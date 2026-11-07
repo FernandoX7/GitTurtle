@@ -339,19 +339,41 @@ impl GitTurtle {
             pane: self.pane,
             sidebar: self.sidebar,
             history_sidebar: self.history_sidebar,
-            focus: if self.app_focus.contains_focused(window, cx) {
-                window.focused(cx)
-            } else {
-                // A contextual popup owns temporary focus outside the app's
-                // tree; retain the underlying list instead of that popup.
-                Some(if self.pane == Pane::Files {
-                    self.file_focus.clone()
-                } else {
-                    self.focus.clone()
-                })
-            },
+            focus: self.inspection_opener(window, cx),
             status: self.status.clone(),
             error: self.error.take(),
+        }
+    }
+
+    /// The control an inspection opened now gives focus back to as it
+    /// closes (`ReturnContext::focus`): the focused control, or, where a
+    /// row's menu holds focus as its item opens the inspection, the list the
+    /// menu returns focus to (File history… from a changed file's
+    /// right-click or keyboard menu). Such a menu is drawn inside the
+    /// window's tree, and its handle, kept, went with the menu: closing File
+    /// history focused it once the menu was gone, where AT-SPI read only the
+    /// window's frame focused and no key, Escape and the command palette's
+    /// shortcut among them, reached anything until a click. A popup outside
+    /// the window's tree gives back the shown pane's list.
+    pub(super) fn inspection_opener(&self, window: &Window, cx: &App) -> Option<FocusHandle> {
+        if let Some(list) = [&self.file_menu, &self.commit_menu, &self.nav_menu]
+            .into_iter()
+            .flatten()
+            .find_map(|menu| menu.returns_focus_to(window, cx))
+        {
+            return Some(list.clone());
+        }
+        if let Some(previous) = crate::native_accessibility::pointer_menu_return(window, cx) {
+            return previous;
+        }
+        if self.app_focus.contains_focused(window, cx) {
+            window.focused(cx)
+        } else {
+            Some(if self.pane == Pane::Files {
+                self.file_focus.clone()
+            } else {
+                self.focus.clone()
+            })
         }
     }
 
@@ -417,8 +439,59 @@ impl GitTurtle {
             self.return_modal_to(focus);
         } else {
             let focus = focus.unwrap_or_else(|| self.take_mode_list());
-            window.focus(&focus, cx);
+            self.give_inspection_focus_back(focus, window, cx);
         }
+    }
+
+    /// Focuses `focus` as an inspection closes on the repository page, and,
+    /// once a frame has drawn the restored page, the shown mode's own list
+    /// (History's commit list, else the changed-file list, named as the
+    /// window's pane) where `focus` still holds focus but that frame did not
+    /// draw it, or where nothing holds focus: the brief's "if gone, History's
+    /// selected row". A control the inspection was opened from can be gone
+    /// as it closes: a dropdown's menu drawn inside the window's tree, as
+    /// the narrow Compare's File actions, which held focus as its File
+    /// history… or Blame ran, or the wide Compare's File history button,
+    /// which no frame draws while File history is open, so its handle is
+    /// dropped. Focus stayed on that handle, where no key reached anything
+    /// until a click. Focus the person moves meanwhile, or a dialog or sheet
+    /// opened meanwhile, is left where it is.
+    pub(super) fn give_inspection_focus_back(
+        &mut self,
+        focus: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&focus, cx);
+        let (owner, path) = (cx.entity().downgrade(), self.path.clone());
+        let given = focus.downgrade();
+        // The callbacks run as a frame starts: the second runs once the
+        // first frame has drawn the restored page.
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if this.page != AppPage::Repository
+                        || this.path != path
+                        || window.has_active_dialog(cx)
+                        || window.has_active_sheet(cx)
+                    {
+                        return;
+                    }
+                    let stranded = match window.focused(cx) {
+                        None => true,
+                        Some(now) => {
+                            given.upgrade().as_ref() == Some(&now)
+                                && !this.app_focus.contains(&now, window)
+                        }
+                    };
+                    if stranded {
+                        let list = this.take_mode_list();
+                        window.focus(&list, cx);
+                        cx.notify();
+                    }
+                });
+            });
+        });
     }
 
     /// A page may finish while Settings or Projects is visible. Accept its
@@ -1755,5 +1828,282 @@ pub(crate) mod tests {
             );
         }
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// File history opened from Compare's changed-file row by the row's
+    /// right-click menu, at 18 pt in a 461 × 490 window, closes by Escape
+    /// onto that row's list, drawn and taking the keys: the command
+    /// palette's shortcut opens the palette, and with the palette closed a
+    /// second Escape goes back to History. The menu, drawn inside the row,
+    /// held focus as its item ran, and its handle was kept as the control to
+    /// give back: closing focused that handle once the menu was gone, where
+    /// AT-SPI read only the window's frame focused and no key reached
+    /// anything until a click.
+    #[gpui::test]
+    async fn file_history_opened_from_a_rows_menu_closes_onto_its_list(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{Modifiers, MouseButton, px, size};
+        const HISTORY: &str = "menu-item: File history… · MenuItem";
+        let palette = if cfg!(target_os = "macos") {
+            "cmd-shift-p"
+        } else {
+            "ctrl-shift-p"
+        };
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|window, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+            cx.set_reduce_motion(true);
+            crate::appearance::apply_text_sizes(18, 12, window, cx);
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_commit(1, window, cx);
+                app.pane = Pane::History;
+                window.focus(&app.focus, cx);
+            })
+        });
+        settle(&app, cx).await;
+        // Enter on the commit opens its highlighted file in Compare.
+        cx.simulate_keystrokes("enter");
+        settle(&app, cx).await;
+        let (files, root) = app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Compare, "Enter opened Compare");
+            (app.file_focus.clone(), app.app_focus.clone())
+        });
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        assert_eq!(focused(cx), Some(files.clone()), "Compare's file list");
+        let row = cx
+            .debug_bounds("selected-changed-file")
+            .expect("the selected file's row");
+        cx.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+        draw(cx);
+        let item = cx.debug_bounds(HISTORY).expect("the row's menu");
+        cx.simulate_click(item.center(), Modifiers::default());
+        first_page_lands(&app, cx);
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.file_history.is_active()));
+        cx.simulate_keystrokes("escape");
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| !app.file_history.is_active()
+            && app.mode == WorkspaceMode::Compare));
+        assert_eq!(focused(cx), Some(files.clone()), "the row's list");
+        assert!(
+            cx.update(|window, _| root.contains(&files, window)),
+            "the window draws the list"
+        );
+        assert!(app.read_with(cx, |app, _| app.pane == Pane::Files));
+        cx.simulate_keystrokes(palette);
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the palette opens"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert_eq!(
+            focused(cx),
+            Some(files.clone()),
+            "the palette closes onto it"
+        );
+        cx.simulate_keystrokes("escape");
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.mode == WorkspaceMode::History),
+            "a second Escape goes back to History"
+        );
+        // The same from the keyboard: Shift-F10 on History's changed file,
+        // whose menu opens on File history….
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.pane = Pane::Files;
+                window.focus(&app.file_focus, cx);
+            })
+        });
+        draw(cx);
+        cx.simulate_keystrokes("shift-f10");
+        draw(cx);
+        assert!(
+            cx.debug_bounds(HISTORY).is_some(),
+            "the row's keyboard menu"
+        );
+        cx.simulate_keystrokes("enter");
+        first_page_lands(&app, cx);
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.file_history.is_active()));
+        cx.simulate_keystrokes("escape");
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| !app.file_history.is_active()
+            && app.mode == WorkspaceMode::History));
+        assert_eq!(focused(cx), Some(files), "the changed files' list");
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// With the window's root focused, as a click on an empty spot of the
+    /// window leaves it and where AT-SPI reads only the window's frame
+    /// focused, the window's own shortcuts reach it: in Compare the command
+    /// palette's shortcut opens the palette, and Escape goes back to History.
+    #[gpui::test]
+    async fn the_windows_shortcuts_reach_its_focused_root(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{Modifiers, point, px};
+        let palette = if cfg!(target_os = "macos") {
+            "cmd-shift-p"
+        } else {
+            "ctrl-shift-p"
+        };
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Compare));
+        let root = app.read_with(cx, |app, _| app.app_focus.clone());
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let click_an_empty_spot = |cx: &mut VisualTestContext| {
+            let bar = cx.debug_bounds("status-bar").expect("the status bar");
+            cx.simulate_click(
+                point(bar.left() + px(4.), bar.center().y),
+                Modifiers::default(),
+            );
+            draw(cx);
+        };
+        click_an_empty_spot(cx);
+        assert_eq!(focused(cx), Some(root.clone()), "the window's root");
+        cx.simulate_keystrokes(palette);
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the palette opens"
+        );
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        click_an_empty_spot(cx);
+        assert_eq!(focused(cx), Some(root), "the window's root again");
+        cx.simulate_keystrokes("escape");
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.mode == WorkspaceMode::History),
+            "Escape goes back to History"
+        );
+    }
+
+    /// File history and Blame closed by Escape never leave focus on a
+    /// control the restored page does not draw: opened from the narrow
+    /// Compare's File actions menu at 18 pt in a 461 × 490 window, whose
+    /// menu held focus as its item ran, each lands on the changed-file list,
+    /// where the command palette's shortcut opens the palette; opened by
+    /// the wide Compare's File history button, which no frame draws while
+    /// File history is open, it lands on a drawn control. Focus stayed on
+    /// the gone menu's or button's handle, where no key reached anything.
+    #[gpui::test]
+    async fn inspections_closed_from_gone_openers_land_on_a_drawn_control(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{Modifiers, px, size};
+        let palette = if cfg!(target_os = "macos") {
+            "cmd-shift-p"
+        } else {
+            "ctrl-shift-p"
+        };
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|window, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+            cx.set_reduce_motion(true);
+            crate::appearance::apply_text_sizes(18, 12, window, cx);
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let (files, root) =
+            app.read_with(cx, |app, _| (app.file_focus.clone(), app.app_focus.clone()));
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        for item in [
+            "menu-item: File history… · MenuItem",
+            "menu-item: Blame · MenuItem",
+        ] {
+            assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Compare));
+            let trigger = cx
+                .debug_bounds("file-actions-menu")
+                .expect("the narrow Compare's File actions");
+            cx.simulate_click(trigger.center(), Modifiers::default());
+            draw(cx);
+            let entry = cx
+                .debug_bounds(item)
+                .unwrap_or_else(|| panic!("File actions offers {item}"));
+            cx.simulate_click(entry.center(), Modifiers::default());
+            if item.contains("File history") {
+                first_page_lands(&app, cx);
+            } else {
+                crate::blame::lands(&app, cx);
+            }
+            settle(&app, cx).await;
+            assert!(app.read_with(cx, |app, _| app.file_history.is_active()
+                || app.blame.is_visible()));
+            cx.simulate_keystrokes("escape");
+            settle(&app, cx).await;
+            assert!(app.read_with(cx, |app, _| !app.file_history.is_active()
+                && !app.blame.is_visible()
+                && app.mode == WorkspaceMode::Compare));
+            assert_eq!(focused(cx), Some(files.clone()), "{item}: the file list");
+            cx.simulate_keystrokes(palette);
+            draw(cx);
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{item}: the palette opens"
+            );
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(400));
+            draw(cx);
+        }
+        // The wide Compare's File history button.
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let button = cx
+            .debug_bounds("open-file-history")
+            .expect("the wide Compare's File history button");
+        cx.simulate_click(button.center(), Modifiers::default());
+        first_page_lands(&app, cx);
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.file_history.is_active()));
+        cx.simulate_keystrokes("escape");
+        settle(&app, cx).await;
+        let now = focused(cx).expect("a focused control");
+        assert!(
+            cx.update(|window, _| root.contains(&now, window)),
+            "the window draws the control {now:?}"
+        );
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
     }
 }

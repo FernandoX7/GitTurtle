@@ -340,6 +340,9 @@ impl ListRow {
 /// offered a commit's Revert once an Undo had taken that commit from the row.
 pub(super) struct KeyboardMenu {
     menu: Entity<PopupMenu>,
+    /// The menu's own focus handle, read without the menu, which is being
+    /// updated while one of its items runs ([`Self::returns_focus_to`]).
+    held: WeakFocusHandle,
     row: RowPlace,
     /// The window's size when the menu opened, which its overlay covers. The
     /// menu also closes on a press outside itself, past an overlay that a
@@ -564,6 +567,7 @@ impl KeyboardMenu {
         window.focus(&handle, cx);
         Self {
             menu,
+            held: handle.downgrade(),
             row,
             viewport: window.viewport_size(),
             room,
@@ -645,6 +649,17 @@ impl KeyboardMenu {
                 Self::finish(build(menu), focus, cap, window, cx)
             })
         });
+    }
+
+    /// The list or tree the menu returns focus to as it closes, its action
+    /// context, while the menu holds focus: a view that keeps the focused
+    /// control to give focus back to later keeps this one instead of the
+    /// menu's, which goes with the menu.
+    pub(super) fn returns_focus_to(&self, window: &Window, cx: &App) -> Option<&FocusHandle> {
+        self.held
+            .upgrade()
+            .is_some_and(|held| held.contains_focused(window, cx))
+            .then_some(&self.focus)
     }
 
     /// The open menu, for tests that watch it built again.
@@ -2037,7 +2052,17 @@ impl Pressed {
 /// it. It takes the closed menu's own instead, as the kit's context menu
 /// takes an earlier menu's.
 #[derive(Default)]
-struct OpenPointerMenus(Vec<(WeakEntity<PopupMenu>, Option<FocusHandle>)>);
+struct OpenPointerMenus(Vec<OpenPointerMenu>);
+
+/// An open right-click menu ([`OpenPointerMenus`]).
+struct OpenPointerMenu {
+    menu: WeakEntity<PopupMenu>,
+    /// The menu's own focus handle, read without the menu, which is being
+    /// updated while one of its items runs ([`pointer_menu_return`]).
+    held: WeakFocusHandle,
+    /// Where it returns focus as it closes.
+    previous: Option<FocusHandle>,
+}
 
 impl Global for OpenPointerMenus {}
 
@@ -2045,32 +2070,47 @@ impl OpenPointerMenus {
     /// Where a menu opening now returns focus: where an open right-click
     /// menu that holds focus returns it, or else the focus itself.
     fn restore_target(window: &Window, cx: &App) -> Option<FocusHandle> {
-        let holder = cx.try_global::<Self>().and_then(|open| {
-            open.0.iter().find(|(menu, _)| {
-                menu.upgrade()
-                    .is_some_and(|menu| menu.focus_handle(cx).contains_focused(window, cx))
-            })
-        });
-        match holder {
-            Some((_, previous)) => previous.clone(),
-            None => window.focused(cx),
-        }
+        pointer_menu_return(window, cx).unwrap_or_else(|| window.focused(cx))
     }
 
     /// Records `menu`, open, returning focus to `previous`; a menu that is
     /// gone is forgotten.
     fn open(menu: &Entity<PopupMenu>, previous: Option<FocusHandle>, cx: &mut App) {
+        let held = menu.focus_handle(cx).downgrade();
         let open = &mut cx.default_global::<Self>().0;
-        open.retain(|(menu, _)| menu.upgrade().is_some());
-        open.push((menu.downgrade(), previous));
+        open.retain(|open| open.menu.upgrade().is_some());
+        open.push(OpenPointerMenu {
+            menu: menu.downgrade(),
+            held,
+            previous,
+        });
     }
 
     /// Forgets `menu`, closed or released.
     fn close(menu: EntityId, cx: &mut App) {
         cx.default_global::<Self>()
             .0
-            .retain(|(open, _)| open.entity_id() != menu);
+            .retain(|open| open.menu.entity_id() != menu);
     }
+}
+
+/// Where the open right-click menu that holds focus returns it as it
+/// closes, or `None` where no right-click menu holds focus. The menu is
+/// drawn inside its row, so its handle lies in the window's tree, and a view
+/// that keeps the focused control to give focus back to later
+/// (`file_history::ReturnContext`) keeps this one instead: the menu's handle
+/// goes with the menu. Read from one of the menu's items, which runs while
+/// the menu is being updated, so the menu itself is not read.
+pub(crate) fn pointer_menu_return(window: &Window, cx: &App) -> Option<Option<FocusHandle>> {
+    cx.try_global::<OpenPointerMenus>()?
+        .0
+        .iter()
+        .find(|open| {
+            open.held
+                .upgrade()
+                .is_some_and(|held| held.contains_focused(window, cx))
+        })
+        .map(|open| open.previous.clone())
 }
 
 #[cfg(test)]
@@ -2094,7 +2134,7 @@ pub(crate) fn pointer_menu_builds(menu: EntityId) -> usize {
 #[cfg(test)]
 pub(crate) fn open_pointer_menus(cx: &App) -> Vec<WeakEntity<PopupMenu>> {
     cx.try_global::<OpenPointerMenus>()
-        .map(|open| open.0.iter().map(|(menu, _)| menu.clone()).collect())
+        .map(|open| open.0.iter().map(|open| open.menu.clone()).collect())
         .unwrap_or_default()
 }
 

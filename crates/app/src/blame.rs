@@ -160,7 +160,12 @@ impl GitTurtle {
             previous,
             repository: Some(repo.path().to_owned()),
             target: Some(target),
-            return_context: Some((self.mode, self.pane, self.sidebar, window.focused(cx))),
+            return_context: Some((
+                self.mode,
+                self.pane,
+                self.sidebar,
+                self.inspection_opener(window, cx),
+            )),
             ..Default::default()
         };
         if self.mode == WorkspaceMode::History {
@@ -190,7 +195,7 @@ impl GitTurtle {
             let focus = self.saved_focus(focus);
             if self.page == AppPage::Repository {
                 let focus = focus.unwrap_or_else(|| self.take_mode_list());
-                window.focus(&focus, cx);
+                self.give_inspection_focus_back(focus, window, cx);
             } else if self.page_return_focus.is_some() && self.page_return_focus == self.blame.focus
             {
                 // Closed behind Settings or Projects, as a status read

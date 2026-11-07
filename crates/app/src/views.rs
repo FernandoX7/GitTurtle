@@ -3553,6 +3553,7 @@ impl GitTurtle {
                 }))
                 .children(history_index.map(|index| {
                     button("file-history", "", "clock", false)
+                        .debug_selector(|| "open-file-history".into())
                         .accessibility_label("File history")
                         .tooltip("File history · follow renames along the first parent")
                         .on_click(cx.listener(move |this, _, window, cx| {
