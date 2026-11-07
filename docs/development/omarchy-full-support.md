@@ -759,7 +759,10 @@ cover current upstream x86-64 Omarchy.
        Ctrl+R, History's refs and sidebar update one frame before the Git actions bar (one-frame lag; low). (verify)
        FU27-D's QA note expected "History rows 21–520" in the status bar after a restore past the end; it never shows.
        N2 (new with FU26-E: the stale "Git rev-parse failed" banner and a half-cut notice line beside the mark) is in
-       FU26-E2's fixup pass.
+       FU26-E2's fixup pass. File History in windows shorter than 490 px at 18 pt can shrink its revisions to
+       nothing (no scrolling fallback; FU29-A). A status line draws a two-line text whole, its first line rising
+       above the 26 px bar (`views.rs:~9073`; FU29-B: draw the first line only). An unrelated watcher warning set
+       before a tab is marked stays beside the mark (FU26-E2 report; low).
      - **Held Enter residuals (FU21-E landed 2026-11-06: a held Enter that opened a dialog reaches
        nothing in or behind it until its key-up, input-method repeats included; native QA-106 pending):**
        (macOS, verify) a Command pressed mid-hold clears the press's start, so if Cocoa keeps repeating
