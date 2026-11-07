@@ -1260,7 +1260,7 @@ impl GitTurtle {
     }
 
     /// History's column controls, in Settings (`in_settings`) or History's
-    /// own Columns popover. In Settings the keyboard focusing one scrolls the
+    /// own Columns panel. In Settings the keyboard focusing one scrolls the
     /// page to show it.
     pub(super) fn render_columns_controls(
         &self,
@@ -1293,7 +1293,7 @@ impl GitTurtle {
             // In Settings the steppers are centred on the title's first line,
             // as every Settings row's trailing control, with the value
             // centred between them; the paragraph above is the gap's 0.75 rem
-            // away. History's Columns popover tops them on the row, as
+            // away. History's Columns panel tops them on the row, as
             // before.
             .child(div()
                 .debug_selector(|| "graph-spacing-row".into())
@@ -4866,7 +4866,7 @@ fn rem() -> Pixels {
 /// separator: such a control is lowered just enough instead. The slot itself
 /// is one title line tall, so the row keeps its text's height. A control
 /// stacked below its text is placed without it, as is History's Columns
-/// popover, where the steppers stand under the panel's paragraph rather than
+/// panel, where the steppers stand under the panel's paragraph rather than
 /// beside a row's title; a row whose control wraps below its text when
 /// narrow is a [`wrapping_row`].
 fn on_title_line(control: impl IntoElement, room: Pixels, cx: &App) -> TitleLine {
@@ -9022,18 +9022,18 @@ mod picker_tests {
     }
 }
 
-/// History's Columns popover, which keeps its controls off the title line.
+/// History's Columns panel, which keeps its controls off the title line.
 #[cfg(test)]
 mod columns_popover_tests {
     use super::*;
     use core::prelude::v1::test;
 
-    /// History's Columns popover lays its graph lane spacing out as it did
+    /// History's Columns panel lays its graph lane spacing out as it did
     /// before Settings centred its rows' controls on their titles' first
     /// lines: the steppers top their row and lie inside it, and the column
     /// list starts the panel's 0.75 rem gap below that row, at 13 and 18 pt
     /// in a 1,280 and a 461 px window. The title-line slot belongs beside a
-    /// Settings row's title; in the popover it lifted the steppers above
+    /// Settings row's title; in the panel it lifted the steppers above
     /// their row, 4.25 px at 13 pt and 6 px at 18 pt.
     #[gpui::test]
     async fn the_columns_popover_tops_its_steppers_on_their_row(cx: &mut TestAppContext) {
@@ -9064,7 +9064,7 @@ mod columns_popover_tests {
                     cx.debug_bounds("graph-spacing-controls"),
                     cx.debug_bounds("history-column-row-0"),
                 ) else {
-                    panic!("{at}: the popover draws its graph lane spacing and columns");
+                    panic!("{at}: the panel draws its graph lane spacing and columns");
                 };
                 let half = cx.update(|window, _| px(0.5 / window.scale_factor()));
                 assert!(

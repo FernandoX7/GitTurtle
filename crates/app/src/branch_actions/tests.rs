@@ -540,6 +540,100 @@ async fn the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds(cx: &mu
     draw(cx);
 }
 
+/// The branch picker's open menu keeps keyboard focus, as a dialog does
+/// (decided 2026-11-07): it is one stop, so Tab and Shift+Tab, pressed on
+/// past its last and its first stop, leave focus on the menu and the keys'
+/// cursor on its row, and the menu stays drawn; Escape closes it and gives
+/// focus back to the picker that opened it. At 13 pt in a 461 × 490 half
+/// tile QA-106e tabbed from the open menu to Main Menu, the tab and its
+/// close button behind it while it stayed drawn; the same at 1480 × 973.
+#[gpui::test]
+async fn tab_and_shift_tab_stay_inside_the_open_branch_chooser(cx: &mut TestAppContext) {
+    const FIND: &str = "menu-item: Find or create a branch… · MenuItem";
+    const CURRENT: &str = "menu-item: main, current branch · MenuItemCheckBox True disabled";
+    const HELD: &str = "menu-item: review, another worktree. Open that worktree from Worktrees… · MenuItemCheckBox False disabled";
+    let (_fixture, _app, cx, _repository) = with_held_branch(cx).await;
+    // The rows that draw the keys' cursor.
+    let cursor = |cx: &mut VisualTestContext| {
+        let fill = cx.update(|_, cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).list_active)
+        });
+        [FIND, CURRENT, HELD]
+            .into_iter()
+            .filter(|item| {
+                cx.debug_bounds(item).is_some_and(|bounds| {
+                    crate::appearance::painted_row(cx, bounds).0.contains(&fill)
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+    let press = |cx: &mut VisualTestContext, keys: &str| {
+        cx.simulate_keystrokes(keys);
+        draw(cx);
+    };
+    let drawn = |cx: &mut VisualTestContext| cx.debug_bounds(FIND).is_some();
+    // Tabs on to the picker, as QA-106e reached it, and opens the chooser
+    // with Space, returning the picker's focus: the menu button whose Space
+    // draws the chooser. A press does not focus a Button.
+    let open_from_the_picker = |cx: &mut VisualTestContext, at: &str| {
+        for _ in 0..80 {
+            let on_a_menu_button = cx.update(|window, _| {
+                (window.context_stack().iter()).any(|context| context.contains("PopoverTrigger"))
+            });
+            if on_a_menu_button {
+                let opener = focused(cx).expect("the menu button holds focus");
+                press(cx, "space");
+                if drawn(cx) {
+                    return opener;
+                }
+                // Another button's menu: Escape gives focus back to it.
+                if focused(cx).as_ref() != Some(&opener) {
+                    press(cx, "escape");
+                }
+            }
+            press(cx, "tab");
+        }
+        panic!("{at}: Tab never reached the branch picker");
+    };
+    for (width, height) in [(461., 490.), (1480., 973.)] {
+        let at = format!("13 pt in {width} × {height}");
+        cx.simulate_resize(size(px(width), px(height)));
+        draw(cx);
+        let opener = open_from_the_picker(cx, &at);
+        let menu = focused(cx).unwrap_or_else(|| panic!("{at}: focus in the chooser"));
+        assert_ne!(menu, opener, "{at}: the chooser takes focus");
+        press(cx, "down");
+        press(cx, "down");
+        assert_eq!(cursor(cx), [HELD], "{at}: the keys rest on the held branch");
+        for key in [
+            "tab",
+            "tab",
+            "tab",
+            "shift-tab",
+            "shift-tab",
+            "shift-tab",
+            "shift-tab",
+        ] {
+            press(cx, key);
+            assert_eq!(
+                focused(cx).as_ref(),
+                Some(&menu),
+                "{at}: focus stays in the chooser after {key}"
+            );
+            assert!(drawn(cx), "{at}: the chooser stays drawn after {key}");
+            assert_eq!(cursor(cx), [HELD], "{at}: {key} moves no cursor");
+        }
+        press(cx, "escape");
+        assert!(!drawn(cx), "{at}: Escape closes the chooser");
+        assert_eq!(
+            focused(cx).as_ref(),
+            Some(&opener),
+            "{at}: Escape gives focus back to the picker"
+        );
+    }
+}
+
 /// In a 461 × 490 half tile, at 13 and 18 pt, Tab from the branch chooser's
 /// filter through its 30 rows and Shift+Tab back shows each row whole with
 /// its ring, inside every clip around it, the dialog's among them. Laid out

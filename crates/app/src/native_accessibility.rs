@@ -37,12 +37,31 @@ gpui_kit::actions!(
         CollapseNavigation,
         ActivateNavigation,
         ManageNavigation,
-        RowActions
+        RowActions,
+        HoldMenuFocus
     ]
 );
 
+/// The kit's key context of an open menu, every menu the app opens: a
+/// button's ([`AppDropdown`]), a row's ([`PointerMenu`], [`KeyboardMenu`])
+/// and a text field's drawn fallback menu.
+const MENU_CONTEXT: &str = "PopupMenu";
+
 pub(super) fn bind_keys(cx: &mut App) {
+    // An open menu keeps keyboard focus inside it, as a dialog does (decided
+    // 2026-11-07, `DESIGN.md`'s focus rules): it is one stop, whose rows Up
+    // and Down move through, and Tab and Shift+Tab leave focus where it is
+    // and move nothing, on every platform; Escape gives focus back to the
+    // opener, choosing an item acts, and a click outside closes it. Bound in
+    // the menu's own context, deeper than the window root's Tab, which moved
+    // focus to the controls behind the menu while it stayed drawn: QA-106e
+    // tabbed from the branch picker's open menu to Main Menu, the tab and its
+    // close button.
+    // No element handles the action, so this global listener ends it.
+    cx.on_action(|_: &HoldMenuFocus, _| {});
     cx.bind_keys([
+        KeyBinding::new("tab", HoldMenuFocus, Some(MENU_CONTEXT)),
+        KeyBinding::new("shift-tab", HoldMenuFocus, Some(MENU_CONTEXT)),
         KeyBinding::new("down", NextNavigation, Some("GitTurtleNavigation")),
         KeyBinding::new("up", PreviousNavigation, Some("GitTurtleNavigation")),
         KeyBinding::new("home", FirstNavigation, Some("GitTurtleNavigation")),
