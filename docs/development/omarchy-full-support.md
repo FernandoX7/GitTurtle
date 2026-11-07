@@ -843,9 +843,9 @@ cover current upstream x86-64 Omarchy.
        FU28-D, now 0.25 px): `confirming_with` clones `id` for the test-only selector each frame in release
        (`copy_feedback.rs:524`).
        FU27-B landed 2026-11-06 (the GitHub connection pane's "Local worktree:" line keeps to one line, its path
-       elided in the middle as the header's; the panel's stops all draw their rings, checked over 1,526 stops); found
-       by its probe (low; in FU28-A's remaining commits, in review, fix pass FU28-A2): Pulls at 17 pt in 461 × 490, stops 2 and 3 leave a line cut at the body's edge; Overview at
-       17 pt (461, 440 px) and 18 pt (480 px): no stop shows `github-captured-identities` (below every stop's view).
+       elided in the middle as the header's; the panel's stops all draw their rings, checked over 1,526 stops); its
+       probe's two findings (Pulls at 17 pt in 461 × 490, stops 2 and 3 cutting a line at the body's edge; no stop
+       showing `github-captured-identities` at 17 pt 461/440 px and 18 pt 480 px) landed with FU28-A on 2026-11-07.
      - **A Refresh moves a tab whose `.git` vanished to an enclosing repository (found by FU26-A, 2026-11-06; FU26-E):**
        `RepositorySession::open` rediscovers from the tab's path, so with an enclosing work tree (a dotfiles
        repository in the home directory) the tab silently shows, and later writes would target, that repository.
