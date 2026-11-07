@@ -6096,16 +6096,7 @@ mod tests {
             })
         }
 
-        /// Draws the window as client-decorated, with its controls, while
-        /// it lives, and as GPUI's test window once it is dropped.
-        struct Decorated;
-        impl Drop for Decorated {
-            fn drop(&mut self) {
-                crate::window_chrome::CLIENT_DECORATED.with(|decorated| decorated.set(false));
-            }
-        }
-        crate::window_chrome::CLIENT_DECORATED.with(|decorated| decorated.set(true));
-        let _decorated = Decorated;
+        let _decorated = Decorated::on();
 
         let (_fixture, app, cx, paths) = strip_window(cx).await;
         cx.update(|window, cx| {
@@ -6190,6 +6181,103 @@ mod tests {
         cx.update(|window, _| window.set_scale_factor(2.));
         reset_strip_text(cx, &app);
         settle_tab_test(&app, cx).await;
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Draws the test's window as client-decorated, with its controls,
+    /// while it lives, and as GPUI's test window once it is dropped.
+    #[cfg(target_os = "linux")]
+    struct Decorated;
+
+    #[cfg(target_os = "linux")]
+    impl Decorated {
+        fn on() -> Self {
+            crate::window_chrome::CLIENT_DECORATED.with(|decorated| decorated.set(true));
+            Self
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for Decorated {
+        fn drop(&mut self) {
+            crate::window_chrome::CLIENT_DECORATED.with(|decorated| decorated.set(false));
+        }
+    }
+
+    /// In a client-decorated window, whose strip draws the window controls
+    /// and, after the tabs inside the list, the drag region, the tabs take
+    /// exactly the room `GitTurtle::tab_list_room` predicts for them, the
+    /// room `window_chrome::strip_width` leaves: the list, between Menu and
+    /// New tab, holds that room, one gap and the drag region's least width
+    /// inside its ring's room on either side, and a tab whose name the strip
+    /// cuts spans exactly that room. At 13 and 18 pt in 461 × 490 and
+    /// 640 × 680 windows at scale factors 1.25, 1.5 and 2. The exact-fit
+    /// tests above lay the strip out undecorated, where the decorated room
+    /// goes unchecked.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_decorated_strip_gives_its_tabs_the_room_predicted(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, rendered};
+
+        let _decorated = Decorated::on();
+        let (_fixture, app, cx, paths) = strip_window(cx).await;
+        app.update(cx, |app, cx| {
+            app.project_names
+                .insert(paths[0].clone(), "a much longer repository name".to_owned());
+            cx.notify();
+        });
+        let mut failures = Vec::new();
+        let mut cut = 0;
+        for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.), (18, 640., 680.)] {
+            for scale in [1.25, 1.5, 2.] {
+                // A resize puts the test window back at scale 2.
+                resize_strip(cx, &app, (interface, width, height)).await;
+                cx.update(|window, _| window.set_scale_factor(scale));
+                settle_tab_test(&app, cx).await;
+                draw(cx);
+                let at = format!("{interface} pt in {width} × {height} at {scale}x");
+                for control in ["minimize-window", "maximize-window", "close-window"] {
+                    if cx.debug_bounds(control).is_none() {
+                        failures.push(format!("{at}: {control} is not drawn"));
+                    }
+                }
+                let (room, ring, gap, drag, whole) = cx.update(|window, cx| {
+                    let app = app.read(cx);
+                    let labels = app.tab_strip_labels(window, cx);
+                    (
+                        app.tab_list_room(
+                            labels,
+                            app.tab_strip_labelled_actions(window),
+                            window,
+                            cx,
+                        ),
+                        tab_list_ring_room(window, cx),
+                        tab_gap(window),
+                        window.pixel_snap(appearance::ui_size(32.)),
+                        app.tabs_whole_width(window),
+                    )
+                });
+                let list = rendered(cx, "repository-tabs").size.width - ring * 2. - gap - drag;
+                if (list - room).abs() >= px(0.01) {
+                    failures.push(format!(
+                        "{at}: the list holds {list:?} for its tabs, predicted {room:?}"
+                    ));
+                }
+                if whole > room {
+                    cut += 1;
+                    let tab = rendered(cx, "repository-tab-frame-0").size.width;
+                    if (tab - room).abs() >= px(0.01) {
+                        failures.push(format!(
+                            "{at}: the cut tab is {tab:?} wide, not the {room:?} predicted"
+                        ));
+                    }
+                }
+            }
+        }
+        cx.update(|window, _| window.set_scale_factor(2.));
+        reset_strip_text(cx, &app);
+        settle_tab_test(&app, cx).await;
+        assert!(cut > 0, "some window cuts the tab's name");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
