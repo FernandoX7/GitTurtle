@@ -775,6 +775,31 @@ cover current upstream x86-64 Omarchy.
        walk test's pre-walk clone of the failure region's reveal (FU29-A re-check 2). (S, allocation rule)
        `FocusReveal`: a record path taking one bounds value, so `Reveals::track` and other per-control reports
        stop allocating a `Vec` and cloning the reveal per button per frame (FU29-A3).
+       (S) Recovery: the recovery form loads a commit message of up to 64 MiB into a Textarea
+       (`recovery.rs:1243-1245`; `git-core/src/lib.rs:1121`) while submitting caps it at 64 KiB
+       (`work/recovery.rs:885-888`): cap it when the form loads (FU29-C security review, 2026-11-07). (nit)
+       Repository identity: a repository whose `core.worktree` points outside the folder holding `.git` is
+       refused at open with "changed while it was opened", wrong for an unchanged layout: say its work tree
+       lies outside the folder Git found it in (FU26-E2 security re-check round 4, L4). (defect, M; first)
+       Rewritten-series review (Review rewritten branch series…) shows an empty list with no explanation,
+       before and after a real rebase through the app: `recovery-drafts.json` holds the capture, Refresh
+       series stays empty, and the "No captured interactive rebase is available…" error
+       (`recovery_drafts.rs:326`) is never drawn (QA-106e D3/D5, `qa/qa106/REPORT-e.md`,
+       `q106-D3series-dfd209f.png`; blocks D5). (S) In that dialog "Check publication destination…" is not
+       pulled to the text edge (label ~56.5 px, frame at 42). (M) A click ~40 ms after Return closes a dialog
+       is lost: focus returns to the opener's row (18 pt 1480 × 800; History → Manage current branch… → Tab to
+       Done → Return → click another row; 250 ms later wins) (QA-106e D6). (S, keyboard) Tab leaves the open
+       branch chooser while its popover stays drawn (13 pt 461 × 490) (QA-106e D4). (S) After a rebase the
+       status bar and banner show Git's progress fragments ("Rebasing (1/3)Rebasing (2/3)…Successfully
+       rebased…") instead of the outcome (QA-106e). (nit) Saved session: `lenient_git_directories` swallows
+       JSON syntax errors in its first `Value::deserialize` step with `.ok()`; propagate that step with `?`
+       and keep only `from_value` lenient (FU26-E2 re-check, harmless today). (nit) GitHub Files: with a
+       single page of files both pager buttons are disabled and no stop reveals the page label (FU28-A
+       re-check 3; holds at the walked sizes).
+       (S) Changes: an explicit Refresh with a working row selected re-selects it and moves focus to the list
+       (`workspace.rs` `select_working_row`), even from the commit title (FU29-A2b, pre-existing, 2026-11-07);
+       at scale 1.2 the composer's 16 px padding is not device-aligned, so a one-line description snaps up to
+       0.17 px short (pre-existing).
      - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
        (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
        Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
