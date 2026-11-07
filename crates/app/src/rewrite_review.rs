@@ -28,8 +28,24 @@ impl GitTurtle {
         let branch = self.remote_branch.read(cx).value().trim().to_owned();
         let form = cx.new(|cx| SeriesBrowser::new(owner, repo, remote, branch, window, cx));
         open_series_dialog(form.clone(), window, cx);
+        #[cfg(test)]
+        OPENED.with(|opened| opened.replace(Some(form.downgrade())));
         Some(form)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The review opened last, for a test that opens it as a person does,
+    /// from the palette, whose command keeps no handle to it.
+    static OPENED: std::cell::RefCell<Option<WeakEntity<SeriesBrowser>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The review opened since this was last asked, if it is still open.
+#[cfg(test)]
+pub(crate) fn take_opened() -> Option<Entity<SeriesBrowser>> {
+    OPENED.with(|opened| opened.take()?.upgrade())
 }
 
 /// The focus sweep (`focus_ring::sweep`) walks the rewritten series' review,
@@ -92,6 +108,163 @@ fn open_series_dialog(form: Entity<SeriesBrowser>, window: &mut Window, cx: &mut
 /// review.
 pub(crate) const SERIES_CONTEXT: &str = "RewriteSeries";
 
+/// The series list's accessible description while it lists a series: its
+/// keys.
+const SERIES_KEYS: &str = "Up and Down select a commit pair. Return inspects its rewritten files, or the original's where it has no rewritten commit.";
+
+/// What the list's place says while the series is read.
+const READING: &str = "Reading captured local history…";
+
+/// What an inspected commit's file box says while its changed files are
+/// read.
+const READING_FILES: &str = "Reading changed files…";
+
+/// What the preview's box says while a chosen file's preview is read.
+const READING_PREVIEW: &str = "Reading preview…";
+
+/// What the chosen file's row says at its end while its preview is read
+/// below the body's view ([`SeriesBrowser::preview_read_hidden`]).
+const READING_ROW: &str = "Reading…";
+
+/// What the preview's box says for a commit that changed no files.
+const NO_FILES: &str = "This commit has no changed files.";
+
+/// What the preview's box says before a file is chosen, and why the text
+/// modes wait then.
+const CHOOSE_FILE: &str = "Select a file to inspect its captured commit bytes.";
+
+/// Why the text modes wait for a preview with no patch or source, as an
+/// image's or a document's.
+const NO_TEXT: &str = "This file's preview has no patch or source.";
+
+/// The text modes' names, by mode, and the keys their tooltips are drawn
+/// under ([`refusing`]).
+const TEXT_MODES: [(&str, &str); 4] = [
+    ("Patch", "series-text-mode-0"),
+    ("Before source", "series-text-mode-1"),
+    ("After source", "series-text-mode-2"),
+    ("Diagrams", "series-text-mode-3"),
+];
+
+/// What the list's place says where the captured series has no commit on
+/// either side, which a rebase that rewrote at least one never leaves.
+const NO_COMMITS: &str = "The captured series has no commits to compare.";
+
+/// Why Check publication destination… and Refresh series wait while a
+/// destination check runs.
+const CHECKING: &str = "Checking the publication destination. Cancel remote check stops it.";
+
+/// `control`, unavailable while `refused` says why, which it then says in
+/// its tooltip and its accessible description, as a branch dialog's refused
+/// actions do (`branch_actions::dialog_action`): the review's actions were
+/// dimmed with nothing to say they waited for a series.
+fn refusing(control: Button, id: &'static str, refused: Option<SharedString>) -> impl IntoElement {
+    let disabled = refused.is_some();
+    described(control.disabled(disabled), id, refused)
+}
+
+/// `control`, saying `reason`, where it has one, in its tooltip and its
+/// accessible description.
+fn described(control: Button, id: &'static str, reason: Option<SharedString>) -> impl IntoElement {
+    use native_accessibility::DrawnButton as _;
+    control
+        .when_some(reason, |control, reason| {
+            let control = Described(control).aria_description(reason.clone()).0;
+            crate::workspace::waiting_tooltip(control, id, reason.to_string())
+        })
+        .node_recorded()
+}
+
+/// The title a failed read of the series keeps above its explanation
+/// (DESIGN.md, "Empty and edge states").
+const UNREVIEWABLE: &str = "Series not reviewable";
+
+/// The menu's name for the rebase form, which the review offers where no
+/// rebase captured a series.
+const EDIT_COMMITS: &str = "Edit local commits…";
+
+/// Why Edit local commits… waits once the review's repository is no longer
+/// the one its window shows: it would open the rebase form on another.
+const NOT_SHOWN: &str = "Return to this review's repository first";
+
+/// What the review draws in the series list's place with no series to show
+/// ([`SeriesBrowser::empty_reason`]).
+struct Empty {
+    /// A failure's title, above its explanation, `line`.
+    title: Option<&'static str>,
+    line: SharedString,
+    /// The whole state, read as the list's accessible description and the
+    /// description of each action that waits for a series.
+    description: SharedString,
+    /// Whether no rebase captured a series, which offers Edit local commits….
+    uncaptured: bool,
+}
+
+/// The prepaint of the actions below the series, `observe`, recording in
+/// tests where each frame put them and whether it drew a read under way
+/// ([`painted_actions`]).
+fn action_row(
+    pending: bool,
+    observe: impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static,
+) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+    #[cfg(not(test))]
+    let _ = pending;
+    move |bounds, window, cx| {
+        #[cfg(test)]
+        if let Some(first) = bounds.first() {
+            painted_actions::record(first.top(), pending);
+        }
+        observe(bounds, window, cx)
+    }
+}
+
+/// Test-only: where each painted frame put the actions below the series,
+/// the top of Review messages, and whether that frame drew a read under
+/// way. A test window draws a frame a read's landing asks for inside the
+/// update that asked, so bounds read after it show only the last frame; this
+/// record keeps each (as `diff_view::painted_rows` does).
+#[cfg(test)]
+mod painted_actions {
+    use super::*;
+
+    thread_local! {
+        static TOPS: std::cell::RefCell<Option<Vec<(Pixels, bool)>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Starts recording, forgetting anything recorded before.
+    pub(super) fn watch() {
+        TOPS.with_borrow_mut(|tops| *tops = Some(Vec::new()));
+    }
+
+    /// What each frame painted since [`watch`], in order; recording stops.
+    pub(super) fn take() -> Vec<(Pixels, bool)> {
+        TOPS.with_borrow_mut(|tops| tops.take().unwrap_or_default())
+    }
+
+    pub(super) fn record(top: Pixels, pending: bool) {
+        TOPS.with_borrow_mut(|tops| {
+            if let Some(tops) = tops {
+                tops.push((top, pending));
+            }
+        });
+    }
+}
+
+/// A kit Button lent GPUI's stateful element methods for its accessible
+/// description, which the kit's Button does not offer, as a branch dialog's
+/// actions are: its interactivity is its base Button's, whose node GPUI
+/// writes with the description.
+struct Described(Button);
+
+impl InteractiveElement for Described {
+    fn interactivity(&mut self) -> &mut gpui::Interactivity {
+        self.0.interactivity()
+    }
+}
+
+impl StatefulInteractiveElement for Described {}
+
 pub(crate) struct SeriesBrowser {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
@@ -127,6 +300,13 @@ pub(crate) struct SeriesBrowser {
     patch: Option<Entity<diff_view::DiffView>>,
     text_mode: usize,
     pending: bool,
+    /// The height the series list's empty state took as last drawn at
+    /// rest, which it keeps while Refresh series reads again.
+    empty_height: std::rc::Rc<std::cell::Cell<Pixels>>,
+    /// Where the preview's box held its content as last drawn, which tells
+    /// whether a chosen file's read there lies below the body's view
+    /// ([`Self::preview_read_hidden`]).
+    preview_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     network_pending: bool,
     error: Option<String>,
     remote: Entity<InputState>,
@@ -186,6 +366,8 @@ impl SeriesBrowser {
             patch: None,
             text_mode: 0,
             pending: false,
+            empty_height: Default::default(),
+            preview_bounds: Default::default(),
             network_pending: false,
             error: None,
             remote: cx.new(|cx| {
@@ -301,8 +483,11 @@ impl SeriesBrowser {
         let response = self
             .metadata
             .submit_controlled(self.control.clone(), move || {
-                let capture = recovery_drafts::latest_rewrite(repo.path())?;
+                let Some(capture) = recovery_drafts::latest_rewrite(repo.path())? else {
+                    return Ok(None);
+                };
                 repo.rewrite_review(&capture.base, &capture.original, &capture.branch)
+                    .map(Some)
             });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response
@@ -315,16 +500,148 @@ impl SeriesBrowser {
                 this.pending = false;
                 this.task = None;
                 match result {
-                    Ok(review) => {
+                    Ok(Some(review)) => {
                         this.review = Some(Arc::new(review));
                         this.selected = 0;
                         this.focus.focus(window, cx);
                     }
+                    Ok(None) => {}
                     Err(error) => this.error = Some(format!("{error:#}")),
                 }
                 cx.notify();
             });
         }));
+    }
+    /// Why the review shows no series: its read under way, the load's
+    /// failure, with its title, or, with neither, that no rebase captured
+    /// one, which offers Edit local commits….
+    fn empty_reason(&self) -> Empty {
+        let (title, line): (Option<&'static str>, SharedString) = if self.pending {
+            (None, READING.into())
+        } else if self.review.is_some() {
+            (None, NO_COMMITS.into())
+        } else if let Some(error) = &self.error {
+            (Some(UNREVIEWABLE), error.clone().into())
+        } else {
+            (None, recovery_drafts::NO_CAPTURE.into())
+        };
+        let description =
+            title.map_or_else(|| line.clone(), |title| format!("{title}. {line}").into());
+        Empty {
+            title,
+            line,
+            description,
+            uncaptured: !self.pending && self.review.is_none() && self.error.is_none(),
+        }
+    }
+    /// Whether an inspected commit's changed files are read, which its file
+    /// box says.
+    fn reading_files(&self) -> bool {
+        self.inspecting && self.messages.is_none() && self.pending && self.selected_file.is_none()
+    }
+    /// Whether a chosen file's preview is read, which the preview's box
+    /// says.
+    fn reading_preview(&self) -> bool {
+        self.inspecting && self.pending && self.selected_file.is_some()
+    }
+    /// Why the text modes refuse a press, if they do: they stay in their row
+    /// whatever the preview shows, so the preview beneath them keeps its
+    /// place as a file is chosen and its preview read, and wait for a
+    /// preview with text, as the stash browser's do.
+    fn modes_refusal(&self) -> Option<SharedString> {
+        match self.content.as_deref() {
+            Some(Content::Text { .. }) => None,
+            Some(_) => Some(NO_TEXT.into()),
+            None if self.reading_preview() => Some(READING_PREVIEW.into()),
+            None if self.selected_file.is_some() => Some(NO_TEXT.into()),
+            None => Some(CHOOSE_FILE.into()),
+        }
+    }
+    /// Why Edit local commits… refuses a press, and whether it looks it:
+    /// once the review's repository is no longer the one shown, that;
+    /// otherwise the palette's own reason for its Edit local commits…
+    /// (`CommandId::Rebase`), a running write's, which it takes the
+    /// disabled look for only once the write looks busy, or a merge, rebase
+    /// or cherry-pick under way, which the branch menu leaves the item out
+    /// for. Mid-merge it was offered, and opened the form over the merge.
+    fn edit_refusal(&self, window: &Window, cx: &App) -> Option<(SharedString, bool)> {
+        let Some(owner) = self.owner.upgrade() else {
+            return Some((NOT_SHOWN.into(), true));
+        };
+        let owner = owner.read(cx);
+        if owner.path.as_deref() != Some(self.repo.path()) || owner.page != AppPage::Repository {
+            return Some((NOT_SHOWN.into(), true));
+        }
+        let reason =
+            owner.menu_command_reason(crate::command_palette::CommandId::Rebase, window, cx)?;
+        let dimmed = owner.operation_busy.is_none() || owner.operation_shown().is_some();
+        Some((reason.into(), dimmed))
+    }
+    /// Edit local commits…, beside the line saying no rebase captured a
+    /// series: it opens the form as the menu's item does, and is refused
+    /// with the palette's reason where the palette refuses its own
+    /// ([`Self::edit_refusal`]).
+    fn edit_commits(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let refusal = self.edit_refusal(window, cx);
+        let dimmed = refusal.as_ref().is_some_and(|(_, dimmed)| *dimmed);
+        let refused = refusal.is_some();
+        let action = crate::workspace::refusing(
+            crate::empty_state::action("series-edit-commits", EDIT_COMMITS, "")
+                // The body's own handle, which a test reads focus from.
+                .track_focus(&self.body.focus("series-edit-commits", cx))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    // Refused before the review closes.
+                    if this.edit_refusal(window, cx).is_some() {
+                        return;
+                    }
+                    let owner = this.owner.clone();
+                    this.close(window, cx);
+                    let _ = owner.update(cx, |owner, cx| {
+                        owner.open_interactive_rebase(None, window, cx)
+                    });
+                })),
+            || "series-edit-commits".into(),
+            refused,
+            dimmed,
+        );
+        described(
+            action,
+            "series-edit-commits",
+            refusal.map(|(reason, _)| reason),
+        )
+    }
+    /// Why each action beneath the series refuses a press, if it does:
+    /// Review messages, Inspect original files, Inspect rewritten files,
+    /// Check publication destination… and Refresh series ([`refusing`]).
+    /// With no series, `empty` says why, the first four wait for one.
+    fn refusals(
+        &self,
+        empty: Option<&SharedString>,
+        selected: Option<&gitturtle_core::SeriesRow>,
+    ) -> [Option<SharedString>; 5] {
+        let side = |missing: bool, why: &'static str| {
+            empty
+                .cloned()
+                .or_else(|| missing.then(|| SharedString::from(why)))
+        };
+        let checking = self.network_pending.then(|| SharedString::from(CHECKING));
+        [
+            empty.cloned(),
+            side(
+                selected.is_some_and(|row| row.original.is_none()),
+                "No original commit matches this one. Inspect rewritten files shows it.",
+            ),
+            side(
+                selected.is_some_and(|row| row.rewritten.is_none()),
+                "No rewritten commit matches this one. Inspect original files shows it.",
+            ),
+            empty.cloned().or_else(|| checking.clone()),
+            if self.pending {
+                Some(READING.into())
+            } else {
+                checking
+            },
+        ]
     }
     fn select(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self
@@ -455,6 +772,19 @@ impl SeriesBrowser {
             });
         }));
         cx.notify();
+    }
+    /// Whether a chosen file's read, which the preview's box says in its
+    /// middle, lies below the body's view as last drawn, as at 18 pt in a
+    /// 461 × 490 window, where the preview lies wholly below the fold: the
+    /// chosen row says it then. A press never moves what was pressed, so the
+    /// body never scrolls to show the read; scrolled ~170 px, the file list
+    /// slid out from under the pointer.
+    fn preview_read_hidden(&self, window: &Window) -> bool {
+        self.reading_preview()
+            && self.preview_bounds.get().is_some_and(|preview| {
+                let line = crate::empty_state::block_height(1, false, window);
+                preview.center().y + line / 2. > self.body.scroll().bounds().bottom()
+            })
     }
     fn prepare_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.text_mode == 3 {
@@ -714,15 +1044,25 @@ impl SeriesBrowser {
                 )
                 .into_any_element(),
             Some(Content::Notice(message)) => div().p_3().child(message.clone()).into_any_element(),
-            _ => div()
-                .p_3()
-                .child(if self.files.is_empty() && !self.pending {
-                    "This commit has no changed files."
-                } else {
-                    "Select a file to inspect its captured commit bytes."
-                })
-                .into_any_element(),
+            // The chosen file's preview being read says so in its own box,
+            // which keeps its place and size for the preview.
+            None if self.reading_preview() => {
+                crate::empty_state::EmptyState::new("series-preview-reading", READING_PREVIEW)
+                    .pane(cx)
+            }
+            _ => self.preview_prompt(cx),
         }
+    }
+    /// What the preview's box says with nothing to preview, as a designed
+    /// empty state in the box (DESIGN.md, "Empty and edge states"): that the
+    /// commit changed no files, or which to choose.
+    fn preview_prompt(&self, cx: &App) -> AnyElement {
+        let line = if self.files.is_empty() && !self.pending {
+            NO_FILES
+        } else {
+            CHOOSE_FILE
+        };
+        crate::empty_state::EmptyState::new("series-preview-empty", line).pane(cx)
     }
     fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(review) = &self.review else {
@@ -909,6 +1249,21 @@ impl Render for SeriesBrowser {
                 && plan.remote_ref
                     == format!("refs/heads/{}", self.remote_branch.read(cx).value().trim())
         });
+        // With no series to show, the list's place says why (DESIGN.md,
+        // "Empty and edge states"), and so do the list's accessible
+        // description and each action the missing series refuses.
+        let empty = (row_count == 0).then(|| self.empty_reason());
+        let modes_refused = self.modes_refusal();
+        let [
+            messages_refused,
+            original_refused,
+            rewritten_refused,
+            check_refused,
+            reload_refused,
+        ] = self.refusals(
+            empty.as_ref().map(|empty| &empty.description),
+            selected.as_ref(),
+        );
         div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("rewrite-review-body").debug_selector(|| "rewrite-review-body".into()).min_w_0().min_h_0().p(room).m(-room).pl(lead).ml(-lead).max_h(px(height) + room * 2.).when(self.inspecting, |element| element.h(px(height) + room)).overflow_y_scroll().track_scroll(self.body.scroll()).flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
@@ -921,20 +1276,53 @@ impl Render for SeriesBrowser {
                 // series, reported by the body itself, was never revealed
                 // and its ring was cut at the body's foot at 18 pt in a
                 // 461 × 490 window.
-                .child(div().flex().flex_col().flex_shrink_0().on_children_prepainted(self.body.control(self.focus.clone(), room)).child(crate::native_accessibility::clips_children(div().id("series-focus-list").w_full().min_w_0().h(list_height).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).key_context(SERIES_CONTEXT).role(Role::ListBox).aria_label("Original and rewritten commits").aria_description("Up and Down select a commit pair. Return inspects its rewritten files, or the original's where it has no rewritten commit.")
+                // With no series, a designed empty state in the rows' place
+                // says why, at the rows' text inset, the list as tall as
+                // its wrapped lines need: the load's error, drawn at the
+                // body's end in a scrolling box the body shrank to nothing
+                // once it scrolled, left an empty list with no text.
+                .child(div().flex().flex_col().flex_shrink_0().on_children_prepainted(self.body.control(self.focus.clone(), room)).child(crate::native_accessibility::clips_children(div().id("series-focus-list").debug_selector(|| "series-focus-list".into()).w_full().min_w_0().map(|list| if empty.is_some() { list.min_h(list_height) } else { list.h(list_height) }).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).key_context(SERIES_CONTEXT).role(if empty.is_some() { Role::Group } else { Role::ListBox }).aria_label("Original and rewritten commits").aria_description(empty.as_ref().map_or_else(|| SERIES_KEYS.into(), |empty| empty.description.clone()))
                     // Return inspects as it goes down, never on a held key's
-                    // repeats, as the dialog's own Enter acts.
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| { match event.keystroke.key.as_str() { "up" => this.select(this.selected.saturating_sub(1), window, cx), "down" => this.select(this.selected + 1, window, cx), "enter" if !event.is_held && gpui_kit::base::enter_press_began_on(&this.focus, window, cx) => this.inspect_selected(window, cx), "enter" => {}, _ => return } cx.stop_propagation(); }))
-                    .child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll)))))
-                .child(crate::edge_row(window).on_children_prepainted(self.body.controls(vec![Some(messages.clone()), Some(original.clone()), Some(rewritten.clone()), Some(reload.clone())], room))
-                    .child(crate::edge_button("inspect-series-messages", "Review messages").track_focus(&messages).debug_selector(|| "inspect-series-messages".into()).disabled(selected.is_none()).on_click(cx.listener(|this, _, window, cx| this.inspect_messages(window, cx))))
-                    .child(crate::edge_button("inspect-original-commit", "Inspect original files").track_focus(&original).debug_selector(|| "inspect-original-commit".into()).disabled(selected.as_ref().is_none_or(|row| row.original.is_none())).on_click(cx.listener(|this, _, window, cx| this.inspect(true, window, cx))))
-                    .child(crate::edge_button("inspect-rewritten-commit", "Inspect rewritten files").track_focus(&rewritten).debug_selector(|| "inspect-rewritten-commit".into()).disabled(selected.as_ref().is_none_or(|row| row.rewritten.is_none())).on_click(cx.listener(|this, _, window, cx| this.inspect(false, window, cx))))
-                    .child(crate::edge_button("reload-series", "Refresh series").track_focus(&reload).debug_selector(|| "reload-series".into()).disabled(self.pending || self.network_pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
+                    // repeats, as the dialog's own Enter acts. A key on Edit
+                    // local commits… inside it is that Button's own.
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| { if !this.focus.is_focused(window) { return; } match event.keystroke.key.as_str() { "up" => this.select(this.selected.saturating_sub(1), window, cx), "down" => this.select(this.selected + 1, window, cx), "enter" if !event.is_held && gpui_kit::base::enter_press_began_on(&this.focus, window, cx) => this.inspect_selected(window, cx), "enter" => {}, _ => return } cx.stop_propagation(); }))
+                    .map(|list| match empty {
+                        Some(empty) => {
+                            let line = crate::empty_state::EmptyState::new("series-empty", empty.line).titled(empty.title);
+                            let line = if empty.uncaptured { line.action(self.edit_commits(window, cx)) } else { line };
+                            // While Refresh series reads again, the state keeps
+                            // the height the last one took at rest, so nothing
+                            // below it moves.
+                            let kept = self.empty_height.clone();
+                            let record = !self.pending;
+                            let first_read = self.pending && self.empty_height.get() == Pixels::ZERO;
+                            list.child(div().on_children_prepainted(move |bounds, _, _| if record { kept.set(bounds.first().map_or(Pixels::ZERO, |state| state.size.height)); })
+                                .child(div().px_3().py_2().when(self.pending, |state| state.min_h(self.empty_height.get()))
+                                    // The first read, with no height kept,
+                                    // holds the room of the state it most
+                                    // likely lands in, no rebase captured
+                                    // with Edit local commits… below its
+                                    // line, measured at the list's width, so
+                                    // the actions below never move on open:
+                                    // kept from nothing, the reading line
+                                    // took one line and they dropped.
+                                    .map(|state| if first_read {
+                                        state.child(div().relative().w_full().child(crate::empty_state::block_reserve(recovery_drafts::NO_CAPTURE, true)).child(div().absolute().top_0().left_0().w_full().child(line.block(cx))))
+                                    } else {
+                                        state.child(line.block(cx))
+                                    })))
+                        }
+                        None => list.child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll)),
+                    }))))
+                .child(crate::edge_row(window).on_children_prepainted(action_row(self.pending, self.body.controls(vec![Some(messages.clone()), Some(original.clone()), Some(rewritten.clone()), Some(reload.clone())], room)))
+                    .child(refusing(crate::edge_button("inspect-series-messages", "Review messages").track_focus(&messages).debug_selector(|| "inspect-series-messages".into()).on_click(cx.listener(|this, _, window, cx| this.inspect_messages(window, cx))), "inspect-series-messages", messages_refused))
+                    .child(refusing(crate::edge_button("inspect-original-commit", "Inspect original files").track_focus(&original).debug_selector(|| "inspect-original-commit".into()).on_click(cx.listener(|this, _, window, cx| this.inspect(true, window, cx))), "inspect-original-commit", original_refused))
+                    .child(refusing(crate::edge_button("inspect-rewritten-commit", "Inspect rewritten files").track_focus(&rewritten).debug_selector(|| "inspect-rewritten-commit".into()).on_click(cx.listener(|this, _, window, cx| this.inspect(false, window, cx))), "inspect-rewritten-commit", rewritten_refused))
+                    .child(refusing(crate::edge_button("reload-series", "Refresh series").track_focus(&reload).debug_selector(|| "reload-series".into()).on_click(cx.listener(|this, _, window, cx| this.load(window, cx))), "reload-series", reload_refused)))
                 .child(div().flex().flex_wrap().items_center().gap_2().on_children_prepainted(self.body.controls(vec![Some(remote), Some(remote_branch), Some(check.clone()), Some(stop.clone())], room))
                     .child(div().w(px(150.)).child(Input::new(&self.remote).aria_label("Publication remote").disabled(self.network_pending)))
                     .child(div().w(px(170.)).child(Input::new(&self.remote_branch).aria_label("Publication remote branch").disabled(self.network_pending)))
-                    .child(button("inspect-publication-remote", if self.network_pending { "Checking remote…" } else { "Check publication destination…" }, "", false).track_focus(&check).disabled(self.review.is_none() || self.network_pending || self.pending).on_click(cx.listener(|this, _, window, cx| this.check_remote(window, cx))))
+                    .child(refusing(button("inspect-publication-remote", if self.network_pending { "Checking remote…" } else { "Check publication destination…" }, "", false).track_focus(&check).on_click(cx.listener(|this, _, window, cx| this.check_remote(window, cx))), "inspect-publication-remote", check_refused))
                     .when(self.network_pending, |element| element.child(button("cancel-remote-inspection", "Cancel remote check", "", false).track_focus(&stop).on_click(cx.listener(|this, _, _, cx| { if let Some(control) = &this.network_control { control.cancel(); } cx.notify(); })))))
                 .when_some(self.notice.as_ref(), |element, notice| element.child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(notice.clone())))
                 .when_some(self.publication.as_ref(), |element, plan| element.child(div().p_3().flex_shrink_0().flex().flex_col().gap_2().border_1().border_color(rgb(p.warning)).rounded(px(6.))
@@ -949,16 +1337,39 @@ impl Render for SeriesBrowser {
                 // wraps there, never onto a line of its own, which would
                 // start at the row's pulled left, its pull before the edge.
                 .child(crate::edge_row(window).items_center().on_children_prepainted(self.body.controls(vec![Some(self.back.clone())], room)).child(button("back-rewrite-series", "Back to series", "arrow-left", false).track_focus(&self.back).debug_selector(|| "back-rewrite-series".into()).flex_shrink(1.).on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))).child(div().debug_selector(|| "rewrite-inspect-label".into()).flex_1().min_w_0().text_size(appearance::ui_text(12.)).child(self.inspect_label.clone())))
-                .when(self.messages.is_none(), |element| element.child(div().debug_selector(|| "series-files".into()).track_focus(&files_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).on_children_prepainted(self.body.control(files_focus.clone(), room)).h(px(130.)).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| {
-                    let file = &this.files[index]; button(("series-file", index), file.path().to_string_lossy().into_owned(), "", this.selected_file == Some(index)).w_full().h(appearance::ui_size(30.)).on_click(cx.listener(move |this, _, window, cx| this.file(index, window, cx))).into_any_element()
-                }).collect::<Vec<_>>())).size_full().p(room).track_scroll(&self.files_scroll))))
-                .when(matches!(self.content.as_deref(), Some(Content::Text { .. })), |element| element.child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.body.controls(modes.iter().cloned().map(Some).collect(), room)).children(["Patch", "Before source", "After source", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| button(("series-text-mode", mode), label, "", self.text_mode == mode).track_focus(&modes[mode]).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); }))))))
+                // The changed files being read say so in the file box's
+                // place, at the rows' inset, the box keeping its fixed
+                // height: said after the preview, the read lay below the
+                // view at 18 pt in a 461 × 490 window.
+                .when(self.messages.is_none(), |element| element.child(div().debug_selector(|| "series-files".into()).track_focus(&files_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).on_children_prepainted(self.body.control(files_focus.clone(), room)).h(px(130.)).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().map(|files| if self.reading_files() { files.child(div().px_3().py_2().child(crate::empty_state::EmptyState::new("series-files-reading", READING_FILES).block(cx))) } else { files.child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, window, cx| range.map(|index| {
+                    let file = &this.files[index];
+                    let control = button(("series-file", index), file.path().to_string_lossy().into_owned(), "", this.selected_file == Some(index)).flex_1().min_w_0().h(appearance::ui_size(30.)).on_click(cx.listener(move |this, _, window, cx| this.file(index, window, cx)));
+                    // The chosen row says its preview's read where the
+                    // preview lies below the view, in its accessible
+                    // description too, and nothing scrolls.
+                    let reading = this.selected_file == Some(index) && this.preview_read_hidden(window);
+                    let control = if reading { Described(control).aria_description(SharedString::from(READING_PREVIEW)).0 } else { control };
+                    div().w_full().h(appearance::ui_size(30.)).flex().items_center().gap_2().child({ use native_accessibility::DrawnButton as _; control.node_recorded() })
+                        .when(reading, |row| row.child(div().debug_selector(|| "series-file-reading".into()).flex_shrink_0().pr_2().text_size(appearance::ui_text(11.)).text_color(rgb(palette(cx).muted)).child(READING_ROW)))
+                        .into_any_element()
+                }).collect::<Vec<_>>())).size_full().p(room).track_scroll(&self.files_scroll)) })))
+                // The text modes keep their row before a file is chosen,
+                // while its preview is read and for text, waiting for a
+                // preview with text, so a text preview keeps its place and
+                // size as its read comes and goes; a landed image or
+                // document takes the row's room back, as at 13 pt in a
+                // 461 × 490 window the line a document's failed open says
+                // why on needs it.
+                .when(self.messages.is_none() && self.content.as_deref().is_none_or(|content| matches!(content, Content::Text { .. })), |element| element.child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.body.controls(modes.iter().cloned().map(Some).collect(), room)).children(TEXT_MODES.into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, (label, key))| refusing(button(("series-text-mode", mode), label, "", self.text_mode == mode && modes_refused.is_none()).debug_selector(move || key.into()).track_focus(&modes[mode]).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); })), key, modes_refused.clone())))))
                 // Built for the box's width in the frame it is drawn
                 // (`in_frame`), so the open controls take the form that
                 // width leaves them in the first frame after a resize.
-                .child(div().debug_selector(|| "series-file-preview".into()).track_focus(&preview_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).on_children_prepainted(self.body.control(preview_focus.clone(), room)).flex_1().min_h(appearance::ui_size(100.)).flex().flex_col().border_1().border_color(rgb(if text_ringed { p.accent } else { p.border })).overflow_hidden().child(crate::in_frame::in_frame(move |bounds, window, cx| series.update(cx, |this, cx| this.render_content(bounds.size.width, window, cx)).unwrap_or_else(|_| div().into_any_element())).named("rewrite-comparison"))))
-            .when(self.pending, |element| element.child(div().text_color(rgb(p.muted)).child("Reading captured local history…")))
-            .when_some(self.error.as_ref(), |element, error| element.child(div().max_h(appearance::ui_size(100.)).id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))), "rewrite-review-scrollbar").min_h_0())
+                .child(div().debug_selector(|| "series-file-preview".into()).track_focus(&preview_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).on_children_prepainted(self.body.control(preview_focus.clone(), room)).flex_1().min_h(appearance::ui_size(100.)).flex().flex_col().border_1().border_color(rgb(if text_ringed { p.accent } else { p.border })).overflow_hidden().child(crate::in_frame::in_frame(move |bounds, window, cx| series.update(cx, |this, cx| { this.preview_bounds.set(Some(bounds)); this.render_content(bounds.size.width, window, cx) }).unwrap_or_else(|_| div().into_any_element())).named("rewrite-comparison"))))
+            // A failed publication check or push, below the series it
+            // concerns; the load's own error says why in the list's place.
+            // It keeps its height in the scrolling body, which shrank a
+            // scrolling box with no least height of its own to nothing.
+            .when_some(self.error.as_ref().filter(|_| self.review.is_some()), |element, error| element.child(div().max_h(appearance::ui_size(100.)).flex_shrink_0().id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))), "rewrite-review-scrollbar").min_h_0())
     }
 }
 
@@ -1941,7 +2352,11 @@ mod tests {
         let (fixture, app, cx) =
             crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 2))
                 .await;
-        cx.update(|_, cx| crate::interactive_rebase::init(cx));
+        // The review opens at rest, so its geometry is read where it stays.
+        cx.update(|_, cx| {
+            crate::interactive_rebase::init(cx);
+            cx.set_reduce_motion(true);
+        });
         let repo = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
         git(repo.path(), &["reset", "--quiet", "--hard", "main"]);
         let plan = repo.interactive_rebase_plan("main~2").unwrap();
@@ -2178,5 +2593,1020 @@ mod tests {
             "its original side: {label:?}"
         );
         assert_eq!(files, ["notes.txt"], "its changed files are listed");
+    }
+
+    /// A `git fast-import` stream on `main`: a base commit and three after
+    /// it, each adding a file of its own, so a rebase that drops the second
+    /// replays the third without a conflict. The third adds `large.txt`,
+    /// `large` bytes of numbered lines, where `large` is not zero.
+    fn series_script(large: usize) -> String {
+        let mut input = String::new();
+        for commit in 0..4 {
+            let (path, content) = if commit == 3 && large > 0 {
+                let mut content = String::new();
+                let mut line = 0;
+                while content.len() < large {
+                    content.push_str(&format!("line {line}\n"));
+                    line += 1;
+                }
+                ("large.txt".to_owned(), content)
+            } else {
+                (format!("file-{commit}.txt"), format!("file {commit}\n"))
+            };
+            let message = format!("series commit {commit}");
+            input.push_str(&format!(
+                "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\nM 100644 inline {path}\ndata {}\n{content}\n",
+                1_700_000_000 + commit,
+                message.len(),
+                content.len(),
+            ));
+        }
+        input + "done\n"
+    }
+
+    /// The app on [`series_script`]'s repository, checked out, with dialogs
+    /// opening at rest.
+    async fn series_window(
+        cx: &mut gpui_kit::TestAppContext,
+        large: usize,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut gpui::VisualTestContext,
+    ) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, series_script(large)).await;
+        cx.update(|_, cx| {
+            crate::interactive_rebase::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let repo = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
+        crate::tags::tests::git(repo.path(), &["reset", "--quiet", "--hard", "main"]);
+        crate::views::tests::settle(&app, cx).await;
+        (fixture, app, cx)
+    }
+
+    /// `text` pt in a `width` × `height` window.
+    fn size_to(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        text: u8,
+        width: f32,
+        height: f32,
+    ) {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = text;
+                appearance::apply_text_sizes(text, app.settings.code_text_size, window, cx);
+                cx.notify();
+            })
+        });
+        crate::tags::tests::draw(cx);
+    }
+
+    /// Runs a rebase through Edit local commits as a person does: the form
+    /// opened on `base`, Load commits pressed, the second commit dropped
+    /// with Down and D, Review rebase… pressed and the alert's Start rebase
+    /// pressed; returns once the rebase and the series' capture before it
+    /// have landed.
+    async fn rebase_dropping_the_second(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        base: &str,
+    ) {
+        use crate::tags::tests::draw;
+        let head = |cx: &mut gpui::VisualTestContext| {
+            let repo = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
+            let output = std::process::Command::new("git")
+                .args(["rev-parse", "main"])
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        let before = head(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_interactive_rebase(Some(base.into()), window, cx)
+            })
+        });
+        draw(cx);
+        let load = cx
+            .debug_bounds("load-rebase-commits")
+            .expect("Load commits");
+        cx.simulate_click(load.center(), Modifiers::none());
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(app, cx).await;
+        cx.simulate_keystrokes("down d");
+        draw(cx);
+        let review = cx
+            .debug_bounds("review-interactive-rebase")
+            .expect("Review rebase…");
+        cx.simulate_click(review.center(), Modifiers::none());
+        draw(cx);
+        let start = cx
+            .debug_bounds("dialog-ok: Start rebase")
+            .expect("the alert's Start rebase");
+        cx.simulate_click(start.center(), Modifiers::none());
+        // The operation waits for the capture, saved on the preferences
+        // thread, before Git starts.
+        for _ in 0..4 {
+            app.read_with(cx, |app, _| {
+                app.preferences_writer.drain();
+                app.operations.drain();
+            });
+            crate::views::tests::settle(app, cx).await;
+        }
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_none()),
+            "the rebase has ended"
+        );
+        assert_ne!(head(cx), before, "the rebase rewrote main");
+    }
+
+    /// The review the palette's Review rewritten branch series… opens, its
+    /// read landed.
+    fn review_from_palette(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Entity<SeriesBrowser> {
+        use crate::tags::tests::draw;
+        let _ = take_opened();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+        draw(cx);
+        cx.simulate_input("Review rewritten branch series");
+        draw(cx);
+        // Its Return goes down and comes up, as a person's does: the
+        // review it opens takes no Return until that key-up.
+        enter(cx, true);
+        enter(cx, false);
+        let review = take_opened().expect("the palette opens the review");
+        lands(&review, cx);
+        review
+    }
+
+    /// Lands the review's read.
+    fn lands(review: &Entity<SeriesBrowser>, cx: &mut gpui::VisualTestContext) {
+        use crate::focus_ring::sweep::Opened as _;
+        Some(review.clone()).finish(cx);
+        crate::tags::tests::draw(cx);
+    }
+
+    /// Whether `inner` lies whole inside `outer`, to a quarter pixel.
+    fn lies_in(inner: Bounds<Pixels>, outer: Bounds<Pixels>) -> bool {
+        let slack = px(0.25);
+        inner.left() >= outer.left() - slack
+            && inner.top() >= outer.top() - slack
+            && inner.right() <= outer.right() + slack
+            && inner.bottom() <= outer.bottom() + slack
+    }
+
+    /// What the review says with no series to show: its line, its title
+    /// where it has one, and whether Edit local commits… stands beside it.
+    struct Says<'a> {
+        line: &'a str,
+        title: Option<&'a str>,
+        edit: bool,
+    }
+
+    impl Says<'_> {
+        /// The whole state, as its accessible description reads it.
+        fn description(&self) -> String {
+            self.title.map_or_else(
+                || self.line.to_owned(),
+                |title| format!("{title}. {}", self.line),
+            )
+        }
+    }
+
+    /// No rebase captured a series.
+    const UNCAPTURED: Says<'static> = Says {
+        line: recovery_drafts::NO_CAPTURE,
+        title: None,
+        edit: true,
+    };
+
+    /// The review, with no series to show, says why in the list's place,
+    /// as `says` gives it: drawn as a designed empty state whole in the
+    /// list and in view once Tab moves onto the list, a failure's title
+    /// above its line, and read whole as the list's accessible description
+    /// and each disabled action's; Edit local commits… stands below the
+    /// line where no rebase captured a series, and Refresh series is
+    /// offered, Tab moving onto each in turn from the list. Returns with
+    /// Refresh series focused.
+    fn says_why(
+        review: &Entity<SeriesBrowser>,
+        cx: &mut gpui::VisualTestContext,
+        says: &Says,
+        at: &str,
+    ) {
+        let reason = says.line;
+        let described = says.description();
+        let described = described.as_str();
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        assert!(
+            review.read_with(cx, |review, _| review
+                .review
+                .as_ref()
+                .is_none_or(|review| review.rows.is_empty())),
+            "{at}: no series to show"
+        );
+        // From the dialog's shell as it opens, Tab moves onto the list.
+        if !cx.update(|window, cx| review.read(cx).focus.is_focused(window)) {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+        }
+        assert!(
+            cx.update(|window, cx| review.read(cx).focus.is_focused(window)),
+            "{at}: Tab moves onto the list"
+        );
+        assert_eq!(
+            crate::empty_state::shown("series-empty").as_deref(),
+            Some(reason),
+            "{at}: the list's place says why"
+        );
+        let line = cx
+            .debug_bounds("series-empty-line")
+            .unwrap_or_else(|| panic!("{at}: the reason is drawn"));
+        let list = cx
+            .debug_bounds("series-focus-list")
+            .unwrap_or_else(|| panic!("{at}: the list is drawn"));
+        let body = cx
+            .debug_bounds("rewrite-review-body")
+            .unwrap_or_else(|| panic!("{at}: the body is drawn"));
+        assert!(line.size.height > px(0.), "{at}: the reason has a line");
+        assert!(
+            lies_in(line, list),
+            "{at}: the reason at {line:?} lies whole in the list, {list:?}"
+        );
+        assert!(
+            lies_in(list, body),
+            "{at}: the focused list at {list:?} lies whole in the body's view, {body:?}"
+        );
+        let title = cx.debug_bounds("series-empty-title");
+        match says.title {
+            Some(_) => {
+                let title = title.unwrap_or_else(|| panic!("{at}: the failure's title is drawn"));
+                assert!(
+                    lies_in(title, list) && title.bottom() <= line.top(),
+                    "{at}: the title at {title:?} lies in the list, {list:?}, above its line, \
+                     {line:?}"
+                );
+                // Drawn as the app's title-and-explanation panes draw theirs
+                // (`main::empty`): one 14 px line, its fixed `gap_2` above
+                // its line.
+                let (title_line, gap) = cx.update(|window, _| {
+                    let text = appearance::ui_text(crate::empty_state::TITLE_TEXT);
+                    (
+                        window
+                            .text_style()
+                            .line_height
+                            .to_pixels(text.into(), window.rem_size()),
+                        window.rem_size() * 0.5,
+                    )
+                });
+                let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.5);
+                assert!(
+                    near(title.size.height, title_line),
+                    "{at}: the title, {title:?}, is one 14 px line, {title_line:?} tall"
+                );
+                assert!(
+                    near(line.top() - title.bottom(), gap),
+                    "{at}: the title, {title:?}, stands {gap:?} above its line, {line:?}"
+                );
+            }
+            None => assert!(title.is_none(), "{at}: the state has no title"),
+        }
+        let edit = cx.debug_bounds("series-edit-commits");
+        assert_eq!(
+            edit.is_some_and(|edit| lies_in(edit, list) && edit.top() >= line.bottom()),
+            says.edit,
+            "{at}: Edit local commits… stands below the line where no rebase captured a series: \
+             {edit:?}"
+        );
+        let list_node = written::get("series-focus-list")
+            .unwrap_or_else(|| panic!("{at}: the list's node is written"))
+            .node;
+        assert_eq!(
+            list_node.description(),
+            Some(described),
+            "{at}: the list's accessible description is the reason"
+        );
+        for id in [
+            "inspect-series-messages",
+            "inspect-original-commit",
+            "inspect-rewritten-commit",
+            "inspect-publication-remote",
+        ] {
+            let node = written::get(id)
+                .unwrap_or_else(|| panic!("{at}: {id}'s node is written"))
+                .node;
+            assert!(node.is_disabled(), "{at}: {id} waits for a series");
+            assert_eq!(
+                node.description(),
+                Some(described),
+                "{at}: {id} says why it is unavailable"
+            );
+        }
+        if says.edit {
+            let node = written::get("series-edit-commits")
+                .unwrap_or_else(|| panic!("{at}: Edit local commits…' node is written"))
+                .node;
+            assert!(!node.is_disabled(), "{at}: Edit local commits… is offered");
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            let edit_focus =
+                cx.update(|_, cx| review.read(cx).body.focus("series-edit-commits", cx));
+            assert!(
+                cx.update(|window, _| edit_focus.is_focused(window)),
+                "{at}: Tab moves from the list onto Edit local commits…"
+            );
+            // Its ring whole inside every clip around it, and in the body's
+            // view.
+            crate::tags::tests::assert_rings_whole(cx, &["series-edit-commits"]);
+            let edit = cx
+                .debug_bounds("series-edit-commits")
+                .unwrap_or_else(|| panic!("{at}: Edit local commits… is drawn"));
+            assert!(
+                lies_in(edit, body),
+                "{at}: Edit local commits… at {edit:?} lies in the body's view, {body:?}"
+            );
+        }
+        let reload = written::get("reload-series")
+            .unwrap_or_else(|| panic!("{at}: Refresh series' node is written"))
+            .node;
+        assert!(!reload.is_disabled(), "{at}: Refresh series is offered");
+        assert_eq!(
+            reload.description(),
+            None,
+            "{at}: Refresh series is offered"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| {
+                let review = review.read(cx);
+                review.body.focus("reload-series", cx).is_focused(window)
+            }),
+            "{at}: Tab moves from the list onto Refresh series"
+        );
+    }
+
+    /// Presses Refresh series with Return, as [`says_why`] leaves it
+    /// focused, and lands the read it starts, which the review's thread
+    /// holds for a frame: while it reads, and once it has read, Refresh
+    /// series stays where it was, the state keeping its height. It keeps
+    /// focus, and Shift+Tab, past the Buttons that wait for a series and
+    /// Edit local commits… where `says` offers it, moves back onto the list.
+    fn refresh(
+        review: &Entity<SeriesBrowser>,
+        cx: &mut gpui::VisualTestContext,
+        says: &Says,
+        at: &str,
+    ) {
+        let read = review.read_with(cx, |review, _| review.generation);
+        let place = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("reload-series")
+                .unwrap_or_else(|| panic!("{at}: Refresh series is drawn"))
+                .top()
+        };
+        let before = place(cx);
+        let state = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("series-focus-list")
+                .unwrap_or_else(|| panic!("{at}: the list is drawn"))
+                .size
+                .height
+        };
+        let kept = state(cx);
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        review.read_with(cx, |review, _| {
+            drop(review.metadata.submit(move || {
+                let _ = held.recv();
+                Ok(())
+            }))
+        });
+        enter(cx, true);
+        enter(cx, false);
+        assert!(
+            review.read_with(cx, |review, _| review.pending),
+            "{at}: Return on Refresh series reads the capture again"
+        );
+        assert_eq!(
+            crate::empty_state::shown("series-empty").as_deref(),
+            Some(READING),
+            "{at}: the list's place says the read is under way"
+        );
+        assert_eq!(
+            state(cx),
+            kept,
+            "{at}: the state keeps the height it took at rest while it reads"
+        );
+        assert_eq!(
+            place(cx),
+            before,
+            "{at}: Refresh series stays put while it reads"
+        );
+        drop(release);
+        lands(review, cx);
+        assert_ne!(
+            review.read_with(cx, |review, _| review.generation),
+            read,
+            "{at}: Refresh series reads the capture again"
+        );
+        assert_eq!(
+            place(cx),
+            before,
+            "{at}: Refresh series stays put once read"
+        );
+        cx.simulate_keystrokes(if says.edit {
+            "shift-tab shift-tab"
+        } else {
+            "shift-tab"
+        });
+        crate::tags::tests::draw(cx);
+    }
+
+    /// The palette's Review rewritten branch series… in a repository with
+    /// no captured rebase says so in the list's place, at 13 pt in a 1,480 ×
+    /// 973 window and at 18 pt in a 461 × 490 half tile; QA-106e saw an
+    /// empty list, disabled Buttons and no text: the load's error was drawn
+    /// at the body's end in a scrolling box the body shrank to nothing.
+    /// Refresh series, pressed with Return, reads again and says so again,
+    /// moving nothing. Edit local commits…, offered beside the line, is
+    /// refused with the menu's reason while a write runs, and otherwise
+    /// opens the rebase form in the review's place, as the menu's item does.
+    #[gpui::test]
+    async fn the_palettes_review_says_why_it_has_no_series(cx: &mut gpui_kit::TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = series_window(cx, 0).await;
+        // The app's focus ring, which `says_why` finds whole.
+        crate::focus_ring::sweep::prepare(&app, cx);
+        for (text, width, height) in [(13, 1480., 973.), (18, 461., 490.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            size_to(&app, cx, text, width, height);
+            let review = review_from_palette(&app, cx);
+            says_why(&review, cx, &UNCAPTURED, &at);
+            refresh(&review, cx, &UNCAPTURED, &at);
+            says_why(&review, cx, &UNCAPTURED, &format!("{at}, refreshed"));
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: Escape closes the review"
+            );
+        }
+
+        let _review = review_from_palette(&app, cx);
+        app.update(cx, |app, _| app.operation_busy = Some("Fetching…"));
+        draw(cx);
+        let busy = app.read_with(cx, |app, _| app.busy_reason());
+        let node = written::get("series-edit-commits")
+            .expect("Edit local commits…' node is written")
+            .node;
+        assert!(node.is_disabled(), "a write refuses Edit local commits…");
+        assert_eq!(
+            node.description(),
+            Some(busy),
+            "Edit local commits… says why with the menu's reason"
+        );
+        app.update(cx, |app, _| app.operation_busy = None);
+        draw(cx);
+        // Tab moves onto the list, then onto the action, revealing it.
+        cx.simulate_keystrokes("tab tab");
+        draw(cx);
+        enter(cx, true);
+        enter(cx, false);
+        assert!(
+            cx.debug_bounds("load-rebase-commits").is_some()
+                && cx.debug_bounds("series-focus-list").is_none(),
+            "Edit local commits… opens the rebase form in the review's place"
+        );
+    }
+
+    /// The palette's review opens with its first read holding the room of
+    /// the state it most likely lands in, no rebase captured, with Edit
+    /// local commits… below its line, at 18 pt in a 461 × 490 half tile:
+    /// where it lands there, the actions below the list stand where they
+    /// settle in every frame painted from open to settled (kept from nothing,
+    /// the reading line took one line, and the actions dropped as the state
+    /// landed); where it lands on the load's failure, a series past the
+    /// review's bound, they move once, as it lands.
+    #[gpui::test]
+    async fn the_actions_stand_still_from_open_to_settled(cx: &mut gpui_kit::TestAppContext) {
+        // Where each painted frame from open to settled put the actions, and
+        // where they settled; the review's read has landed.
+        fn opened(
+            app: &Entity<GitTurtle>,
+            cx: &mut gpui::VisualTestContext,
+        ) -> (Entity<SeriesBrowser>, Vec<(Pixels, bool)>, Pixels) {
+            size_to(app, cx, 18, 461., 490.);
+            painted_actions::watch();
+            let review = review_from_palette(app, cx);
+            crate::tags::tests::draw(cx);
+            let painted = painted_actions::take();
+            assert!(
+                review.read_with(cx, |review, _| !review.pending),
+                "the read lands"
+            );
+            assert!(
+                painted.iter().any(|(_, pending)| *pending),
+                "a frame drew the read under way: {painted:?}"
+            );
+            let settled = cx
+                .debug_bounds("inspect-series-messages")
+                .expect("Review messages is drawn")
+                .top();
+            (review, painted, settled)
+        }
+        let moved = |a: Pixels, b: Pixels| (a - b).abs() >= px(0.5);
+        let moves = |painted: &[(Pixels, bool)]| {
+            painted
+                .windows(2)
+                .filter(|pair| moved(pair[0].0, pair[1].0))
+                .count()
+        };
+        {
+            let (_fixture, app, cx) = series_window(cx, 0).await;
+            let (review, painted, settled) = opened(&app, cx);
+            assert!(
+                review.read_with(cx, |review, _| review.review.is_none()
+                    && review.error.is_none()),
+                "no rebase captured a series"
+            );
+            assert_eq!(
+                crate::empty_state::shown("series-empty").as_deref(),
+                Some(recovery_drafts::NO_CAPTURE),
+                "the likely state lands"
+            );
+            assert!(
+                painted.iter().all(|(top, _)| !moved(*top, settled)),
+                "every frame from open to settled puts the actions at {settled:?}: {painted:?}"
+            );
+        }
+        // A listed series moves them twice: once as it lands, and by the
+        // ring's room a frame later, as the body reveals the list its
+        // landing focuses (queued).
+        for (outcome, large) in [("the load's failure", 4_500_000)] {
+            let (_fixture, app, cx) = series_window(cx, large).await;
+            size_to(&app, cx, 13, 1480., 973.);
+            rebase_dropping_the_second(&app, cx, "main~3").await;
+            let (review, painted, settled) = opened(&app, cx);
+            let (failed, listed) = review.read_with(cx, |review, _| {
+                (
+                    review.error.is_some(),
+                    review
+                        .review
+                        .as_ref()
+                        .is_some_and(|review| !review.rows.is_empty()),
+                )
+            });
+            assert_eq!(
+                (failed, listed),
+                (large > 0, large == 0),
+                "the read lands on {outcome}"
+            );
+            assert!(
+                moves(&painted) <= 1,
+                "{outcome}: the actions move at most once from open to settled: {painted:?}"
+            );
+            assert!(
+                painted.last().is_some_and(|(top, _)| !moved(*top, settled)),
+                "{outcome}: the last frame puts them where they settle, {settled:?}: {painted:?}"
+            );
+        }
+    }
+
+    /// While an inspected commit's changed files are read, its file box says
+    /// so, and while a chosen file's preview is read, the preview's box does,
+    /// each line inside the box being read and in the body's view, at 13 pt
+    /// in a 1,480 × 973 window; at 18 pt in a 461 × 490 half tile, where the
+    /// preview lies below the view, the chosen row says it, in its accessible
+    /// description too. The file box and the preview keep their place and
+    /// size as each read comes and goes, and the body's scroll never moves: a
+    /// choice that scrolled ~170 px slid the file list out from under the
+    /// pointer. Said in a line after the preview, the read lay below the view
+    /// in the half tile and took a line's height from the preview at each
+    /// read at 13 pt.
+    #[gpui::test]
+    async fn the_inspector_says_each_read_in_the_box_it_fills(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, review, cx) = rewritten_review(
+            cx,
+            &[&[
+                "commit",
+                "--quiet",
+                "--amend",
+                "-m",
+                "fixture notes 2, reworded",
+            ]],
+        )
+        .await;
+        let app = cx.update(|_, cx| review.read(cx).owner.upgrade().expect("the app"));
+        // Asked and drawn in one frame, before the worker's reply lands.
+        let frame = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+        };
+        let boxes = |cx: &mut gpui::VisualTestContext| {
+            ["series-files", "series-file-preview"].map(|id| {
+                cx.debug_bounds(id)
+                    .unwrap_or_else(|| panic!("{id} is drawn"))
+            })
+        };
+        // The body's scroll, which no choice moves.
+        let offset = |cx: &mut gpui::VisualTestContext| {
+            review.read_with(cx, |review, _| review.body.scroll().offset())
+        };
+        // The fills the last frame painted in exactly the bounds of `id`.
+        let fills = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+            let bounds = cx
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("{id} is drawn"));
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let near = |device: f32, logical: Pixels| {
+                    (device / scale - f32::from(logical)).abs() < 0.5
+                };
+                window
+                    .painted_quads()
+                    .iter()
+                    .filter(|quad| {
+                        near(quad.bounds.origin.x.as_f32(), bounds.left())
+                            && near(quad.bounds.origin.y.as_f32(), bounds.top())
+                            && near(quad.bounds.size.width.as_f32(), bounds.size.width)
+                            && near(quad.bounds.size.height.as_f32(), bounds.size.height)
+                    })
+                    .map(|quad| quad.background)
+                    .collect::<Vec<_>>()
+            })
+        };
+        // The state `id` says `line` inside the box `within` and in the
+        // body's view.
+        let says = |cx: &mut gpui::VisualTestContext,
+                    id: &str,
+                    line: &str,
+                    within: &'static str,
+                    at: &str| {
+            assert_eq!(
+                crate::empty_state::shown(id).as_deref(),
+                Some(line),
+                "{at}: {within} says its read"
+            );
+            let drawn = cx
+                .debug_bounds(format!("{id}-line").leak())
+                .unwrap_or_else(|| panic!("{at}: {id}'s line is drawn"));
+            let within_bounds = cx.debug_bounds(within).expect("the box");
+            let body = cx.debug_bounds("rewrite-review-body").expect("the body");
+            assert!(drawn.size.height > px(0.), "{at}: {id} has a line");
+            assert!(
+                lies_in(drawn, within_bounds),
+                "{at}: {id}'s line at {drawn:?} lies in {within}, {within_bounds:?}"
+            );
+            assert!(
+                lies_in(drawn, body),
+                "{at}: {id}'s line at {drawn:?} lies in the body's view, {body:?}"
+            );
+        };
+        for (text, width, height) in [(13, 1480., 973.), (18, 461., 490.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            size_to(&app, cx, text, width, height);
+            cx.update(|window, cx| {
+                review.update(cx, |review, cx| review.inspect(false, window, cx))
+            });
+            frame(cx);
+            let reading = boxes(cx);
+            says(
+                cx,
+                "series-files-reading",
+                READING_FILES,
+                "series-files",
+                &at,
+            );
+            assert!(
+                cx.debug_bounds("series-preview-reading").is_none(),
+                "{at}: the preview reads nothing yet"
+            );
+            review.read_with(cx, |review, _| review.worker.wait_idle());
+            draw(cx);
+            assert!(
+                cx.debug_bounds("series-files-reading").is_none(),
+                "{at}: the line goes once the files land"
+            );
+            assert_eq!(boxes(cx), reading, "{at}: nothing moves as the files land");
+            // The preview's box says which file to choose, as a designed
+            // empty state in the box.
+            assert_eq!(
+                crate::empty_state::shown("series-preview-empty").as_deref(),
+                Some(CHOOSE_FILE),
+                "{at}: the preview's box says which file to choose"
+            );
+            let prompt = cx
+                .debug_bounds("series-preview-empty-line")
+                .unwrap_or_else(|| panic!("{at}: the prompt is drawn"));
+            assert!(
+                lies_in(prompt, reading[1]),
+                "{at}: the prompt at {prompt:?} lies in the preview's box, {:?}",
+                reading[1]
+            );
+            let scrolled = offset(cx);
+            cx.update(|window, cx| review.update(cx, |review, cx| review.file(0, window, cx)));
+            frame(cx);
+            assert_eq!(
+                offset(cx),
+                scrolled,
+                "{at}: choosing a file scrolls nothing"
+            );
+            // In view in the wide window, the modes wait for the patch with
+            // none drawn selected: Patch is painted as Before source is.
+            if text == 13 {
+                assert_eq!(
+                    fills(cx, "series-text-mode-0"),
+                    fills(cx, "series-text-mode-1"),
+                    "{at}: no mode is drawn selected while the modes wait"
+                );
+            }
+            // In the half tile the preview lies wholly below the body's
+            // view, so the chosen row says the read.
+            let body = cx.debug_bounds("rewrite-review-body").expect("the body");
+            let [files, preview] = boxes(cx);
+            let hidden = text == 18;
+            assert_eq!(
+                preview.center().y > body.bottom(),
+                hidden,
+                "{at}: the preview, {preview:?}, against the body's view, {body:?}"
+            );
+            let row = cx.debug_bounds("series-file-reading");
+            if hidden {
+                let row = row.unwrap_or_else(|| panic!("{at}: the chosen row says its read"));
+                assert!(
+                    lies_in(row, files) && lies_in(row, body),
+                    "{at}: the row's read at {row:?} lies in the file box, {files:?}, in view, \
+                     {body:?}"
+                );
+                let node = crate::native_accessibility::written::get("series-file-0")
+                    .unwrap_or_else(|| panic!("{at}: the chosen row's node is written"))
+                    .node;
+                assert_eq!(
+                    node.description(),
+                    Some(READING_PREVIEW),
+                    "{at}: the chosen row's accessible description says its read"
+                );
+            } else {
+                says(
+                    cx,
+                    "series-preview-reading",
+                    READING_PREVIEW,
+                    "series-file-preview",
+                    &at,
+                );
+                assert!(
+                    row.is_none(),
+                    "{at}: the row says nothing where the preview's read is seen"
+                );
+            }
+            assert_eq!(
+                boxes(cx),
+                reading,
+                "{at}: nothing moves as the preview is read"
+            );
+            review.read_with(cx, |review, _| review.worker.wait_idle());
+            draw(cx);
+            assert!(
+                review.read_with(cx, |review, _| matches!(
+                    review.content.as_deref(),
+                    Some(Content::Text { .. })
+                )),
+                "{at}: the file's patch lands"
+            );
+            assert!(
+                cx.debug_bounds("series-preview-reading").is_none()
+                    && cx.debug_bounds("series-file-reading").is_none(),
+                "{at}: the read goes once the preview lands"
+            );
+            assert_eq!(offset(cx), scrolled, "{at}: nor does its landing");
+            if text == 13 {
+                assert_ne!(
+                    fills(cx, "series-text-mode-0"),
+                    fills(cx, "series-text-mode-1"),
+                    "{at}: Patch is drawn selected once the patch lands"
+                );
+            }
+            assert_eq!(
+                boxes(cx),
+                reading,
+                "{at}: nothing moves as the preview lands"
+            );
+            cx.update(|window, cx| review.update(cx, |review, cx| review.back(window, cx)));
+            draw(cx);
+        }
+    }
+
+    /// Whether the pointer resting on action `id` shows the tooltip `text`,
+    /// as the window draws it under the pointer; the pointer then leaves the
+    /// window until the tooltip has gone.
+    fn hover_shows(cx: &mut gpui::VisualTestContext, id: &'static str, text: &str) -> bool {
+        use crate::tags::tests::draw;
+        const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+        let action = cx.debug_bounds(id).expect("the action is drawn");
+        cx.simulate_mouse_move(action.center(), None, Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        draw(cx);
+        let shown = cx
+            .debug_bounds(format!("{id}/tooltip/{text}").leak())
+            .is_some();
+        cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        draw(cx);
+        shown
+    }
+
+    /// Mid-merge, where the palette refuses its Edit local commits… and the
+    /// branch menu leaves it out, the review's Edit local commits…, beside
+    /// the line saying no rebase captured a series, is refused with the
+    /// palette's reason, in its tooltip and its accessible description, and
+    /// a press opens nothing: it was offered, refused only while a write
+    /// ran. Once the review's repository is no longer the one shown, it says
+    /// so, where it said to wait for a Git operation.
+    #[gpui::test]
+    async fn edit_local_commits_waits_for_a_merge_under_way(cx: &mut gpui_kit::TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = series_window(cx, 0).await;
+        size_to(&app, cx, 13, 1480., 973.);
+        let repo = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
+        let git = |args: &[&str]| {
+            let identity = [
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ];
+            crate::tags::tests::git(repo.path(), &[&identity[..], args].concat());
+        };
+        git(&["checkout", "--quiet", "-b", "side", "main~1"]);
+        std::fs::write(repo.path().join("side.txt"), "side\n").unwrap();
+        git(&["add", "side.txt"]);
+        git(&["commit", "--quiet", "-m", "side"]);
+        git(&["checkout", "--quiet", "main"]);
+        git(&["merge", "--quiet", "--no-commit", "--no-ff", "side"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.integration_state.is_some()),
+            "a merge is under way"
+        );
+        let reason = cx
+            .update(|window, cx| {
+                app.read(cx).menu_command_reason(
+                    crate::command_palette::CommandId::Rebase,
+                    window,
+                    cx,
+                )
+            })
+            .expect("the palette refuses Edit local commits… mid-merge");
+        let _review = review_from_palette(&app, cx);
+        assert_eq!(
+            crate::empty_state::shown("series-empty").as_deref(),
+            Some(recovery_drafts::NO_CAPTURE),
+            "the review has no captured series to show"
+        );
+        let node = written::get("series-edit-commits")
+            .expect("Edit local commits…' node is written")
+            .node;
+        assert!(node.is_disabled(), "the merge refuses Edit local commits…");
+        assert_eq!(
+            node.description(),
+            Some(reason),
+            "Edit local commits… says why with the palette's reason"
+        );
+        assert!(
+            hover_shows(cx, "series-edit-commits", reason),
+            "its tooltip says why"
+        );
+        let edit = cx
+            .debug_bounds("series-edit-commits")
+            .expect("Edit local commits… is drawn");
+        cx.simulate_click(edit.center(), Modifiers::none());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("load-rebase-commits").is_none()
+                && cx.debug_bounds("series-focus-list").is_some(),
+            "a press on the refused Edit local commits… opens nothing"
+        );
+        // The repository no longer the one shown.
+        app.update(cx, |app, cx| {
+            app.page = AppPage::Settings;
+            cx.notify();
+        });
+        draw(cx);
+        let node = written::get("series-edit-commits")
+            .expect("Edit local commits…' node is written")
+            .node;
+        assert!(
+            node.is_disabled(),
+            "a repository no longer shown refuses it"
+        );
+        assert_eq!(
+            node.description(),
+            Some(NOT_SHOWN),
+            "Edit local commits… says its repository is no longer shown"
+        );
+    }
+
+    /// A rebase run through Edit local commits' Start rebase is reviewed
+    /// from the palette, as QA-106e reviewed one: its capture is found and
+    /// the review lists its series, and Refresh series lists it again.
+    #[gpui::test]
+    async fn a_rebase_started_in_edit_local_commits_is_reviewed_from_the_palette(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_fixture, app, cx) = series_window(cx, 0).await;
+        size_to(&app, cx, 13, 1480., 973.);
+        rebase_dropping_the_second(&app, cx, "main~3").await;
+        size_to(&app, cx, 18, 461., 490.);
+        let review = review_from_palette(&app, cx);
+        let listed = |cx: &mut gpui::VisualTestContext| {
+            review.read_with(cx, |review, _| {
+                (
+                    review.error.clone(),
+                    review.review.as_ref().map(|review| {
+                        review
+                            .rows
+                            .iter()
+                            .map(|row| row.change.label())
+                            .collect::<Vec<_>>()
+                    }),
+                )
+            })
+        };
+        let (error, rows) = listed(cx);
+        assert_eq!(error, None, "the captured series is read");
+        let rows = rows.expect("the review lists the captured series");
+        assert_eq!(rows.len(), 3, "its three original commits: {rows:?}");
+        assert!(
+            rows.contains(&"Dropped / unmatched"),
+            "the dropped commit is listed: {rows:?}"
+        );
+        assert!(
+            cx.debug_bounds("series-empty").is_none(),
+            "a listed series draws no empty state"
+        );
+        let reload = cx.debug_bounds("reload-series").expect("Refresh series");
+        cx.simulate_click(reload.center(), Modifiers::none());
+        lands(&review, cx);
+        assert_eq!(
+            listed(cx).1.map(|rows| rows.len()),
+            Some(3),
+            "Refresh series lists it again"
+        );
+    }
+
+    /// QA-106e's route: the palette's review before any capture, then a
+    /// rebase through Edit local commits' Start rebase, the review opened
+    /// again and Refresh series pressed. Its series holds a commit whose
+    /// patch is past the per-command bound on what a read keeps (4 MiB), as
+    /// QA-106e's two 30 MB images were, so the capture is found but the
+    /// bounded review refuses the series: the review says why in the list's
+    /// place, where it drew an empty list with no text.
+    #[gpui::test]
+    async fn a_series_past_the_review_bound_says_why_after_its_rebase(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_fixture, app, cx) = series_window(cx, 4_500_000).await;
+        // The app's focus ring, which `says_why` finds whole.
+        crate::focus_ring::sweep::prepare(&app, cx);
+        size_to(&app, cx, 18, 461., 490.);
+        let review = review_from_palette(&app, cx);
+        says_why(&review, cx, &UNCAPTURED, "before the rebase");
+        cx.simulate_keystrokes("escape");
+        crate::tags::tests::draw(cx);
+        size_to(&app, cx, 13, 1480., 973.);
+        rebase_dropping_the_second(&app, cx, "main~3").await;
+        size_to(&app, cx, 18, 461., 490.);
+        let review = review_from_palette(&app, cx);
+        let error = review
+            .read_with(cx, |review, _| review.error.clone())
+            .expect("the bounded review refuses the series");
+        assert!(
+            error
+                .starts_with("Original series is unavailable or outside the bounded linear review")
+                && error.contains("Git output exceeded its limit"),
+            "the capture is found and its series is past the bound: {error}"
+        );
+        let says = Says {
+            line: &error,
+            title: Some(UNREVIEWABLE),
+            edit: false,
+        };
+        says_why(&review, cx, &says, "after the rebase");
+        refresh(&review, cx, &says, "after the rebase");
+        says_why(&review, cx, &says, "after Refresh series");
     }
 }

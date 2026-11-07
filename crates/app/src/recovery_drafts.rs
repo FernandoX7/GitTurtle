@@ -321,10 +321,26 @@ pub(super) struct SavedRewrite {
     pub original: String,
 }
 
-pub(super) fn latest_rewrite(root: &Path) -> Result<SavedRewrite> {
+/// What the rewritten-series review says where [`latest_rewrite`] finds no
+/// capture: no rebase started in GitTurtle captured a series for the
+/// worktree. Edit local commits… stands beside it.
+pub(super) const NO_CAPTURE: &str =
+    "No rewritten series for this worktree · A rebase started in Edit local commits captures one";
+
+/// The series the latest rebase started in GitTurtle in the worktree at
+/// `root` captured, if one did.
+pub(super) fn latest_rewrite(root: &Path) -> Result<Option<SavedRewrite>> {
     let entries = read(&store_path()?)?;
-    let draft = entries.values().filter(|draft| draft.key.worktree == path_bytes(root) && draft.key.kind == Kind::RewriteSeries).max_by_key(|draft| draft.updated).context("No captured interactive rebase is available for this worktree. Start a rebase in GitTurtle to capture its original series before rewriting")?;
-    Ok(serde_json::from_str(&draft.text)?)
+    let Some(draft) = entries
+        .values()
+        .filter(|draft| {
+            draft.key.worktree == path_bytes(root) && draft.key.kind == Kind::RewriteSeries
+        })
+        .max_by_key(|draft| draft.updated)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_str(&draft.text)?))
 }
 
 impl GitTurtle {

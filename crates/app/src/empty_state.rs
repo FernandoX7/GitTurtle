@@ -26,6 +26,9 @@ const LINE_MAX: f32 = 480.;
 /// A glyph drawn in a line's place, at the default interface size: the
 /// line's own height, as the bar's counts' icons sit in theirs.
 pub(crate) const GLYPH: f32 = 14.;
+/// A block's title's text size at the default interface size: the app's
+/// title-and-explanation panes' (`main::empty`), 14 px regular.
+pub(crate) const TITLE_TEXT: f32 = 14.;
 
 #[cfg(test)]
 thread_local! {
@@ -81,6 +84,7 @@ pub(crate) struct EmptyState {
     action: Option<AnyElement>,
     truncate: bool,
     glyph: Option<&'static str>,
+    title: Option<SharedString>,
 }
 
 impl EmptyState {
@@ -95,7 +99,17 @@ impl EmptyState {
             action: None,
             truncate: false,
             glyph: None,
+            title: None,
         }
+    }
+
+    /// A loading or failed state's title, where it has one, which
+    /// [`Self::block`] draws above its line as the app's title-and-explanation
+    /// panes draw theirs (`main::empty`): 14 px regular, `gap_2` above the line,
+    /// read by itself as static text, `{id}-title` in tests.
+    pub(crate) fn titled(mut self, title: Option<impl Into<SharedString>>) -> Self {
+        self.title = title.map(Into::into);
+        self
     }
 
     /// In a row with no room for even the shortest whole line, as the
@@ -283,12 +297,24 @@ impl EmptyState {
             .into_any_element()
     }
 
-    /// At the leading edge of the list that holds it, the line as wide as
-    /// the list and wrapping inside it, and the action below it; the host
-    /// gives the inset its rows take.
+    /// At the leading edge of the list that holds it, its title where it has
+    /// one ([`Self::titled`]), the line as wide as the list and wrapping
+    /// inside it, and the action below it, each the state's gap apart; the
+    /// host gives the inset its rows take.
     pub(crate) fn block(self, cx: &App) -> AnyElement {
         let id = self.id;
         let line = self.read(self.line(cx).w_full());
+        let title = self.title.clone().map(|title| {
+            native_accessibility::static_text(
+                div()
+                    .id("title")
+                    .debug_selector(move || format!("{id}-title"))
+                    .w_full()
+                    .text_size(appearance::ui_text(TITLE_TEXT))
+                    .child(title.clone()),
+                title,
+            )
+        });
         div()
             .id(id)
             .debug_selector(move || id.into())
@@ -297,7 +323,19 @@ impl EmptyState {
             .flex_col()
             .items_start()
             .gap(appearance::ui_size(GAP))
-            .child(line)
+            .child(match title {
+                // As `main::empty` draws a title above its explanation, its
+                // fixed `gap_2` between them.
+                Some(title) => div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(title)
+                    .child(line)
+                    .into_any_element(),
+                None => line.into_any_element(),
+            })
             .children(self.action)
             .into_any_element()
     }
@@ -323,6 +361,27 @@ pub(crate) fn block_height(lines: usize, action: bool, window: &Window) -> Pixel
         } else {
             Pixels::ZERO
         }
+}
+
+/// The room [`EmptyState::block`] takes with `line` wrapped at the width it
+/// is laid out at and, where `action`, its action below it, laid out as the
+/// block lays out its line and action and drawn as nothing, as Reflog's kept
+/// details are: a state drawn over it while the one it holds the room for is
+/// still to come leaves what lies below where that one will leave it. With
+/// no id, it writes no node for assistive technology to read; measured from
+/// [`block_height`] instead, it fell half a pixel short at 18 pt, where the
+/// text's own line layout rounds its lines.
+pub(crate) fn block_reserve(line: &'static str, action: bool) -> Div {
+    div()
+        .invisible()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(appearance::ui_size(GAP))
+        .child(div().w_full().text_size(line_text()).child(line))
+        .when(action, |reserve| {
+            reserve.child(div().h(appearance::ui_size(28.)).flex_shrink_0())
+        })
 }
 
 /// An empty or edge state's action: the shared 28 px control with its icon
