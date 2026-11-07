@@ -68,6 +68,10 @@ struct WorkingBodyParts {
     short: bool,
     forms: WorkingForms,
     fit: WorkingFit,
+    /// The scroll cue's gutter the body keeps at its right, which `forms`
+    /// and the composer's rows are fitted beside; nothing where the body did
+    /// not scroll as last laid out.
+    gutter: Pixels,
     metrics: ComposerMetrics,
     /// The composer's fields' rows but the description's field
     /// (`GitTurtle::composer_rows`).
@@ -632,6 +636,12 @@ pub(super) struct WorkingForms {
     /// its icon, with that label as its accessible name and leading its
     /// tooltip.
     compact_commit: bool,
+    /// Its icon, which leaves where even "Commit" does not fit beside it,
+    /// as beside the scroll cue's gutter at 18 pt in a 156.5 px inspector:
+    /// a lone glyph is less clear than the word for a full-width primary
+    /// action, so the word stays and is never cut, as the composer
+    /// heading's icon leaves before its text.
+    commit_icon: bool,
 }
 
 /// The filter's, the title's and the description's placeholders, of which
@@ -648,6 +658,10 @@ pub(super) const TITLE_PLACEHOLDER: &str = "Summarize the change";
 /// The title's placeholder where the whole one does not fit, rather than
 /// "Summarize t…".
 pub(super) const TITLE_SHORT_PLACEHOLDER: &str = "Summarize";
+/// The title's placeholder where not even "Summarize" fits, as beside the
+/// short body's scroll cue at 18 pt in a 461 × 490 window (89.7 px in an
+/// 88.5 px field), rather than "Summari…".
+pub(super) const TITLE_SHORTEST_PLACEHOLDER: &str = "Summary";
 pub(super) const DESCRIPTION_PLACEHOLDER: &str = "Explain why this change is needed…";
 
 /// The composer's texts below its title, whose wrapped lines the
@@ -966,6 +980,8 @@ thread_local! {
     static DESCRIPTION_LABEL: RefCell<Option<(crate::views::LineKey, Pixels)>> =
         const { RefCell::new(None) };
     static COMMIT_LABEL: crate::views::TextWidth = const { RefCell::new(None) };
+    static COMMIT_WORD: RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { RefCell::new(None) };
     static CLEAR_FILTER_LABEL: crate::views::TextWidth = const { RefCell::new(None) };
     /// Each placeholder as it fits the width its field last painted at.
     static TITLE_FIT: PlaceholderFit = const { RefCell::new(None) };
@@ -1068,14 +1084,16 @@ impl GitTurtle {
         })
     }
 
-    /// `WorkingForms` for an inspector `width` wide. Each text is laid out
-    /// again only when it, the font or the sizes change, so a steady render
-    /// asks the text system nothing. `short` is the composer's short form,
-    /// whose heading names the branch, and `title_length` the title's
-    /// committed length (`title_length`).
+    /// `WorkingForms` for an inspector `width` wide, whose list and composer
+    /// are laid out `body` wide, less the scroll cue's gutter where they
+    /// keep it. Each text is laid out again only when it, the font or the
+    /// sizes change, so a steady render asks the text system nothing.
+    /// `short` is the composer's short form, whose heading names the branch,
+    /// and `title_length` the title's committed length (`title_length`).
     fn working_forms(
         &self,
         width: Pixels,
+        body: Pixels,
         short: bool,
         title_length: usize,
         window: &Window,
@@ -1092,6 +1110,8 @@ impl GitTurtle {
         let (gap, tight) = (rem * 0.5, rem * 0.25);
         // Every row's `px_3`, the inspector's one leading inset.
         let room = width - rem * 0.75 * 2.;
+        // The same inset inside the body, beside any gutter it keeps.
+        let body_room = body - rem * 0.75 * 2.;
         let control = ui_size(28.);
         let sum = |items: &[Pixels], gap: Pixels| {
             items.iter().copied().sum::<Pixels>() + gap * items.len().saturating_sub(1) as f32
@@ -1201,7 +1221,7 @@ impl GitTurtle {
                     labelled(stage_all),
                 ),
             ];
-            let section_room = room - px(3.);
+            let section_room = body_room - px(3.);
             let fits = |(action_label, glyph, label): (bool, bool, bool)| {
                 rows.iter().all(|&(name, count, action)| {
                     let glyph = if glyph { px(15.) + gap } else { px(0.) };
@@ -1232,7 +1252,7 @@ impl GitTurtle {
                 widest,
             ]
         });
-        let file_room = width - px(3.) - px(12.) - rem * 0.75;
+        let file_room = body - px(3.) - px(12.) - rem * 0.75;
         let fits = |(word, tile, action, glyph): (bool, bool, bool, bool)| {
             let lead = if tile {
                 px(26.) + gap
@@ -1276,9 +1296,9 @@ impl GitTurtle {
                 + cached_text_width(&STAGED_BADGE, &text, window, || {
                     measure(&text, ui_text(10.), FontWeight::MEDIUM)
                 });
-            if sum(&[px(16.), heading_min, badge], gap) > room {
+            if sum(&[px(16.), heading_min, badge], gap) > body_room {
                 heading_icon = false;
-                heading_badge = sum(&[heading_min, badge], gap) <= room;
+                heading_badge = sum(&[heading_min, badge], gap) <= body_room;
             }
         }
 
@@ -1290,13 +1310,13 @@ impl GitTurtle {
         let counter = cached_text_width(&TITLE_COUNTER, &counter, window, || {
             measure(&counter, ui_text(11.), regular)
         });
-        let counter_word = title + gap + counter <= room;
+        let counter_word = title + gap + counter <= body_room;
         // The description's label: "Description", `gap_1`, "· optional".
         let description_note = cached_width(&DESCRIPTION_LABEL, &key, || {
             measure("Description", ui_text(11.), FontWeight::MEDIUM)
                 + tight
                 + measure("· optional", ui_text(11.), regular)
-        }) <= room;
+        }) <= body_room;
 
         // The commit action, as wide as the composer: the kit's Button at its
         // default size, `px_2p5` either side, its 16 px icon, `gap_2` and its
@@ -1305,7 +1325,10 @@ impl GitTurtle {
         let label = cached_text_width(&COMMIT_LABEL, &label, window, || {
             measure(&label, rem, regular)
         });
-        let compact_commit = rem * 0.625 * 2. + px(16.) + gap + label + px(2.) > room;
+        let compact_commit = rem * 0.625 * 2. + px(16.) + gap + label + px(2.) > body_room;
+        let word = cached_width(&COMMIT_WORD, &key, || measure("Commit", rem, regular));
+        let commit_icon =
+            !compact_commit || rem * 0.625 * 2. + px(16.) + gap + word + px(2.) <= body_room;
         WorkingForms {
             compact_selection,
             selection_rows,
@@ -1325,6 +1348,7 @@ impl GitTurtle {
             counter_word,
             description_note,
             compact_commit,
+            commit_icon,
         }
     }
 
@@ -3440,8 +3464,23 @@ impl GitTurtle {
         // it is prepainted (`WorkingBody`).
         let short = short_body(layout.read(cx).height);
         let fitted_width = if pinned { width } else { layout.read(cx).width };
+        // Where the list and the composer scroll together, the body keeps the
+        // scroll cue's gutter at its right (`tags::ScrollCue`), which it keeps
+        // where it scrolled as last laid out, the cue's own rule, also in a
+        // frame that no longer scrolls (`render_working_body`): what the body
+        // holds is fitted to the width that leaves in the frame that keeps it.
+        // Fitted to the inspector's width, Commit's label and the file rows
+        // were laid out a gutter too wide and cut at its edge, at 18 pt in a
+        // 461 × 490 window. The controls above the body keep the inspector's
+        // width.
+        let gutter = if self.working_body.scroll().max_offset().y > Pixels::ZERO {
+            crate::tags::ScrollCue::gutter()
+        } else {
+            Pixels::ZERO
+        };
+        let body_width = fitted_width - gutter;
         let title_length = self.title_length(window, cx);
-        let forms = self.working_forms(fitted_width, short, title_length, window, cx);
+        let forms = self.working_forms(fitted_width, body_width, short, title_length, window, cx);
         // The measured body's height must not change the header height, which
         // would oscillate at a size threshold on successive layout passes.
         let header_height = WORKING_HEADER;
@@ -3541,7 +3580,7 @@ impl GitTurtle {
         // its label.
         let no_match = total > 0 && self.working_no_match();
         let unmatched = no_match.then(|| {
-            let room = working_no_match_room(fitted_width, window);
+            let room = working_no_match_room(body_width, window);
             let labelled = room >= labelled_button_width(CLEAR_FILTER, &CLEAR_FILTER_LABEL, window);
             let clear = if labelled {
                 empty_state::action("working-clear-filter", CLEAR_FILTER, "close")
@@ -3586,7 +3625,7 @@ impl GitTurtle {
         // bounds, with Clear filter, and draws neither group's heading, as
         // with nothing to list; it keeps the room to show both whole.
         let floor = if no_match {
-            working_no_match_floor(fitted_width, window)
+            working_no_match_floor(body_width, window)
         } else {
             working_list_floor(
                 working_floor_rows(&self.working_rows),
@@ -3601,13 +3640,13 @@ impl GitTurtle {
             let metrics = ComposerMetrics::new(short, true, window);
             let (rows, _) = self.composer_rows(
                 &metrics,
-                fitted_width,
+                body_width,
                 identity_ready,
                 shown,
                 title_length,
                 window,
             );
-            let section = self.description_section(&metrics, fitted_width, window);
+            let section = self.description_section(&metrics, body_width, window);
             f32::from(metrics.least(rows, section))
         } else {
             0.
@@ -3624,14 +3663,14 @@ impl GitTurtle {
         // size: the composer prefers room for them whole with that field.
         let (rows, stops) = self.composer_rows(
             &metrics,
-            fitted_width,
+            body_width,
             identity_ready,
             shown,
             title_length,
             window,
         );
         // The Description section's own rows.
-        let section = self.description_section(&metrics, fitted_width, window);
+        let section = self.description_section(&metrics, body_width, window);
         let minimum = f32::from(metrics.least(rows, section));
         // A row that its Stage or Unstage moved travels to its slot above
         // the rows and beneath the section headings, and the list keeps the
@@ -3972,6 +4011,7 @@ impl GitTurtle {
                     short,
                     forms,
                     fit,
+                    gutter,
                     metrics,
                     rows,
                     stops,
@@ -4010,6 +4050,7 @@ impl GitTurtle {
             short,
             forms,
             fit,
+            gutter,
             metrics,
             rows,
             stops,
@@ -4223,8 +4264,21 @@ impl GitTurtle {
             // through its first file, its own scroll keeping the selected file
             // in them.
             .when(scrolls, |el| el.flex_none().h(px(floor)));
+        // Scrolling, the body shows the app's scroll cue: its track in the
+        // gutter at its right while what it holds overflows, otherwise the
+        // fades, which stop short of the focused stop's ring
+        // (`tags::ScrollCue::revealing`). It draws once more where this
+        // frame's layout keeps the gutter otherwise than the frame assumed,
+        // in either form, so a body that has stopped scrolling gives the
+        // gutter back in the next frame.
+        let cue = crate::tags::ScrollCue::revealing(reveal, Pixels::ZERO);
+        let observe = reveal.observe();
         let body = div()
-            .when(scrolls, |el| el.on_children_prepainted(reveal.observe()))
+            .on_children_prepainted(cue.observe(move |bounds, window, cx| {
+                if scrolls {
+                    observe(bounds, window, cx)
+                }
+            }))
             .id("working-body")
             .debug_selector(|| "working-body".into())
             .w(size.width)
@@ -4694,9 +4748,17 @@ impl GitTurtle {
                                         .primary()
                                         .w_full()
                                         .h(crate::appearance::ui_size(36.))
-                                        .icon(
-                                            Icon::default().path("icons/commit.svg").size(px(16.)),
-                                        );
+                                        .when(forms.commit_icon, |commit| {
+                                            crate::views::note_control_icon(
+                                                &"commit-staged".into(),
+                                                "icons/commit.svg",
+                                            );
+                                            commit.icon(
+                                                Icon::default()
+                                                    .path("icons/commit.svg")
+                                                    .size(px(16.)),
+                                            )
+                                        });
                                     let label = self.commit_action_label(cx);
                                     let detail = format!("Commit staged changes to {branch}");
                                     // While only the rows being prepared refuse it,
@@ -4761,7 +4823,11 @@ impl GitTurtle {
                         .child(placeholder_fit(
                             self.commit_title.clone(),
                             &TITLE_FIT,
-                            &[TITLE_PLACEHOLDER, TITLE_SHORT_PLACEHOLDER],
+                            &[
+                                TITLE_PLACEHOLDER,
+                                TITLE_SHORT_PLACEHOLDER,
+                                TITLE_SHORTEST_PLACEHOLDER,
+                            ],
                             12.,
                         ))
                         .child(placeholder_fit(
@@ -4772,11 +4838,14 @@ impl GitTurtle {
                         )),
                 )
             });
-        // Scrolling, it reports to assistive technology only what it shows.
+        // Scrolling, it reports to assistive technology only what it shows
+        // (`ScrollCue::list`). Not scrolling, it keeps a gutter the frame
+        // assumed, so it is laid out at the width its rows were fitted to.
         if scrolls {
-            native_accessibility::clips_children(body).into_any_element()
+            cue.list(body, "working-body-scrollbar").into_any_element()
         } else {
-            body.into_any_element()
+            body.when(gutter > Pixels::ZERO, |el| el.pr(gutter))
+                .into_any_element()
         }
     }
 

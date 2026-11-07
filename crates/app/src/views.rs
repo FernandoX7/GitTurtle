@@ -28030,12 +28030,20 @@ pub(crate) mod tests {
     /// it once read "Summarize t…", and the description's, where the composer
     /// draws it, ends with an ellipsis at a character boundary inside its
     /// field; and the commit action reads "Commit", named with its whole
-    /// label, such as "Write a commit title". Wherever they fit, the counter,
-    /// the title's placeholder and the label stay whole.
+    /// label, such as "Write a commit title". In the narrowest form, at 18
+    /// pt in the 461 × 490 window, where the composer lies beside the body's
+    /// scroll cue, the title's placeholder reads "Summary", since
+    /// "Summarize" (89.7 px) does not fit its 88.5 px field, rather than
+    /// "Summari…", and since "Commit" (64.8 px) does not fit the 61 px
+    /// beside its icon, Commit keeps its word, drawn whole, and drops its
+    /// icon: a lone glyph is less clear than the word for a full-width
+    /// primary action. Wherever they fit, the counter, the title's
+    /// placeholder, the label and the icon stay whole.
     #[gpui::test]
     async fn narrow_composer_keeps_its_texts_inside_the_column(cx: &mut TestAppContext) {
         use crate::workspace::{
             DESCRIPTION_PLACEHOLDER, TITLE_PLACEHOLDER, TITLE_SHORT_PLACEHOLDER,
+            TITLE_SHORTEST_PLACEHOLDER,
         };
         let (_fixture, app, cx) = working_window(cx).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
@@ -28052,6 +28060,7 @@ pub(crate) mod tests {
             // Only the names the settled layout gives: a frame laid out at
             // the previous width can have named a compact form.
             COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+            CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
             app.update(cx, |_, cx| cx.notify());
             draw(cx);
             let at = format!("{text} pt at {width} × {height}");
@@ -28103,17 +28112,33 @@ pub(crate) mod tests {
                 narrow.then_some("0/72 suggested"),
                 "{at}"
             );
-            // The commit action's label fits beside its icon, inside the edge
-            // a disabled action keeps: its whole label, or "Commit" named
-            // with it. The label depends on the Git identity the fixture
-            // finds ("Write a commit title" with one), so it is read back.
+            // The commit action's label fits inside the edge a disabled
+            // action keeps, beside its icon: its whole label, or "Commit"
+            // named with it; where not even "Commit" fits there, "Commit"
+            // alone, whole, without the icon. The label depends on the Git
+            // identity the fixture finds ("Write a commit title" with one),
+            // so it is read back.
             let commit = bounds(cx, "commit-staged");
-            let room = commit.size.width - rem * 0.625 * 2. - px(16.) - rem * 0.5 - px(2.);
+            let edge = commit.size.width - rem * 0.625 * 2. - px(2.);
+            let beside = edge - px(16.) - rem * 0.5;
             let whole = app.read_with(cx, |app, cx| app.commit_action_label(cx));
-            let compact = width_of(cx, &whole, rem) > room;
-            assert!(compact || !narrow, "{at}: {whole:?} in {room:?}");
-            assert!(!compact || width < 1000., "{at}: {whole:?} in {room:?}");
+            let compact = width_of(cx, &whole, rem) > beside;
+            assert!(compact || !narrow, "{at}: {whole:?} in {beside:?}");
+            assert!(!compact || width < 1000., "{at}: {whole:?} in {beside:?}");
+            let bare = width_of(cx, "Commit", rem) > beside;
+            assert_eq!(
+                bare,
+                narrow && height < 1000.,
+                "{at}: \"Commit\" beside its icon in {beside:?}"
+            );
+            let icon = CONTROL_ICONS.with(|icons| icons.borrow().get("commit-staged").cloned());
+            assert_eq!(
+                icon.as_deref(),
+                (!bare).then_some("icons/commit.svg"),
+                "{at}: Commit's icon"
+            );
             let shown = if compact { "Commit" } else { whole.as_str() };
+            let room = if bare { edge } else { beside };
             assert!(
                 width_of(cx, shown, rem) <= room,
                 "{at}: {shown:?} in {room:?}"
@@ -28160,7 +28185,11 @@ pub(crate) mod tests {
                 // Its whole-word forms, from the longest; only the shortest
                 // is ever cut.
                 let forms: &[&str] = if whole == TITLE_PLACEHOLDER {
-                    &[TITLE_PLACEHOLDER, TITLE_SHORT_PLACEHOLDER]
+                    &[
+                        TITLE_PLACEHOLDER,
+                        TITLE_SHORT_PLACEHOLDER,
+                        TITLE_SHORTEST_PLACEHOLDER,
+                    ]
                 } else {
                     &[whole]
                 };
@@ -28173,8 +28202,11 @@ pub(crate) mod tests {
                 );
                 if whole == TITLE_PLACEHOLDER {
                     // Where the whole title placeholder does not fit, it reads
-                    // the short "Summarize", not "Summarize t…".
-                    let expected = if narrow {
+                    // the short "Summarize", not "Summarize t…", and beside
+                    // the body's scroll cue "Summary", not "Summari…".
+                    let expected = if narrow && height < 1000. {
+                        TITLE_SHORTEST_PLACEHOLDER
+                    } else if narrow {
                         TITLE_SHORT_PLACEHOLDER
                     } else {
                         TITLE_PLACEHOLDER
@@ -32616,6 +32648,368 @@ pub(crate) mod tests {
                 "frame {index} of {} draws the title {control:?} cut in {:?}",
                 frames.len(),
                 frame.viewport
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Where the list and the composer scroll together, the Working body
+    /// shows the app's scroll cue (`tags::ScrollCue`), as the other scroll
+    /// views do: at 13 and 18 pt in a 461 × 490 window and at 18 pt in a
+    /// 640 × 680 one, its track runs in a gutter at the body's right, the
+    /// scrollbar's width and the ring's room, where its thumb follows the
+    /// body's offset, the list and the composer end beside it, and it lies
+    /// over no ring. The list draws no scrollbar of its own in its floor
+    /// beside it. Where they fit, at 13 and 18 pt in a 1480 × 973 window,
+    /// it draws no scrollbar and keeps no gutter: the composer reaches the
+    /// body's right edge. The body once scrolled with no cue at all.
+    #[gpui::test]
+    async fn a_scrolling_working_body_shows_the_scroll_cue(cx: &mut TestAppContext) {
+        use crate::tags::tests::{
+            assert_no_scroll_cue, assert_scroll_cue, painted_thumb, set_interface_text_size,
+        };
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let scroll = app.read_with(cx, |app, _| app.working_body.scroll().clone());
+        let gutter = crate::tags::ScrollCue::gutter();
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert_scroll_cue(
+            cx,
+            &app,
+            &scroll,
+            "working-body",
+            Pixels::ZERO,
+            &["working-pane", "commit-title", "commit-staged"],
+        );
+        set_interface_text_size(cx, &app, 18);
+        cx.simulate_resize(size(px(640.), px(680.)));
+        draw(cx);
+        assert!(
+            scroll.max_offset().y > px(0.),
+            "the body scrolls at 18 pt in 640 × 680"
+        );
+        let body = cx.debug_bounds("working-body").expect("the body");
+        let track = Bounds::from_corners(
+            point(body.right() - Scrollbar::width(), body.top()),
+            body.bottom_right(),
+        );
+        assert!(
+            painted_thumb(cx, track).is_some(),
+            "at 18 pt in 640 × 680 a thumb in {track:?}"
+        );
+        for part in ["working-pane", "commit-composer"] {
+            let bounds = cx.debug_bounds(part).expect(part);
+            assert!(
+                (bounds.right() - (body.right() - gutter)).abs() < px(0.01),
+                "{part} {bounds:?} ends beside the gutter of {body:?}"
+            );
+        }
+        // No thumb of the list's own beside the body's, in its floor.
+        let pane = cx.debug_bounds("working-pane").expect("the list");
+        let inside = Bounds::from_corners(
+            point(pane.right() - Scrollbar::width() - px(1.), pane.top()),
+            pane.bottom_right(),
+        );
+        assert_eq!(
+            painted_thumb(cx, inside),
+            None,
+            "a thumb in the list {pane:?}"
+        );
+        set_interface_text_size(cx, &app, 13);
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        assert_no_scroll_cue(cx, &app, "working-body", Pixels::ZERO, &["commit-composer"]);
+        assert!(
+            cx.debug_bounds("working-body-scrollbar").is_none(),
+            "no scrollbar where the body fits"
+        );
+    }
+
+    /// At 18 pt in a 461 × 490 window the Working inspector is 156.5 px wide
+    /// and its list and composer scroll together beside the scroll cue's
+    /// 19 px gutter. What the body holds is fitted to the width the gutter
+    /// leaves, in the frame that keeps it, so nothing is cut at its edge:
+    /// the filter reads "Filter" inside its field, the title's counter
+    /// "0/72", Commit "Commit" whole inside its edge, its icon left out
+    /// since the word (64.8 px) does not fit the 61 px beside it, and each
+    /// file row its whole name and its folder, with what the narrow row
+    /// order leaves beside them, inside the row. Fitted to the inspector's
+    /// width, they were laid out a gutter too wide.
+    #[gpui::test]
+    async fn a_scrolling_working_body_fits_what_it_holds_beside_its_gutter(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::workspace::FILTER_SHORT_PLACEHOLDER;
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        // Only the names and icons the settled layout gives.
+        COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+        CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
+        app.update(cx, |_, cx| cx.notify());
+        draw(cx);
+        let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} drawn"))
+        };
+        let width_of =
+            |cx: &mut VisualTestContext, text: &str, size: Pixels, weight: FontWeight| {
+                cx.update(|window, _| shaped_width(text, size, weight, window))
+            };
+        let (rem, inset, regular) = cx.update(|window, _| {
+            (
+                window.rem_size(),
+                window.pixel_snap(window.rem_size() * 0.75),
+                window.text_style().font_weight,
+            )
+        });
+        let body = bounds(cx, "working-body");
+        assert_eq!(body.size.width, px(156.5), "the inspector's width");
+        assert!(
+            app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+            "the body scrolls"
+        );
+        assert!(cx.debug_bounds("working-body-scrollbar").is_some());
+        let gutter = crate::tags::ScrollCue::gutter();
+        let composer = bounds(cx, "commit-composer");
+        assert!(
+            (composer.right() - (body.right() - gutter)).abs() < px(0.01),
+            "the composer {composer:?} beside the gutter of {body:?}"
+        );
+        // The filter's placeholder, whole in its field.
+        let (placeholder, field) = app.read_with(cx, |app, cx| {
+            let filter = app.working_filter.read(cx);
+            (
+                filter.presentation().placeholder().clone(),
+                filter.text_bounds().expect("the filter's text laid out"),
+            )
+        });
+        assert_eq!(placeholder.as_ref(), FILTER_SHORT_PLACEHOLDER);
+        let filter = width_of(cx, &placeholder, appearance::ui_text(12.), regular);
+        assert!(
+            filter <= field.size.width,
+            "{placeholder:?} {filter:?} in {field:?}"
+        );
+        let (start, end) = (
+            composer.left() + inset - px(0.5),
+            composer.right() - inset + px(0.5),
+        );
+        // The counter, whole inside the composer's column.
+        let counter = bounds(cx, "commit-title-counter");
+        assert_eq!(
+            counter.size.width,
+            width_of(cx, "0/72", appearance::ui_text(11.), regular).ceil(),
+            "the counter reads \"0/72\""
+        );
+        for selector in ["commit-title-name", "commit-title-counter", "commit-staged"] {
+            let part = bounds(cx, selector);
+            assert!(
+                part.left() >= start && part.right() <= end,
+                "{selector} {part:?} inside {start:?}..{end:?}"
+            );
+        }
+        // Commit, in its narrowest form: "Commit" does not fit beside its
+        // icon, so it keeps the word, drawn whole inside the edge a disabled
+        // action keeps, and drops the icon; it keeps its whole label as its
+        // accessible name.
+        let commit = bounds(cx, "commit-staged");
+        let edge = commit.size.width - rem * 0.625 * 2. - px(2.);
+        let beside = edge - px(16.) - rem * 0.5;
+        let label = width_of(cx, "Commit", rem, regular);
+        assert!(
+            label > beside,
+            "\"Commit\" {label:?} beside its icon in {beside:?}"
+        );
+        assert!(label <= edge, "\"Commit\" {label:?} in {edge:?}");
+        assert_eq!(
+            CONTROL_ICONS.with(|icons| icons.borrow().get("commit-staged").cloned()),
+            None,
+            "Commit draws no icon"
+        );
+        let whole = app.read_with(cx, |app, cx| app.commit_action_label(cx));
+        assert_eq!(
+            COMPACT_LABELS.with(|names| names.borrow().get("commit-staged").cloned()),
+            Some(whole.into()),
+            "Commit keeps its whole label as its name"
+        );
+        // Each file row: its whole name and its folder, and the status mark
+        // and control the narrow row order leaves it (DESIGN.md: the word
+        // leaves first, the tile gives way to its glyph so the control
+        // stays, then the control leaves, and the glyph last), inside the
+        // row and the list.
+        let pane = bounds(cx, "working-pane");
+        let files: Vec<(usize, String)> = app.read_with(cx, |app, _| {
+            let entries = &app.work_status.as_ref().expect("a status").entries;
+            app.working_rows
+                .iter()
+                .enumerate()
+                .filter_map(|(position, row)| match row {
+                    workspace::WorkingRow::File(index, _) => Some((
+                        position,
+                        entries[*index]
+                            .path
+                            .file_name()
+                            .expect("a file name")
+                            .to_string_lossy()
+                            .into_owned(),
+                    )),
+                    _ => None,
+                })
+                .collect()
+        });
+        let mut drawn = 0;
+        for (position, name) in files {
+            let Some(row) = cx.debug_bounds(format!("working-row-{position}").leak()) else {
+                continue;
+            };
+            if row.bottom() <= pane.top() || row.top() >= pane.bottom() {
+                continue;
+            }
+            drawn += 1;
+            assert!(
+                row.right() <= pane.right() + px(0.01),
+                "row {position} {row:?} inside the list {pane:?}"
+            );
+            let part = |cx: &mut VisualTestContext, kind: &str| {
+                cx.debug_bounds(format!("working-{kind}-{position}").leak())
+            };
+            let (tile, glyph, status, stage) = (
+                part(cx, "tile"),
+                part(cx, "glyph"),
+                part(cx, "status"),
+                part(cx, "stage"),
+            );
+            assert!(
+                status.is_none() || tile.is_some(),
+                "row {position}: its status word only beside its tile"
+            );
+            assert!(
+                tile.is_some() || glyph.is_some() || stage.is_none(),
+                "row {position}: its control only beside a status mark, which leaves last"
+            );
+            let text = bounds(cx, format!("working-path-{position}").leak());
+            let shown = bounds(cx, format!("working-name-{position}").leak());
+            let whole = width_of(cx, &name, appearance::ui_text(12.), FontWeight::MEDIUM);
+            assert!(
+                whole <= shown.size.width + px(0.01),
+                "row {position} reads {name:?} whole: {whole:?} in {shown:?}"
+            );
+            let parts = [
+                ("tile", tile),
+                ("glyph", glyph),
+                ("status word", status),
+                ("control", stage),
+                ("name and folder", Some(text)),
+            ];
+            for (part, at) in parts {
+                let Some(at) = at else { continue };
+                assert!(
+                    at.left() >= row.left() && at.right() <= row.right() - inset + px(0.5),
+                    "row {position}'s {part} {at:?} inside {row:?}"
+                );
+            }
+        }
+        assert!(drawn > 0, "the list draws a file row");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The scroll cue's gutter follows whether the Working body scrolls, and
+    /// no height flips between the two forms: around the height where the
+    /// list and the composer begin to scroll together at 18 pt in a 461 px
+    /// window, a pixel at a time as the window shortens and then as it grows
+    /// again, each height settles on one form, the gutter and the scrollbar
+    /// kept exactly where the body scrolls, the frames drawn on the way lay
+    /// the composer out at another width once at most, never back, and a
+    /// frame drawn once settled changes nothing.
+    #[gpui::test]
+    async fn the_working_body_settles_on_one_form_at_its_scroll_threshold(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let gutter = crate::tags::ScrollCue::gutter();
+        let scrolls = |cx: &mut VisualTestContext, height: f32| {
+            cx.simulate_resize(size(px(461.), px(height)));
+            draw(cx);
+            draw(cx);
+            app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.)
+        };
+        // The heights between which the body begins to scroll.
+        let (mut low, mut high) = (490., 1100.);
+        assert!(scrolls(cx, low), "the body scrolls at 461 × {low}");
+        assert!(!scrolls(cx, high), "the body fits at 461 × {high}");
+        while high - low > 1. {
+            let middle = ((low + high) / 2.).round();
+            if scrolls(cx, middle) {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        let steps = (0..12).map(|step| high + 6. - step as f32);
+        let heights: Vec<f32> = steps.clone().chain(steps.rev()).collect();
+        for height in heights {
+            let at = format!("18 pt in 461 × {height}");
+            cx.simulate_resize(size(px(461.), px(height)));
+            app.read_with(cx, |app, _| {
+                app.working_probe.frames.borrow_mut().clear();
+                app.working_probe.line.set(workspace::ProbeLine::Watch)
+            });
+            draw(cx);
+            draw(cx);
+            let frames = app.read_with(cx, |app, _| {
+                app.working_probe.line.set(workspace::ProbeLine::Off);
+                std::mem::take(&mut *app.working_probe.frames.borrow_mut())
+            });
+            let body = cx.debug_bounds("working-body").expect("the body");
+            let composer = cx.debug_bounds("commit-composer").expect("the composer");
+            let scrolled =
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.);
+            let kept = (composer.right() - (body.right() - gutter)).abs() < px(0.01);
+            assert!(
+                kept == scrolled && (kept || (composer.right() - body.right()).abs() < px(0.01)),
+                "{at}: the gutter kept {kept}, the body scrolls {scrolled}: {composer:?} in {body:?}"
+            );
+            assert_eq!(
+                cx.debug_bounds("working-body-scrollbar").is_some(),
+                scrolled,
+                "{at}: the scrollbar where the body scrolls"
+            );
+            let laid_out: Vec<Pixels> = frames
+                .iter()
+                .filter_map(|frame| frame.composer.map(|composer| composer.right()))
+                .collect();
+            // The width the composer is laid out at changes once at most,
+            // to the settled one, and never back.
+            let changes = laid_out
+                .windows(2)
+                .filter(|pair| (pair[0] - pair[1]).abs() >= px(0.01))
+                .count();
+            assert!(
+                changes <= 1
+                    && laid_out
+                        .last()
+                        .is_some_and(|right| (*right - composer.right()).abs() < px(0.01)),
+                "{at}: the composer laid out at {laid_out:?}, settling at {:?}",
+                composer.right()
+            );
+            app.update(cx, |_, cx| cx.notify());
+            draw(cx);
+            assert_eq!(
+                cx.debug_bounds("commit-composer").expect("the composer"),
+                composer,
+                "{at}: a frame drawn once settled moves nothing"
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
