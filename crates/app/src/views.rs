@@ -8659,6 +8659,7 @@ impl GitTurtle {
             // 220.67 px pane and a 1,060.67 px body. The snap only drops the
             // rounding of the two divided lengths.
             let pane = self.drawn_project_pane_width(viewport, window, cx);
+            // The floor is the drawn width: the group lays the page out at its 520 px minimum.
             window.pixel_snap(body - pane).max(px(520.))
         } else {
             body
