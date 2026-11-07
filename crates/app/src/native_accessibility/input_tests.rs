@@ -516,6 +516,18 @@ fn a_frame_drawn_again_with_no_change_builds_nothing_again(cx: &mut TestAppConte
                 "the frame holds the keystroke"
             );
             assert_eq!(frame(state).0, builds(2, 3));
+            // An input method's composition, text marked at the caret
+            // before it is committed, changes the text as a keystroke does.
+            gpui::EntityInputHandler::replace_and_mark_text_in_range(
+                state, None, "ü", None, window, cx,
+            );
+            let (counted, value) = frame(state);
+            assert_eq!(counted, builds(3, 4), "a composition changes the text");
+            assert!(
+                value.contains("linxüe 0800"),
+                "the frame holds the composition"
+            );
+            assert_eq!(frame(state).0, builds(3, 4));
         })
     });
 }
