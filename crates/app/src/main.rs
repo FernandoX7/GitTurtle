@@ -2421,15 +2421,107 @@ impl GitTurtle {
 }
 
 fn app_icon(dimension: f32) -> Img {
-    img(APP_ICON_PATH)
+    app_icon_img(app_icon_source())
         .size(px(dimension))
         .object_fit(ObjectFit::Contain)
         .flex_shrink_0()
 }
 
+/// The app icon's image: the embedded asset, by its static path, which GPUI
+/// takes as it is. Given the path as a `&str`, GPUI parsed it as a URL and
+/// copied it into a new string on every frame that drew the icon.
+fn app_icon_source() -> ImageSource {
+    ImageSource::Resource(gpui::Resource::Embedded(SharedString::new_static(
+        APP_ICON_PATH,
+    )))
+}
+
+/// The app icon's image from `source`, noted for a test with what making
+/// it an image source allocated ([`APP_ICON_DRAWN`]).
+fn app_icon_img(source: impl Into<ImageSource>) -> Img {
+    #[cfg(test)]
+    let before = test_support::allocations();
+    let source = source.into();
+    #[cfg(test)]
+    {
+        let made = test_support::allocations() - before;
+        APP_ICON_DRAWN.with_borrow_mut(|drawn| *drawn = Some((source.clone(), made)));
+    }
+    img(source)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The image source the app icon was last drawn from, and the
+    /// allocations making it took ([`app_icon_img`]), for a test.
+    static APP_ICON_DRAWN: std::cell::RefCell<Option<(ImageSource, u64)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// What the shared helpers draw for an icon's `symbol`, formatted once per
+/// symbol ([`symbol_text`]).
+#[derive(Clone)]
+struct SymbolText {
+    /// The icon's asset, `icons/<symbol>.svg`.
+    path: SharedString,
+    /// An icon-only control's name until its caller names it
+    /// ([`button_frame`]): `<symbol> file path`.
+    name: SharedString,
+}
+
+thread_local! {
+    /// [`SymbolText`] for each symbol drawn, by symbol: the app's own icon
+    /// names, a fixed set.
+    static SYMBOL_TEXT: std::cell::RefCell<HashMap<Box<str>, SymbolText>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times a symbol's text was formatted ([`symbol_text`]), for a
+    /// test.
+    static SYMBOL_TEXT_FORMATTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times a symbol's text was asked for, for a test.
+    static SYMBOL_TEXT_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What `read` takes from the text the shared helpers draw for `symbol`
+/// ([`button`], [`button_frame`], [`control_icon`], [`icon`]), formatted the
+/// first time the symbol is drawn and kept, so a frame at rest formats none
+/// of it. Each Button formatted its icon's path, and an icon-only one its
+/// placeholder name, on every frame.
+fn symbol_text<R>(symbol: &str, read: impl FnOnce(&SymbolText) -> R) -> R {
+    #[cfg(test)]
+    SYMBOL_TEXT_LOOKUPS.set(SYMBOL_TEXT_LOOKUPS.get() + 1);
+    SYMBOL_TEXT.with_borrow_mut(|kept| {
+        if let Some(text) = kept.get(symbol) {
+            return read(text);
+        }
+        #[cfg(test)]
+        SYMBOL_TEXT_FORMATTED.set(SYMBOL_TEXT_FORMATTED.get() + 1);
+        let text = SymbolText {
+            path: format!("icons/{symbol}.svg").into(),
+            name: format!("{symbol} file path").into(),
+        };
+        read(kept.entry(symbol.into()).or_insert(text))
+    })
+}
+
+/// The icon asset `symbol` names, `icons/<symbol>.svg` ([`symbol_text`]).
+fn icon_path(symbol: &str) -> SharedString {
+    symbol_text(symbol, |text| text.path.clone())
+}
+
+/// Empties [`SYMBOL_TEXT`], for a test that counts what it formats: a GPUI
+/// test's seeds share the thread and its cache.
+#[cfg(test)]
+fn forget_symbol_text() {
+    SYMBOL_TEXT.with_borrow_mut(HashMap::clear);
+}
+
 fn icon(name: &str, dimension: f32, color: u32) -> Svg {
     svg()
-        .path(format!("icons/{name}.svg"))
+        .path(icon_path(name))
         .size(px(dimension))
         .text_color(rgb(color))
         .flex_shrink_0()
@@ -2441,17 +2533,17 @@ fn button(
     active: bool,
 ) -> Button {
     let (id, label) = (id.into(), label.into());
-    // Only tests read the icon back; a render builds no path for it.
-    #[cfg(test)]
-    if !symbol.is_empty() {
-        views::note_control_icon(&id, &format!("icons/{symbol}.svg"));
+    let path = (!symbol.is_empty()).then(|| icon_path(symbol));
+    if let Some(path) = &path {
+        // Only tests read the icon back.
+        views::note_control_icon(&id, path);
     }
     let mut button = button_frame(id, &label, symbol, active);
     if !label.is_empty() {
         button = button.label(label);
     }
-    if !symbol.is_empty() {
-        button = button.icon(control_icon(symbol));
+    if let Some(path) = path {
+        button = button.icon(control_icon_at(path));
     }
     button
 }
@@ -2603,7 +2695,7 @@ fn button_frame(id: impl Into<ElementId>, label: &str, symbol: &str, active: boo
     if label.is_empty() {
         button = button
             .w(appearance::ui_size(28.))
-            .accessibility_label(format!("{} file path", symbol));
+            .accessibility_label(symbol_text(symbol, |text| text.name.clone()));
     }
     button
 }
@@ -2739,9 +2831,12 @@ fn widest_label_now(labels: &[&str], window: &Window) -> Pixels {
 
 /// A control's 16 px icon, `icons/<symbol>.svg`, tinted with its text.
 fn control_icon(symbol: &str) -> Icon {
-    Icon::default()
-        .path(format!("icons/{symbol}.svg"))
-        .size(appearance::ui_size(16.))
+    control_icon_at(icon_path(symbol))
+}
+
+/// [`control_icon`] for the asset at `path`.
+fn control_icon_at(path: SharedString) -> Icon {
+    Icon::default().path(path).size(appearance::ui_size(16.))
 }
 /// A pane's title and explanation, as loading and failures keep them, read
 /// as one static text.
@@ -3661,6 +3756,161 @@ mod shared_button_tests {
             }
             rings
         })
+    }
+
+    /// The shared helpers, each once: an icon-only Button named by its
+    /// symbol's placeholder, `symbol`, a labelled Button with an icon, a
+    /// control's bare icon, an inline icon and the app icon.
+    struct Helpers {
+        symbol: &'static str,
+        /// How many times it was rendered.
+        renders: usize,
+    }
+
+    impl Render for Helpers {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.renders += 1;
+            div()
+                .flex()
+                .gap_2()
+                .child(button("helpers-icon", "", self.symbol, false))
+                .child(button("helpers-labelled", "Refresh", "refresh", false))
+                .child(control_icon("copy"))
+                .child(icon("copy", 16., 0))
+                .child(app_icon(28.))
+        }
+    }
+
+    /// The shared helpers format a symbol's icon path and placeholder name
+    /// once, the first time the symbol is drawn ([`symbol_text`]), and the
+    /// app icon's source allocates nothing ([`app_icon_source`]): frames at
+    /// rest format none of them, though each takes every helper's text from
+    /// its symbol's and draws the app icon from its static source, allocating
+    /// nothing to make it, another symbol formats its own text once,
+    /// and a symbol drawn before finds its text kept. The icon drawn is the
+    /// symbol's own asset. Every frame formatted each Button's icon path and
+    /// an icon-only Button's name, and parsed the app icon's path as a URL
+    /// and copied it.
+    #[gpui::test]
+    fn the_shared_helpers_format_a_symbol_s_text_once(cx: &mut TestAppContext) {
+        // Empty, as a GPUI test's seeds share the thread and its cache.
+        forget_symbol_text();
+        let first = SYMBOL_TEXT_FORMATTED.get();
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(|_, _| Helpers {
+            symbol: "copy",
+            renders: 0,
+        });
+        let draw = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        };
+        let counts = || (SYMBOL_TEXT_FORMATTED.get(), SYMBOL_TEXT_LOOKUPS.get());
+        let drawn_icon = || {
+            views::CONTROL_ICONS.with(|icons| {
+                icons
+                    .borrow()
+                    .get("helpers-icon")
+                    .map(|path| path.to_string())
+            })
+        };
+        let at_rest = |at: &str, cx: &mut VisualTestContext| {
+            let (formatted, lookups) = counts();
+            let renders = view.read_with(cx, |view, _| view.renders);
+            for _ in 0..3 {
+                APP_ICON_DRAWN.set(None);
+                view.update(cx, |_, cx| cx.notify());
+                draw(cx);
+                // Drawn from its embedded asset, by the static path, which
+                // made nothing.
+                let drawn = APP_ICON_DRAWN.take();
+                assert!(
+                    matches!(
+                        &drawn,
+                        Some((ImageSource::Resource(gpui::Resource::Embedded(path)), 0))
+                            if &**path == APP_ICON_PATH
+                    ),
+                    "{at}: the app icon is drawn from its embedded asset, allocating nothing"
+                );
+            }
+            let (formatted_after, lookups_after) = counts();
+            let renders = view.read_with(cx, |view, _| view.renders) - renders;
+            assert!(renders >= 3, "{at}: each frame renders the helpers");
+            // A render asks for each helper's text once: the icon-only
+            // Button's path and name, the labelled Button's path, the bare
+            // control icon's and the inline icon's.
+            assert_eq!(
+                lookups_after - lookups,
+                renders * 5,
+                "{at}: each render at rest draws every helper's text from its symbol's"
+            );
+            assert_eq!(
+                formatted_after - formatted,
+                0,
+                "{at}: frames at rest format no symbol's text"
+            );
+        };
+        draw(cx);
+        assert_eq!(
+            counts().0 - first,
+            2,
+            "the first frames format `copy`'s and `refresh`'s text once each"
+        );
+        assert_eq!(drawn_icon().as_deref(), Some("icons/copy.svg"));
+        at_rest("copy", cx);
+
+        let (formatted, _) = counts();
+        view.update(cx, |view, cx| {
+            view.symbol = "folder";
+            cx.notify()
+        });
+        draw(cx);
+        assert_eq!(
+            counts().0 - formatted,
+            1,
+            "another symbol formats its text once"
+        );
+        assert_eq!(drawn_icon().as_deref(), Some("icons/folder.svg"));
+        at_rest("folder", cx);
+
+        let (formatted, _) = counts();
+        view.update(cx, |view, cx| {
+            view.symbol = "copy";
+            cx.notify()
+        });
+        draw(cx);
+        assert_eq!(
+            counts().0,
+            formatted,
+            "a symbol drawn before finds its text kept"
+        );
+        assert_eq!(drawn_icon().as_deref(), Some("icons/copy.svg"));
+        assert_eq!(
+            symbol_text("folder", |text| (
+                text.path.to_string(),
+                text.name.to_string()
+            )),
+            ("icons/folder.svg".to_owned(), "folder file path".to_owned()),
+            "a symbol's kept path and placeholder name"
+        );
+
+        let before = crate::test_support::allocations();
+        let source = app_icon_source();
+        assert_eq!(
+            crate::test_support::allocations() - before,
+            0,
+            "the app icon's source allocates nothing"
+        );
+        assert!(
+            matches!(
+                &source,
+                ImageSource::Resource(gpui::Resource::Embedded(path)) if &**path == APP_ICON_PATH
+            ),
+            "the app icon is the embedded asset"
+        );
     }
 
     /// A focused helper, at rest or hovered and selected or not, keeps the box
