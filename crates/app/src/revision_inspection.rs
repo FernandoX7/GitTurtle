@@ -346,7 +346,7 @@ impl GitTurtle {
         self.page = AppPage::Repository;
         self.sidebar = false;
         self.pane = Pane::Files;
-        window.focus(&self.file_focus, cx);
+        window.focus(self.files_focus(), cx);
         true
     }
 
@@ -452,6 +452,17 @@ impl GitTurtle {
             )
     }
 
+    /// Where focus on the changed files lands: their list, or in Quick
+    /// source, which draws none, the inspector's tracked source information
+    /// beside the file, which takes the window's shortcuts there.
+    pub(super) fn files_focus(&self) -> &FocusHandle {
+        if self.is_quick_source() {
+            &self.source_focus
+        } else {
+            &self.file_focus
+        }
+    }
+
     /// Reads the selected file's preview again without activating it, as
     /// it was first read: a Quick Open source through its own tracked read,
     /// whose working-tree side has no object to read, any other comparison
@@ -504,7 +515,7 @@ impl GitTurtle {
                     && this.generation == generation
                     && this.page == AppPage::Repository
                 {
-                    this.file_focus.focus(window, cx);
+                    this.files_focus().focus(window, cx);
                 }
             });
         });
@@ -621,9 +632,11 @@ impl GitTurtle {
             ),
         };
         div().id("revision-inspector").size_full().min_h_0().flex().flex_col().bg(rgb(p.panel)).border_l_1().border_color(rgb(p.border))
-            // Quick source omits the changed-file list. Keep its destination
-            // focus attached to this visible inspector so app shortcuts work.
-            .when(self.is_quick_source(), |element| element.role(Role::Group).aria_label("Tracked source information").track_focus(&self.file_focus).tab_stop(true))
+            // Quick source omits the changed-file list. Its focus lands on
+            // this visible inspector instead (`files_focus`), so the app's
+            // shortcuts work; the inspector holds no selection and its
+            // controls are their own stops, so it is no Tab stop.
+            .when(self.is_quick_source(), |element| element.role(Role::Group).aria_label("Tracked source information").track_focus(&self.source_focus))
             .child(crate::native_accessibility::clips_children(div().id("revision-metadata").min_h_0().overflow_y_scroll().flex_shrink_0()
                 .when(!self.is_quick_source(), |element| element.max_h(px(260.)))
                 .p_3().flex().flex_col().gap_2()

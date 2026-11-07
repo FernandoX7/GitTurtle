@@ -556,12 +556,13 @@ impl GitTurtle {
     }
 
     /// The shown mode's own list and the pane it is: History's commit list,
-    /// else the changed-file list of Compare or Changes.
+    /// else the changed-file list of Compare or Changes, or what Quick
+    /// source draws in its place (`files_focus`).
     fn mode_list(&self) -> (&FocusHandle, Pane) {
         if self.mode == WorkspaceMode::History {
             (&self.focus, Pane::History)
         } else {
-            (&self.file_focus, Pane::Files)
+            (self.files_focus(), Pane::Files)
         }
     }
 

@@ -635,6 +635,10 @@ struct GitTurtle {
     app_focus: FocusHandle,
     focus: FocusHandle,
     file_focus: FocusHandle,
+    /// Quick source's "Tracked source information", which stands where the
+    /// changed files would and takes the focus that lands on them there
+    /// (`GitTurtle::files_focus`), so the window's shortcuts reach it.
+    source_focus: FocusHandle,
     /// The cursor row's menu in the changed-file or Working Changes list,
     /// opened from the keyboard (`native_accessibility::RowActions`).
     file_menu: Option<native_accessibility::KeyboardMenu>,
@@ -1022,6 +1026,10 @@ impl GitTurtle {
             // share: each a Tab stop (`nav_focus`).
             focus: cx.focus_handle().tab_stop(true),
             file_focus: cx.focus_handle().tab_stop(true),
+            // No Tab stop: Quick source's information holds no selection,
+            // and its controls are their own stops. It once tracked
+            // `file_focus`, which drew no ring there.
+            source_focus: cx.focus_handle(),
             file_menu: None,
             file_menu_row: None,
             working_row_ids: Default::default(),

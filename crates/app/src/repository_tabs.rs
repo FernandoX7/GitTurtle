@@ -1429,7 +1429,7 @@ impl GitTurtle {
         let (fallback, pane) = if self.mode == WorkspaceMode::History {
             (self.focus.clone(), Pane::History)
         } else {
-            (self.file_focus.clone(), Pane::Files)
+            (self.files_focus().clone(), Pane::Files)
         };
         let focus = focus.unwrap_or_else(|| {
             self.pane = pane;

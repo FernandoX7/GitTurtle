@@ -123,7 +123,8 @@ fn stops(
 /// prints what each walk met for the audit's record, and checks that every
 /// name in `lists` is met `once` each way (else at least once, its stops in
 /// one run), in that order with Tab and the other with Shift+Tab, and that
-/// Shift+Tab meets the stops Tab does, in the other order.
+/// Shift+Tab meets the stops Tab does, in the other order. Returns the
+/// names Tab and Shift+Tab met.
 fn audit(
     app: &Entity<GitTurtle>,
     cx: &mut VisualTestContext,
@@ -132,7 +133,7 @@ fn audit(
     lists: &[&str],
     once: bool,
     failures: &mut Vec<String>,
-) {
+) -> (Vec<String>, Vec<String>) {
     let start = (!once)
         .then(|| cx.update(|window, cx| window.focused(cx)))
         .flatten();
@@ -210,6 +211,7 @@ fn audit(
             named(&forward)
         ));
     }
+    (named(&forward), named(&backward))
 }
 
 /// The names of History's and Compare's stops that the app keeps handles
@@ -500,6 +502,60 @@ async fn compare_meets_the_rendered_markdown_once_in_order(cx: &mut TestAppConte
         true,
         &mut failures,
     );
+    sweep::assert_whole(failures);
+}
+
+/// Quick source, a tracked file opened from Quick Open: its inspector,
+/// "Tracked source information", stands where the changed files would and
+/// takes the focus that lands on them (`GitTurtle::files_focus`), so the
+/// window's shortcuts reach it; it holds no selection, and its controls are
+/// their own stops, so it is no stop. It once tracked the changed files'
+/// handle, a stop that drew no ring there.
+#[gpui::test]
+async fn quick_source_meets_its_stops_both_ways_and_not_its_information(cx: &mut TestAppContext) {
+    use gitturtle_core::{HistoryCancellation, PathScope};
+    let (_fixture, app, cx) = history_window(cx).await;
+    // The fixture's history is imported: its file is checked out, for
+    // Quick Open to find.
+    let path = app.read_with(cx, |app, _| app.path.clone().unwrap());
+    tags::tests::git(&path, &["reset", "--quiet", "--hard"]);
+    settle(&app, cx).await;
+    prepare(&app, cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let repo = app.repository.clone().expect("a repository");
+            let paths = repo
+                .search_tracked_paths(
+                    &PathScope::Worktree,
+                    "notes",
+                    &HistoryCancellation::default(),
+                )
+                .expect("tracked paths");
+            let entry = paths.entries.first().expect("the file").clone();
+            app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+        })
+    });
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.is_quick_source()),
+        "Quick source is shown"
+    );
+    let information = app.read_with(cx, |app, _| app.source_focus.clone());
+    assert!(
+        cx.update(|window, _| information.is_focused(window)),
+        "opening Quick source puts focus on its information"
+    );
+    let names = repository_names(&app, cx).handle(Some(information), "the information");
+    let mut failures = Vec::new();
+    let (forward, backward) = audit(&app, cx, "Quick source", &names, &[], true, &mut failures);
+    for (key, walk) in [("Tab", forward), ("Shift+Tab", backward)] {
+        if walk.iter().any(|name| name == "the information") {
+            failures.push(format!(
+                "Quick source: {key} meets its information: {walk:?}"
+            ));
+        }
+    }
     sweep::assert_whole(failures);
 }
 

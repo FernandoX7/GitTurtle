@@ -592,7 +592,7 @@ impl GitTurtle {
             window.focused(cx)
         } else {
             Some(if self.pane == Pane::Files {
-                self.file_focus.clone()
+                self.files_focus().clone()
             } else {
                 self.focus.clone()
             })
