@@ -224,6 +224,8 @@ pub(super) struct ProbeFrame {
     pub(super) line: bool,
     pub(super) list: Option<Bounds<Pixels>>,
     pub(super) composer: Option<Bounds<Pixels>>,
+    /// The composer's rows, inside the room they keep at its right.
+    pub(super) rows: Option<Bounds<Pixels>>,
 }
 
 #[cfg(test)]
@@ -249,20 +251,19 @@ impl WorkingProbe {
         line
     }
 
-    /// A canvas over the list or, where `composer`, the composer, which
-    /// records their bounds in this frame's record.
-    fn recorder(&self, composer: bool) -> Option<impl IntoElement + use<>> {
+    /// A canvas over what `part` names in a frame's record, the list, the
+    /// composer or the composer's rows, which records where this frame laid
+    /// it out.
+    fn recorder(
+        &self,
+        part: fn(&mut ProbeFrame) -> &mut Option<Bounds<Pixels>>,
+    ) -> Option<impl IntoElement + use<>> {
         let frames = self.frames.clone();
         (self.line.get() != ProbeLine::Off).then(|| {
             canvas(
                 move |bounds, _, _| {
                     if let Some(frame) = frames.borrow_mut().last_mut() {
-                        let part = if composer {
-                            &mut frame.composer
-                        } else {
-                            &mut frame.list
-                        };
-                        *part = Some(bounds);
+                        *part(frame) = Some(bounds);
                     }
                 },
                 |_, _, _, _| (),
@@ -549,6 +550,58 @@ fn working_no_match_room(width: Pixels, window: &Window) -> Pixels {
         - window.pixel_snap(window.rem_size() * 0.75) * 2.
 }
 
+/// The fades over the file list at its floor in the short body, where the
+/// list and the composer scroll together and the list keeps whole rows
+/// through its first file under its own scroll, `scroll`: at each edge its
+/// rows continue past, a band as wide as the list, opaque at the edge in the
+/// panel the rows lie on and clear inward, `tags::EDGE_FADE` scaled and at
+/// most a quarter of the list, as the shared cue's fades (`tags::ScrollCue`),
+/// none at an end the list is scrolled to and none where its rows fit. The
+/// body's track is the cue beside it, so the list draws no scrollbar of its
+/// own; with neither, its rows past the floor once scrolled into view with
+/// nothing to say they were there. Read as the frame paints, after the list
+/// has laid out and clamped its offset, it follows a scroll, a resize or
+/// rows that arrive in the frame that draws them; drawn over the rows and
+/// inside the list's edge, it catches no pointer and lies over no ring.
+fn floor_fades(scroll: UniformListScrollHandle) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, window, cx| {
+            let scroll = scroll.0.borrow().base_handle.clone();
+            let list = scroll.bounds();
+            let reach = scroll.max_offset().y;
+            if reach <= Pixels::ZERO {
+                return;
+            }
+            let fade = appearance::ui_size(crate::tags::EDGE_FADE).min(list.size.height / 4.);
+            // Half a pixel either way is an end, as for the shared cue.
+            let slack = px(0.5);
+            let scrolled = -scroll.offset().y;
+            let surface: Hsla = rgb(palette(cx).panel).into();
+            let band = |angle: f32| {
+                linear_gradient(
+                    angle,
+                    linear_color_stop(surface.opacity(0.), 0.),
+                    linear_color_stop(surface, 1.),
+                )
+            };
+            if scrolled > slack {
+                let top = Bounds::new(list.origin, size(list.size.width, fade));
+                window.paint_quad(fill(top, band(0.)));
+            }
+            if scrolled < reach - slack {
+                let bottom = Bounds::new(
+                    point(list.left(), list.bottom() - fade),
+                    size(list.size.width, fade),
+                );
+                window.paint_quad(fill(bottom, band(180.)));
+            }
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
 /// The no-match line the file list draws in `room`: the whole line where it
 /// fits on one line, otherwise its short form, which the whole line names.
 fn working_no_match_line(room: Pixels, window: &Window) -> &'static str {
@@ -612,13 +665,30 @@ pub(super) struct WorkingForms {
     /// the tile's bare 16 px glyph, and its Stage or Unstage control, in the
     /// first of `FILE_FORMS` that keeps a short name such as "README.md"
     /// whole beside them, on every row together: the word leaves first, the
-    /// tile gives way to its glyph before the control leaves, and the glyph
-    /// leaves last. The word joins the path's tooltip, the action the row's
-    /// menu; the status stays in the tooltip and the row's accessible name.
+    /// tile gives way to its glyph before the control leaves, the bare
+    /// glyph comes a `gap_1` from the name, and the glyph leaves last. The
+    /// word joins the path's tooltip, the action the row's menu; the status
+    /// stays in the tooltip and the row's accessible name.
     file_status: bool,
     file_tile: bool,
     file_action: bool,
     file_glyph: bool,
+    /// The bare glyph a `gap_1` from the name rather than `gap_2`, the step
+    /// before it would leave.
+    file_glyph_close: bool,
+    /// The file's folder below its name, drawn only beside a status mark,
+    /// the tile or its glyph: status outranks location, so a row never says
+    /// where its file lies without saying how it changed (at 18 pt in a 461
+    /// × 490 window the rows once read their names and folders alone). The
+    /// folder lies beneath the name and takes none of its room, so it
+    /// leaves with the glyph's last step, never after it; the path's
+    /// tooltip and the row's accessible name keep it.
+    file_folder: bool,
+    /// What the rows in the body keep at their right beyond their `px_3`
+    /// inset while the body keeps the scroll cue's gutter: the gutter less
+    /// that inset, since the cue's track lies over their trailing inset
+    /// (`GitTurtle::render_working_inspector`); nothing otherwise.
+    trailing: Pixels,
     /// The short composer heading's icon, then its staged badge, leave where
     /// the heading beside them could not keep "Commit to" and the branch's
     /// first character and ellipsis, so it truncates only the branch.
@@ -642,6 +712,15 @@ pub(super) struct WorkingForms {
     /// action, so the word stays and is never cut, as the composer
     /// heading's icon leaves before its text.
     commit_icon: bool,
+}
+
+impl WorkingForms {
+    /// A row's inset at its right in the body: its `px_3`, and beside the
+    /// scroll cue's gutter the room the track takes beyond it, so the row's
+    /// content and its controls' rings end where the track begins.
+    fn row_end(&self, window: &Window) -> Pixels {
+        window.rem_size() * 0.75 + self.trailing
+    }
 }
 
 /// The filter's, the title's and the description's placeholders, of which
@@ -1044,17 +1123,21 @@ const FILE_STATUS_WORDS: [&str; 6] = ["Conflict", "New", "Modified", "Deleted", 
 const FILE_NAME_FLOOR: &str = "README.md";
 
 /// A file row's forms, widest first, as (status word, status tile, Stage or
-/// Unstage control, bare status glyph): see `WorkingForms::file_status`.
-/// The word leaves first; then the tile gives way to its glyph, so the
-/// control stays; then the control leaves, and the tile returns where it
-/// fits without it; last the glyph leaves.
-const FILE_FORMS: [(bool, bool, bool, bool); 6] = [
-    (true, true, true, false),
-    (false, true, true, false),
-    (false, false, true, true),
-    (false, true, false, false),
-    (false, false, false, true),
-    (false, false, false, false),
+/// Unstage control, bare status glyph, the glyph `gap_1` from the name): see
+/// `WorkingForms::file_status`. The word leaves first; then the tile gives
+/// way to its glyph, so the control stays; then the control leaves, and the
+/// tile returns where it fits without it; then the bare glyph comes a
+/// `gap_1` from the name; last the glyph leaves, the folder below the name
+/// with it (`WorkingForms::file_folder`), only where the name's floor needs
+/// the glyph's room.
+const FILE_FORMS: [(bool, bool, bool, bool, bool); 7] = [
+    (true, true, true, false, false),
+    (false, true, true, false, false),
+    (false, false, true, true, false),
+    (false, true, false, false, false),
+    (false, false, false, true, false),
+    (false, false, false, true, true),
+    (false, false, false, false, false),
 ];
 
 /// The Staged and Unstaged headings' forms, widest first, as
@@ -1085,9 +1168,11 @@ impl GitTurtle {
     }
 
     /// `WorkingForms` for an inspector `width` wide, whose list and composer
-    /// are laid out `body` wide, less the scroll cue's gutter where they
-    /// keep it. Each text is laid out again only when it, the font or the
-    /// sizes change, so a steady render asks the text system nothing.
+    /// lay their rows out as if `body` wide: less what the scroll cue's
+    /// gutter takes beyond their trailing inset where they keep it, which
+    /// the rows keep at their right (`WorkingForms::trailing`). Each text is
+    /// laid out again only when it, the font or the sizes change, so a
+    /// steady render asks the text system nothing.
     /// `short` is the composer's short form, whose heading names the branch,
     /// and `title_length` the title's committed length (`title_length`).
     fn working_forms(
@@ -1253,11 +1338,11 @@ impl GitTurtle {
             ]
         });
         let file_room = body - px(3.) - px(12.) - rem * 0.75;
-        let fits = |(word, tile, action, glyph): (bool, bool, bool, bool)| {
+        let fits = |(word, tile, action, glyph, close): (bool, bool, bool, bool, bool)| {
             let lead = if tile {
                 px(26.) + gap
             } else if glyph {
-                px(16.) + gap
+                px(16.) + if close { tight } else { gap }
             } else {
                 px(0.)
             };
@@ -1265,10 +1350,10 @@ impl GitTurtle {
             let action = if action { gap + control } else { px(0.) };
             lead + name_floor + word + action <= file_room
         };
-        let (file_status, file_tile, file_action, file_glyph) = FILE_FORMS
+        let (file_status, file_tile, file_action, file_glyph, file_glyph_close) = FILE_FORMS
             .into_iter()
             .find(|&form| fits(form))
-            .unwrap_or((false, false, false, false));
+            .unwrap_or((false, false, false, false, false));
 
         // The composer heading: "Commit to" and at least the branch's first
         // character and ellipsis, a truncated line keeping the characters
@@ -1343,12 +1428,15 @@ impl GitTurtle {
             file_tile,
             file_action,
             file_glyph,
+            file_glyph_close,
+            file_folder: file_tile || file_glyph,
             heading_icon,
             heading_badge,
             counter_word,
             description_note,
             compact_commit,
             commit_icon,
+            trailing: width - body,
         }
     }
 
@@ -3472,13 +3560,27 @@ impl GitTurtle {
         // Fitted to the inspector's width, Commit's label and the file rows
         // were laid out a gutter too wide and cut at its edge, at 18 pt in a
         // 461 × 490 window. The controls above the body keep the inspector's
-        // width.
+        // width. The track lies over the rows' trailing inset, `px_3`, rather
+        // than beside it: the list and the composer keep the body's whole
+        // width, the list's edge, its focus ring, beneath the track, 3 px
+        // outside the thumb the track paints 4 px in, and their rows keep the
+        // gutter less that inset at their right (`WorkingForms::trailing`),
+        // so each row's content and its controls' rings end where the track
+        // begins. Beside the whole gutter, "README.md" was drawn 76.5 px wide
+        // for its 89.7 at 18 pt in a 430 × 490 window.
         let gutter = if self.working_body.scroll().max_offset().y > Pixels::ZERO {
             crate::tags::ScrollCue::gutter()
         } else {
             Pixels::ZERO
         };
-        let body_width = fitted_width - gutter;
+        // On the device pixel at or past it, so the rounding of the
+        // composer's two insets never brings its rows past the track's ring
+        // room: at 13 pt, 9.25 px and its 9.75 px `px_3` drew the title's
+        // ring half a pixel over the track.
+        let device = window.scale_factor();
+        let trailing =
+            ((gutter - window.rem_size() * 0.75).max(Pixels::ZERO) * device).ceil() / device;
+        let body_width = fitted_width - trailing;
         let title_length = self.title_length(window, cx);
         let forms = self.working_forms(fitted_width, body_width, short, title_length, window, cx);
         // The measured body's height must not change the header height, which
@@ -3593,7 +3695,8 @@ impl GitTurtle {
                 .tooltip(CLEAR_FILTER)
             };
             div()
-                .px_3()
+                .pl_3()
+                .pr(forms.row_end(window))
                 .py(appearance::ui_size(empty_state::GAP / 2.))
                 .child(
                     EmptyState::new("working-no-match", working_no_match_line(room, window))
@@ -3957,7 +4060,7 @@ impl GitTurtle {
                 .inset_0(),
             );
         #[cfg(test)]
-        let pane = pane.children(self.working_probe.recorder(false));
+        let pane = pane.children(self.working_probe.recorder(|frame| &mut frame.list));
         let inspector_layout = layout.clone();
         #[cfg(test)]
         let probe = self.working_probe.frame(self.working_paths.pending);
@@ -4266,17 +4369,25 @@ impl GitTurtle {
             .unwrap_or("detached HEAD");
         let summary_length = title_length;
         #[cfg(test)]
-        let composer_probe = self.working_probe.recorder(true);
+        let (composer_probe, rows_probe) = (
+            self.working_probe.recorder(|frame| &mut frame.composer),
+            self.working_probe.recorder(|frame| &mut frame.rows),
+        );
         #[cfg(not(test))]
-        let composer_probe = None::<Empty>;
+        let (composer_probe, rows_probe) = (None::<Empty>, None::<Empty>);
         let pane = pane
             .when(below > 0., |el| {
                 el.max_h(px(available - if composer { drawn } else { 0. } - below))
             })
             // Scrolling with the composer, the list keeps its floor: whole rows
             // through its first file, its own scroll keeping the selected file
-            // in them.
-            .when(scrolls, |el| el.flex_none().h(px(floor)));
+            // in them, and a fade at each edge its rows continue past, since
+            // the body's track beside it is the only scrollbar there.
+            .when(scrolls, |el| {
+                el.flex_none()
+                    .h(px(floor))
+                    .child(floor_fades(self.working_scroll.clone()))
+            });
         // Scrolling, the body shows the app's scroll cue: its track in the
         // gutter at its right while what it holds overflows, otherwise the
         // fades, which stop short of the focused stop's ring
@@ -4307,12 +4418,16 @@ impl GitTurtle {
                 let pane = native_accessibility::clips_children(pane);
                 if scrolls {
                     // Focus moving into the list, onto it or a row's control,
-                    // shows the list whole.
+                    // shows the list whole. It reaches into the gutter the
+                    // cue keeps at the body's right (`ScrollCue::list`), as
+                    // the composer does, so the track lies over its rows'
+                    // trailing inset, inside its edge.
                     el.child(
                         div()
                             .flex_none()
                             .flex()
                             .flex_col()
+                            .when(gutter > Pixels::ZERO, |el| el.mr(-gutter))
                             .on_children_prepainted(reveal.control(self.file_focus.clone(), gap))
                             .child(pane),
                     )
@@ -4328,6 +4443,11 @@ impl GitTurtle {
                         .flex_shrink_0()
                         .min_h_0()
                         .when(!scrolls, |el| el.h(px(drawn)))
+                        // Its surface spans the body beneath the cue's track,
+                        // and its rows end the gutter less their inset short
+                        // of it (`WorkingForms::trailing`).
+                        .when(scrolls && gutter > Pixels::ZERO, |el| el.mr(-gutter))
+                        .pr(forms.trailing)
                         .flex()
                         .flex_col()
                         // It ends at the body's foot, above the status bar: what
@@ -4743,6 +4863,7 @@ impl GitTurtle {
                                 .px_3()
                                 .pb_3()
                                 .when(short, |el| el.pb_2())
+                                .children(rows_probe)
                                 // Enabled, it is the composer's last stop, revealed
                                 // down to the composer's foot in the scrolling body.
                                 .when(scrolls, |el| {
@@ -4852,13 +4973,14 @@ impl GitTurtle {
                 )
             });
         // Scrolling, it reports to assistive technology only what it shows
-        // (`ScrollCue::list`). Not scrolling, it keeps a gutter the frame
-        // assumed, so it is laid out at the width its rows were fitted to.
+        // (`ScrollCue::list`). Not scrolling, its rows keep the trailing room
+        // of a gutter the frame assumed (`WorkingForms::trailing`), so they
+        // are laid out at the width they were fitted to, and the body gives
+        // that room back in the next frame.
         if scrolls {
             cue.list(body, "working-body-scrollbar").into_any_element()
         } else {
-            body.when(gutter > Pixels::ZERO, |el| el.pr(gutter))
-                .into_any_element()
+            body.into_any_element()
         }
     }
 
@@ -4907,7 +5029,8 @@ impl GitTurtle {
                     .map_or("Repository root".into(), |path| path.display().to_string());
                 div()
                     .h(px(self.settings.density.file_row_height()))
-                    .px_3()
+                    .pl_3()
+                    .pr(forms.row_end(window))
                     .flex()
                     .items_center()
                     .text_size(crate::appearance::ui_text(11.))
@@ -4984,7 +5107,8 @@ impl GitTurtle {
                     .debug_selector(move || format!("working-row-{position}"))
                     .w_full()
                     .h(px(self.settings.density.file_row_height()))
-                    .px_3()
+                    .pl_3()
+                    .pr(forms.row_end(window))
                     .flex()
                     .items_center()
                     .gap_2()
@@ -5144,10 +5268,16 @@ impl GitTurtle {
                     // fixed 10 px stood the tile 2.25 px past the headings' icons at
                     // 13 pt.
                     .pl(crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(2.))
-                    .pr_3()
+                    .pr(forms.row_end(window))
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .map(|row| {
+                        if forms.file_glyph_close {
+                            row.gap_1()
+                        } else {
+                            row.gap_2()
+                        }
+                    })
                     .bg(rgb(if active { p.selected } else { p.panel }))
                     .border_l_2()
                     .border_color(if active {
@@ -5233,12 +5363,16 @@ impl GitTurtle {
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(name),
                             )
-                            .child(
-                                crate::views::ellipsis_end(div())
+                            .when(forms.file_folder, |path| {
+                                path.child(
+                                    crate::views::ellipsis_end(div().debug_selector(move || {
+                                        format!("working-folder-{position}")
+                                    }))
                                     .text_size(crate::appearance::ui_text(10.))
                                     .text_color(rgb(p.muted))
                                     .child(parent),
-                            ),
+                                )
+                            }),
                     )
                     .when(forms.file_status, |row| {
                         row.child(

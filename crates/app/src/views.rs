@@ -28024,19 +28024,21 @@ pub(crate) mod tests {
 
     /// The composer's title line, fields and commit action stay inside its
     /// column in a 461 × 490 window at the default size and at 18 pt, in a
-    /// 461 × 1400 one at 18 pt and in a 1480 × 980 one. At 18 pt in the 156 px
+    /// 430 × 490 and a 461 × 1400 one at 18 pt and in a 1480 × 980 one; where
+    /// the list and the composer scroll together, that column ends the scroll
+    /// cue's gutter short of the body's right. At 18 pt in the 156 px
     /// inspector the title counter reads "0/72", named "0/72 suggested";
     /// the title's placeholder reads its short whole word, "Summarize", where
     /// it once read "Summarize t…", and the description's, where the composer
     /// draws it, ends with an ellipsis at a character boundary inside its
     /// field; and the commit action reads "Commit", named with its whole
     /// label, such as "Write a commit title". In the narrowest form, at 18
-    /// pt in the 461 × 490 window, where the composer lies beside the body's
-    /// scroll cue, the title's placeholder reads "Summary", since
-    /// "Summarize" (89.7 px) does not fit its 88.5 px field, rather than
-    /// "Summari…", and since "Commit" (64.8 px) does not fit the 61 px
-    /// beside its icon, Commit keeps its word, drawn whole, and drops its
-    /// icon: a lone glyph is less clear than the word for a full-width
+    /// pt in the 125.5 px inspector of a 430 × 490 window, where the
+    /// composer lies beside the body's scroll cue, the title's placeholder
+    /// reads "Summary", since "Summarize" (89.7 px) does not fit its field,
+    /// rather than "Summari…", and since "Commit" (64.8 px) does not fit the
+    /// 43.5 px beside its icon, Commit keeps its word, drawn whole, and drops
+    /// its icon: a lone glyph is less clear than the word for a full-width
     /// primary action. Wherever they fit, the counter, the title's
     /// placeholder, the label and the icon stay whole.
     #[gpui::test]
@@ -28050,9 +28052,11 @@ pub(crate) mod tests {
         let sizes = [
             (13, 461., 490.),
             (18, 461., 490.),
+            (18, 430., 490.),
             (18, 461., 1400.),
             (13, 1480., 980.),
         ];
+        let gutter = crate::tags::ScrollCue::gutter();
         for (text, width, height) in sizes {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
@@ -28065,6 +28069,7 @@ pub(crate) mod tests {
             draw(cx);
             let at = format!("{text} pt at {width} × {height}");
             let narrow = text == 18;
+            let narrowest = narrow && width < 461.;
             let (rem, inset) = cx.update(|window, _| {
                 (
                     window.rem_size(),
@@ -28077,9 +28082,16 @@ pub(crate) mod tests {
                 })
             };
             let composer = cx.debug_bounds("commit-composer").unwrap();
+            let body = cx.debug_bounds("working-body").unwrap();
+            let scrolled =
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.);
             let (start, end) = (
                 composer.left() + inset - px(0.5),
-                composer.right() - inset + px(0.5),
+                if scrolled {
+                    body.right() - gutter
+                } else {
+                    composer.right() - inset
+                } + px(0.5),
             );
             let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
                 cx.debug_bounds(selector)
@@ -28127,8 +28139,7 @@ pub(crate) mod tests {
             assert!(!compact || width < 1000., "{at}: {whole:?} in {beside:?}");
             let bare = width_of(cx, "Commit", rem) > beside;
             assert_eq!(
-                bare,
-                narrow && height < 1000.,
+                bare, narrowest,
                 "{at}: \"Commit\" beside its icon in {beside:?}"
             );
             let icon = CONTROL_ICONS.with(|icons| icons.borrow().get("commit-staged").cloned());
@@ -28204,7 +28215,7 @@ pub(crate) mod tests {
                     // Where the whole title placeholder does not fit, it reads
                     // the short "Summarize", not "Summarize t…", and beside
                     // the body's scroll cue "Summary", not "Summari…".
-                    let expected = if narrow && height < 1000. {
+                    let expected = if narrowest {
                         TITLE_SHORTEST_PLACEHOLDER
                     } else if narrow {
                         TITLE_SHORT_PLACEHOLDER
@@ -28959,11 +28970,15 @@ pub(crate) mod tests {
 
     /// With "README.md" staged first, as the native review's fixture has,
     /// each file row keeps its name whole in every window from 430 to 480
-    /// px wide at 18 pt, around the 156 px inspector of a 461 px window:
-    /// where the name does not fit beside the 26 px status tile, the tile
-    /// gives way to its bare glyph, left of the name, before the name is
-    /// cut. At the default size in a 461 × 490 window, and at 18 pt in a
-    /// 1480 × 980 one, the rows keep their tiles.
+    /// px wide and 490 tall at the default size and at 18 pt, around the 156
+    /// px inspector of a 461 px window, where the list and the composer
+    /// scroll together beside the scroll cue: where the name does not fit
+    /// beside the 26 px status tile, the tile gives way to its bare glyph,
+    /// left of the name, before the name is cut. At the default size in a
+    /// 461 × 490 window, and at 18 pt in a 1480 × 980 one, the rows keep
+    /// their tiles. Every width that cuts a name is reported: beside the
+    /// cue's whole gutter, "README.md" (89.7 px) was drawn in 76.5 px at 18
+    /// pt in a 430 × 490 window.
     #[gpui::test]
     async fn narrow_file_rows_give_the_status_tile_up_before_the_name(cx: &mut TestAppContext) {
         let (fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
@@ -28994,9 +29009,16 @@ pub(crate) mod tests {
             files.first().map(|(_, name)| name.as_str()),
             Some("README.md")
         );
-        let mut sizes = vec![(13, 461., 490.), (18, 1480., 980.)];
-        sizes.extend((430..=480).step_by(2).map(|width| (18, width as f32, 490.)));
+        let mut sizes = vec![(18, 1480., 980.)];
+        for text in [13, 18] {
+            sizes.extend(
+                (430..=480)
+                    .step_by(2)
+                    .map(|width| (text, width as f32, 490.)),
+            );
+        }
         let mut forms = std::collections::BTreeSet::new();
+        let mut failures = Vec::new();
         for (text, width, height) in sizes {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
@@ -29019,31 +29041,155 @@ pub(crate) mod tests {
                 let whole = cx.update(|window, _| {
                     shaped_width(name, appearance::ui_text(12.), FontWeight::MEDIUM, window)
                 });
-                assert!(
-                    shown.size.width >= whole && shown.right() <= end,
-                    "{at}: {name:?} ({whole:?}) in {shown:?}, the list ending at {end:?}"
-                );
+                if shown.size.width < whole || shown.right() > end {
+                    failures.push(format!(
+                        "{at}: {name:?} ({whole:?}) in {shown:?}, the list ending at {end:?}"
+                    ));
+                }
                 let tile = cx.debug_bounds(selector("tile"));
                 let glyph = cx.debug_bounds(selector("glyph"));
-                assert!(
-                    tile.is_none() || glyph.is_none(),
-                    "{at}: {name:?} draws its tile or its glyph"
-                );
-                if text == 13 || width > 1000. {
-                    assert!(tile.is_some(), "{at}: {name:?}'s tile");
+                if tile.is_some() && glyph.is_some() {
+                    failures.push(format!("{at}: {name:?} draws its tile and its glyph"));
                 }
-                if let Some(status) = tile.or(glyph) {
-                    assert!(
-                        status.right() <= shown.left() && status.left() >= pane.left(),
+                if (text == 13 && width == 461.) || width > 1000. {
+                    if tile.is_none() {
+                        failures.push(format!("{at}: {name:?} draws no tile"));
+                    }
+                }
+                if let Some(status) = tile.or(glyph)
+                    && (status.right() > shown.left() || status.left() < pane.left())
+                {
+                    failures.push(format!(
                         "{at}: {name:?}'s status {status:?} before {shown:?}"
-                    );
+                    ));
                 }
                 forms.insert((tile.is_some(), glyph.is_some()));
             }
         }
+        assert!(failures.is_empty(), "{failures:#?}");
         // The walk reaches both forms: the tile, and its glyph in its place.
         assert!(forms.contains(&(true, false)), "{forms:?}");
         assert!(forms.contains(&(false, true)), "{forms:?}");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Status outranks location in a narrow file row. From 430 to 480 px
+    /// wide at 18 pt, where the list and the composer scroll together beside
+    /// the scroll cue, a row keeps its folder only beside a status mark, the
+    /// tile or its bare glyph; before the glyph would leave it comes a
+    /// `gap_1` (4.5 px) from the name, and it leaves only where not even
+    /// that keeps "README.md" whole beside it, the folder with it, never
+    /// after it. The walk reaches the glyph `gap_2` from the name, the glyph
+    /// `gap_1` from it and the name alone. At 18 pt in a 461 × 490 window
+    /// the rows once read their names and folders with no status at all.
+    #[gpui::test]
+    async fn narrow_file_rows_keep_their_status_before_their_folder(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        std::fs::write(root.join("README.md"), "readme\n").unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs").join("guide.md"), "guide\n").unwrap();
+        fixture_git(&root, &["add", "README.md", "docs/guide.md"]);
+        std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let files = app.read_with(cx, |app, _| {
+            let entries = &app.work_status.as_ref().unwrap().entries;
+            app.working_rows
+                .iter()
+                .enumerate()
+                .filter_map(|(position, row)| match row {
+                    crate::workspace::WorkingRow::File(index, _) => Some((
+                        position,
+                        entries[*index].path.to_string_lossy().into_owned(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            files.first().map(|(_, path)| path.as_str()),
+            Some("README.md")
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let (gap, close, floor) = cx.update(|window, _| {
+            (
+                window.rem_size() * 0.5,
+                window.rem_size() * 0.25,
+                shaped_width(
+                    "README.md",
+                    appearance::ui_text(12.),
+                    FontWeight::MEDIUM,
+                    window,
+                ),
+            )
+        });
+        let mut forms = std::collections::BTreeSet::new();
+        let mut failures = Vec::new();
+        for width in 430..=480 {
+            let width = width as f32;
+            cx.simulate_resize(size(px(width), px(490.)));
+            draw(cx);
+            let at = format!("18 pt at {width} × 490");
+            assert!(
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+                "{at}: the body scrolls"
+            );
+            for (position, path) in &files {
+                app.update(cx, |app, _| {
+                    app.working_scroll
+                        .scroll_to_item(*position, ScrollStrategy::Top)
+                });
+                draw(cx);
+                let part = |cx: &mut VisualTestContext, kind: &str| {
+                    cx.debug_bounds(format!("working-{kind}-{position}").leak())
+                };
+                let (tile, glyph, folder) =
+                    (part(cx, "tile"), part(cx, "glyph"), part(cx, "folder"));
+                let column = part(cx, "path").unwrap_or_else(|| panic!("{at}: {path}"));
+                let mark = tile.is_some() || glyph.is_some();
+                if folder.is_some() != mark {
+                    failures.push(format!(
+                        "{at}: {path:?} draws its folder {folder:?} beside a status mark: {mark}"
+                    ));
+                }
+                let spacing = glyph.map(|glyph| column.left() - glyph.right());
+                if let Some(spacing) = spacing
+                    && (spacing - gap).abs() > px(0.5)
+                    && (spacing - close).abs() > px(0.5)
+                {
+                    failures.push(format!(
+                        "{at}: {path:?}'s glyph {spacing:?} from its name, not {gap:?} or {close:?}"
+                    ));
+                }
+                // The glyph leaves only where it does not fit a `gap_1` from
+                // the floor's name.
+                if !mark && px(16.) + close + floor <= column.size.width + px(0.01) {
+                    failures.push(format!(
+                        "{at}: {path:?} gives its glyph up with {column:?} for {floor:?}"
+                    ));
+                }
+                forms.insert((
+                    tile.is_some(),
+                    glyph.is_some(),
+                    spacing.is_some_and(|spacing| (spacing - close).abs() <= px(0.5)),
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        for form in [
+            (false, true, false),
+            (false, true, true),
+            (false, false, false),
+        ] {
+            assert!(forms.contains(&form), "{form:?} among {forms:?}");
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
@@ -32777,11 +32923,16 @@ pub(crate) mod tests {
     /// views do: at 13 and 18 pt in a 461 × 490 window and at 18 pt in a
     /// 640 × 680 one, its track runs in a gutter at the body's right, the
     /// scrollbar's width and the ring's room, where its thumb follows the
-    /// body's offset, the list and the composer end beside it, and it lies
-    /// over no ring. The list draws no scrollbar of its own in its floor
-    /// beside it. Where they fit, at 13 and 18 pt in a 1480 × 973 window,
-    /// it draws no scrollbar and keeps no gutter: the composer reaches the
-    /// body's right edge. The body once scrolled with no cue at all.
+    /// body's offset, and it lies over no ring. It lies over the rows'
+    /// trailing inset: the list and the composer keep the body's width, the
+    /// list's edge 3 px outside the thumb, and their rows' content and their
+    /// controls end the gutter short of the body's right, as the composer's
+    /// action and fields do. The list draws no scrollbar of its own in its
+    /// floor beside it. Where they fit, at 13 and 18 pt in a 1480 × 973
+    /// window, it draws no scrollbar and keeps no gutter: the composer
+    /// reaches the body's right edge. The body once scrolled with no cue at
+    /// all; beside the whole gutter, the list and the composer once ended
+    /// at the track, their rows another inset in.
     #[gpui::test]
     async fn a_scrolling_working_body_shows_the_scroll_cue(cx: &mut TestAppContext) {
         use crate::tags::tests::{
@@ -32802,7 +32953,12 @@ pub(crate) mod tests {
             &scroll,
             "working-body",
             Pixels::ZERO,
-            &["working-pane", "commit-title", "commit-staged"],
+            &[
+                "working-path-1",
+                "unstage-all",
+                "commit-title",
+                "commit-staged",
+            ],
         );
         set_interface_text_size(cx, &app, 18);
         cx.simulate_resize(size(px(640.), px(680.)));
@@ -32820,13 +32976,35 @@ pub(crate) mod tests {
             painted_thumb(cx, track).is_some(),
             "at 18 pt in 640 × 680 a thumb in {track:?}"
         );
+        // The list and the composer keep the body's width beneath the track;
+        // their rows' content ends the gutter short of the body's right, a
+        // file row's, its Stage control last, 1 px inside the list's edge,
+        // as at rest.
         for part in ["working-pane", "commit-composer"] {
             let bounds = cx.debug_bounds(part).expect(part);
             assert!(
-                (bounds.right() - (body.right() - gutter)).abs() < px(0.01),
-                "{part} {bounds:?} ends beside the gutter of {body:?}"
+                (bounds.right() - body.right()).abs() < px(0.01),
+                "{part} {bounds:?} reaches the right of {body:?}"
             );
         }
+        for (part, edge) in [
+            ("commit-staged", px(0.)),
+            ("commit-title", px(0.)),
+            ("working-stage-1", px(1.)),
+        ] {
+            let bounds = cx.debug_bounds(part).expect(part);
+            assert!(
+                (bounds.right() - (body.right() - gutter - edge)).abs() < px(0.5),
+                "{part} {bounds:?} ends {edge:?} inside the gutter of {body:?}"
+            );
+        }
+        // The list's edge, its focus ring, lies 3 px outside the thumb.
+        let thumb = painted_thumb(cx, track).expect("a thumb");
+        assert!(
+            body.right() - px(1.) - thumb.right() >= px(3.) - px(0.01),
+            "the thumb {thumb:?} 3 px inside the list's edge at {:?}",
+            body.right()
+        );
         // No thumb of the list's own beside the body's, in its floor.
         let pane = cx.debug_bounds("working-pane").expect("the list");
         let inside = Bounds::from_corners(
@@ -32848,16 +33026,186 @@ pub(crate) mod tests {
         );
     }
 
+    /// Beside the short Working body's scroll cue, each ring Tab draws in
+    /// the body is whole and lies at least 3 px clear of the thumb the
+    /// track paints, at 13 and 18 pt in a 461 × 490 window and at 18 pt in
+    /// a 640 × 680 one (`focus_ring::sweep`): the list's ring, its own edge
+    /// beneath the track, 3 px outside the thumb, and each composer stop's
+    /// ring beside it. The track lies over the rows' trailing inset, inside
+    /// the list's edge, so only the rows' trailing room keeps their rings
+    /// off it.
+    #[gpui::test]
+    async fn the_working_bodys_track_stays_clear_of_every_ring(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        let (_fixture, app, cx) = working_window(cx).await;
+        sweep::prepare(&app, cx);
+        let mut failures = Vec::new();
+        let mut clearances = Vec::new();
+        for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.), (18, 640., 680.)] {
+            sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+                "the body scrolls at {interface} pt in {width} × {height}"
+            );
+            let surface = format!("Working Changes at {width} × {height}");
+            let mut rings = 0;
+            sweep::walk_each(
+                &app,
+                cx,
+                "tab",
+                &surface,
+                interface,
+                &mut failures,
+                &mut |cx, at, outlines| {
+                    let Some(body) = cx.debug_bounds("working-body") else {
+                        return;
+                    };
+                    let track = Bounds::from_corners(
+                        point(body.right() - Scrollbar::width(), body.top()),
+                        body.bottom_right(),
+                    );
+                    let Some(thumb) = crate::tags::tests::painted_thumb(cx, track) else {
+                        clearances.push(format!("{at}: the body paints no thumb"));
+                        return;
+                    };
+                    for ring in outlines.iter().filter(|ring| ring.bounds.intersects(&body)) {
+                        rings += 1;
+                        let ring = (ring.bounds, ring.width);
+                        // A ring around the thumb, the list's own edge, keeps
+                        // its inner edge clear of it; any other lies beside it.
+                        let room = if ring.0.left() < thumb.left() && ring.0.right() > thumb.right()
+                        {
+                            ring.0.right() - ring.1 - thumb.right()
+                        } else {
+                            thumb.left() - ring.0.right()
+                        };
+                        if room < px(3.) - px(0.01) {
+                            clearances.push(format!(
+                                "{at}: the ring {:?} {room:?} from the thumb {thumb:?}",
+                                ring.0
+                            ));
+                        }
+                    }
+                },
+            );
+            // The list, the title and the Description section at least.
+            assert!(
+                rings >= 3,
+                "{surface} at {interface} pt: {rings} rings in the body"
+            );
+        }
+        sweep::assert_whole(failures);
+        assert!(clearances.is_empty(), "{clearances:#?}");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Where the list and the composer scroll together, the file list keeps
+    /// its floor, whole rows through its first file, and scrolls the rest
+    /// under its own scroll, with no scrollbar of its own beside the body's:
+    /// at 18 pt in a 461 × 490 window it fades its foot while rows lie below
+    /// its floor, as the shared cue's fades do, opaque at the edge in the
+    /// panel its rows lie on, and draws no fade at its top at rest; scrolled
+    /// to its end it fades its top and draws none at its foot. Its rows past
+    /// the floor once scrolled into view with nothing to say they were there.
+    #[gpui::test]
+    async fn the_working_lists_floor_fades_where_its_rows_continue(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+            "the list and the composer scroll together"
+        );
+        let handle = app.read_with(cx, |app, _| {
+            app.working_scroll.0.borrow().base_handle.clone()
+        });
+        let list = handle.bounds();
+        assert!(
+            handle.max_offset().y > px(0.),
+            "rows lie below the floor {list:?}"
+        );
+        let height = appearance::ui_size(crate::tags::EDGE_FADE).min(list.size.height / 4.);
+        // The fades painted along the list's top and its bottom, each as
+        // wide as the list, in the panel, clear inward.
+        let fades = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let surface: Hsla = rgb(palette(cx).panel).into();
+                let toward = |angle: f32| {
+                    linear_gradient(
+                        angle,
+                        linear_color_stop(surface.opacity(0.), 0.),
+                        linear_color_stop(surface, 1.),
+                    )
+                };
+                let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.5);
+                let scale = window.scale_factor();
+                let (mut top, mut bottom) = (None, None);
+                for quad in window.painted_quads() {
+                    let band = Bounds::from_corners(
+                        point(
+                            px(quad.bounds.left().as_f32() / scale),
+                            px(quad.bounds.top().as_f32() / scale),
+                        ),
+                        point(
+                            px(quad.bounds.right().as_f32() / scale),
+                            px(quad.bounds.bottom().as_f32() / scale),
+                        ),
+                    );
+                    if !near(band.left(), list.left()) || !near(band.right(), list.right()) {
+                        continue;
+                    }
+                    if quad.background == toward(0.) && near(band.top(), list.top()) {
+                        top = Some(band.size.height);
+                    } else if quad.background == toward(180.) && near(band.bottom(), list.bottom())
+                    {
+                        bottom = Some(band.size.height);
+                    }
+                }
+                (top, bottom)
+            })
+        };
+        let (top, bottom) = fades(cx);
+        assert_eq!(top, None, "no fade along the top of {list:?} at rest");
+        assert!(
+            bottom.is_some_and(|bottom| (bottom - height).abs() < px(0.5)),
+            "a fade {height:?} tall along the foot of {list:?}, not {bottom:?}"
+        );
+        let last = app.read_with(cx, |app, _| app.working_rows.len() - 1);
+        app.update(cx, |app, _| {
+            app.working_scroll
+                .scroll_to_item(last, ScrollStrategy::Bottom)
+        });
+        draw(cx);
+        assert_eq!(handle.bounds(), list, "the list keeps its floor");
+        let (top, bottom) = fades(cx);
+        assert!(
+            top.is_some_and(|top| (top - height).abs() < px(0.5)),
+            "a fade {height:?} tall along the top of {list:?} at its end, not {top:?}"
+        );
+        assert_eq!(
+            bottom, None,
+            "no fade along the foot of {list:?} at its end"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// At 18 pt in a 461 × 490 window the Working inspector is 156.5 px wide
     /// and its list and composer scroll together beside the scroll cue's
-    /// 19 px gutter. What the body holds is fitted to the width the gutter
-    /// leaves, in the frame that keeps it, so nothing is cut at its edge:
-    /// the filter reads "Filter" inside its field, the title's counter
-    /// "0/72", Commit "Commit" whole inside its edge, its icon left out
-    /// since the word (64.8 px) does not fit the 61 px beside it, and each
-    /// file row its whole name and its folder, with what the narrow row
-    /// order leaves beside them, inside the row. Fitted to the inspector's
-    /// width, they were laid out a gutter too wide.
+    /// 19 px gutter, whose track lies over their rows' 13.5 px trailing
+    /// inset. What the body holds is fitted to the width the gutter leaves
+    /// beyond that inset, in the frame that keeps it, so nothing is cut at
+    /// the track: the filter reads "Filter" inside its field, the title's
+    /// counter "0/72", Commit "Commit" whole beside its icon, and each file
+    /// row its whole name, with what the narrow row order leaves beside it,
+    /// inside the row, ending where the track begins. Fitted to the
+    /// inspector's width, they were laid out a gutter too wide.
     #[gpui::test]
     async fn a_scrolling_working_body_fits_what_it_holds_beside_its_gutter(
         cx: &mut TestAppContext,
@@ -32901,8 +33249,8 @@ pub(crate) mod tests {
         let gutter = crate::tags::ScrollCue::gutter();
         let composer = bounds(cx, "commit-composer");
         assert!(
-            (composer.right() - (body.right() - gutter)).abs() < px(0.01),
-            "the composer {composer:?} beside the gutter of {body:?}"
+            (composer.right() - body.right()).abs() < px(0.01),
+            "the composer {composer:?} spans {body:?} beneath the track"
         );
         // The filter's placeholder, whole in its field.
         let (placeholder, field) = app.read_with(cx, |app, cx| {
@@ -32918,9 +33266,10 @@ pub(crate) mod tests {
             filter <= field.size.width,
             "{placeholder:?} {filter:?} in {field:?}"
         );
+        // Its column ends the gutter short of the body's right.
         let (start, end) = (
             composer.left() + inset - px(0.5),
-            composer.right() - inset + px(0.5),
+            body.right() - gutter + px(0.5),
         );
         // The counter, whole inside the composer's column.
         let counter = bounds(cx, "commit-title-counter");
@@ -32936,23 +33285,23 @@ pub(crate) mod tests {
                 "{selector} {part:?} inside {start:?}..{end:?}"
             );
         }
-        // Commit, in its narrowest form: "Commit" does not fit beside its
-        // icon, so it keeps the word, drawn whole inside the edge a disabled
-        // action keeps, and drops the icon; it keeps its whole label as its
+        // Commit reads "Commit", drawn whole beside its icon inside the edge
+        // a disabled action keeps; it keeps its whole label as its
         // accessible name.
         let commit = bounds(cx, "commit-staged");
         let edge = commit.size.width - rem * 0.625 * 2. - px(2.);
         let beside = edge - px(16.) - rem * 0.5;
         let label = width_of(cx, "Commit", rem, regular);
         assert!(
-            label > beside,
+            label <= beside,
             "\"Commit\" {label:?} beside its icon in {beside:?}"
         );
-        assert!(label <= edge, "\"Commit\" {label:?} in {edge:?}");
         assert_eq!(
-            CONTROL_ICONS.with(|icons| icons.borrow().get("commit-staged").cloned()),
-            None,
-            "Commit draws no icon"
+            CONTROL_ICONS
+                .with(|icons| icons.borrow().get("commit-staged").cloned())
+                .as_deref(),
+            Some("icons/commit.svg"),
+            "Commit draws its icon"
         );
         let whole = app.read_with(cx, |app, cx| app.commit_action_label(cx));
         assert_eq!(
@@ -33029,10 +33378,12 @@ pub(crate) mod tests {
                 ("control", stage),
                 ("name and folder", Some(text)),
             ];
+            // Inside the row, its content the gutter short of its right,
+            // where the track begins.
             for (part, at) in parts {
                 let Some(at) = at else { continue };
                 assert!(
-                    at.left() >= row.left() && at.right() <= row.right() - inset + px(0.5),
+                    at.left() >= row.left() && at.right() <= row.right() - gutter + px(0.5),
                     "row {position}'s {part} {at:?} inside {row:?}"
                 );
             }
@@ -33046,9 +33397,11 @@ pub(crate) mod tests {
     /// list and the composer begin to scroll together at 18 pt in a 461 px
     /// window, a pixel at a time as the window shortens and then as it grows
     /// again, each height settles on one form, the gutter and the scrollbar
-    /// kept exactly where the body scrolls, the frames drawn on the way lay
-    /// the composer out at another width once at most, never back, and a
-    /// frame drawn once settled changes nothing.
+    /// kept exactly where the body scrolls, Commit then ending the gutter
+    /// short of the body's right and otherwise the composer's inset, the
+    /// frames drawn on the way lay the composer's rows out at another width
+    /// once at most, never back, and a frame drawn once settled changes
+    /// nothing.
     #[gpui::test]
     async fn the_working_body_settles_on_one_form_at_its_scroll_threshold(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working_window(cx).await;
@@ -33058,6 +33411,7 @@ pub(crate) mod tests {
         });
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         let gutter = crate::tags::ScrollCue::gutter();
+        let inset = cx.update(|window, _| window.rem_size() * 0.75);
         let scrolls = |cx: &mut VisualTestContext, height: f32| {
             cx.simulate_resize(size(px(461.), px(height)));
             draw(cx);
@@ -33080,11 +33434,11 @@ pub(crate) mod tests {
         let heights: Vec<f32> = steps.clone().chain(steps.rev()).collect();
         for height in heights {
             let at = format!("18 pt in 461 × {height}");
-            cx.simulate_resize(size(px(461.), px(height)));
             app.read_with(cx, |app, _| {
                 app.working_probe.frames.borrow_mut().clear();
                 app.working_probe.line.set(workspace::ProbeLine::Watch)
             });
+            cx.simulate_resize(size(px(461.), px(height)));
             draw(cx);
             draw(cx);
             let frames = app.read_with(cx, |app, _| {
@@ -33093,12 +33447,18 @@ pub(crate) mod tests {
             });
             let body = cx.debug_bounds("working-body").expect("the body");
             let composer = cx.debug_bounds("commit-composer").expect("the composer");
+            let commit = cx.debug_bounds("commit-staged").expect("Commit");
             let scrolled =
                 app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.);
-            let kept = (composer.right() - (body.right() - gutter)).abs() < px(0.01);
             assert!(
-                kept == scrolled && (kept || (composer.right() - body.right()).abs() < px(0.01)),
-                "{at}: the gutter kept {kept}, the body scrolls {scrolled}: {composer:?} in {body:?}"
+                (composer.right() - body.right()).abs() < px(0.01),
+                "{at}: {composer:?} spans {body:?}"
+            );
+            let kept = (commit.right() - (body.right() - gutter)).abs() < px(0.5);
+            assert!(
+                kept == scrolled
+                    && (kept || (commit.right() - (body.right() - inset)).abs() < px(0.5)),
+                "{at}: the gutter kept {kept}, the body scrolls {scrolled}: {commit:?} in {body:?}"
             );
             assert_eq!(
                 cx.debug_bounds("working-body-scrollbar").is_some(),
@@ -33107,7 +33467,7 @@ pub(crate) mod tests {
             );
             let laid_out: Vec<Pixels> = frames
                 .iter()
-                .filter_map(|frame| frame.composer.map(|composer| composer.right()))
+                .filter_map(|frame| frame.rows.map(|rows| rows.right()))
                 .collect();
             // The width the composer is laid out at changes once at most,
             // to the settled one, and never back.
@@ -33115,13 +33475,14 @@ pub(crate) mod tests {
                 .windows(2)
                 .filter(|pair| (pair[0] - pair[1]).abs() >= px(0.01))
                 .count();
+            // The composer's rows, Commit's container, end an inset past it.
+            let rows = commit.right() + inset;
             assert!(
                 changes <= 1
                     && laid_out
                         .last()
-                        .is_some_and(|right| (*right - composer.right()).abs() < px(0.01)),
-                "{at}: the composer laid out at {laid_out:?}, settling at {:?}",
-                composer.right()
+                        .is_some_and(|right| (*right - rows).abs() < px(0.5)),
+                "{at}: the composer's rows laid out at {laid_out:?}, settling at {rows:?}"
             );
             app.update(cx, |_, cx| cx.notify());
             draw(cx);
