@@ -112,6 +112,10 @@ pub(super) struct ReviewState {
     pub file_focus: FocusHandle,
     pub line_focus: FocusHandle,
     pub section_focus: FocusHandle,
+    /// The connection pane's own stop, its ring on its edge as the conversations pane's
+    /// is: Tab onto it shows the pane from its top, its "Local worktree:" line and its help,
+    /// which the reveals of its controls cannot show with every line whole in a short body.
+    pub connection_focus: FocusHandle,
     pub preparing: bool,
     /// A preparation the panel's close cancelled, resumed when it reopens.
     suspended: bool,
@@ -166,6 +170,7 @@ impl ReviewState {
             file_focus: cx.focus_handle().tab_stop(true),
             line_focus: cx.focus_handle().tab_stop(true),
             section_focus: cx.focus_handle().tab_stop(true),
+            connection_focus: cx.focus_handle().tab_stop(true),
             preparing: false,
             suspended: false,
             prepare_generation: 0,

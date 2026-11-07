@@ -2455,15 +2455,21 @@ impl Render for Panel {
             // revealed as one part, the pane, taller than the body at 18 pt in a 461 × 490
             // window, showed its foot and left the help's second line cut at the body's top.
             // Its first line names the local worktree on one line, the path elided in its
-            // middle where it is longer than the line ([`path_label`]).
-            .when(self.review.connection_open,|element|element.child(self.part("connection",div(),cx).map(bordered_pane).border_1().border_color(rgb(p.border)).rounded(px(6.))
+            // middle where it is longer than the line ([`path_label`]). The pane is a stop of
+            // its own before its controls, its ring on its edge as the conversations pane's
+            // is, so Tab shows its first line and its help from its top: the stops of its
+            // controls alone could not show them with every line whole in a short body, as at
+            // 18 pt in a 461 × 490 window, where macOS lays the help out in five lines (and
+            // Linux from 470 px wide), and no stop showed the worktree line or the help's
+            // first line at all.
+            .when(self.review.connection_open,|element|element.child(self.ringed_part("connection",div(),&self.review.connection_focus,cx).child(div().id("github-connection").role(Role::Group).aria_label("GitHub connection: local worktree and sign-in").track_focus(&self.review.connection_focus).map(bordered_pane).border_1().border_color(rgb(if self.ringed(&self.review.connection_focus,cx){p.accent}else{p.border})).rounded(px(6.))
                 .child(div().flex().flex_col().gap_2().on_children_prepainted(self.review.body_blocks.starts())
                 .child(path_label("github-worktree",&self.worktree).text_color(rgb(p.muted)))
                 .child(label("github-connection-help",connection_help()).text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_2()
                     .child(self.part("connect",div(),cx).child(review::starts_block()).child(button("github-connect","Connect GitHub CLI account","",false).debug_selector(||"github-connect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx)))))
                     .child(self.part("sign-in-help",div(),cx).child(review::starts_block()).child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into()))))
-                    .child(self.part("disconnect",div(),cx).child(review::starts_block()).child(button("github-disconnect","Disconnect GitTurtle","",false).debug_selector(||"github-disconnect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.disconnect(window,cx)))))))))
+                    .child(self.part("disconnect",div(),cx).child(review::starts_block()).child(button("github-disconnect","Disconnect GitTurtle","",false).debug_selector(||"github-disconnect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.disconnect(window,cx))))))))))
             .children(flowing_line)
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
                 // The list scrolls, so it clips its rows on both axes. Its full-width rows keep
@@ -11092,7 +11098,9 @@ mod tests {
 
     /// At 18 pt in a 461 × 490 window, every stop of the PR list, the connection pane above it,
     /// Changes and Source, walked with Tab and with Shift+Tab from the surface opened at the
-    /// body's top, draws its ring whole inside every clip around it (`focus_ring::sweep`). The
+    /// body's top, draws its ring whole inside every clip around it (`focus_ring::sweep`), but
+    /// for the connection pane's own stop, which is taller than the body there and draws its
+    /// ring on its edge, so its reveal shows its top, the ring's top edge whole. The
     /// reveal sweep found two cut ([`sweep_reveals`]): Tab onto the PR list's first row left
     /// its ring's top edge half a pixel above the body's top, where the reveal's stop clear of
     /// every line was allowed half a pixel inside the part it shows; and Tab onto Changes'
@@ -11128,7 +11136,19 @@ mod tests {
                 );
             }
         }
-        sweep::assert_whole(failures);
+        sweep::assert_whole_except(
+            failures,
+            &[
+                (
+                    "Connection by tab at 18 pt, stop 2",
+                    "a clip cuts the right, bottom, left",
+                ),
+                (
+                    "Connection by shift-tab at 18 pt, stop 5",
+                    "a clip cuts the right, bottom, left",
+                ),
+            ],
+        );
     }
 
     /// Tab onto the destination field, the part the panel reopens onto, from the banner's Move
@@ -11267,6 +11287,13 @@ mod tests {
     /// nextest's 120 s limit on every hosted runner (run 42250019193). Threads in the wide
     /// window, whose two walks of 24 stops each take about 16 s there, is two tests, one for
     /// each key, and each walk shows every line outside the lists whole on its own.
+    ///
+    /// The connection pane at 18 pt in a 480 × 490 window, where Linux lays its help out in
+    /// five lines as macOS does in 461 × 490, is a walk of its own: there no stop of its
+    /// controls can show its "Local worktree:" line or its help's first line with every line
+    /// whole, and hosted run 42333458175 found neither shown at any stop on macOS
+    /// (`connection_at_18_pt`), as the walk did on Linux from 470 to 495 px wide. The pane is
+    /// a stop of its own now, which shows both from its top.
     mod the_reveal_sweep_finds_nothing_where_it_found_reveals_to_trace {
         use super::*;
 
@@ -11287,6 +11314,7 @@ mod tests {
             overview_at_13_pt: Overview at (13, 461., 490.), by BOTH_WAYS;
             source_at_13_pt: Source at (13, 461., 490.), by BOTH_WAYS;
             connection_at_18_pt: Connection at (18, 461., 490.), by BOTH_WAYS;
+            connection_at_18_pt_in_a_480_px_window: Connection at (18, 480., 490.), by BOTH_WAYS;
             pulls_at_18_pt: Pulls at (18, 461., 490.), by BOTH_WAYS;
             review_at_18_pt: Review at (18, 461., 490.), by BOTH_WAYS;
             changes_at_18_pt: Changes at (18, 461., 490.), by BOTH_WAYS;
