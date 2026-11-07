@@ -16034,9 +16034,11 @@ pub(crate) mod tests {
     /// The UI thread's frame at rest, for a release build: the repository
     /// page of [`working_window`] (its branch, three working files and forty
     /// commits) in History, whose scope toolbar lays out its count, and in
-    /// Changes, each in a 1,480 × 800 window and a 461 × 490 half tile at
-    /// 13 pt, with quiet reads held so nothing it shows changes. Each frame
-    /// times one `app.update` that notifies the app, as a hover or a caret's
+    /// Changes, whose action bar draws the branch's edge, an empty state
+    /// (`branch-edge`), and on the Projects page with four recent projects,
+    /// each in a 1,480 × 800 window and a 461 × 490 half tile at 13 pt, with
+    /// quiet reads held so nothing it shows changes. Each frame times one
+    /// `app.update` that notifies the app, as a hover or a caret's
     /// blink does, from before the call to its return: the effects it
     /// flushes draw the window it dirtied, once (the test app's
     /// `flush_effects`), with the root render, the chrome's header and
@@ -16049,7 +16051,8 @@ pub(crate) mod tests {
     /// (the test binary's counting allocator, `test_support::allocations`),
     /// which a chrome that formats nothing at rest lowers by each string it
     /// stopped building; `frames` counts the repository columns each timed
-    /// update's draw laid out, which the benchmark asserts is one.
+    /// update's draw laid out, which the benchmark asserts is one on the
+    /// repository page and none on Projects.
     ///
     /// Built and run from the workspace root (the app crate has no library
     /// target, so the test binary is built alone and run by its path),
@@ -16099,33 +16102,66 @@ pub(crate) mod tests {
         hold_quiet_reads_for_test(&app, cx);
         crate::in_frame::probe::watch();
         let mut series = Vec::new();
-        for surface in ["history", "changes"] {
+        for surface in ["history", "changes", "projects"] {
             for window_size in [size(px(1480.), px(800.)), size(px(461.), px(490.))] {
                 cx.update(|window, cx| {
                     appearance::apply_text_sizes(13, 12, window, cx);
                     app.update(cx, |app, cx| match surface {
                         "history" => app.show_history(window, cx),
-                        _ => app.show_working(window, cx),
+                        "changes" => app.show_working(window, cx),
+                        _ => {
+                            if app.page != AppPage::Projects {
+                                // Four recent projects, so the series
+                                // cover the recent rows.
+                                let recent =
+                                    ["narrow", "turtle-core", "turtle-docs", "turtle-site"]
+                                        .map(|name| _fixture.path().join(name))
+                                        .to_vec();
+                                app.hub.update(cx, |hub, cx| hub.set_recent(recent, cx));
+                                app.show_projects(window, cx)
+                            }
+                        }
                     });
                 });
                 cx.simulate_resize(window_size);
                 settle(&app, cx).await;
-                let shown = match surface {
-                    "history" => WorkspaceMode::History,
-                    _ => WorkspaceMode::Working,
-                };
-                assert!(
-                    app.read_with(cx, |app, _| app.mode == shown),
-                    "{surface}: the page shown"
-                );
+                let shown = app.read_with(cx, |app, _| match surface {
+                    "history" => {
+                        app.page == AppPage::Repository && app.mode == WorkspaceMode::History
+                    }
+                    "changes" => {
+                        app.page == AppPage::Repository && app.mode == WorkspaceMode::Working
+                    }
+                    _ => app.page == AppPage::Projects,
+                });
+                assert!(shown, "{surface}: the page shown");
+                if surface == "changes" {
+                    // In the last frame's bounds, which no earlier page's
+                    // frame can answer for.
+                    assert!(
+                        cx.debug_bounds("branch-edge-line").is_some(),
+                        "changes: the action bar draws the branch's edge"
+                    );
+                }
                 let mut cpu_ms = Vec::new();
                 let mut wall_ms = Vec::new();
                 let mut allocations = Vec::new();
                 let mut frames = Vec::new();
+                // Whether each timed update drew the hub's recent panel, its
+                // count's node written again (the written nodes' order
+                // advancing), and left a recent row in its frame, so a
+                // Projects page whose flush drew nothing cannot pass for one
+                // at rest.
+                let mut hub_drawn = Vec::new();
+                let count_written = || {
+                    crate::native_accessibility::written::get("recent-projects-count")
+                        .map(|written| written.order)
+                };
                 for frame in 0..WARMUP + FRAMES {
                     cx.update(|window, cx| window.simulate_next_frame(cx));
                     cx.run_until_parked();
                     repository_frames();
+                    let written = count_written();
                     // The update's effects draw the window it dirtied, once,
                     // before it returns (the test app's `flush_effects`).
                     let allocated = crate::test_support::allocations();
@@ -16133,18 +16169,29 @@ pub(crate) mod tests {
                     app.update(cx, |_, cx| cx.notify());
                     let (cpu, wall) = (thread_cpu_ms() - cpu, wall.elapsed().as_secs_f64() * 1000.);
                     let allocated = crate::test_support::allocations() - allocated;
+                    let drawn =
+                        count_written() > written && cx.debug_bounds("recent-project-0").is_some();
                     cx.run_until_parked();
                     if frame >= WARMUP {
                         cpu_ms.push(cpu);
                         wall_ms.push(wall);
                         allocations.push(allocated);
                         frames.push(repository_frames());
+                        hub_drawn.push(drawn);
                     }
                 }
+                let columns = usize::from(surface != "projects");
                 assert!(
-                    frames.iter().all(|&drawn| drawn == 1),
+                    frames.iter().all(|&drawn| drawn == columns),
                     "{surface}: every timed update draws the page once: {frames:?}"
                 );
+                if surface == "projects" {
+                    assert!(
+                        hub_drawn.iter().all(|&drawn| drawn),
+                        "projects: every timed update draws the recent rows and their count: \
+                         {hub_drawn:?}"
+                    );
+                }
                 series.push(serde_json::json!({
                     "surface": surface,
                     "text_pt": 13,
@@ -16166,7 +16213,7 @@ pub(crate) mod tests {
             "schema": 2,
             "frames": FRAMES,
             "warmup_frames": WARMUP,
-            "boundary": "One `app.update` on the UI thread that notifies the app with nothing it shows changed, from before the call to its return: the notification and the effects it flushes, which draw the window it dirtied once (the root render, the repository chrome and page, layout, prepaint and paint on the test platform; no GPU, compositor or display link), quiet reads held. `cpu_ms` is the UI thread's CPU time across the call, `wall_ms` its elapsed time, `allocations` the UI thread's heap allocations across it (the test binary's counting allocator); `frames` counts the repository columns that draw laid out. The frame callbacks before it and any work it leaves queued are delivered untimed.",
+            "boundary": "One `app.update` on the UI thread that notifies the app with nothing it shows changed, from before the call to its return: the notification and the effects it flushes, which draw the window it dirtied once (the root render, the repository chrome and page or the Projects page, layout, prepaint and paint on the test platform; no GPU, compositor or display link), quiet reads held. `cpu_ms` is the UI thread's CPU time across the call, `wall_ms` its elapsed time, `allocations` the UI thread's heap allocations across it (the test binary's counting allocator); `frames` counts the repository columns that draw laid out (none on Projects). The frame callbacks before it and any work it leaves queued are delivered untimed.",
             "series": series,
         });
         std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
