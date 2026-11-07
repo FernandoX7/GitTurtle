@@ -1915,6 +1915,47 @@ mod tests {
         );
     }
 
+    /// A repository opened at a path that reaches it through a link, a
+    /// linked folder above it (as macOS reaches every temporary folder
+    /// through `/var`) or a link to its own folder, is the repository at its
+    /// real root, as Git reports it, confined there: its root, Git
+    /// directory and ceiling are the real folders, its check from the
+    /// filesystem and Git's both find it the same, starting no write, and
+    /// its reads run.
+    #[cfg(unix)]
+    #[test]
+    fn an_open_through_a_link_is_the_repository_at_its_real_root() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let real = base.join("real");
+        let root = real.join("repository");
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "--quiet"]);
+        git(
+            &root,
+            &["commit", "--quiet", "--allow-empty", "-m", "linked"],
+        );
+        std::os::unix::fs::symlink(&real, base.join("link")).unwrap();
+        std::os::unix::fs::symlink(&root, base.join("repository-link")).unwrap();
+        for at in [
+            base.join("link").join("repository"),
+            base.join("repository-link"),
+        ] {
+            let repo = GitRepository::open(&at).unwrap();
+            let opened = at.display();
+            assert_eq!(repo.path(), root, "{opened}");
+            assert_eq!(repo.git_dir(), root.join(".git"), "{opened}");
+            assert_eq!(repo.identity.root, root, "{opened}");
+            assert_eq!(repo.identity.ceiling.as_deref(), Some(real.as_path()));
+            assert!(repo.identity.confined, "{opened}");
+            assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+            assert_eq!(repo.found_at_path().unwrap(), FoundAtPath::Same);
+            assert!(repo.ensure_found_at_path().is_ok(), "{opened}");
+            assert!(repo.status().unwrap().entries.is_empty(), "{opened}");
+            assert_eq!(repo.branches().unwrap().len(), 1, "{opened}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn passive_deadline_includes_pipe_holders_after_parent_exit() {
