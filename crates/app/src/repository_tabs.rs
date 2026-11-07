@@ -4501,6 +4501,170 @@ mod tests {
         );
     }
 
+    /// A tab restored at launch whose saved root reaches its repository
+    /// through a folder that is a link, as macOS reaches every temporary
+    /// folder through `/var` (a link to `/private/var`), opens that
+    /// repository unmarked and takes its real root, and Refresh keeps it; a
+    /// tab saved at its real root with its Git directories, whose folder
+    /// was then moved and linked back from its old place, opens the same
+    /// way when it is switched to cold. Compared as saved, both were marked
+    /// " · unavailable", where they opened before.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_restored_tab_reached_through_a_linked_folder_opens(cx: &mut TestAppContext) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        for folder in ["real", "kept"] {
+            std::fs::create_dir(base.join(folder)).unwrap();
+        }
+        let first = fixture_repository(base.join("real/first"));
+        let second = fixture_repository(base.join("kept/second"));
+        for (repository, subject) in [(&first, "First fixture"), (&second, "Second fixture")] {
+            fixture_git(
+                repository.path(),
+                &["commit", "--allow-empty", "-m", subject],
+            );
+        }
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+        let through = base.join("link/first");
+        let captured = worker::GitDirectories::of(&second);
+        let tab = |path: &Path, git_directories| SavedTab {
+            path: SavedPath::new(path),
+            bookmark: Bookmark::default(),
+            unresolved: false,
+            git_directories,
+        };
+        let saved = Session {
+            version: 1,
+            active: 0,
+            tabs: vec![
+                tab(&through, None),
+                tab(
+                    second.path(),
+                    Some(SavedGitDirectories {
+                        git_dir: SavedPath::new(&captured.git_dir),
+                        common: SavedPath::new(&captured.common),
+                    }),
+                ),
+            ],
+            ..Default::default()
+        };
+        std::fs::rename(base.join("kept"), base.join("moved")).unwrap();
+        std::os::unix::fs::symlink(base.join("moved"), base.join("kept")).unwrap();
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            through,
+            saved,
+            isolated_session("restored-through-a-link.json"),
+            size(px(1000.), px(680.)),
+        );
+        let cx = &mut window_cx;
+        let opened = |cx: &mut VisualTestContext, index: usize, root: &Path, subject: &str| {
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.repository_tabs.active, Some(index), "{subject}");
+                let tab = &app.repository_tabs.tabs[index];
+                assert!(
+                    !app.tab_label(tab).0.ends_with(" · unavailable"),
+                    "{subject}: marked, {:?}",
+                    app.error
+                );
+                assert_eq!(app.error, None, "{subject}");
+                assert_eq!(tab.path, root, "{subject}: the tab takes its real root");
+                assert_eq!(
+                    app.repository.as_ref().map(|repository| repository.path()),
+                    Some(root),
+                    "{subject}"
+                );
+                assert_eq!(
+                    app.commits
+                        .iter()
+                        .map(|commit| commit.subject.as_str())
+                        .collect::<Vec<_>>(),
+                    [subject]
+                );
+            });
+        };
+        settle_tab_test(&app, cx).await;
+        opened(cx, 0, first.path(), "First fixture");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle_tab_test(&app, cx).await;
+        opened(cx, 0, first.path(), "First fixture");
+
+        let moved = base.join("moved/second");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        settle_tab_test(&app, cx).await;
+        opened(cx, 1, &moved, "Second fixture");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle_tab_test(&app, cx).await;
+        opened(cx, 1, &moved, "Second fixture");
+    }
+
+    /// A folder that is a link to a repository's own folder opens that
+    /// repository in a tab that takes its real root, as Git reports it;
+    /// Refresh opens it again, and so does the restore of the session saved
+    /// after it, unmarked.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn an_opened_link_to_a_repository_folder_refreshes_and_restores(cx: &mut TestAppContext) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let repository = fixture_repository(base.join("repository"));
+        fixture_git(
+            repository.path(),
+            &["commit", "--allow-empty", "-m", "Linked fixture"],
+        );
+        let root = repository.path().to_owned();
+        let link = base.join("link-to-repository");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let destination = isolated_session("opened-through-a-link.json");
+        let opened = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext, after: &str| {
+            assert_eq!(
+                first_tab(app, cx),
+                (
+                    1,
+                    root.clone(),
+                    false,
+                    None,
+                    Some(root.clone()),
+                    vec!["Linked fixture".to_owned()]
+                ),
+                "{after}"
+            );
+        };
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            link,
+            Session::default(),
+            destination.clone(),
+            size(px(1000.), px(680.)),
+        );
+        settle_tab_test(&app, &mut window_cx).await;
+        opened(&app, &mut window_cx, "opened");
+        window_cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle_tab_test(&app, &mut window_cx).await;
+        opened(&app, &mut window_cx, "Refresh");
+        window_cx
+            .update(|window, cx| app.update(cx, |app, cx| app.save_repository_session(window, cx)));
+        settle_tab_test(&app, &mut window_cx).await;
+
+        let saved = Session::load_at(&destination).unwrap();
+        let (restored, mut window_cx) = open_tab_window(
+            cx,
+            saved.tabs[0].path.path(),
+            saved,
+            isolated_session("restored-after-a-link.json"),
+            size(px(1000.), px(680.)),
+        );
+        settle_tab_test(&restored, &mut window_cx).await;
+        opened(&restored, &mut window_cx, "restored");
+    }
+
     /// A malformed saved `git_directories` degrades alone to none captured:
     /// the session loads every tab and its library, a well-formed tab's
     /// directories with them. Failing the whole file, it once dropped every

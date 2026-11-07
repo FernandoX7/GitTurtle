@@ -1210,6 +1210,53 @@ impl GitDirectories {
     }
 }
 
+/// The folders above a tab's captured root as they resolve now, where they
+/// resolve to other folders than the ones captured: a root saved through a
+/// linked folder (macOS reaches every temporary folder through `/var`, a
+/// link to `/private/var`; a person's projects folder can be a link in
+/// their home), or one whose folder was moved and linked back from its old
+/// place. A passive reopen compares the tab's root and Git directories
+/// through them, on the worker as it reads the repository, never at launch;
+/// the root's own name and everything below those folders are compared as
+/// captured, so a root turned into a link to another repository, a `.git`
+/// swapped for another repository's, or a re-pointed `commondir` is still
+/// another repository ([`RepositorySession::open`]). Compared as captured,
+/// every such root was another repository, its tab marked " ·
+/// unavailable" where it opened before.
+struct FoldersAbove {
+    captured: PathBuf,
+    now: PathBuf,
+}
+
+impl FoldersAbove {
+    /// `None` where `root` is reached as captured, as every root Git
+    /// reported is (it is `canonical`, the folder the reopen asked for
+    /// resolved), and where its folders cannot be resolved.
+    fn of(root: &Path, canonical: &Path) -> Option<Self> {
+        if root == canonical {
+            return None;
+        }
+        root.file_name()?;
+        let captured = root.parent()?;
+        let now = captured.canonicalize().ok()?;
+        (now != captured).then(|| Self {
+            captured: captured.to_owned(),
+            now,
+        })
+    }
+
+    /// `path` reached through these folders as they resolve now; as
+    /// captured where it lies outside them, as a linked worktree's Git
+    /// directories in another folder do.
+    fn through(&self, path: &Path) -> PathBuf {
+        match path.strip_prefix(&self.captured) {
+            Ok(rest) if rest.as_os_str().is_empty() => self.now.clone(),
+            Ok(rest) => self.now.join(rest),
+            Err(_) => path.to_owned(),
+        }
+    }
+}
+
 /// Fails with [`RepositoryGone`] where `repo` is no longer the repository
 /// at its path: its `.git` gone, swapped for another repository's, or its
 /// root turned into a link to another folder. From the filesystem alone
@@ -1348,15 +1395,19 @@ impl RepositorySession {
     /// fails as any open of a folder that is not a repository does.
     ///
     /// The captured root is compared as it was captured, never resolved
-    /// again: a root since turned into a link to another repository resolves
-    /// elsewhere and is that other repository, gone from the tab. At the
-    /// same root, the Git directories found must be `git_dir`, the ones the
-    /// tab captured there, where it names them: not another repository's
-    /// that a swapped `.git` leads to, nor another repository's refs and
-    /// objects that a linked worktree's re-pointed `commondir` leads to. The
-    /// retained repository answers only where its own directories are the
-    /// captured ones; otherwise Git is asked again, and a mismatch found
-    /// fails as `RepositoryGone`, naming the directory that differs.
+    /// again, but for the folders above it ([`FoldersAbove`]): a root since
+    /// turned into a link to another repository resolves elsewhere and is
+    /// that other repository, gone from the tab, while one reached through
+    /// a linked folder above it, as macOS reaches every temporary folder
+    /// through `/var`, is the repository it was. At the same root, the Git
+    /// directories found must be `git_dir`, the ones the tab captured
+    /// there, where it names them (through the same folders): not another
+    /// repository's that a swapped `.git` leads to, nor another
+    /// repository's refs and objects that a linked worktree's re-pointed
+    /// `commondir` leads to. The retained repository answers only where its
+    /// own directories are the captured ones; otherwise Git is asked again,
+    /// and a mismatch found fails as `RepositoryGone`, naming the directory
+    /// that differs.
     fn open(
         &mut self,
         requested: &Path,
@@ -1364,7 +1415,17 @@ impl RepositorySession {
         git_dir: Option<&GitDirectories>,
     ) -> Result<GitRepository> {
         let canonical = requested.canonicalize()?;
-        let captured = captured.map(Path::to_path_buf);
+        let folders = captured.and_then(|root| FoldersAbove::of(root, &canonical));
+        let through = |path: &Path| match &folders {
+            Some(folders) => folders.through(path),
+            None => path.to_owned(),
+        };
+        let captured = captured.map(through);
+        let git_dir = git_dir.map(|directories| GitDirectories {
+            git_dir: through(&directories.git_dir),
+            common: through(&directories.common),
+        });
+        let git_dir = git_dir.as_ref();
         if self
             .current
             .as_ref()
@@ -6054,6 +6115,75 @@ mod image_tests {
         );
         fs::remove_file(&fixture.0).unwrap();
         fs::rename(&moved, &fixture.0).unwrap();
+    }
+
+    /// A tab's root reached through a folder that is a link, as macOS
+    /// reaches every temporary folder through `/var` (a link to
+    /// `/private/var`), is the repository there, warm and cold: saved
+    /// through the link with no Git directories captured yet, and captured
+    /// at its real root with its Git directories, its folder then moved and
+    /// linked back from its old place. Compared as captured, each reopen
+    /// found the repository gone and the tab was marked " · unavailable",
+    /// where it opened before. The root itself turned into a link to
+    /// another repository, reached through the linked folder, is still
+    /// another repository.
+    #[cfg(unix)]
+    #[test]
+    fn a_reopen_through_a_linked_folder_finds_the_repository_it_captured() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let real = base.join("real");
+        let root = real.join("repository");
+        fs::create_dir_all(&root).unwrap();
+        let init = Fixture::command(&root)
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let through = link.join("repository");
+        let other = Fixture::new();
+        let mut session = RepositorySession::default();
+        let reopen = |session: &mut RepositorySession,
+                      at: &Path,
+                      git_dir: Option<&GitDirectories>,
+                      cold: bool| {
+            if cold {
+                session.open(&other.0, None, None).unwrap();
+            }
+            session.open(at, Some(at), git_dir)
+        };
+        let opened = reopen(&mut session, &through, None, false)
+            .unwrap_or_else(|error| panic!("saved through the link: {error:#}"));
+        assert_eq!(opened.path(), root, "saved through the link");
+        let captured = GitDirectories::of(&opened);
+        for cold in [false, true] {
+            let reopened = reopen(&mut session, &through, Some(&captured), cold)
+                .unwrap_or_else(|error| panic!("through the link, cold {cold}: {error:#}"));
+            assert_eq!(reopened.path(), root, "through the link, cold {cold}");
+        }
+
+        let moved = base.join("moved");
+        fs::rename(&real, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &real).unwrap();
+        let now = moved.join("repository");
+        for cold in [false, true] {
+            let reopened = reopen(&mut session, &root, Some(&captured), cold)
+                .unwrap_or_else(|error| panic!("moved, cold {cold}: {error:#}"));
+            assert_eq!(reopened.path(), now, "moved, cold {cold}");
+        }
+
+        fs::rename(&now, moved.join("repository-away")).unwrap();
+        std::os::unix::fs::symlink(&other.0, &now).unwrap();
+        let other_root = other.0.canonicalize().unwrap();
+        for git_dir in [None, Some(&captured)] {
+            let gone = reopen(&mut session, &through, git_dir, false)
+                .expect_err("a root turned into a link is another repository")
+                .downcast::<RepositoryGone>()
+                .expect("gone");
+            assert_eq!(gone.found.as_deref(), Some(other_root.as_path()));
+        }
     }
 
     /// A linked worktree's `commondir` re-pointed at another repository
