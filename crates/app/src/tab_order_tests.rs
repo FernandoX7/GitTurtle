@@ -10,6 +10,10 @@
 //! were made without it, so Tab passed over History's commit list, the
 //! changed files, Working Changes' files, File history's revisions, the
 //! navigator, the project list and Blame's lines, and over the message.
+//!
+//! The dialogs' selection lists, whose rows are each a Button and so each a
+//! stop, are walked the same way at the end, each named by the list that
+//! holds the stop.
 
 use crate::focus_ring::{PaintedOutline, sweep};
 use crate::views::tests::{history_window, history_window_from, settle};
@@ -29,6 +33,11 @@ impl Names {
         if let Some(handle) = handle {
             self.handles.push((handle, name));
         }
+        self
+    }
+
+    fn region(mut self, selector: &'static str, name: &'static str) -> Self {
+        self.regions.push((selector, name));
         self
     }
 
@@ -217,13 +226,59 @@ fn repository_names(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Name
     })
 }
 
+/// [`repository_names`], with every other stop named by its own debug
+/// selector where it has one (the tab strip's controls, the Git actions and
+/// Compare's review options), else by the part of the window that holds
+/// it: the tab strip, the repository's header, the sidebar, History's scope
+/// bar, the message's toolbar, the files' header, Compare's toolbar, text
+/// and footer, and the status bar. A stop named by where its ring lay moved
+/// with the controls before it, and the strip's Main Menu is Linux's alone:
+/// macOS keeps it in its menu bar.
+fn page_names(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Names {
+    repository_names(app, cx)
+        .region("main-menu", "the Main Menu")
+        .region("repository-tab-0", "the repository's tab")
+        .region("repository-tab-close-0", "the tab's Close")
+        .region("new-repository-tab", "Open repository tab")
+        .region("repository-workspaces", "Workspaces")
+        .region("current-branch", "the branch picker")
+        .region("edge-add-remote", "Add remote")
+        .region("git-actions-toggle", "Targets")
+        .region("previous-text-change", "Previous change")
+        .region("next-text-change", "Next change")
+        .region("hide-whitespace-changes", "Hide whitespace")
+        .region("expand-text-context", "More context")
+        .region("repository-tab-strip", "a tab strip control")
+        .region("git-actions", "a Git actions control")
+        .region("text-review-options", "a review option")
+        .region("repository-rail", "a rail control")
+        .region("repository-header", "a header control")
+        .region("history-sidebar", "a sidebar control")
+        .region("history-scope-toolbar", "a scope control")
+        .region("commit-message-toolbar", "a message control")
+        .region("changed-files-header", "a files header control")
+        .region("commit-inspector-files", "a files control")
+        .region("compare-toolbar", "a comparison control")
+        .region("compare-footer", "a comparison footer control")
+        .region("preview-content", "the comparison's text")
+        .region("status-bar", "a status bar control")
+}
+
+/// Fails unless Tab met `expected`, stop for stop: the whole order, so a
+/// stop that moves, leaves or comes in is seen, not only the lists'.
+fn pin(surface: &str, met: &[String], expected: &[&str], failures: &mut Vec<String>) {
+    if met != expected {
+        failures.push(format!("{surface}: Tab meets {met:#?}\nnot {expected:#?}"));
+    }
+}
+
 #[gpui::test]
 async fn history_meets_each_list_and_the_message_once_in_order(cx: &mut TestAppContext) {
     let (_fixture, app, cx) = history_window(cx).await;
     prepare(&app, cx);
-    let names = repository_names(&app, cx);
+    let names = page_names(&app, cx);
     let mut failures = Vec::new();
-    audit(
+    let (met, _) = audit(
         &app,
         cx,
         "History",
@@ -238,7 +293,65 @@ async fn history_meets_each_list_and_the_message_once_in_order(cx: &mut TestAppC
         true,
         &mut failures,
     );
+    pin("History", &met, &history_stops(), &mut failures);
     sweep::assert_whole(failures);
+}
+
+/// The tab strip's stops, in Tab's order from the window's root: on Linux
+/// the Main Menu, then the repository's tab, its Close, Open repository tab
+/// and Workspaces.
+fn tab_strip_stops() -> Vec<&'static str> {
+    let mut stops = Vec::new();
+    #[cfg(target_os = "linux")]
+    stops.push("the Main Menu");
+    stops.extend([
+        "the repository's tab",
+        "the tab's Close",
+        "Open repository tab",
+        "Workspaces",
+    ]);
+    stops
+}
+
+/// The Git actions' stops below the repository's header, a fixture with no
+/// remote offering Add remote among them.
+const GIT_ACTION_STOPS: &[&str] = &["the branch picker", "Add remote", "Targets"];
+
+/// Every stop Tab meets in History from the window's root, in order.
+fn history_stops() -> Vec<&'static str> {
+    let mut stops = tab_strip_stops();
+    stops.extend(["a header control"; 6]);
+    stops.extend(GIT_ACTION_STOPS);
+    stops.extend(["a sidebar control"; 4]);
+    stops.extend([
+        "the navigator",
+        "a scope control",
+        "a scope control",
+        "the search",
+        "the commit list",
+    ]);
+    stops.extend(["a message control"; 3]);
+    stops.extend(["the commit message", "a files control", "the file list"]);
+    stops
+}
+
+/// Every stop Tab meets in Compare from the window's root, in order.
+fn compare_stops() -> Vec<&'static str> {
+    let mut stops = tab_strip_stops();
+    stops.extend(["a header control"; 7]);
+    stops.extend(GIT_ACTION_STOPS);
+    stops.push("a rail control");
+    stops.extend(["a comparison control"; 7]);
+    stops.extend([
+        "Previous change",
+        "Next change",
+        "Hide whitespace",
+        "More context",
+        "the comparison's text",
+    ]);
+    stops.extend(["a message control"; 3]);
+    stops.extend(["the commit message", "a files control", "the file list"]);
+    stops
 }
 
 #[gpui::test]
@@ -247,9 +360,9 @@ async fn compare_and_blame_meet_their_lists_once_in_order(cx: &mut TestAppContex
     prepare(&app, cx);
     cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
     settle(&app, cx).await;
-    let names = repository_names(&app, cx);
+    let names = page_names(&app, cx);
     let mut failures = Vec::new();
-    audit(
+    let (met, _) = audit(
         &app,
         cx,
         "Compare",
@@ -258,6 +371,7 @@ async fn compare_and_blame_meet_their_lists_once_in_order(cx: &mut TestAppContex
         true,
         &mut failures,
     );
+    pin("Compare", &met, &compare_stops(), &mut failures);
     cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
     settle(&app, cx).await;
     let blame = app.read_with(cx, |app, _| app.blame.focus());
@@ -502,4 +616,143 @@ async fn settings_meet_their_stops_the_same_both_ways(cx: &mut TestAppContext) {
         &mut failures,
     );
     sweep::assert_whole(failures);
+}
+
+/// The dialogs' selection lists, each dialog walked both ways from where it
+/// puts focus as it opens: every list met by Tab and by Shift+Tab, its stops
+/// in one run, the same stops both ways. The branch chooser, the remote
+/// manager, Tags and the worktree manager list a Button for each row, each
+/// a stop; the Stashes' two lists and the Reflog's entries are one stop
+/// each, moved through with the arrow keys. Saved recovery drafts lists no
+/// selection, and the series review's files and Edit local commits'
+/// sequence belong to `rewrite_review` and `interactive_rebase`.
+#[gpui::test]
+async fn dialog_selection_lists_are_met_both_ways(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = history_window(cx).await;
+    let root = fixture.path().join("narrow");
+    let run = |args: &[&str]| tags::tests::git(&root, args);
+    run(&["branch", "feature"]);
+    run(&["tag", "v1"]);
+    run(&[
+        "remote",
+        "add",
+        "origin",
+        "https://example.invalid/fixture.git",
+    ]);
+    let linked = fixture.path().join("linked");
+    run(&["worktree", "add", linked.to_str().unwrap(), "feature"]);
+    std::fs::write(root.join("notes.txt"), "stashed\n").unwrap();
+    run(&["stash", "push", "-m", "saved"]);
+    prepare(&app, cx);
+    settle(&app, cx).await;
+    views::tests::hold_quiet_reads_for_test(&app, cx);
+    let mut failures = Vec::new();
+    for (surface, remotes, list, selector) in [
+        (
+            "The branch manager",
+            false,
+            "the branch choices",
+            "branch-chooser-list",
+        ),
+        (
+            "The remote manager",
+            true,
+            "the remotes",
+            "remote-manager-list",
+        ),
+    ] {
+        let list_focus = app.read_with(cx, |app, _| app.focus.clone());
+        cx.update(|window, cx| window.focus(&list_focus, cx));
+        let read =
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_manager(remotes, window, cx)));
+        read.expect("the list is read").await;
+        settle(&app, cx).await;
+        let names = Names::default().region(selector, list);
+        audit(&app, cx, surface, &names, &[list], false, &mut failures);
+        sweep::close_dialogs(cx, surface, 13, &mut failures);
+    }
+    sweep::open_dialog(&app, cx, "Tags", |app, window, cx| {
+        app.open_tags(window, cx)
+    })
+    .await;
+    let names = Names::default().region("tags-list", "the tags");
+    audit(
+        &app,
+        cx,
+        "Tags",
+        &names,
+        &["the tags"],
+        false,
+        &mut failures,
+    );
+    sweep::close_dialogs(cx, "Tags", 13, &mut failures);
+    sweep::open_dialog(&app, cx, "Worktrees", |app, window, cx| {
+        app.open_worktree_manager_entity(window, cx)
+    })
+    .await;
+    let names = Names::default().region("managed-worktree-list", "the worktrees");
+    audit(
+        &app,
+        cx,
+        "Worktrees",
+        &names,
+        &["the worktrees"],
+        false,
+        &mut failures,
+    );
+    sweep::close_dialogs(cx, "Worktrees", 13, &mut failures);
+    sweep::open_dialog(&app, cx, "Stashes", |app, window, cx| {
+        app.open_stash_browser(window, cx)
+    })
+    .await;
+    // The saved files are drawn once a stash is selected, from the keyboard
+    // as the Stashes sweep selects it, and its inspection has landed.
+    let (browser, _) = app
+        .read_with(cx, recovery::open_stash_list)
+        .expect("Stashes is open");
+    let row = cx
+        .debug_bounds("saved-stash-row-0")
+        .expect("the saved stash is drawn");
+    cx.simulate_click(row.center(), Modifiers::none());
+    cx.simulate_keystrokes("home");
+    recovery::StashBrowser::lands(&browser, cx);
+    let names = Names::default()
+        .region("stash-list", "the stashes")
+        .region("stash-files", "the saved files");
+    audit(
+        &app,
+        cx,
+        "Stashes",
+        &names,
+        &["the stashes", "the saved files"],
+        false,
+        &mut failures,
+    );
+    sweep::close_dialogs(cx, "Stashes", 13, &mut failures);
+    sweep::open_dialog(&app, cx, "The Reflog", |app, window, cx| {
+        app.open_reflog_browser(window, cx)
+    })
+    .await;
+    let names = Names::default().region("reflog-list", "the reflog entries");
+    audit(
+        &app,
+        cx,
+        "The Reflog",
+        &names,
+        &["the reflog entries"],
+        false,
+        &mut failures,
+    );
+    sweep::close_dialogs(cx, "The Reflog", 13, &mut failures);
+    // No sweep walked the remote manager: its search field and Add remote…
+    // draw their rings cut by the dialog body's clip, which keeps no ring
+    // room around them. Its remotes are reached whole; the clip awaits its
+    // own follow-up (FU30-C's report).
+    sweep::assert_whole_except(
+        failures,
+        &[(
+            "The remote manager at 13 pt, stop",
+            "a clip cuts the top, right, left of its ring",
+        )],
+    );
 }

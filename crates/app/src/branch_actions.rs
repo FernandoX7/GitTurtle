@@ -755,6 +755,24 @@ impl GitTurtle {
         );
     }
 
+    /// Opens the remote manager, or with `remotes` false the branch
+    /// manager's chooser, as the Branch menu does, and hands back the read
+    /// that fills its list, for tests outside this module to await.
+    #[cfg(test)]
+    pub(crate) fn open_manager(
+        &mut self,
+        remotes: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<()>> {
+        if remotes {
+            self.open_remote_manager(window, cx);
+        } else {
+            self.choose_branch(ChoicePurpose::Manage, window, cx);
+        }
+        self.branch_actions.task.take()
+    }
+
     fn open_remote_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.read_branch_action(
             |repo| {

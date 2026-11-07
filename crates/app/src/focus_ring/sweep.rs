@@ -207,7 +207,13 @@ fn walk_with(
 }
 
 /// [`walk_with`], moving focus with `key`, "tab" or "shift-tab", and
-/// running `each` as [`walk_each`] does.
+/// running `each` as [`walk_each`] does. The walk meets more than one stop:
+/// a key that leaves focus on the stop it was on fails, at the walk's
+/// first stop as at any later one, from the window's root and from the
+/// stop a dialog opened on alike. A walk whose key moved nothing at its
+/// first stop came round at once and passed, so a view that swallowed Tab
+/// was taken for a surface whose one stop it is; no surface walked has
+/// one stop.
 #[allow(clippy::too_many_arguments)]
 fn walk_keyed(
     app: &Entity<GitTurtle>,
@@ -247,8 +253,12 @@ fn walk_keyed(
             return rings;
         };
         if let Some(seen) = order.iter().position(|other| *other == focused) {
-            if seen > 0 && seen + 1 == order.len() {
-                failures.push(format!("{at}: {name} keeps focus where it was"));
+            if seen + 1 == order.len() {
+                failures.push(if seen == 0 {
+                    format!("{at}: {name} meets no stop but this one")
+                } else {
+                    format!("{at}: {name} keeps focus where it was")
+                });
             }
             return rings;
         }
