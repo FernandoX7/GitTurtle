@@ -8748,9 +8748,11 @@ impl GitTurtle {
         // be narrower than its saved width, and where the inspector is pinned
         // it reserves the rows they take there.
         let inspector_width = self.drawn_inspector_width(width, &columns, cx);
+        // File History's panel lays them out in the room its overflow cue's
+        // gutter leaves while it scrolls.
         self.inspector_message
             .lay_out_toolbar(Some(commit_message::Toolbar::within(
-                inspector_width,
+                inspector_width - self.file_history_gutter(),
                 height,
                 columns.pinned,
                 window,

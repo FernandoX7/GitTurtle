@@ -1,10 +1,177 @@
 //! Contextual revision browsing with immutable anchors and retained UI context.
 //! Git history and preview preparation use the existing replaceable worker.
 use crate::*;
+use focus_reveal::{FocusReveal, Trigger};
 use gitturtle_core::{FileHistoryEntry, FileHistoryPage};
 use gpui_kit::prelude::FluentBuilder;
 
 const PAGE_SIZE: usize = 100;
+
+/// The id File History's message panel is revealed under as one region
+/// (`FocusReveal::region`).
+const MESSAGE_REGION: &str = "file-history-message";
+
+/// The panel's title, at the header's 12 pt semibold.
+const TITLE: &str = "File history";
+/// Close's label where it keeps one.
+const CLOSE_LABEL: &str = "Back";
+/// Close's accessible name in every form.
+const CLOSE_NAME: &str = "Close file history and restore previous view";
+/// Close's tooltip where it keeps only its icon: its label, then its name.
+const CLOSE_TOOLTIP: &str = "Back · Close file history and restore previous view";
+
+thread_local! {
+    static TITLE_WIDTH: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { std::cell::RefCell::new(None) };
+    static CLOSE_LABEL_WIDTH: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The least heights of File History's parts, so the content stays whole
+/// first (DESIGN.md's responsive order): the header and the footer, which
+/// scroll their own rows, give way down to their first row, and the body
+/// keeps the message's toolbar and first line and one whole revision row.
+/// A failed page's notice keeps a line of its message and Retry page whole,
+/// its rows scrolling, and the revision row stays whole beside it, the
+/// notice giving way down to that least first. A panel shorter than all
+/// three scrolls. At 18 pt in a 461 × 490 window the header's and footer's
+/// shares left the revisions 55 px, part of one 94 px row, and at 461 × 420
+/// a failed page's notice left them about 31 px.
+struct PanelLeast {
+    /// The header's padding and its top row, with its bottom border.
+    header: Pixels,
+    /// The message's toolbar and first line, where a revision is shown, a
+    /// failed page's notice, where one shows, and one revision row; or,
+    /// where taller, the body whose rest beside the message panel's whole
+    /// share (`MESSAGE_SHARE`), which a long message takes, still holds the
+    /// notice and the row.
+    body: Pixels,
+    /// A failed page's notice: its padding, a line of its message and Retry
+    /// page; none where no page failed.
+    failure: Pixels,
+    /// One whole revision row, which the revisions keep.
+    row: Pixels,
+    /// The footer's padding and its status line, with its top border.
+    footer: Pixels,
+}
+
+/// The share of File History's body its message panel takes at most, as
+/// the commit inspector draws it (`commit_message::MESSAGE_SHARE`).
+const MESSAGE_SHARE: f32 = 0.45;
+
+impl PanelLeast {
+    fn of(app: &GitTurtle, message: bool, failed: bool, window: &Window) -> Self {
+        let rem = window.rem_size();
+        let edge = window.pixel_snap(px(1.)) + rem * 1.5;
+        let line = |size: f32| {
+            window
+                .text_style()
+                .line_height
+                .to_pixels(crate::appearance::ui_text(size).into(), rem)
+        };
+        let row = crate::appearance::ui_size(68.);
+        // Its `py_2` and `gap_2`, a line of its message and Retry page.
+        let failure = if failed {
+            rem * 1.5 + line(11.) + crate::appearance::ui_size(28.)
+        } else {
+            px(0.)
+        };
+        let below = failure + row;
+        let body = if message {
+            let least = app
+                .inspector_message
+                .revision_message_least()
+                .unwrap_or_default();
+            // A body taller than its least gives the message panel up to its
+            // share, which a long message takes, so the room below it grows
+            // by the rest alone: at 18 pt in a 461 × 420 window a failed
+            // page's notice made the body tall enough to give the message
+            // more than its least, which the revisions gave up.
+            (least + below).max(below / (1. - MESSAGE_SHARE))
+        } else {
+            below
+        };
+        Self {
+            header: edge + crate::appearance::ui_size(28.),
+            body,
+            failure,
+            row,
+            footer: edge + line(10.),
+        }
+    }
+}
+
+/// What scrolls each of File History's Tab stops into view, whole, as its
+/// focus comes from the keyboard (DESIGN.md: whole focus). A panel shorter
+/// than its parts' least heights scrolls as a whole (`PanelLeast`), and its
+/// header, its failure and its footer each scroll their own rows as well,
+/// so a control there is revealed in its own region first and then in the
+/// panel, where that region has just scrolled it
+/// (`FocusReveal::control_within`). At 18 pt in a 461 × 420 window Tab
+/// otherwise moved onto the anchor path's copy control hidden in the
+/// header's scroll, and, after a failed page, onto Older page below the
+/// panel's fold. Kept with the inspection, so Back to an earlier one finds
+/// its panel where it was left.
+#[derive(Clone)]
+struct Reveals {
+    /// The whole panel, with its overflow cue (`tags::ScrollCue`).
+    panel: FocusReveal,
+    header: FocusReveal,
+    failure: FocusReveal,
+    footer: FocusReveal,
+}
+
+impl Default for Reveals {
+    fn default() -> Self {
+        let keyboard = || FocusReveal::new(Trigger::Keyboard);
+        Self {
+            panel: keyboard(),
+            header: keyboard(),
+            failure: keyboard(),
+            footer: keyboard(),
+        }
+    }
+}
+
+impl Reveals {
+    /// `button`, tracked as `id`, revealed whole with its ring's `room` in
+    /// `region`'s own scroll and in the panel where `region` has scrolled
+    /// it in the same frame.
+    fn track(
+        &self,
+        region: &FocusReveal,
+        id: &'static str,
+        button: Button,
+        room: Pixels,
+        cx: &mut App,
+    ) -> Button {
+        let focus = region.focus(id, cx);
+        let own = region.control(focus.clone(), room);
+        let panel = self.panel.control_within(focus.clone(), room, region);
+        gpui_kit::base::ElementExt::on_prepaint(
+            button.track_focus(&focus).debug_selector(move || id.into()),
+            move |bounds, window, cx| {
+                own(vec![bounds], window, cx);
+                panel(vec![bounds], window, cx);
+            },
+        )
+    }
+}
+
+/// How the header's top row, the title and Close, fits the room inside the
+/// header, in DESIGN.md's responsive order: Close becomes its icon, then
+/// the title goes, so Close is never cut by the panel's edge. At 18 pt in a
+/// 461 × 490 window "File history" and the labelled Close ran 79 px past
+/// the window's edge, Close's ring and label cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TopRow {
+    /// The title and Close with its label.
+    Labelled,
+    /// The title and Close's icon, its label in its tooltip.
+    Icon,
+    /// Close's icon alone.
+    Bare,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Position {
@@ -167,6 +334,7 @@ pub(super) struct State {
     retained: Option<Box<ReturnContext>>,
     task: Option<Task<()>>,
     scroll: UniformListScrollHandle,
+    reveals: Reveals,
     previous: Option<Box<State>>,
 }
 
@@ -342,6 +510,60 @@ impl GitTurtle {
             focus: self.inspection_opener(window, cx),
             status: self.status.clone(),
             error: self.error.take(),
+        }
+    }
+
+    /// The width File History's panel keeps at its right for its overflow
+    /// cue while it scrolls, the scrollbar's gutter (`tags::ScrollCue`),
+    /// which the inspector's toolbar, its message and the header's top row
+    /// are laid out without: none where the panel fits, as it did when last
+    /// laid out, or File History is not shown. Laid out at the inspector's
+    /// whole width, they would have run under the gutter.
+    pub(super) fn file_history_gutter(&self) -> Pixels {
+        let scroll = self.file_history.reveals.panel.scroll();
+        if self.file_history.is_active() && scroll.max_offset().y > Pixels::ZERO {
+            crate::tags::ScrollCue::gutter()
+        } else {
+            Pixels::ZERO
+        }
+    }
+
+    /// The header's top row for the room the inspector gives it, measured
+    /// from the interface font at the interface size (`TopRow`): inside the
+    /// panel's left border and the header's `px_3`, the room the message
+    /// toolbar has (`commit_message::State::details_room`), the title, the
+    /// row's half-rem gap and Close, as the shared `button` helper draws it
+    /// (10 px either side of its 16 px icon, 6 px gap and label, or a 28 px
+    /// square), each on whole device pixels. Close's focus ring lies in the
+    /// gap and the header's padding, inside the header's clip. Labelled
+    /// where no window lays the inspector out.
+    fn file_history_top_row(&self, window: &Window) -> TopRow {
+        use crate::views::{LineKey, cached_width, line_widths, shaped_width};
+        let Some(room) = self.inspector_message.details_room() else {
+            return TopRow::Labelled;
+        };
+        let key = LineKey::current(window);
+        let scale = window.scale_factor();
+        let drawn = |width: Pixels| px((f32::from(width) * scale).ceil() / scale);
+        let title = drawn(cached_width(&TITLE_WIDTH, &key, || {
+            shaped_width(
+                TITLE,
+                crate::appearance::ui_text(12.),
+                FontWeight::SEMIBOLD,
+                window,
+            )
+        }));
+        let label = cached_width(&CLOSE_LABEL_WIDTH, &key, || {
+            line_widths(&[(CLOSE_LABEL, crate::appearance::ui_text(12.))], window)
+        });
+        let gap = window.rem_size() * 0.5;
+        let labelled = drawn(crate::appearance::ui_size(20. + 16. + 6.) + label);
+        if title + gap + labelled <= room {
+            TopRow::Labelled
+        } else if title + gap + drawn(crate::appearance::ui_size(28.)) <= room {
+            TopRow::Icon
+        } else {
+            TopRow::Bare
         }
     }
 
@@ -676,6 +898,7 @@ impl GitTurtle {
         let repository = lineage.repository.clone();
         let anchor = lineage.anchor.clone();
         let path = lineage.path.clone();
+        self.forget_failed_page(window, cx);
         let generation = self.generation;
         let response = self.worker.submit(Job::FileHistory {
             repo,
@@ -731,6 +954,23 @@ impl GitTurtle {
         cx.notify();
     }
 
+    /// Once a failed page's notice is no longer drawn, as its page is read
+    /// again or lands or a revision is chosen, its reveal lets go of Retry
+    /// page's focus handle and of where the notice drew it, so neither
+    /// outlives the notice; a reveal kept for its next failure kept both
+    /// for as long as File History stayed open. Focus on Retry page moves
+    /// to the revisions first, as focus on an inspection's opener no frame
+    /// draws falls back to the mode's list (`give_inspection_focus_back`):
+    /// pressed, Retry page went with its notice as the page was read again,
+    /// and focus stayed on its handle, where no key reached anything until
+    /// the page landed, or, where it landed empty, until a click.
+    fn forget_failed_page(&mut self, window: &mut Window, cx: &mut App) {
+        if self.file_history.reveals.failure.holds_focus(window, cx) {
+            window.focus(&self.file_focus, cx);
+        }
+        self.file_history.reveals.failure = FocusReveal::new(Trigger::Keyboard);
+    }
+
     fn select_file_revision(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.close_blame(window, cx);
         let Some(lineage) = self.file_history.lineage.as_mut() else {
@@ -750,6 +990,7 @@ impl GitTurtle {
         let change = entry.change.clone();
         lineage.selected = Some(index);
         lineage.error = None;
+        self.forget_failed_page(window, cx);
         self.file_history
             .scroll
             .scroll_to_item(index, ScrollStrategy::Center);
@@ -816,7 +1057,28 @@ impl GitTurtle {
         let path = copy_path.clone();
         let path_mark = copy_feedback::Mark::new("copy-history-path", &lineage.path);
         let path_copy = path_mark.clone();
-        div()
+        let top_row = self.file_history_top_row(window);
+        let least = PanelLeast::of(self, entry.is_some(), lineage.error.is_some(), window);
+        let reveals = &self.file_history.reveals;
+        let room = crate::appearance::button_ring_room(cx);
+        // Each region reveals the control focus moves onto in its own rows;
+        // the panel's reveal runs the region's again first where focus lies
+        // there, so both show it whole in the frame that first draws it.
+        for region in [&reveals.header, &reveals.failure, &reveals.footer] {
+            region.reveal(window, cx);
+        }
+        reveals.panel.reveal(window, cx);
+        // While it scrolls, the panel keeps its cue's gutter at its right,
+        // which its toolbar and message are laid out without
+        // (`file_history_gutter`).
+        let cue = crate::tags::ScrollCue::revealing(&reveals.panel, Pixels::ZERO);
+        cue.list(div()
+            .on_children_prepainted(cue.observe(reveals.panel.observe()))
+            // A panel shorter than its parts' least heights scrolls.
+            .id("file-history-panel")
+            .debug_selector(|| "file-history-panel".into())
+            .overflow_y_scroll()
+            .track_scroll(reveals.panel.scroll())
             .size_full()
             .min_w_0()
             .flex()
@@ -826,10 +1088,14 @@ impl GitTurtle {
             .border_color(rgb(p.border))
             .child(
                 crate::native_accessibility::clips_children(div()
+                    .on_children_prepainted(reveals.header.observe())
                     .id("file-history-header")
+                    .debug_selector(|| "file-history-header".into())
                     .max_h(relative(0.30))
                     .overflow_y_scroll()
-                    .flex_shrink_0()
+                    .track_scroll(reveals.header.scroll())
+                    .flex_shrink(1.)
+                    .min_h(least.header)
                     .px_3()
                     .py_3()
                     .flex()
@@ -837,26 +1103,50 @@ impl GitTurtle {
                     .gap_2()
                     .border_b_1()
                     .border_color(rgb(p.border))
+                    // DESIGN.md's responsive order: Close becomes its icon,
+                    // then the title goes; Close is never cut (`TopRow`).
                     .child(
                         div()
+                            .debug_selector(|| "file-history-top-row".into())
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(
-                                div()
-                                    .text_size(crate::appearance::ui_text(12.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("File history"),
-                            )
-                            .child(
-                                button("close-file-history", "Back", "arrow-left", false).debug_selector(|| "close-file-history".into())
-                                    .accessibility_label(
-                                        "Close file history and restore previous view",
-                                    )
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.back_to_history(window, cx);
-                                    })),
-                            ),
+                            .gap_2()
+                            .when(top_row != TopRow::Bare, |row| {
+                                row.child(
+                                    div()
+                                        .debug_selector(|| "file-history-title".into())
+                                        .flex_shrink_0()
+                                        .text_size(crate::appearance::ui_text(12.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(TITLE),
+                                )
+                            })
+                            // Alone, it keeps the trailing edge it has beside the title.
+                            .when(top_row == TopRow::Bare, |row| row.justify_end())
+                            .child({
+                                let close = if top_row == TopRow::Labelled {
+                                    button("close-file-history", CLOSE_LABEL, "arrow-left", false)
+                                } else {
+                                    button("close-file-history", "", "arrow-left", false)
+                                        .tooltip(CLOSE_TOOLTIP)
+                                };
+                                let close = crate::views::compact_control_name(
+                                    close.flex_shrink_0(),
+                                    "close-file-history",
+                                    CLOSE_NAME,
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.back_to_history(window, cx);
+                                }));
+                                reveals.track(
+                                    &reveals.header,
+                                    "close-file-history",
+                                    close,
+                                    room,
+                                    cx,
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -876,7 +1166,10 @@ impl GitTurtle {
                             .gap_2()
                             .child(
                                 div()
+                                    .debug_selector(|| "file-history-from".into())
                                     .flex_1()
+                                    // Wraps inside its room rather than run past the header.
+                                    .min_w_0()
                                     .text_size(crate::appearance::ui_text(10.))
                                     .text_color(rgb(p.muted))
                                     .child(format!(
@@ -884,8 +1177,8 @@ impl GitTurtle {
                                         short_oid(&lineage.anchor)
                                     )),
                             )
-                            .child(
-                                copy_feedback::copy_button(
+                            .child({
+                                let copy = copy_feedback::copy_button(
                                     path_mark,
                                     "",
                                     "Copy file history's anchor path",
@@ -899,8 +1192,9 @@ impl GitTurtle {
                                         "file path",
                                         copy_path.clone(),
                                     )
-                                }),
-                            ),
+                                });
+                                reveals.track(&reveals.header, "copy-history-path", copy, room, cx)
+                            }),
                     )
                     .child(
                         div()
@@ -914,22 +1208,24 @@ impl GitTurtle {
                             .flex_wrap()
                             .items_center()
                             .gap_2()
-                            .child(
-                                button("newer-file-revision", "Newer", "", false)
+                            .child({
+                                let newer = button("newer-file-revision", "Newer", "", false)
                                     .disabled(!newer)
                                     .accessibility_label("Previous newer file revision")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.move_file_history_revision(-1, false, window, cx);
-                                    })),
-                            )
-                            .child(
-                                button("older-file-revision", "Older", "", false)
+                                    }));
+                                reveals.track(&reveals.header, "newer-file-revision", newer, room, cx)
+                            })
+                            .child({
+                                let older = button("older-file-revision", "Older", "", false)
                                     .disabled(!older)
                                     .accessibility_label("Next older file revision")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.move_file_history_revision(1, false, window, cx);
-                                    })),
-                            )
+                                    }));
+                                reveals.track(&reveals.header, "older-file-revision", older, room, cx)
+                            })
                             .child(
                                 div()
                                     .flex_1()
@@ -941,19 +1237,27 @@ impl GitTurtle {
                             ),
                     )),
             )
-            .child(div().flex_1().min_h_0().flex().flex_col()
+            .child(div().flex_1().min_h(least.body).flex().flex_col()
                 // As tall as the message and the revision's details where
                 // they fit, as History's panel is, at most its share here.
+                // Its controls keep their own focus handles, so the panel
+                // reveals the message panel whole as one region.
                 .children(entry.map(|entry| {
                     let extent = self.message_extent(&entry.commit, Some(entry), window, cx);
-                    self.render_commit_message(&entry.commit, true, extent, cx)
+                    let message = self.render_commit_message(&entry.commit, true, extent, cx);
+                    reveals.panel.region(MESSAGE_REGION, room, message, cx)
                 }))
             .children(lineage.error.as_ref().map(|error| {
                 crate::native_accessibility::clips_children(div()
+                    .on_children_prepainted(reveals.failure.observe())
                     .id("file-history-failure")
+                    .debug_selector(|| "file-history-failure".into())
                     .max_h(relative(0.35))
                     .overflow_y_scroll()
-                    .flex_shrink_0()
+                    .track_scroll(reveals.failure.scroll())
+                    // Gives way to the revisions' whole row down to its least.
+                    .flex_shrink(1.)
+                    .min_h(least.failure)
                     .px_3()
                     .py_2()
                     .bg(rgb(p.removed_background))
@@ -969,8 +1273,8 @@ impl GitTurtle {
                             .text_color(rgb(p.warning))
                             .child(error.clone()),
                     )
-                    .child(
-                        button("retry-file-history", "Retry page", "refresh", false)
+                    .child({
+                        let retry = button("retry-file-history", "Retry page", "refresh", false)
                             .disabled(busy || retry.is_none())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if let Some(request) = retry {
@@ -981,10 +1285,11 @@ impl GitTurtle {
                                         cx,
                                     );
                                 }
-                            })),
-                    ))
+                            }));
+                        reveals.track(&reveals.failure, "retry-file-history", retry, room, cx)
+                    }))
             }))
-            .child(
+            .child(gpui_kit::base::ElementExt::on_prepaint(
                 crate::native_accessibility::clips_children(div()
                     .id("file-revision-list").debug_selector(|| "file-revision-list".into())
                     .role(Role::ListBox)
@@ -998,7 +1303,8 @@ impl GitTurtle {
                         },
                     ))
                     .flex_1()
-                    .min_h_0()
+                    // One whole row, which a failed page's notice gives way to.
+                    .min_h(least.row)
                     .child(if count == 0 {
                         empty(
                             if busy {
@@ -1022,14 +1328,22 @@ impl GitTurtle {
                         .track_scroll(&self.file_history.scroll)
                         .into_any_element()
                     })),
-            )
+                {
+                    let report = reveals.panel.control(self.file_focus.clone(), room);
+                    move |bounds, window, cx| report(vec![bounds], window, cx)
+                },
+            ))
             )
             .child(
                 crate::native_accessibility::clips_children(div()
+                    .on_children_prepainted(reveals.footer.observe())
                     .id("file-history-footer")
+                    .debug_selector(|| "file-history-footer".into())
                     .max_h(relative(0.25))
                     .overflow_y_scroll()
-                    .flex_shrink_0()
+                    .track_scroll(reveals.footer.scroll())
+                    .flex_shrink(1.)
+                    .min_h(least.footer)
                     .border_t_1()
                     .border_color(rgb(p.border))
                     .p_3()
@@ -1063,8 +1377,8 @@ impl GitTurtle {
                             .flex_wrap()
                             .items_center()
                             .gap_2()
-                            .child(
-                                button("newer-file-page", "Newer page", "", false).debug_selector(|| "newer-file-page".into())
+                            .child({
+                                let newer = button("newer-file-page", "Newer page", "", false)
                                     .disabled(busy || previous_page.is_none())
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if let Some(offset) = previous_page {
@@ -1075,10 +1389,11 @@ impl GitTurtle {
                                                 cx,
                                             );
                                         }
-                                    })),
-                            )
-                            .child(
-                                button("older-file-page", "Older page", "", false).debug_selector(|| "older-file-page".into())
+                                    }));
+                                reveals.track(&reveals.footer, "newer-file-page", newer, room, cx)
+                            })
+                            .child({
+                                let older = button("older-file-page", "Older page", "", false)
                                     .disabled(busy || next_page.is_none())
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if let Some(offset) = next_page {
@@ -1089,10 +1404,13 @@ impl GitTurtle {
                                                 cx,
                                             );
                                         }
-                                    })),
-                            ),
+                                    }));
+                                reveals.track(&reveals.footer, "older-file-page", older, room, cx)
+                            }),
                     )),
-            )
+            ), "file-history-panel-scrollbar")
+            .size_full()
+            .min_w_0()
             .into_any_element()
     }
 
@@ -2007,6 +2325,576 @@ pub(crate) mod tests {
             app.read_with(cx, |app, _| app.mode == WorkspaceMode::History),
             "Escape goes back to History"
         );
+    }
+
+    /// File History at 18 pt in a 461 × 490 window gives way in DESIGN.md's
+    /// responsive order: in its top row Close becomes its icon, and the
+    /// title goes where the two do not fit, Close whole inside the header
+    /// and the window with room for its ring,
+    /// the anchor's line wraps inside the header, and the message keeps its
+    /// first line whole below its toolbar, above the revisions. The labelled
+    /// Close and the title ran 79 px past the window's edge, and the
+    /// message's 15 px viewport drew nothing under the revision row. At 13 pt
+    /// in a 1,480 × 980 window Close keeps its label.
+    #[gpui::test]
+    async fn file_history_gives_way_in_a_half_tile_at_18_pt(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let slack = px(0.5);
+        let ring = cx.update(|_, cx| crate::appearance::button_ring_room(cx));
+        for (text, width, height) in [(18, 461., 490.), (18, 461., 420.), (13, 1480., 980.)] {
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector}"))
+            };
+            let header = bounds(cx, "file-history-header");
+            let close = bounds(cx, "close-file-history");
+            assert!(
+                close.left() - ring >= header.left() - slack
+                    && close.right() + ring <= header.right() + slack
+                    && close.right() + ring <= px(width),
+                "{at}: Close {close:?} and its ring inside {header:?} and the window"
+            );
+            let square = crate::appearance::ui_size(28.);
+            let title = cx.debug_bounds("file-history-title");
+            if text == 18 {
+                assert!(
+                    (close.size.width - square).abs() <= slack,
+                    "{at}: Close {close:?} keeps its icon"
+                );
+                // Where the title has not gone, it lies whole beside Close.
+                if let Some(title) = title {
+                    assert!(
+                        title.right() <= close.left() && title.left() >= header.left(),
+                        "{at}: the title {title:?} beside Close {close:?}"
+                    );
+                }
+            } else {
+                assert!(
+                    close.size.width > square + slack && title.is_some(),
+                    "{at}: Close {close:?} keeps its label beside the title"
+                );
+            }
+            let from = bounds(cx, "file-history-from");
+            assert!(
+                from.right() <= header.right() + slack,
+                "{at}: the anchor's line {from:?} inside {header:?}"
+            );
+            let viewport = bounds(cx, "commit-message-viewport");
+            // The title's first line, a half rem below the piece's top, at
+            // 15 pt and 1.35 lines, whole inside the viewport.
+            let first = bounds(cx, "commit-message-piece-0");
+            let line = cx.update(|window, _| {
+                window.rem_size() * 0.5 + crate::appearance::ui_text(15.) * 1.35
+            });
+            assert!(
+                (first.top() - viewport.top()).abs() <= slack
+                    && first.top() + line <= viewport.bottom() + slack,
+                "{at}: the message's first line, {line:?} of {first:?}, whole in {viewport:?}"
+            );
+            let panel = bounds(cx, "commit-message-panel");
+            let revisions = bounds(cx, "file-revision-list");
+            assert!(
+                revisions.top() + slack >= panel.bottom(),
+                "{at}: the revisions {revisions:?} below the message {panel:?}"
+            );
+            // At least one revision row whole.
+            let row = crate::appearance::ui_size(68.);
+            assert!(
+                revisions.size.height + slack >= row,
+                "{at}: the revisions {revisions:?} hold a whole {row:?} row; header {header:?}, \
+                 message {panel:?}, footer {:?}",
+                cx.debug_bounds("file-history-footer")
+            );
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// Every Tab stop of File History is revealed whole as Tab or Shift+Tab
+    /// moves onto it at 18 pt, in a 461 × 420 window, where the panel is
+    /// shorter than its parts' least heights and scrolls as a whole, and in
+    /// a 461 × 490 one, where the panel fits but its header and footer
+    /// scroll their own rows: Close, the anchor path's copy control and the
+    /// revision arrows in the header's own scroll, the message panel's Copy
+    /// message and Hash, revealed with the message panel as one region, and,
+    /// where a page failed and another follows, Retry page in the failure's
+    /// own scroll and the page arrows in the footer's, each whole, its
+    /// ring's room included, inside the part of the panel and of its region
+    /// the window shows, and inside the panel's view in every frame painted
+    /// after the key, the first that draws the focus included; so are the
+    /// revisions where the keyboard places focus on them. A stop starts
+    /// below its fold, so no walk passes by finding every stop in view. The
+    /// scrolling panel draws its scrollbar, and the toolbar, message and top
+    /// row are laid out for the room its gutter leaves. The revisions keep
+    /// one whole row, a failed page's notice giving way above them. Tab once moved
+    /// onto the anchor path's copy control hidden in the header's scroll and
+    /// onto Older page below the panel's fold, showing neither. At 13 pt in
+    /// a 1,480 × 973 window the panel fits, draws no scrollbar and is laid
+    /// out as it was before it could scroll.
+    #[gpui::test]
+    async fn every_file_history_stop_is_revealed_whole_in_a_short_panel(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{Bounds, ElementId, point, px, size};
+        const HEADER: [&str; 4] = [
+            "close-file-history",
+            "copy-history-path",
+            "newer-file-revision",
+            "older-file-revision",
+        ];
+        const FOOTER: [&str; 2] = ["newer-file-page", "older-file-page"];
+        const RETRY: &str = "retry-file-history";
+        const MESSAGE: &str = "commit-message-panel";
+        const LIST: &str = "file-revision-list";
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let reveals = app.read_with(cx, |app, _| app.file_history.reveals.clone());
+        // The toolbar, the message and the top row are laid out for the room
+        // the panel draws them in (`commit_message::State::details_room`),
+        // the toolbar's own less its `px_3`, so a scrolling panel's gutter
+        // is taken from both: laid out at the inspector's whole width, they
+        // measured 19 px wider than drawn at 18 pt in a 461 × 420 window.
+        let laid_out_for_drawn_room = |cx: &mut VisualTestContext, at: &str| {
+            let room = app
+                .read_with(cx, |app, _| app.inspector_message.details_room())
+                .expect("a laid-out toolbar");
+            let toolbar = cx
+                .debug_bounds("commit-message-toolbar")
+                .expect("the toolbar");
+            let drawn = toolbar.size.width - cx.update(|window, _| window.rem_size()) * 1.5;
+            // The toolbar's width is laid out on whole device pixels.
+            assert!(
+                (room - drawn).abs() <= px(1.),
+                "{at}: laid out for {room:?}, drawn in {drawn:?}"
+            );
+        };
+        // The guard: where the panel fits, it is laid out as before it could
+        // scroll, and draws no scrollbar.
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        draw(cx);
+        let laid_out = |x: f32, y: f32, width: f32, height: f32| {
+            Some(Bounds::new(
+                point(px(x), px(y)),
+                size(px(width), px(height)),
+            ))
+        };
+        for (selector, before) in [
+            ("file-history-header", laid_out(1201., 136., 279., 181.5)),
+            ("file-history-top-row", laid_out(1210.5, 145.5, 260., 28.)),
+            ("file-history-title", laid_out(1210.5, 149.5, 87., 19.5)),
+            ("close-file-history", laid_out(1399.5, 145.5, 71., 28.)),
+            ("file-history-from", laid_out(1210.5, 212., 225.5, 16.)),
+            (MESSAGE, laid_out(1201., 317.5, 279., 172.)),
+            ("commit-message-toolbar", laid_out(1201., 317.5, 279., 34.)),
+            (
+                "commit-message-viewport",
+                laid_out(1201., 351.5, 279., 137.),
+            ),
+            (LIST, laid_out(1201., 489.5, 279., 387.)),
+            ("file-history-footer", laid_out(1201., 876.5, 279., 70.5)),
+            ("newer-file-page", laid_out(1210.5, 909.5, 92., 28.)),
+            ("older-file-page", laid_out(1309., 909.5, 92., 28.)),
+        ] {
+            assert_eq!(
+                cx.debug_bounds(selector),
+                before,
+                "13 pt in 1480 × 973: {selector}"
+            );
+        }
+        assert_eq!(
+            reveals.panel.scroll().max_offset().y,
+            px(0.),
+            "13 pt in 1480 × 973: the panel fits"
+        );
+        assert!(
+            cx.debug_bounds("file-history-panel-scrollbar").is_none(),
+            "13 pt in 1480 × 973: no scrollbar"
+        );
+        laid_out_for_drawn_room(cx, "13 pt in 1480 × 973");
+
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        let room = cx.update(|_, cx| crate::appearance::button_ring_room(cx));
+        let slack = px(0.5);
+        // The region whose own scroll holds `stop`, if any.
+        let region = |stop: &str| {
+            if HEADER.contains(&stop) {
+                Some("file-history-header")
+            } else if FOOTER.contains(&stop) {
+                Some("file-history-footer")
+            } else if stop == RETRY {
+                Some("file-history-failure")
+            } else {
+                None
+            }
+        };
+        // The stop holding focus. The message panel's controls keep their
+        // own focus handles; focus on any of them lies in its region.
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                for (reveal, stops) in [
+                    (&reveals.header, &HEADER[..]),
+                    (&reveals.failure, &[RETRY][..]),
+                    (&reveals.footer, &FOOTER[..]),
+                ] {
+                    if let Some(id) = reveal.focused(window) {
+                        return stops
+                            .iter()
+                            .copied()
+                            .find(|stop| ElementId::from(*stop) == id);
+                    }
+                }
+                if reveals
+                    .panel
+                    .focus(MESSAGE_REGION, cx)
+                    .contains_focused(window, cx)
+                {
+                    Some(MESSAGE)
+                } else {
+                    let list = app.read(cx).file_focus.clone();
+                    list.is_focused(window).then_some(LIST)
+                }
+            })
+        };
+        // What the window shows of the place `stop` lies in: the panel's
+        // view, and its region's where it lies in one.
+        let shown = |cx: &mut VisualTestContext, stop: &str| {
+            let panel = cx.debug_bounds("file-history-panel").expect("the panel");
+            region(stop).map_or(panel, |region| {
+                panel.intersect(&cx.debug_bounds(region).expect("the region"))
+            })
+        };
+        let whole = |control: Bounds<Pixels>, view: Bounds<Pixels>| {
+            control.top() + slack >= view.top() && control.bottom() <= view.bottom() + slack
+        };
+        // `key` until focus leaves File History: the stops in order, each
+        // whole where it took focus.
+        let walk = |cx: &mut VisualTestContext, key: &str, at: &str| {
+            let mut stops = Vec::new();
+            for _ in 0..16 {
+                reveals.panel.take_painted();
+                cx.simulate_keystrokes(key);
+                draw(cx);
+                let Some(stop) = focused(cx) else {
+                    return stops;
+                };
+                let control = cx
+                    .debug_bounds(stop)
+                    .unwrap_or_else(|| panic!("{at}: {stop} drawn"));
+                let view = shown(cx, stop);
+                assert!(
+                    whole(control.dilate(room), view),
+                    "{at}, {key} onto {stop}: {control:?} with its ring whole in {view:?}"
+                );
+                for frame in reveals.panel.take_painted() {
+                    if let Some(drawn) = frame.control {
+                        assert!(
+                            whole(drawn, frame.viewport),
+                            "{at}, {key} onto {stop}: a frame drew it at {drawn:?} in {:?}",
+                            frame.viewport
+                        );
+                    }
+                }
+                stops.push(stop);
+            }
+            panic!("{at}: {key} kept to File History through {stops:?}");
+        };
+        for (height, failed) in [(420., false), (420., true), (490., false)] {
+            cx.simulate_resize(size(px(461.), px(height)));
+            if failed {
+                // A page failed, and another follows.
+                app.update(cx, |app, cx| {
+                    let lineage = app.file_history.lineage.as_mut().unwrap();
+                    lineage.error = Some("The page could not be read.".into());
+                    lineage.page.as_mut().unwrap().next_offset = Some(PAGE_SIZE);
+                    cx.notify();
+                });
+            } else {
+                app.update(cx, |app, cx| {
+                    let lineage = app.file_history.lineage.as_mut().unwrap();
+                    lineage.error = None;
+                    lineage.page.as_mut().unwrap().next_offset = None;
+                    cx.notify();
+                });
+            }
+            draw(cx);
+            draw(cx);
+            let at = format!("18 pt in 461 × {height}, failed {failed}");
+            let scrolls = height < 490.;
+            assert_eq!(
+                reveals.panel.scroll().max_offset().y > px(0.),
+                scrolls,
+                "{at}: the panel scrolls"
+            );
+            assert_eq!(
+                cx.debug_bounds("file-history-panel-scrollbar").is_some(),
+                scrolls,
+                "{at}: the scrolling panel draws its scrollbar"
+            );
+            laid_out_for_drawn_room(cx, &at);
+            // The revisions keep one whole row, below a failed page's notice
+            // and above the footer: a notice once left them about 31 px.
+            let revisions = cx.debug_bounds(LIST).expect("the revisions");
+            let footer = cx.debug_bounds("file-history-footer").expect("the footer");
+            let row = crate::appearance::ui_size(68.);
+            assert!(
+                revisions.size.height + slack >= row && revisions.bottom() <= footer.top() + slack,
+                "{at}: the revisions {revisions:?} hold a whole {row:?} row above the footer \
+                 {footer:?}"
+            );
+            if failed {
+                let notice = cx.debug_bounds("file-history-failure").expect("the notice");
+                assert!(
+                    revisions.top() + slack >= notice.bottom(),
+                    "{at}: the revisions {revisions:?} below the notice {notice:?}"
+                );
+            }
+            // From Close, every region at its top.
+            cx.update(|window, cx| {
+                for reveal in [
+                    &reveals.panel,
+                    &reveals.header,
+                    &reveals.failure,
+                    &reveals.footer,
+                ] {
+                    reveal.scroll().set_offset(point(px(0.), px(0.)));
+                }
+                reveals
+                    .header
+                    .focus("close-file-history", cx)
+                    .focus(window, cx);
+            });
+            draw(cx);
+            // Copy message and Hash; the message's text and the revisions
+            // are no Tab stops (their focus handles are none).
+            let mut expected = vec![
+                "close-file-history",
+                "copy-history-path",
+                "older-file-revision",
+                MESSAGE,
+                MESSAGE,
+            ];
+            if failed {
+                expected.extend([RETRY, "older-file-page"]);
+            }
+            // Not every stop is in view before the walk.
+            let below = expected
+                .iter()
+                .copied()
+                .filter(|stop| {
+                    let fold = shown(cx, stop).bottom();
+                    cx.debug_bounds(stop)
+                        .is_some_and(|bounds| bounds.top() >= fold)
+                })
+                .collect::<Vec<_>>();
+            assert!(!below.is_empty(), "{at}: a stop starts below its fold");
+            let mut forward = vec!["close-file-history"];
+            forward.extend(walk(cx, "tab", &at));
+            assert_eq!(forward, expected, "{at}: Tab walks every stop");
+            // Back from the control past the last stop.
+            let mut backward = walk(cx, "shift-tab", &at);
+            backward.reverse();
+            assert_eq!(backward, expected, "{at}: Shift+Tab walks them back");
+            // Focus the keyboard places on the revisions, as Escape out of a
+            // dialog opened from them does, with the panel at its top.
+            reveals.panel.scroll().set_offset(point(px(0.), px(0.)));
+            draw(cx);
+            cx.update(|window, cx| {
+                let list = app.read(cx).file_focus.clone();
+                window.focus(&list, cx);
+            });
+            draw(cx);
+            assert_eq!(focused(cx), Some(LIST), "{at}");
+            let list = cx.debug_bounds(LIST).expect("the revisions");
+            let view = shown(cx, LIST);
+            assert!(
+                whole(list.dilate(room), view),
+                "{at}: the revisions {list:?} with their ring whole in {view:?}"
+            );
+            if failed && scrolls {
+                // The message panel, revealed as one region: from Retry page
+                // with the panel at its foot, where the message panel lies
+                // above the view, Shift+Tab onto Hash shows it whole.
+                cx.update(|window, cx| {
+                    let scroll = reveals.panel.scroll();
+                    scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+                    reveals.failure.focus(RETRY, cx).focus(window, cx);
+                });
+                draw(cx);
+                assert_eq!(focused(cx), Some(RETRY), "{at}");
+                let message = cx.debug_bounds(MESSAGE).expect("the message panel");
+                assert!(
+                    !whole(message, shown(cx, MESSAGE)),
+                    "{at}: the message panel {message:?} starts out of view"
+                );
+                reveals.panel.take_painted();
+                cx.simulate_keystrokes("shift-tab");
+                draw(cx);
+                assert_eq!(focused(cx), Some(MESSAGE), "{at}: Shift+Tab onto Hash");
+                let message = cx.debug_bounds(MESSAGE).expect("the message panel");
+                let view = shown(cx, MESSAGE);
+                assert!(
+                    whole(message.dilate(room), view),
+                    "{at}: the message panel {message:?} with its ring's room whole in {view:?}"
+                );
+                for frame in reveals.panel.take_painted() {
+                    if let Some(drawn) = frame.control {
+                        assert!(
+                            whole(drawn, frame.viewport),
+                            "{at}: a frame drew the message panel at {drawn:?} in {:?}",
+                            frame.viewport
+                        );
+                    }
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// A failed page's notice leaves nothing in its reveal once no notice
+    /// is drawn: a revision chosen ends the failure, and Retry page's focus
+    /// handle and where the notice drew it go with the notice. Kept for the
+    /// next failure, they stayed as long as File History did.
+    #[gpui::test]
+    async fn a_failed_pages_notice_leaves_no_reveal_behind(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        app.update(cx, |app, cx| {
+            let lineage = app.file_history.lineage.as_mut().unwrap();
+            lineage.error = Some("The page could not be read.".into());
+            cx.notify();
+        });
+        draw(cx);
+        let kept = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.file_history.reveals.failure.kept())
+        };
+        assert!(kept(cx) > 0, "the notice's Retry page is tracked");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.move_file_history_revision(1, false, window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("file-history-failure").is_none(),
+            "the notice goes"
+        );
+        assert_eq!(kept(cx), 0, "the notice's reveal holds nothing");
+    }
+
+    /// Retry page, focused from the keyboard and pressed, goes as its notice
+    /// does, the page read again, and focus moves to the revisions in the
+    /// same step, so no frame draws focus on a control it does not draw;
+    /// once the page lands, the notice's reveal holds no handle. Focus
+    /// stayed on Retry page's handle, where no key reached anything until
+    /// the page landed, or, where it landed empty, until a click.
+    #[gpui::test]
+    async fn retry_page_pressed_gives_focus_to_the_revisions(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{KeyDownEvent, KeyUpEvent, Keystroke, PlatformInput};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        app.update(cx, |app, cx| {
+            let lineage = app.file_history.lineage.as_mut().unwrap();
+            lineage.error = Some("The page could not be read.".into());
+            cx.notify();
+        });
+        draw(cx);
+        // Retry page by the keyboard, from Hash before it.
+        let retry = app.read_with(cx, |app, cx| {
+            app.file_history
+                .reveals
+                .failure
+                .focus("retry-file-history", cx)
+        });
+        cx.update(|window, cx| retry.focus(window, cx));
+        cx.simulate_keystrokes("shift-tab");
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| retry.is_focused(window)),
+            "Retry page holds focus"
+        );
+        // Pressed: its handler runs, and the page's read has not answered.
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let enter = Keystroke::parse("enter").unwrap();
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke: enter.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke: enter }), cx);
+        });
+        let reading = app.read_with(cx, |app, _| {
+            let lineage = app.file_history.lineage.as_ref().unwrap();
+            lineage.pending.is_some() && lineage.error.is_none()
+        });
+        assert!(reading, "Retry page reads the page again");
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the revisions take focus as Retry page goes"
+        );
+        first_page_lands(&app, cx);
+        settle(&app, cx).await;
+        assert!(cx.debug_bounds("retry-file-history").is_none(), "no notice");
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the revisions"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.file_history.reveals.failure.kept()),
+            0,
+            "the notice's reveal holds no handle"
+        );
+        cx.update(|_, cx| cx.set_reduce_motion(false));
     }
 
     /// File history and Blame closed by Escape never leave focus on a

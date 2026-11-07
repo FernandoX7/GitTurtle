@@ -99,7 +99,16 @@ the presentation inside the remaining height between its bounded header and
 footer, leaving revision rows usable, and shrinks it alike: its 45% is of that
 remaining height, and the extent measures the revision's details
 (`render_revision_metadata`) after the message, kept apart from the commit's
-own metadata, which History measures for the same commit.
+own metadata, which History measures for the same commit. A File History panel
+shorter than its parts' least heights (`file_history::PanelLeast`, which counts
+a failed page's notice and the message panel's whole share, so the revisions
+keep one whole row) scrolls as a whole, cued by `tags::ScrollCue`, and while it scrolls the toolbar, the message
+and the top row are laid out in the width its gutter leaves
+(`GitTurtle::file_history_gutter`). Its `file_history::Reveals` reveal every
+Tab stop whole: a control in the header's, the failure's or the footer's own
+scroll there first and then in the panel (`FocusReveal::control_within`), and
+the message panel, whose controls keep their own focus handles, as one region
+(`FocusReveal::region`).
 Reading order is title, available body, then author/date/parent/path metadata.
 Empty bodies add neither filler nor a blank clipboard suffix.
 

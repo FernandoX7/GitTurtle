@@ -491,6 +491,35 @@ impl FocusReveal {
         }
     }
 
+    /// `element`, inside the container, revealed whole, `margin` clear of
+    /// the container's edges, when focus moves onto any control inside it:
+    /// for an element built elsewhere whose controls keep focus handles of
+    /// their own, as File History's message panel, which the commit
+    /// inspector builds, with Copy message, Hash and the message's text.
+    /// The element keeps its layout, input and Tab order: the wrapper adds
+    /// no layout node, style or listener and takes no focus, and only puts
+    /// the focus handle `id` tracks ([`Self::focus`]) on the dispatch node
+    /// every element has, so focus on a control inside lies inside that
+    /// handle ([`Self::control`]). A `div` tracking the handle would have
+    /// taken the element's share of its parent's height, so the panel's
+    /// share of File History's body would have been a share of the `div`,
+    /// and a click on a part of it no control handles would have focused
+    /// the `div`.
+    pub(crate) fn region(
+        &self,
+        id: impl Into<ElementId>,
+        margin: Pixels,
+        element: impl IntoElement,
+        cx: &App,
+    ) -> Region {
+        let focus = self.focus(id, cx);
+        Region {
+            report: Box::new(self.control(focus.clone(), margin)),
+            focus,
+            element: Some(element.into_any_element()),
+        }
+    }
+
     fn observation(&self, window: &Window, cx: &App) -> Observation {
         Observation {
             focus: window.focused(cx),
@@ -722,6 +751,90 @@ impl FocusReveal {
                 window.refresh();
             }
         });
+    }
+}
+
+/// What reports a drawn control's bounds to its container
+/// ([`FocusReveal::control`]).
+type Report = Box<dyn Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App)>;
+
+/// The element [`FocusReveal::region`] returns: laid out, prepainted and
+/// painted as the element it holds, then reported to the container.
+pub(crate) struct Region {
+    focus: FocusHandle,
+    report: Report,
+    element: Option<AnyElement>,
+}
+
+impl IntoElement for Region {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Region {
+    /// The element it holds, laid out as its own.
+    type RequestLayoutState = Option<AnyElement>;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Option<AnyElement>) {
+        // The element's own layout node, as a view's or a deferred
+        // element's: the wrapper takes no share of its parent of its own.
+        let mut element = self.element.take();
+        let layout = match element.as_mut() {
+            Some(element) => element.request_layout(window, cx),
+            None => window.request_layout(Style::default(), None, cx),
+        };
+        (layout, element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        element: &mut Option<AnyElement>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // On this element's dispatch node, which the held element's lies
+        // under; not a Tab stop, and no listener focuses it.
+        window.set_focus_handle(&self.focus, cx);
+        if let Some(element) = element {
+            element.prepaint(window, cx);
+        }
+        (self.report)(vec![bounds], window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        element: &mut Option<AnyElement>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(element) = element {
+            element.paint(window, cx);
+        }
     }
 }
 

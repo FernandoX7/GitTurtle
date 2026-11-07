@@ -294,6 +294,16 @@ impl State {
         self.1.get().map(|toolbar| toolbar.room)
     }
 
+    /// The least height File History's message panel keeps in the inspector
+    /// the window draws next: its toolbar and the message's first line
+    /// (`GitTurtle::render_commit_message`); `None` where no window lays
+    /// the inspector out.
+    pub(super) fn revision_message_least(&self) -> Option<Pixels> {
+        self.1
+            .get()
+            .map(|toolbar| toolbar.plain.height + first_line())
+    }
+
     /// The height the presented message and metadata were last measured at
     /// for `width`, `bound` and `key` on a display of `scale`, with
     /// `revision`'s details or the commit's own
@@ -568,6 +578,15 @@ fn scrollbar_reserve() -> Pixels {
 /// past the viewport's foot at 18 pt in a 461 px window, over the Changed
 /// files heading below. Its text keeps clear of the viewport's scrollbar
 /// ([`scrollbar_reserve`]).
+/// The message's first line as [`render_piece`] lays it out, the title's,
+/// with the half rem above it, rounded up to a whole pixel: the least
+/// height File History's message viewport keeps.
+fn first_line() -> Pixels {
+    let line = (appearance::ui_text(15.) * 1.35).max(appearance::ui_size(20.25));
+    // The rem is the interface's 13 pt (`appearance::apply_text_sizes`).
+    (appearance::ui_size(13. * 0.5) + line).ceil()
+}
+
 fn render_piece(piece: &Piece, index: usize, selection: &Selection, cx: &App) -> impl IntoElement {
     let colors = palette(cx);
     crate::native_accessibility::static_text(
@@ -764,6 +783,15 @@ impl GitTurtle {
             .filter(|toolbar| toolbar.reserve)
             .and(form)
             .map(|form| form.height);
+        // File History's panel keeps its toolbar and the message's first
+        // line whole (DESIGN.md's responsive order: content stays whole
+        // first), whatever its share of a short panel leaves: at 18 pt in a
+        // 461 × 490 window that share left the viewport 15 px below the
+        // toolbar, drawn empty.
+        let reserved = match form.filter(|_| file_history) {
+            Some(form) => Some(reserved.unwrap_or_default().max(form.height + first_line())),
+            None => reserved,
+        };
         let actions = (!file_history).then(|| {
             self.render_commit_recovery_menu(
                 commit,
@@ -2241,8 +2269,9 @@ pub(crate) mod tests {
         cx.simulate_resize(size(px(461.), px(490.)));
         crate::file_history::tests::open_landed(&app, cx).await;
         draw(cx);
-        // A 15 px viewport over the overflowing message, where a 16 × 15 px
-        // track drew, its thumb with no room to move.
+        // A viewport shorter than the shortest track, the message's first
+        // line, over the overflowing message, where a 16 px track drew its
+        // thumb with no room to move.
         let (cue, viewport) = drawn_cue(cx, &app, "File History at 18 pt in 461 × 490");
         assert!(
             viewport.size.height < crate::tags::SHORTEST_SCROLL_TRACK
