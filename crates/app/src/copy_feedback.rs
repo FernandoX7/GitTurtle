@@ -353,6 +353,41 @@ pub(crate) fn copy_hash_button(
     feedback_button(mark, COPY_HASH, label, tooltip, cx)
 }
 
+/// [`copy_hash_button`] as a ghost Button standing at a dialog's text edge in
+/// a row pulled before it ([`crate::edge_row`]), as the Reflog's Copy commit
+/// ID stands: it never runs past the dialog's text column, and where the
+/// column is narrower than its content it shrinks to it and wraps its label
+/// beside the hash glyph, onto lines that start where its first does, as
+/// [`crate::edge_button`] wraps a label with no icon, its frame growing by
+/// each line, rather than cut it with an ellipsis. The glyph stands beside
+/// the first line, and the check and Copied take the glyph's and that line's
+/// place. On one line it is the 28 px Button `copy_hash_button` draws. Without a tooltip: its label says what it copies.
+pub(crate) fn edge_copy_hash_button(
+    mark: Mark,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    let label = label.into();
+    let frame = button_frame(mark.control.clone(), &label, COPY_HASH.icon, false)
+        .h_auto()
+        .min_h(appearance::ui_size(28.))
+        .py(appearance::ui_size(EDGE_LABEL_PADDING))
+        // The kit's Button keeps its width in a row; this one gives way to
+        // the row's.
+        .flex_shrink(1.);
+    confirming_with(
+        frame,
+        appearance::ui_size(6.),
+        Fit::Reserve,
+        mark,
+        COPY_HASH,
+        label,
+        None,
+        Lines::Wrap,
+        cx,
+    )
+}
+
 /// A button that confirms `action` in place as [`copy_button`] confirms a
 /// copy, with the same frame, cells, naming and tooltip: at rest it draws the
 /// action's icon and `label`, and while [`confirm`] marks `mark` the check and
@@ -374,6 +409,7 @@ pub(crate) fn feedback_button(
         action,
         label,
         Some(tooltip.into()),
+        Lines::One,
         cx,
     )
 }
@@ -400,6 +436,7 @@ pub(crate) fn still_feedback_button(
         action,
         label,
         None,
+        Lines::One,
         cx,
     )
 }
@@ -443,11 +480,24 @@ pub(crate) fn confirming(
         action,
         label,
         Some(tooltip.into()),
+        Lines::One,
         cx,
     )
 }
 
-/// [`confirming`], with no tooltip at all where `tooltip` is `None`.
+/// How a labelled control lays out its label in its bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lines {
+    /// On one line, ending in an ellipsis where its frame is too narrow.
+    One,
+    /// Wrapped onto lines that start where its first does, where its frame
+    /// is narrower than its content ([`edge_copy_hash_button`]); the frame
+    /// gives the content its room, so the lines start at its inset.
+    Wrap,
+}
+
+/// [`confirming`], with no tooltip at all where `tooltip` is `None`, and its
+/// label laid out on `lines`.
 #[allow(clippy::too_many_arguments)]
 fn confirming_with(
     frame: Button,
@@ -457,6 +507,7 @@ fn confirming_with(
     action: Action,
     label: impl Into<SharedString>,
     tooltip: Option<SharedString>,
+    lines: Lines,
     cx: &App,
 ) -> Button {
     let copied = confirmed(&mark, cx);
@@ -486,9 +537,25 @@ fn confirming_with(
                 div()
                     .debug_selector(move || format!("{probe}/{state}"))
                     .flex()
-                    .items_center()
                     .gap(gap)
-                    .children(icon)
+                    // A wrapped label reads from its first line, so its icon
+                    // stands beside that line (DESIGN.md, "One left edge"),
+                    // not centred on the label's lines.
+                    .map(|content| match lines {
+                        Lines::One => content.items_center(),
+                        Lines::Wrap => content.items_start().min_w_0(),
+                    })
+                    .children(icon.map(|icon| {
+                        match lines {
+                            Lines::One => icon.into_any_element(),
+                            // Named, so a test finds where it stands.
+                            Lines::Wrap => div()
+                                .debug_selector(|| format!("{id}/{state}/icon"))
+                                .flex_shrink_0()
+                                .child(icon)
+                                .into_any_element(),
+                        }
+                    }))
                     .when(!text.is_empty(), |content| {
                         let key = format!("{text_probe}/{state}/text");
                         let probe = key.clone();
@@ -496,9 +563,22 @@ fn confirming_with(
                             div()
                                 .debug_selector(move || key)
                                 .min_w_0()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .line_height(relative(1.))
+                                .map(|text| match lines {
+                                    Lines::One => text
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .line_height(relative(1.)),
+                                    // As an edge Button's label, its lines
+                                    // kept apart and read as one label, its
+                                    // first line centred on the 16 px icon,
+                                    // which is taller than the line.
+                                    Lines::Wrap => text
+                                        .whitespace_normal()
+                                        .line_height(relative(EDGE_LABEL_LINE))
+                                        .mt((appearance::ui_size(16.)
+                                            - appearance::ui_text(LABEL_TEXT) * EDGE_LABEL_LINE)
+                                            / 2.),
+                                })
                                 .child(text)
                                 // In tests, the colour the text is painted in.
                                 .children(appearance::text_probe(move || probe)),
@@ -510,7 +590,13 @@ fn confirming_with(
         div()
             .grid()
             .grid_cols(1)
-            .items_center()
+            // Wrapping, the cells fill the frame, so the lines start at its
+            // inset rather than centred in it, and stand at its top, so the
+            // check and the word take the icon's and the first line's place.
+            .map(|cells| match lines {
+                Lines::One => cells.items_center(),
+                Lines::Wrap => cells.items_start().flex_grow(1.).min_w_0(),
+            })
             .child(cell(
                 Some(control_icon(action.icon)),
                 label.clone(),

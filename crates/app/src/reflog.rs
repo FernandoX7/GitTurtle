@@ -1174,7 +1174,10 @@ impl Render for ReflogBrowser {
         // before it by its label inset (`crate::edge_row`) inside a wrapper
         // at that inset, as the labels stand (DESIGN.md, "One left edge"),
         // and as wide as their content: in wrappers that stretched them
-        // across the column, they centred it. The pull passes the inset at
+        // across the column, they centred it. Each wraps its label inside a
+        // column narrower than its content (`crate::edge_button`,
+        // `copy_feedback::edge_copy_hash_button`): Copy commit ID's had ended
+        // in an ellipsis there. The pull passes the inset at
         // 18 pt, by 3 px, so the content keeps that with the ring's room on
         // its left, given back through its margin, and its clip cuts neither
         // the hover fill nor the ring.
@@ -1198,7 +1201,7 @@ impl Render for ReflogBrowser {
             .when_some(self.selected.as_ref(), |element, entry| {
                 let oid = entry.oid.clone(); let mark = copy_feedback::Mark::new("copy-reflog-oid", &entry.oid); let copy_mark = mark.clone();
                 element.child(label("reflog-selected-object", format!("{}\nCommit: {}\nPrevious: {}", entry.selector, entry.oid, entry.previous_oid)).text_size(crate::appearance::ui_text(12.)))
-                    .child(shown(copy.clone()).ml(TEXT_INSET).child(copy_row.child(copy_feedback::copy_hash_button(mark, "Copy commit ID", "", cx).track_focus(&copy).flex_shrink(1.).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit ID", oid.clone())))))
+                    .child(shown(copy.clone()).ml(TEXT_INSET).child(copy_row.child(copy_feedback::edge_copy_hash_button(mark, "Copy commit ID", cx).track_focus(&copy).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit ID", oid.clone())))))
                     .children(loading_below)
                     .children(error_below)
             })

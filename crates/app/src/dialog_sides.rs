@@ -1095,8 +1095,14 @@ fn the_ghost_room_lies_on_the_device_pixel(cx: &mut TestAppContext) {
 /// on one line, its frame its pull before that edge and as wide as its label
 /// and its inset on either side (186 px at 13 pt, 258 px at 18 pt); Copy
 /// commit ID stands its hash glyph there, its label after the glyph's room,
-/// on one 28 px line as wide as its glyph, its label and its insets. Tab
-/// draws each one's whole ring inside the dialog.
+/// on one 28 px line as wide as its glyph, its label and its insets. In a
+/// 260 × 490 window at 18 pt, whose column leaves Copy commit ID less room
+/// than its content, it shrinks to the column and wraps its label onto
+/// lines that start where its first does, drawn whole, its glyph still on
+/// the edge and beside the first line, where the label reads from, and
+/// pressed, it draws Copied where that line starts in the same frame; its
+/// label had ended in an ellipsis in a frame cut to the column. Tab draws
+/// each one's whole ring inside the dialog.
 #[gpui::test]
 async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_content(
     cx: &mut TestAppContext,
@@ -1104,7 +1110,7 @@ async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_conte
     let (_fixture, app, cx, _) = width_walk::open(width_walk::Page::History, cx).await;
     sweep::prepare(&app, cx);
     let mut failures = Vec::new();
-    for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.)] {
+    for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.), (18, 260., 490.)] {
         cx.simulate_resize(size(px(width), px(height)));
         sweep::interface_size(cx, interface);
         appearance::mark_controls(control_mark());
@@ -1140,6 +1146,7 @@ async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_conte
         // whether Tab drew its ring whole inside the dialog's edge.
         let mut read = std::collections::HashMap::new();
         let mut ringed = std::collections::HashSet::new();
+        let mut pressed = None;
         let mut sweep_findings = Vec::new();
         sweep::walk_each(
             &app,
@@ -1156,7 +1163,12 @@ async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_conte
                     if !read.contains_key(selector)
                         && let Some(clip) = whole_in_view(cx, frame)
                     {
-                        read.insert(selector, (frame, runs_in(cx, frame, clip)));
+                        // Where Copy commit ID's wrapping cell stands its
+                        // glyph.
+                        let glyph = (selector == "copy-reflog-oid")
+                            .then(|| cx.debug_bounds("copy-reflog-oid/rest/icon"))
+                            .flatten();
+                        read.insert(selector, (frame, runs_in(cx, frame, clip), glyph));
                     }
                     let around = frame.dilate(ring_room);
                     let inside = inside(panel);
@@ -1170,6 +1182,21 @@ async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_conte
                             && ring.bounds.right() <= inside.right() + px(0.25)
                     }) {
                         ringed.insert(selector);
+                        // Wrapped, Copy commit ID pressed where Tab brought
+                        // it whole into view: its frame and the rest label's
+                        // place before the press, then what it draws.
+                        if selector == "copy-reflog-oid" && width <= 300. && pressed.is_none() {
+                            let rest = cx.debug_bounds("copy-reflog-oid/rest/text");
+                            copy_feedback::tests::click(cx, "copy-reflog-oid");
+                            width_walk::frame(cx);
+                            pressed = Some((
+                                frame,
+                                rest,
+                                copy_feedback::tests::shows(cx, "copy-reflog-oid"),
+                                cx.debug_bounds("copy-reflog-oid"),
+                                cx.debug_bounds("copy-reflog-oid/copied/text"),
+                            ));
+                        }
                     }
                 }
             },
@@ -1179,8 +1206,25 @@ async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_conte
                 failures.push(format!("{at}: Tab never draws {selector}'s whole ring"));
             }
         }
+        // Copied takes the wrapped label's place: the frame keeps its
+        // bounds, and the word starts where the label's first line does.
+        if width <= 300. {
+            match pressed.take() {
+                Some((before, Some(rest), shows, Some(after), Some(word)))
+                    if shows == copy_feedback::tests::Shows::Copied
+                        && after == before
+                        && (word.left() - rest.left()).abs() <= px(0.25)
+                        && (word.top() - rest.top()).abs() <= px(0.25) => {}
+                pressed => failures.push(format!(
+                    "{at}: Copy commit ID pressed draws (frame before, rest label, shows, \
+                     frame after, Copied) {pressed:?}, not Copied in the label's place in \
+                     the same frame"
+                )),
+            }
+        }
+        // In the half tile, Review recovery branch… stands on one line.
         match read.get("review-reflog-recovery") {
-            Some((frame, runs)) => {
+            Some((frame, runs, _)) if width > 300. => {
                 if device(frame.left() + pull) != device(edge) {
                     failures.push(format!(
                         "{at}: Review recovery branch…'s frame starts at {:?}, not its pull \
@@ -1203,12 +1247,13 @@ async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_conte
                     ));
                 }
             }
+            Some(_) => {}
             None => failures.push(format!(
                 "{at}: Review recovery branch… is never drawn whole"
             )),
         }
         match read.get("copy-reflog-oid") {
-            Some((frame, runs)) => {
+            Some((frame, runs, glyph)) => {
                 if device(frame.left() + pull) != device(edge) {
                     failures.push(format!(
                         "{at}: Copy commit ID's frame starts at {:?}, not its pull {pull:?} \
@@ -1252,14 +1297,38 @@ async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_conte
                     ));
                 }
                 let content = pull + icon + copy_label + pull;
-                if runs.len() != 1
-                    || (frame.size.width - content).abs() > px(1.)
-                    || (frame.size.height - one_line).abs() > px(0.5)
-                {
-                    failures.push(format!(
-                        "{at}: Copy commit ID at {frame:?} draws {runs:?}, not one line \
-                         {content:?} wide and {one_line:?} tall"
-                    ));
+                if width > 300. {
+                    if runs.len() != 1
+                        || (frame.size.width - content).abs() > px(1.)
+                        || (frame.size.height - one_line).abs() > px(0.5)
+                    {
+                        failures.push(format!(
+                            "{at}: Copy commit ID at {frame:?} draws {runs:?}, not one line \
+                             {content:?} wide and {one_line:?} tall"
+                        ));
+                    }
+                } else {
+                    if runs.len() < 2 || frame.size.height <= one_line {
+                        failures.push(format!(
+                            "{at}: Copy commit ID at {frame:?} draws {runs:?} in a column \
+                             narrower than its {content:?} content, not wrapped"
+                        ));
+                    }
+                    // Its glyph stands beside the label's first line, where
+                    // the label reads from, not centred on its lines.
+                    let beside = |glyph: &Bounds<Pixels>, first: &Bounds<Pixels>| {
+                        let middle = glyph.center().y;
+                        first.top() <= middle
+                            && middle <= first.bottom()
+                            && (middle - first.center().y).abs() <= px(1.)
+                    };
+                    match (glyph, runs.first()) {
+                        (Some(glyph), Some(first)) if beside(glyph, first) => {}
+                        (glyph, first) => failures.push(format!(
+                            "{at}: Copy commit ID's glyph at {glyph:?} does not stand beside \
+                             its label's first line {first:?}"
+                        )),
+                    }
                 }
             }
             None => failures.push(format!("{at}: Copy commit ID is never drawn whole")),
