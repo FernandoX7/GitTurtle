@@ -162,6 +162,13 @@ pub(super) struct ReviewState {
     /// renders, so the guard knows the focus it finds on nothing drawn went with a pane
     /// ([`Panel::hand_off_lost_pane_focus`]).
     pub pane_held: Option<FocusHandle>,
+    /// The control that held focus inside the body's view as the panel last closed, which
+    /// reopening gives focus back to where a frame still draws it there
+    /// ([`Panel::focus_reopened`]). Held weakly: a Button that keeps its focus in its own
+    /// element state, as most do, drops it with the closed dialog's frame.
+    pub held: Option<WeakFocusHandle>,
+    /// How the reopened panel settles its focus ([`Reopening`]).
+    pub reopening: std::rc::Rc<Reopening>,
     pub preparing: bool,
     /// A preparation the panel's close cancelled, resumed when it reopens.
     suspended: bool,
@@ -230,6 +237,8 @@ impl ReviewState {
             closing: None,
             closers_drawn: Default::default(),
             pane_held: None,
+            held: None,
+            reopening: Default::default(),
             preparing: false,
             suspended: false,
             prepare_generation: 0,
@@ -377,6 +386,128 @@ pub(super) fn record_shown(
         let mut revealed = revealed.borrow_mut();
         if revealed.focus.is_some() && revealed.focus != focused {
             revealed.focus = None;
+        }
+    }
+}
+
+/// Whether the frame the window last drew drew its focus inside the panel's body.
+fn focus_in_body(window: &Window) -> bool {
+    window
+        .context_stack()
+        .iter()
+        .any(|context| context.contains(BODY))
+}
+
+/// Where reopening the panel puts focus ([`Panel::focus_reopened`]) and how it shows it: back
+/// on the control that held it as the panel closed only where a frame draws that control
+/// inside the body's view, and otherwise on the shown section's first stop
+/// ([`Panel::focus_visible_section`]), either revealed whole whatever input came last. Reopened
+/// by a click on the header's Pull requests, the panel put focus on Files' changed-file list
+/// wherever the body had last scrolled, above the body's top at 13 and 18 pt in a 461 × 490
+/// window, out of view with no ring drawn, and Tab went on to Changes below it; its parts
+/// revealed focus only after a key.
+#[derive(Default)]
+pub(super) struct Reopening {
+    phase: std::cell::Cell<Reopen>,
+    /// Where the innermost part of the body holding focus, or a form holding it, lies in the
+    /// frame being drawn, as it prepaints ([`Reopening::note`]).
+    focused: std::cell::Cell<Option<Bounds<Pixels>>>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Reopen {
+    #[default]
+    Settled,
+    /// Focus is back on the control that held it, which no frame has found drawn in the body
+    /// yet: nothing reveals it until one has, which decides whether it stays. The count is the
+    /// body's frames drawn since.
+    Held(u8),
+    /// Focus stays where it is: the body's parts and forms reveal it whatever input came last,
+    /// until a frame finds it drawn. The count is the body's frames drawn since.
+    Reveal(u8),
+}
+impl Reopening {
+    /// The body's frames that find a reopened focus if anything draws it: the first frame after
+    /// the panel reopens is laid out while the window's last frame, whose focus path its parts
+    /// read, is the page's beneath the dialog, so the second is the first to find it.
+    const FRAMES: u8 = 2;
+    /// Focus is back on the control that held it.
+    pub(super) fn hold(&self) {
+        self.phase.set(Reopen::Held(0));
+    }
+    /// Focus is on the shown section's first stop.
+    pub(super) fn reveal(&self) {
+        self.phase.set(Reopen::Reveal(0));
+    }
+    /// Forgets where focus lay, as a frame of the panel starts.
+    pub(super) fn begin_frame(&self) {
+        self.focused.set(None);
+    }
+    /// Records `bounds`, the children of what holds focus, as where focus lies in this frame.
+    fn note(&self, bounds: &[Bounds<Pixels>]) {
+        if let Some(bounds) = bounds.iter().copied().reduce(|a, b| a.union(&b)) {
+            self.focused.set(Some(bounds));
+        }
+    }
+    /// Whether reveals wait until a frame has found the control focus is back on.
+    fn waits(&self) -> bool {
+        matches!(self.phase.get(), Reopen::Held(_))
+    }
+    /// Whether reveals run whatever input came last.
+    fn reveals(&self) -> bool {
+        matches!(self.phase.get(), Reopen::Reveal(_))
+    }
+    /// Whether the window's last frame drew its focus in the body and the frame being drawn
+    /// lays it out at least partly inside `scroll`'s view.
+    pub(super) fn shows_focus(&self, scroll: &ScrollHandle, window: &Window) -> bool {
+        let view = scroll.bounds();
+        focus_in_body(window)
+            && self.focused.get().is_some_and(|focused| {
+                focused.bottom() > view.top() && focused.top() < view.bottom()
+            })
+    }
+    /// For the body's `on_children_prepainted`, once its parts have prepainted and it has
+    /// recorded what it showed ([`record_shown`]): moves the reopened focus on. Held, once a
+    /// frame has found the control drawn, or once the frames that would have found it have
+    /// passed, focus stays where this frame shows it inside the view and is revealed whole in
+    /// the next frame, or otherwise goes to the shown section's first stop by `fallback`,
+    /// revealed whole in the frame after that; the reveals recorded in `revealed` are
+    /// forgotten, so they run again. Revealing, the phase ends with the frame that finds focus
+    /// drawn, whose parts have revealed it.
+    pub(super) fn settle(
+        &self,
+        scroll: &ScrollHandle,
+        revealed: [&std::cell::RefCell<FocusObservation>; 3],
+        fallback: impl FnOnce(&mut Window, &mut App) + 'static,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        match self.phase.get() {
+            Reopen::Settled => {}
+            Reopen::Held(frames) => {
+                if focus_in_body(window) || frames + 1 >= Self::FRAMES {
+                    let shown = self.shows_focus(scroll, window);
+                    self.phase.set(Reopen::Reveal(0));
+                    for revealed in revealed {
+                        *revealed.borrow_mut() = FocusObservation::default();
+                    }
+                    if shown {
+                        window.defer(cx, |window, _| window.refresh());
+                    } else {
+                        window.defer(cx, fallback);
+                    }
+                } else {
+                    self.phase.set(Reopen::Held(frames + 1));
+                    window.defer(cx, |window, _| window.refresh());
+                }
+            }
+            Reopen::Reveal(frames) => {
+                if focus_in_body(window) || frames + 1 >= Self::FRAMES {
+                    self.phase.set(Reopen::Settled);
+                } else {
+                    self.phase.set(Reopen::Reveal(frames + 1));
+                    window.defer(cx, |window, _| window.refresh());
+                }
+            }
         }
     }
 }
@@ -1364,7 +1495,9 @@ fn scroll_edge_to(
 /// its edges, its top edge at the start of one of `blocks` ([`reveal`]). The key context names
 /// the part on the focus path of the frame that drew the control, so a control needs no focus
 /// handle of the panel's. `edge` is the focus whose ring the part draws on its own edge, and
-/// `owned` the content below the part that it owns, if any ([`own`]).
+/// `owned` the content below the part that it owns, if any ([`own`]). While the panel reopens
+/// (`reopening`), a part of the body holding focus records where it lies, and reveals wait for
+/// the reopened focus to settle, then run whatever input came last ([`Reopening`]).
 #[allow(clippy::too_many_arguments)]
 fn revealing(
     element: Div,
@@ -1376,6 +1509,7 @@ fn revealing(
     inset: Pixels,
     edge: Option<FocusHandle>,
     owned: Option<Owned>,
+    reopening: std::rc::Rc<Reopening>,
 ) -> Div {
     let mut context = KeyContext::default();
     context.set(key, name.clone());
@@ -1395,7 +1529,13 @@ fn revealing(
             if let Some(owned) = &owned {
                 owned.lay_out_part(&bounds, &scroll);
             }
-            if !window.last_input_was_keyboard() || innermost.as_ref() != Some(&name) {
+            if innermost.as_ref() != Some(&name) {
+                return;
+            }
+            if key == PART {
+                reopening.note(&bounds);
+            }
+            if reopening.waits() || !(window.last_input_was_keyboard() || reopening.reveals()) {
                 return;
             }
             let Some(owned) = owned.clone() else {
@@ -1571,7 +1711,9 @@ impl Panel {
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
         self.reveal_focus(focus, |_, cx| appearance::button_ring_room(cx))
     }
-    /// Reveals what `focus` moves into with `room(window, cx)` clear of the body's edges.
+    /// Reveals what `focus` moves into with `room(window, cx)` clear of the body's edges. While
+    /// the panel reopens onto it, it records where it lies and waits as the body's parts do
+    /// ([`Reopening`]).
     fn reveal_focus(
         &self,
         focus: FocusHandle,
@@ -1580,8 +1722,13 @@ impl Panel {
         let scroll = self.review.body_scroll.clone();
         let revealed = self.review.revealed_focus.clone();
         let blocks = self.review.body_blocks.clone();
+        let reopening = self.review.reopening.clone();
         move |bounds, window, cx| {
             if focus.contains_focused(window, cx) {
+                reopening.note(&bounds);
+                if reopening.waits() {
+                    return;
+                }
                 let inset = room(window, cx);
                 reveal(&scroll, &revealed, &blocks, bounds, inset, None, window, cx);
             }
@@ -1647,6 +1794,7 @@ impl Panel {
             appearance::button_ring_room(cx),
             None,
             None,
+            self.review.reopening.clone(),
         )
     }
     /// [`Panel::part`] for a pane that draws `focus`'s ring on its own edge: taller than the
@@ -1668,6 +1816,7 @@ impl Panel {
             appearance::button_ring_room(cx),
             Some(focus.clone()),
             None,
+            self.review.reopening.clone(),
         )
     }
     /// [`Panel::part`] for a part that owns the content below it (`owned`): Tab onto it
@@ -1689,6 +1838,7 @@ impl Panel {
             appearance::button_ring_room(cx),
             None,
             Some(owned.clone()),
+            self.review.reopening.clone(),
         )
     }
     /// `element`, a PR row's title, as the part of the PR list called `name`, which scrolls
@@ -1714,6 +1864,7 @@ impl Panel {
             self.review.revealed_focus.clone(),
             self.review.body_blocks.clone(),
         );
+        let reopening = self.review.reopening.clone();
         let inset = appearance::button_ring_room(cx);
         element
             .key_context(context)
@@ -1727,7 +1878,18 @@ impl Panel {
                     .iter()
                     .rev()
                     .find_map(|context| context.get(PULL).cloned());
-                if !window.last_input_was_keyboard() || innermost.as_ref() != Some(&name) {
+                if innermost.as_ref() != Some(&name) {
+                    return;
+                }
+                // Where the panel reopens onto the title, the part of it the list shows.
+                let shown = list.bounds();
+                let visible: Vec<_> = bounds
+                    .iter()
+                    .map(|title| title.intersect(&shown))
+                    .filter(|title| title.size.height > Pixels::ZERO)
+                    .collect();
+                reopening.note(&visible);
+                if reopening.waits() || !(window.last_input_was_keyboard() || reopening.reveals()) {
                     return;
                 }
                 let due = to_reveal(&list, &revealed, None, window, cx)
@@ -1796,6 +1958,7 @@ impl Panel {
             appearance::button_ring_room(cx),
             None,
             None,
+            self.review.reopening.clone(),
         )
     }
     /// `button`, `disabled` or not, as a control whose press can take away a pane that holds
@@ -1821,6 +1984,39 @@ impl Panel {
         self.owner
             .upgrade()
             .is_some_and(|owner| owner.read(cx).focus_ring.shows(focus))
+    }
+    /// Puts focus back as the panel reopens: on the control that held it inside the body's
+    /// view as the panel closed ([`ReviewState::held`]), where it still exists, or otherwise
+    /// on the shown section's first stop ([`Panel::focus_visible_section`]). Either is
+    /// revealed whole, whatever input came last, once a frame has drawn it, and the held
+    /// control keeps focus only where that frame draws it inside the body's view; elsewhere,
+    /// as after a text size change while the panel was closed moved it out of view, focus
+    /// goes to the section's first stop ([`Reopening`]).
+    pub(super) fn focus_reopened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.review.held.take().and_then(|held| held.upgrade()) {
+            Some(held) => {
+                *self.review.revealed_focus.borrow_mut() = Default::default();
+                held.focus(window, cx);
+                self.review.reopening.hold();
+            }
+            None => {
+                self.focus_visible_section(window, cx);
+                self.review.reopening.reveal();
+            }
+        }
+        cx.notify();
+    }
+    /// Records the control that holds focus as the panel closes, if the last frame drew it
+    /// inside the body's view, for reopening to give focus back to ([`Self::focus_reopened`]).
+    pub(super) fn hold_closing_focus(&mut self, window: &Window, cx: &App) {
+        let shown = self
+            .review
+            .reopening
+            .shows_focus(&self.review.body_scroll, window);
+        self.review.held = window
+            .focused(cx)
+            .filter(|_| shown)
+            .map(|focus| focus.downgrade());
     }
     pub(super) fn focus_visible_section(&self, window: &mut Window, cx: &mut Context<Self>) {
         *self.review.revealed_focus.borrow_mut() = Default::default();

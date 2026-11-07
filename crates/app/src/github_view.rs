@@ -542,6 +542,7 @@ impl GitTurtle {
             .iter()
             .position(|entry| entry.owner == owner_id && entry.worktree == worktree)
             .map(|index| warm.0.remove(index).panel);
+        let reopened = cached.is_some();
         let form = if let Some(form) = cached {
             form.update(cx, |panel, cx| {
                 panel.closed = false;
@@ -569,7 +570,12 @@ impl GitTurtle {
                 if let Some(index) = panel.review.take_suspended() {
                     panel.prepare_review_file(index, window, cx);
                 }
-                panel.focus_visible_section(window, cx);
+                // Reopened, focus goes back where it was only where it is still in view.
+                if reopened {
+                    panel.focus_reopened(window, cx);
+                } else {
+                    panel.focus_visible_section(window, cx);
+                }
             });
         });
         window.open_alert_dialog(cx, move |dialog, window, _| {
@@ -2219,6 +2225,7 @@ impl Panel {
         }
         // A press the closing panel took ends with it, so a reopened list is drawn at rest.
         self.pressed.set(None);
+        self.hold_closing_focus(window, cx);
         self.save_draft(window, cx);
         self.closed = true;
         self.heard = Heard::default();
@@ -2373,6 +2380,8 @@ impl Render for Panel {
         // and the one pressed since the last frame, which this frame alone may hand focus to.
         self.review.closers_drawn.get_mut().clear();
         self.review.closing = self.review.closer.take();
+        // Where focus lies in the body, which this frame's parts record as they prepaint.
+        self.review.reopening.begin_frame();
         // The focus a pane that can go with it holds in the frame the window last drew
         // ([`Panel::hand_off_lost_pane_focus`]).
         let review = &self.review;
@@ -2703,6 +2712,12 @@ impl Render for Panel {
         // Before the content: collects the lines it draws for the body's reveals, until the
         // body's own listener keeps them ([`review::Blocks::finish`]).
         let collect = blocks.collect_lines();
+        // Where reopening put focus, settled once the body's parts have found it.
+        let (reopening, panel) = (self.review.reopening.clone(), cx.entity().downgrade());
+        let (pull_revealed, list_revealed) = (
+            self.review.pull_revealed.clone(),
+            self.conversations.list_revealed.clone(),
+        );
         let body = cue.list(
             div()
                 .on_children_prepainted(cue.observe(move |_, window, cx| {
@@ -2714,6 +2729,19 @@ impl Render for Panel {
                         cx,
                     );
                     blocks.finish();
+                    let panel = panel.clone();
+                    reopening.settle(
+                        &scroll,
+                        [&*observed, &*pull_revealed, &*list_revealed],
+                        move |window, cx| {
+                            let _ = panel.update(cx, |panel, cx| {
+                                panel.focus_visible_section(window, cx);
+                                cx.notify();
+                            });
+                        },
+                        window,
+                        cx,
+                    );
                 }))
                 .key_context(review::BODY)
                 .id("github-panel")
@@ -10637,6 +10665,169 @@ mod tests {
                         && line.bottom() <= hint.bottom() + px(0.5),
                     "{at}: the hint's line {line:?} runs past its box {hint:?}"
                 );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Reopened from the header's Pull requests, by a click or by the keyboard, at 13 and
+    /// 18 pt, the panel gives focus back to the control that held it as Escape closed it where
+    /// a frame draws that control inside the body's view, revealed whole, and otherwise to the
+    /// shown section's first stop, revealed whole: in a 461 × 490 window Files' patch, which
+    /// Tab had moved onto, takes focus back whole with its ring after the keyboard, and in a
+    /// 461 × 360 one Files' changed-file list, focused with the body scrolled past it, is shown
+    /// whole as it takes focus. The panel gave focus to the changed-file list wherever the
+    /// body had last scrolled it, above the body's top at both sizes after a click, drawn
+    /// nowhere in view, and Tab went on to Changes below it (QA-106d).
+    #[gpui::test]
+    async fn reopening_focuses_only_what_the_body_shows_whole(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let (list, patch, scroll) = panel.read_with(cx, |panel, _| {
+            (
+                panel.review.file_focus.clone(),
+                panel.review.line_focus.clone(),
+                panel.review.body_scroll.clone(),
+            )
+        });
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        let focused = |cx: &mut VisualTestContext, focus: &FocusHandle| {
+            cx.update(|window, _| focus.is_focused(window))
+        };
+        // Whether `selector` lies whole inside the body with its ring's room.
+        let whole = |cx: &mut VisualTestContext, selector: &'static str| {
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let shown = cx.debug_bounds(selector).expect(selector);
+            let whole = shown.top() - room >= body.top() - px(0.5)
+                && shown.bottom() + room <= body.bottom() + px(0.5);
+            (whole, format!("{shown:?} in the body {body:?}"))
+        };
+        for interface in [13, 18] {
+            for keyboard in [false, true] {
+                let at = format!(
+                    "{interface} pt, reopened by {}",
+                    if keyboard { "the keyboard" } else { "a click" }
+                );
+                // Escape closes the panel, and the header's Pull requests opens it again: Return
+                // on the button, which Escape gave focus back to, or a click on it.
+                let reopen = async |cx: &mut VisualTestContext| {
+                    escape(cx);
+                    assert!(
+                        !cx.update(|window, cx| window.has_active_dialog(cx)),
+                        "{at}: Escape closes the panel"
+                    );
+                    let header =
+                        cx.update(|window, cx| app.read(cx).pull_requests_focus.is_focused(window));
+                    if keyboard {
+                        // Return goes down and comes up: outside a dialog, GPUI presses the
+                        // focused Button as the key comes up.
+                        let keystroke = gpui::Keystroke::parse("enter").unwrap();
+                        cx.simulate_event(gpui::KeyDownEvent {
+                            keystroke: keystroke.clone(),
+                            is_held: false,
+                            prefer_character_input: false,
+                        });
+                        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+                    } else {
+                        crate::copy_feedback::tests::click(cx, "pull-requests");
+                    }
+                    settle_panel(&app, cx).await;
+                    assert!(
+                        cx.update(|window, cx| window.has_active_dialog(cx)),
+                        "{at}: the header's Pull requests opens the panel (focused: {header})"
+                    );
+                    frames(cx);
+                };
+                crate::focus_ring::sweep::interface_size(cx, interface);
+                cx.simulate_resize(size(px(461.), px(490.)));
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.pull = Some(pull.clone());
+                        panel.review.show_list = false;
+                        panel.review.section = Section::Files;
+                        panel.review.files = files.clone();
+                        panel.review.selected_file = None;
+                        panel.select_review_file(1, window, cx);
+                    })
+                });
+                settle_panel(&app, cx).await;
+                frames(cx);
+
+                // Tab from the changed-file list onto the patch, which the body shows whole.
+                for _ in 0..12 {
+                    if focused(cx, &patch) {
+                        break;
+                    }
+                    cx.simulate_keystrokes("tab");
+                    frames(cx);
+                }
+                assert!(focused(cx, &patch), "{at}: Tab reaches the patch");
+                let (shown, place) = whole(cx, "github-patch");
+                assert!(shown, "{at}: Tab shows the patch whole: {place}");
+                reopen(cx).await;
+                assert!(
+                    focused(cx, &patch),
+                    "{at}: the patch, whole in view as the panel closed, takes focus back"
+                );
+                let (shown, place) = whole(cx, "github-patch");
+                assert!(shown, "{at}: the patch is whole: {place}");
+                // Its ring, the accent outline it lays over its rows inside its own edge.
+                let pane = cx.debug_bounds("github-patch").expect("the patch");
+                let accent = cx.update(|_, cx| Hsla::from(rgb(palette(cx).accent)));
+                let ring = quads(cx).into_iter().any(|(bounds, quad)| {
+                    quad.border_color == accent
+                        && [
+                            (bounds.left(), pane.left()),
+                            (bounds.top(), pane.top()),
+                            (bounds.right(), pane.right()),
+                            (bounds.bottom(), pane.bottom()),
+                        ]
+                        .into_iter()
+                        .all(|(a, b)| (a - b).abs() <= px(1.01))
+                });
+                assert_eq!(
+                    ring, keyboard,
+                    "{at}: the patch draws its ring after the keyboard only"
+                );
+
+                // The changed-file list, focused with the body scrolled past it, in a window
+                // short enough for the body to scroll it out of view.
+                cx.simulate_resize(size(px(461.), px(360.)));
+                cx.update(|window, cx| window.focus(&list, cx));
+                frames(cx);
+                let (body, shown) = (
+                    cx.debug_bounds("github-panel").expect("the body"),
+                    cx.debug_bounds("github-file-focus").expect("the list"),
+                );
+                let offset = scroll.offset().y - (shown.bottom() - body.top());
+                assert!(
+                    -offset <= scroll.max_offset().y,
+                    "{at}: the body can scroll the list out of view"
+                );
+                scroll.set_offset(point(px(0.), offset));
+                frames(cx);
+                let shown = cx.debug_bounds("github-file-focus").expect("the list");
+                assert!(
+                    focused(cx, &list) && shown.bottom() <= body.top() + px(0.5),
+                    "{at}: the focused list {shown:?} lies above the body {body:?}"
+                );
+                reopen(cx).await;
+                assert!(
+                    focused(cx, &list),
+                    "{at}: Files' first stop, the changed-file list, takes focus"
+                );
+                let (shown, place) = whole(cx, "github-file-focus");
+                assert!(shown, "{at}: the list is whole: {place}");
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
