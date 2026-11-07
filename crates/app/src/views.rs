@@ -31351,6 +31351,87 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The floor change of
+    /// `a_focused_composer_stop_stays_whole_as_the_content_around_it_moves`
+    /// with the commit title focused by a click, which a resize alone would
+    /// not reveal: at 18 pt in a 461 × 490 window, with the title's label a
+    /// gap below the body's top, a watcher's refresh that stages a file and
+    /// gives up the floor's Unstaged heading keeps the title whole in every
+    /// frame, since the change is no one's input. Revealed only where the
+    /// keyboard had placed the focus, the title moved a row up and its label
+    /// was cut at the body's top.
+    #[gpui::test]
+    async fn a_clicked_composer_stop_stays_whole_as_the_floor_changes(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--quiet"]);
+        watcher_reload(&app, cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        draw(cx);
+        let max = app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y);
+        assert!(max > px(0.), "the body scrolls");
+        let title = app.read_with(cx, |app, cx| app.commit_title.read(cx).focus_handle(cx));
+        let gap = cx.update(|window, _| window.pixel_snap(appearance::ui_size(4.)));
+        let slack = px(0.01);
+        // The title's label a gap below the body's top, where a row's move
+        // up cuts it.
+        let label = cx.debug_bounds("commit-title-label").expect("the label");
+        let body = cx.debug_bounds("working-body").expect("the body");
+        let offset = label.top() - gap - body.top();
+        assert!(offset > px(0.) && offset < max, "{offset:?} within {max:?}");
+        app.read_with(cx, |app, _| {
+            app.working_body.scroll().set_offset(point(px(0.), -offset))
+        });
+        draw(cx);
+        let field = cx.debug_bounds("commit-title").expect("the field");
+        cx.simulate_click(field.center(), Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.update(|window, _| title.is_focused(window)),
+            "the click focuses the title"
+        );
+        let label = cx.debug_bounds("commit-title-label").expect("the label");
+        let body = cx.debug_bounds("working-body").expect("the body");
+        assert!(
+            (label.top() - gap - body.top()).abs() < px(0.5),
+            "the click scrolls nothing: the title's label {label:?} in the body {body:?}"
+        );
+        // A refresh stages a file: the floor gives up the Unstaged heading.
+        let reveal = app.read_with(cx, |app, _| app.working_body.clone());
+        reveal.take_painted();
+        fixture_git(&root, &["add", "alpha.txt"]);
+        watcher_reload(&app, cx);
+        assert!(app.read_with(cx, |app, _| matches!(
+            app.working_rows[..2],
+            [
+                workspace::WorkingRow::Heading(..),
+                workspace::WorkingRow::File(..)
+            ]
+        )));
+        assert!(cx.update(|window, _| title.is_focused(window)));
+        let frames = reveal.take_painted();
+        assert!(!frames.is_empty(), "the refresh draws the body");
+        for (index, frame) in frames.iter().enumerate() {
+            let control = frame
+                .control
+                .unwrap_or_else(|| panic!("frame {index} draws the title"));
+            assert!(
+                control.top() + slack >= frame.viewport.top() + gap
+                    && control.bottom() <= frame.viewport.bottom() - gap + slack,
+                "frame {index} of {} draws the title {control:?} cut in {:?}",
+                frames.len(),
+                frame.viewport
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// At 18 pt in a 461 × 490 window, where the list and the composer
     /// scroll together and the list keeps only its floor, staging the
     /// selected file from the keyboard keeps it among the rows the list
