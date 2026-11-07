@@ -395,8 +395,10 @@ impl ComposerMetrics {
 
     /// The composer drawn with its rows whole and nothing more: its chrome,
     /// the fields' `rows` (`GitTurtle::composer_rows`) and the description's
-    /// `field`, or, where the Description section has left, those rows less
-    /// the section's own (`GitTurtle::description_section`).
+    /// `field`, or, without one, as where an operation's banner stands in
+    /// the composer's place, those rows less the Description section's own
+    /// (`GitTurtle::description_section`): the section never leaves for
+    /// room.
     fn content(&self, rows: Pixels, section: Pixels, field: Option<f32>) -> Pixels {
         self.chrome() + field.map_or(rows - section, |field| rows + px(field))
     }
@@ -4113,10 +4115,9 @@ impl GitTurtle {
         // section keeps its share and its description's field grows to take
         // what its rows leave: the field is the composer's one row that reads
         // better taller, and the action stays at the composer's foot. A short
-        // composer, or one whose section has left, is drawn no taller than its
-        // rows: what it does not use goes back to the list in whole rows, and
-        // what is left, less than a row, lies between the list's last row and
-        // the composer.
+        // composer is drawn no taller than its rows: what it does not use goes
+        // back to the list in whole rows, and what is left, less than a row,
+        // lies between the list's last row and the composer.
         let content = f32::from(metrics.content(rows, section, description));
         let (drawn, description) = match description {
             // Laid out at its rows' own height in the scrolling body.
@@ -4271,11 +4272,12 @@ impl GitTurtle {
                         .border_t_1()
                         .border_color(rgb(p.border))
                         .children(composer_probe)
-                        // The heading is pinned above the scrolling fields, as the
-                        // commit action is below them; where the body is short the
-                        // file list gives up the room for both, down to its floor.
-                        // In the tightest inspector the heading leaves
-                        // (`WorkingFit`).
+                        // The heading leads the composer above its fields, as the
+                        // commit action ends it below them; where the body is short
+                        // the file list gives up the room for both, down to its
+                        // floor, and before the list and the composer would scroll
+                        // together the heading leaves (`WorkingFit`), so it never
+                        // scrolls with them.
                         .when(fit.heading, |el| {
                             el.child(
                                 div()
