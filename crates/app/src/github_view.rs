@@ -1228,6 +1228,9 @@ impl Panel {
             this.account = Some("offline-reviewer".into());
             this.notice=Some("Offline review fixture · fixed sample data; account connection and network transport are unavailable in this mode.".into());
         }
+        // A pane that goes with focus hands it on ([`Panel::hand_off_lost_pane_focus`]).
+        this.subscriptions
+            .push(cx.on_focus_lost(window, Self::hand_off_lost_pane_focus));
         this.subscriptions.push(cx.subscribe_in(
             &this.review.input,
             window,
@@ -2297,9 +2300,51 @@ impl Panel {
         .detach();
     }
 }
+impl Panel {
+    /// The panel's one guard for focus a pane takes with it as it goes, run once a frame has
+    /// drawn the window with focus on nothing it drew: where the Conversations pane or the
+    /// connection pane held that focus in the frame before, on the pane, as a click inside
+    /// either leaves it, or on a control inside it, as Tab from there leaves it
+    /// ([`review::ReviewState::pane_held`]), the control whose press took the pane away
+    /// takes it ([`review::ReviewState::closer`]), as Account options
+    /// does as it closes the connection pane, New pull request as it replaces the PR, a mode
+    /// as it replaces Threads and a page of files as it loads, where the frame drew that
+    /// control enabled; otherwise the content the panel shows takes it, as the file list does
+    /// where the page loaded leaves the button that asked for it disabled
+    /// ([`Panel::focus_visible_section`]). Left on a pane no frame drew, focus started the
+    /// next Tab again from the window's first stop, and the panel's keys, Escape among them,
+    /// went nowhere.
+    fn hand_off_lost_pane_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let review = &mut self.review;
+        // Focus lost anywhere else, or by a closed panel's panes, is not the panel's to move.
+        let lost = window.focused(cx);
+        if self.closed || lost.is_none() || review.pane_held.take() != lost {
+            return;
+        }
+        let closer = review
+            .closer
+            .take()
+            .filter(|closer| review.closers_drawn.get_mut().contains(closer));
+        match closer {
+            Some(closer) => closer.focus(window, cx),
+            None => self.focus_visible_section(window, cx),
+        }
+        cx.notify();
+    }
+}
+
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.announce(window, cx);
+        // The controls this frame draws enabled that can take a pane away ([`Panel::closing`]).
+        self.review.closers_drawn.get_mut().clear();
+        // The focus a pane that can go with it holds in the frame the window last drew
+        // ([`Panel::hand_off_lost_pane_focus`]).
+        let review = &self.review;
+        let held = [&review.section_focus, &review.connection_focus]
+            .into_iter()
+            .any(|pane| pane.contains_focused(window, cx));
+        self.review.pane_held = window.focused(cx).filter(|_| held);
         let p = palette(cx);
         let pending = self.pending;
         let scroll = self.review.body_scroll.clone();
@@ -2451,8 +2496,11 @@ impl Render for Panel {
                 // view.
                 .child(self.part("destination",div(),cx).debug_selector(||"github-destination".into()).w(appearance::ui_size(280.)).min_w(px(190.)).child(review::one_line()).child(review::starts_block()).child(div().on_children_prepainted(self.reveal_field_on_focus(self.destination.read(cx).focus_handle(cx))).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending))))
                 .child(self.part("refresh",div(),cx).child(review::starts_block()).child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).debug_selector(||"github-refresh".into()).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx)))))
-                .child(self.part("create",div(),cx).child(review::starts_block()).child(button("github-create","New pull request","plus",false).debug_selector(||"github-create".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx)))))
-                .child(div().flex_1()).child(self.part("account",div(),cx).child(review::starts_block()).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();})))))
+                .child(self.part("create",div(),cx).child(review::starts_block()).child(self.closing(button("github-create","New pull request","plus",false),&self.review.create_focus,pending||self.review.fixture).debug_selector(||"github-create".into()).on_click(cx.listener(|this,_,window,cx|{this.review.closer=Some(this.review.create_focus.clone());this.create(window,cx)}))))
+                .child(div().flex_1()).child(self.part("account",div(),cx).child(review::starts_block()).child(self.closing(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open),&self.review.account_focus,pending).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).on_click(cx.listener(|this,_,_,cx|{
+                    this.review.closer=Some(this.review.account_focus.clone());
+                    this.review.connection_open= !this.review.connection_open;
+                    cx.notify();})))))
             // The connection pane. Each of its controls is a part of its own, as the toolbar's
             // are, so Tab onto one shows that control whole, and its lines and its controls, as
             // the toolbar's do, start blocks of the body, so the reveal can bring the pane's
@@ -11219,6 +11267,303 @@ mod tests {
             );
             assert_eq!(rows, 1, "{key} reaches the PR row once");
             crate::focus_ring::sweep::assert_whole(walked);
+        }
+    }
+
+    /// A pane that holds focus, itself or on a control inside it, hands it to the control
+    /// that closed it as it goes, by the pointer's route, in a 1,480 × 800 window at 13 pt: a
+    /// click on the connection pane's help focuses the pane, and Tab from there focuses its
+    /// first control; Account options then closes it and takes focus, and Tab moves on to the
+    /// PR list's row after it; a click on the Conversations pane's heading in Files' Threads
+    /// focuses that pane, and Tab its first control; Changes then replaces it and takes
+    /// focus, and Tab moves on to Source. Left on a pane no frame drew, or on a control of
+    /// one, focus started the next Tab again from the window's first stop, and the panel's
+    /// keys, Escape among them, went nowhere. Native QA's route on Omarchy too, with no
+    /// account connected, at 18 pt in a 480 × 490 window: a click on the help, scrolled into
+    /// view, then the body scrolled back to its top and Account options, named Connect
+    /// account there, closing the pane, leaves focus on Connect account.
+    #[gpui::test]
+    async fn closing_a_focused_pane_focuses_the_control_that_closed_it(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let (connection, account, section, modes) = cx.read(|cx| {
+            let review = &panel.read(cx).review;
+            (
+                review.connection_focus.clone(),
+                review.account_focus.clone(),
+                review.section_focus.clone(),
+                review.mode_focus.clone(),
+            )
+        });
+        let focused = |cx: &mut VisualTestContext, focus: &FocusHandle| {
+            cx.update(|window, _| focus.is_focused(window))
+        };
+        let settle = |cx: &mut VisualTestContext| {
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        let click = |cx: &mut VisualTestContext, selector: &'static str| {
+            let at = cx.debug_bounds(selector).expect(selector).center();
+            cx.simulate_click(at, Modifiers::none());
+            settle(cx);
+        };
+        // Tab from the pane, which a click focused, onto the first control inside it.
+        let into = |cx: &mut VisualTestContext, pane: &FocusHandle, name: &str| {
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            assert!(
+                cx.update(
+                    |window, cx| !pane.is_focused(window) && pane.contains_focused(window, cx)
+                ),
+                "Tab moves from {name} onto a control inside it"
+            );
+        };
+        let size = (13, 1480., 800.);
+
+        for inside in [false, true] {
+            let held = if inside {
+                "a control inside the pane"
+            } else {
+                "the pane"
+            };
+            show_surface((&app, &panel, &pull, &files), Surface::Connection, size, cx).await;
+            click(cx, "github-connection-help");
+            assert!(
+                focused(cx, &connection),
+                "a click on the help focuses the pane"
+            );
+            if inside {
+                into(cx, &connection, "the connection pane");
+            }
+            click(cx, "github-account-options");
+            assert!(
+                !panel.read_with(cx, |panel, _| panel.review.connection_open),
+                "Account options closes the pane"
+            );
+            assert!(
+                focused(cx, &account),
+                "the focus {held} held moves to Account options, which closed it"
+            );
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            let part = cx.update(|window, _| {
+                window
+                    .context_stack()
+                    .iter()
+                    .rev()
+                    .find_map(|context| context.get(review::PART).cloned())
+            });
+            assert_eq!(
+                part.as_deref(),
+                Some(format!("pr-{}", pull.number).as_str()),
+                "Tab moves on from Account options to the PR list's row"
+            );
+
+            show_surface((&app, &panel, &pull, &files), Surface::Threads, size, cx).await;
+            click(cx, "github-conversations-heading");
+            assert!(
+                focused(cx, &section),
+                "a click on the heading focuses the Conversations pane"
+            );
+            if inside {
+                into(cx, &section, "the Conversations pane");
+            }
+            click(cx, "github-file-mode-0");
+            assert_eq!(panel.read_with(cx, |panel, _| panel.review.mode), 0);
+            assert!(
+                focused(cx, &modes[0]),
+                "the focus {held} held moves to Changes, which closed it"
+            );
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            assert!(
+                focused(cx, &modes[1]),
+                "Tab moves on from Changes to Source"
+            );
+        }
+
+        show_surface(
+            (&app, &panel, &pull, &files),
+            Surface::Connection,
+            (18, 480., 490.),
+            cx,
+        )
+        .await;
+        panel.update(cx, |panel, cx| {
+            panel.account = None;
+            cx.notify();
+        });
+        settle(cx);
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let body = scroll.bounds();
+        // Scrolled as a wheel would, which moves no focus: the help's top at the body's top.
+        let help = cx.debug_bounds("github-connection-help").expect("the help");
+        let offset = scroll.offset();
+        scroll.set_offset(point(
+            offset.x,
+            (offset.y - (help.top() - body.top())).clamp(-scroll.max_offset().y, px(0.)),
+        ));
+        settle(cx);
+        let help = cx.debug_bounds("github-connection-help").expect("the help");
+        let at = point(
+            help.center().x,
+            help.top() + (help.bottom().min(body.bottom()) - help.top()) / 2.,
+        );
+        assert!(
+            body.contains(&at),
+            "the help's click {at:?} lies in the body {body:?}"
+        );
+        cx.simulate_click(at, Modifiers::none());
+        settle(cx);
+        assert!(
+            focused(cx, &connection),
+            "at 18 pt in 480 × 490, a click on the help focuses the pane"
+        );
+        // Scrolled up, as a wheel would, until Connect account, which the toolbar wraps below
+        // the body's foot at the body's top, shows whole.
+        scroll.set_offset(point(offset.x, px(0.)));
+        settle(cx);
+        let button = cx
+            .debug_bounds("github-account-options")
+            .expect("Connect account");
+        scroll.set_offset(point(
+            offset.x,
+            (body.bottom() - button.bottom()).clamp(-scroll.max_offset().y, px(0.)),
+        ));
+        settle(cx);
+        let button = cx
+            .debug_bounds("github-account-options")
+            .expect("Connect account");
+        assert!(
+            body.contains(&button.center()),
+            "Connect account {button:?} shows in the body {body:?}"
+        );
+        cx.simulate_click(button.center(), Modifiers::none());
+        settle(cx);
+        assert!(
+            !panel.read_with(cx, |panel, _| panel.review.connection_open),
+            "Connect account closes the pane"
+        );
+        assert!(
+            cx.update(|window, _| account.is_focused(window) && !window.context_stack().is_empty()),
+            "the pane's focus moves to Connect account, which closed it, drawn"
+        );
+    }
+
+    /// New pull request and Files' pages take away a pane that holds focus by the pointer's
+    /// route too, and the panel's one guard hands its focus on
+    /// ([`Panel::hand_off_lost_pane_focus`]), in a 1,480 × 800 window at 13 pt: a click on the
+    /// Conversations pane's heading in Overview focuses the pane, and New pull request then
+    /// replaces the PR and takes focus, Tab moving on to Account options; in Files' Threads on
+    /// the third page, Previous loads the second, which replaces the pane, and takes focus;
+    /// from the first page with a next one, Next loads the second, which has none, so Next is
+    /// disabled there and the file list takes focus. Each is a focus the frame draws: left on
+    /// the pane, focus was on nothing drawn and the next Tab started again from the window's
+    /// first stop.
+    #[gpui::test]
+    async fn a_new_pr_or_a_page_of_files_hands_on_the_focus_of_the_pane_it_replaces(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let (section, create, account, pages, file_list) = cx.read(|cx| {
+            let review = &panel.read(cx).review;
+            (
+                review.section_focus.clone(),
+                review.create_focus.clone(),
+                review.account_focus.clone(),
+                review.file_page_focus.clone(),
+                review.file_focus.clone(),
+            )
+        });
+        // Focus on `focus`, which the last frame drew.
+        let drawn = |cx: &mut VisualTestContext, focus: &FocusHandle| {
+            cx.update(|window, _| focus.is_focused(window) && !window.context_stack().is_empty())
+        };
+        let settle = |cx: &mut VisualTestContext| {
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        let click = |cx: &mut VisualTestContext, selector: &'static str| {
+            let at = cx.debug_bounds(selector).expect(selector).center();
+            cx.simulate_click(at, Modifiers::none());
+            settle(cx);
+        };
+        let size = (13, 1480., 800.);
+
+        show_surface((&app, &panel, &pull, &files), Surface::Overview, size, cx).await;
+        // The offline fixture offers no New pull request.
+        panel.update(cx, |panel, cx| {
+            panel.review.fixture = false;
+            cx.notify();
+        });
+        settle(cx);
+        click(cx, "github-conversations-heading");
+        assert!(
+            drawn(cx, &section),
+            "a click on the heading focuses the pane"
+        );
+        click(cx, "github-create");
+        assert!(
+            panel.read_with(cx, |panel, _| panel.create && panel.pull.is_none()),
+            "New pull request replaces the PR"
+        );
+        assert!(
+            drawn(cx, &create),
+            "the pane's focus moves to New pull request, which replaced it"
+        );
+        cx.simulate_keystrokes("tab");
+        settle(cx);
+        assert!(
+            drawn(cx, &account),
+            "Tab moves on from New pull request to Account options"
+        );
+        panel.update(cx, |panel, cx| {
+            panel.create = false;
+            panel.review.fixture = true;
+            cx.notify();
+        });
+
+        for (page, next, selector, takes, name) in [
+            (3, false, "github-files-previous", &pages[0], "Previous"),
+            (1, true, "github-files-next", &file_list, "the file list"),
+        ] {
+            show_surface((&app, &panel, &pull, &files), Surface::Threads, size, cx).await;
+            panel.update(cx, |panel, cx| {
+                panel.review.file_page = page;
+                panel.review.files_next = next;
+                cx.notify();
+            });
+            settle(cx);
+            click(cx, "github-conversations-heading");
+            assert!(
+                drawn(cx, &section),
+                "a click on the heading focuses the pane"
+            );
+            click(cx, selector);
+            settle_panel(&app, cx).await;
+            settle(cx);
+            assert_eq!(
+                panel.read_with(cx, |panel, _| (panel.review.mode, panel.review.file_page)),
+                (0, 2),
+                "{selector} loads the second page, which replaces Threads"
+            );
+            assert!(
+                drawn(cx, takes),
+                "the pane's focus moves to {name} as {selector}'s page replaces it"
+            );
         }
     }
 

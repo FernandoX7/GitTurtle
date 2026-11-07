@@ -120,6 +120,30 @@ pub(super) struct ReviewState {
     /// is: Tab onto it shows the pane from its top, its "Local worktree:" line and its help,
     /// which the reveals of its controls cannot show with every line whole in a short body.
     pub connection_focus: FocusHandle,
+    /// Account options, which opens and closes the connection pane: it takes focus the pane
+    /// held as the pane goes ([`Panel::closing`]).
+    pub account_focus: FocusHandle,
+    /// Files' modes, Changes, Source and Threads: the one a click moves to takes focus
+    /// Threads' Conversations pane held as it goes.
+    pub mode_focus: [FocusHandle; 3],
+    /// New pull request, which takes focus a PR's Conversations pane held as it goes.
+    pub create_focus: FocusHandle,
+    /// Files' Previous and Next page, which take focus Threads' Conversations pane held as the
+    /// page they load replaces it.
+    pub file_page_focus: [FocusHandle; 2],
+    /// The control whose press last took a pane away, or asked for what will, which the
+    /// panel's guard gives focus the pane held ([`Panel::closing`]).
+    pub closer: Option<FocusHandle>,
+    /// The controls that can take a pane away which the last frame drew enabled, so tracking
+    /// their focus ([`Panel::closing`]): a disabled Button tracks none, and focus given to
+    /// one is drawn nowhere.
+    pub closers_drawn: std::cell::RefCell<Vec<FocusHandle>>,
+    /// The focus that a pane which can go with it, the Conversations pane or the connection
+    /// pane, held in the frame the window last drew, on the pane itself or on a control
+    /// inside it, as Tab after a click on the pane puts it there: recorded while the panel
+    /// renders, so the guard knows the focus it finds on nothing drawn went with a pane
+    /// ([`Panel::hand_off_lost_pane_focus`]).
+    pub pane_held: Option<FocusHandle>,
     pub preparing: bool,
     /// A preparation the panel's close cancelled, resumed when it reopens.
     suspended: bool,
@@ -176,6 +200,13 @@ impl ReviewState {
             line_focus: cx.focus_handle().tab_stop(true),
             section_focus: cx.focus_handle().tab_stop(true),
             connection_focus: cx.focus_handle().tab_stop(true),
+            account_focus: cx.focus_handle().tab_stop(true),
+            mode_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            create_focus: cx.focus_handle().tab_stop(true),
+            file_page_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            closer: None,
+            closers_drawn: Default::default(),
+            pane_held: None,
             preparing: false,
             suspended: false,
             prepare_generation: 0,
@@ -1474,6 +1505,23 @@ impl Panel {
             None,
         )
     }
+    /// `button`, `disabled` or not, as a control whose press can take away a pane that holds
+    /// focus, as Account options closes the connection pane, New pull request a PR's
+    /// Conversations pane, and Files' modes and pages Threads' pane: it tracks `focus`, which
+    /// its press records as the panel's closer ([`ReviewState::closer`]), and the panel gives
+    /// that focus whatever focus the pane held as it goes, where the frame draws the control
+    /// enabled ([`Panel::hand_off_lost_pane_focus`]).
+    pub(super) fn closing(
+        &self,
+        button: gpui_kit::component::button::Button,
+        focus: &FocusHandle,
+        disabled: bool,
+    ) -> gpui_kit::component::button::Button {
+        if !disabled {
+            self.review.closers_drawn.borrow_mut().push(focus.clone());
+        }
+        button.track_focus(focus).disabled(disabled)
+    }
     /// Whether the pane that `focus` tracks draws the window's keyboard ring:
     /// after a key, and still while the pointer moves, until a pointer press.
     pub(super) fn ringed(&self, focus: &FocusHandle, cx: &App) -> bool {
@@ -2010,7 +2058,11 @@ impl Panel {
             self.review.source = Some(source);
             self.review.decorate_source(window, cx);
         }
-        self.focus_file_content(window, cx);
+        // Focus Threads' Conversations pane holds, as a click inside it leaves it, is the panel's
+        // guard's to hand on as the pane goes ([`Panel::hand_off_lost_pane_focus`]).
+        if !self.review.section_focus.contains_focused(window, cx) {
+            self.focus_file_content(window, cx);
+        }
         cx.notify();
     }
     pub(super) fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2357,24 +2409,34 @@ impl Panel {
                     .flex()
                     .items_center()
                     .gap_1()
+                    // The page either loads replaces Threads' Conversations pane.
                     .child(
-                        button("github-files-previous", "Previous", "", false)
-                            .debug_selector(|| "github-files-previous".into())
-                            .disabled(self.pending || self.review.file_page <= 1)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.file_page(this.review.file_page - 1, window, cx)
-                            })),
+                        self.closing(
+                            button("github-files-previous", "Previous", "", false),
+                            &self.review.file_page_focus[0],
+                            self.pending || self.review.file_page <= 1,
+                        )
+                        .debug_selector(|| "github-files-previous".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.review.closer = Some(this.review.file_page_focus[0].clone());
+                            this.file_page(this.review.file_page - 1, window, cx)
+                        })),
                     )
                     .child(
                         label("github-files-page", format!("{}", self.review.file_page))
                             .debug_selector(|| "github-files-page".into()),
                     )
                     .child(
-                        button("github-files-next", "Next", "", false)
-                            .disabled(self.pending || !self.review.files_next)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.file_page(this.review.file_page + 1, window, cx)
-                            })),
+                        self.closing(
+                            button("github-files-next", "Next", "", false),
+                            &self.review.file_page_focus[1],
+                            self.pending || !self.review.files_next,
+                        )
+                        .debug_selector(|| "github-files-next".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.review.closer = Some(this.review.file_page_focus[1].clone());
+                            this.file_page(this.review.file_page + 1, window, cx)
+                        })),
                     ),
             );
         let content = if let Some(file) = selected {
@@ -2442,11 +2504,15 @@ impl Panel {
                                         .into_iter()
                                         .enumerate()
                                         .map(|(mode, name)| {
-                                            button(
-                                                ("github-file-mode", mode),
-                                                name,
-                                                "",
-                                                self.review.mode == mode,
+                                            self.closing(
+                                                button(
+                                                    ("github-file-mode", mode),
+                                                    name,
+                                                    "",
+                                                    self.review.mode == mode,
+                                                ),
+                                                &self.review.mode_focus[mode],
+                                                false,
                                             )
                                             .debug_selector(move || {
                                                 format!("github-file-mode-{mode}")
@@ -2454,6 +2520,10 @@ impl Panel {
                                             .toggled(self.review.mode == mode)
                                             .on_click(
                                                 cx.listener(move |this, _, window, cx| {
+                                                    // Another mode replaces Threads'
+                                                    // Conversations pane.
+                                                    this.review.closer =
+                                                        Some(this.review.mode_focus[mode].clone());
                                                     this.review_source(mode, window, cx)
                                                 }),
                                             )
