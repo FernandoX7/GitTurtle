@@ -7524,3 +7524,115 @@ mod git_actions_text_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod write_outcome_tests {
+    use crate::native_accessibility::written;
+    use crate::views::tests::{draw, fixture_git, fixture_git_output, history_window_from, settle};
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// A `git fast-import` commit on `branch` adding `file`, marked `mark`,
+    /// from `from` where it starts a branch.
+    fn commit(branch: &str, mark: usize, from: Option<usize>, file: &str) -> String {
+        let from = from.map_or(String::new(), |from| format!("from :{from}\n"));
+        format!(
+            "commit refs/heads/{branch}\nmark :{mark}\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{file}\n{from}M 100644 inline {file}.txt\ndata {}\n{file}\n\n",
+            1_700_000_000 + mark,
+            file.len(),
+            file.len() + 1,
+        )
+    }
+
+    /// A rebase in the app reports its outcome line alone, in the status
+    /// line, its accessible value and the notice banner: Git writes each
+    /// step's progress before it on one line, "Rebasing (1/3)\rRebasing
+    /// (2/3)\rRebasing (3/3)\rSuccessfully rebased and updated
+    /// refs/heads/main.", and a terminal leaves only the outcome
+    /// (`gitturtle_core::GitRepository::execute`). QA-106e at 18 pt in a
+    /// 461 × 490 half tile found the status reading "Rebasing (1/3)Rebasing
+    /// (2/3)Rebasing (3/3)Successfully rebased…", the bar drawing
+    /// "Rebasing (1/3) Reb…" and the banner wrapping all three steps before
+    /// the outcome.
+    #[gpui::test]
+    async fn a_rebase_reports_its_outcome_without_its_progress(cx: &mut TestAppContext) {
+        const OUTCOME: &str = "Successfully rebased and updated refs/heads/main.";
+        let stream = [
+            commit("main", 1, None, "base"),
+            commit("side", 2, Some(1), "side"),
+            commit("main", 3, None, "one"),
+            commit("main", 4, None, "two"),
+            commit("main", 5, None, "three"),
+        ]
+        .concat()
+            + "done\n";
+        let (fixture, app, cx) = history_window_from(cx, stream).await;
+        let repository = fixture.path().join("narrow");
+        fixture_git(&repository, &["reset", "--hard", "--quiet"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        let plan = app
+            .read_with(cx, |app, _| app.repository.clone())
+            .expect("a repository")
+            .integration_plan("side")
+            .expect("a plan to rebase onto side");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::Integration(
+                        gitturtle_core::IntegrationCommand::Rebase { plan },
+                    ),
+                    "Rebasing…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        let rebase = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the rebase");
+        rebase.await;
+        settle(&app, cx).await;
+        let log = fixture_git_output(&repository, &["log", "--format=%s"]);
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout),
+            "three\ntwo\none\nside\nbase\n",
+            "Git replayed three commits"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_notice.clone())
+                .as_deref(),
+            Some(OUTCOME),
+            "the banner's text and accessible name"
+        );
+        for (points, width, height) in [(18, 461., 490.), (13, 1480., 973.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(points, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            written::forget();
+            draw(cx);
+            let at = format!("{points} pt in {width} × {height}");
+            let value =
+                written::get("status-line").and_then(|line| line.node.value().map(str::to_owned));
+            assert_eq!(
+                value.as_deref(),
+                Some(OUTCOME),
+                "{at}: its accessible value"
+            );
+            let drawn =
+                cx.update(|window, cx| app.update(cx, |app, cx| app.status_line_drawn(window, cx)));
+            let kept = drawn.strip_suffix('…').unwrap_or(&drawn);
+            assert!(
+                !kept.is_empty() && OUTCOME.starts_with(kept),
+                "{at}: the line draws the outcome, {drawn:?}"
+            );
+            if width > 1000. {
+                assert_eq!(drawn, OUTCOME, "{at}: whole");
+            }
+            assert!(
+                cx.debug_bounds("operation-notice-text").is_some(),
+                "{at}: the banner is drawn"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+}

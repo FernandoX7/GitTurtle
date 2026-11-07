@@ -610,13 +610,18 @@ impl GitRepository {
 
     /// Must be called from the application's serialized explicit-operation worker.
     /// Never place this in a replaceable preview queue or automatically retry it.
+    ///
+    /// Every write's outcome passes here, so its message is Git's output as
+    /// a terminal leaves it (`as_terminal_leaves`) for every surface that
+    /// shows it: the status line, the notice banner and their accessible text.
     pub fn execute(&self, operation: &WriteCommand) -> Result<WriteOutcome> {
         // A command the confinement stopped (its `.git` gone mid-write) says
         // what Git finds there now; the diagnosis runs only after a failure.
         let mut outcome = self
             .execute_inner(operation)
             .map_err(|error| self.word_gone(error))?;
-        outcome.message = authentication::redact_current(&outcome.message);
+        outcome.message =
+            as_terminal_leaves(&authentication::redact_current(&outcome.message)).into_owned();
         Ok(outcome)
     }
 
@@ -1813,6 +1818,36 @@ fn checked_write_output(
     Ok(output)
 }
 
+/// `output`, Git's reported output, as a terminal leaves it: Git writes a
+/// step's progress on one line, each step ended by a carriage return so the
+/// next overwrites it, so within each line only the text after its last
+/// carriage return is kept, a trailing one (as in a `\r\n` line end)
+/// keeping the text before it, and a line that ends up blank is dropped. A
+/// line without a carriage return is kept as it is, so output without one
+/// comes back unchanged. Decided 2026-11-07: after a rebase, the status read
+/// "Rebasing (1/3)Rebasing (2/3)Rebasing (3/3)Successfully rebased and
+/// updated refs/heads/main.", the returns dropped as it was drawn, where a
+/// terminal leaves only the outcome. Lines are cut only at the ASCII CR and
+/// LF bytes, which never occur inside a UTF-8 sequence, so what is kept is
+/// the text Git wrote, byte for byte.
+fn as_terminal_leaves(output: &str) -> std::borrow::Cow<'_, str> {
+    if !output.contains('\r') {
+        return output.into();
+    }
+    let lines: Vec<&str> = output
+        .split('\n')
+        .filter_map(|line| {
+            if !line.contains('\r') {
+                return Some(line);
+            }
+            let line = line.trim_end_matches('\r');
+            let shown = line.rsplit_once('\r').map_or(line, |(_, after)| after);
+            (!shown.trim().is_empty()).then_some(shown)
+        })
+        .collect();
+    lines.join("\n").into()
+}
+
 #[cfg(unix)]
 fn make_pipe_nonblocking(pipe: &impl std::os::fd::AsFd) -> Result<()> {
     let flags = rustix::fs::fcntl_getfl(pipe)?;
@@ -2115,6 +2150,91 @@ fn preview_bytes(file: &FileChange, old: &[u8], new: &[u8]) -> TextPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Git's output reads as a terminal leaves it: progress overwritten by
+    /// the outcome, `\r\n` line ends, a trailing carriage return, lines left
+    /// blank, and text around the returns in other scripts; output without a
+    /// carriage return is unchanged, blank lines and all.
+    #[test]
+    fn write_output_reads_as_a_terminal_leaves_it() {
+        for (output, shown) in [
+            (
+                "Rebasing (1/3)\rRebasing (2/3)\rRebasing (3/3)\rSuccessfully rebased and updated refs/heads/main.\n",
+                "Successfully rebased and updated refs/heads/main.\n",
+            ),
+            ("Updated 2 paths\r\nDone.\r\n", "Updated 2 paths\nDone.\n"),
+            ("Rebasing (3/3)\r", "Rebasing (3/3)"),
+            ("Counting 1\rCounting 2\r\r", "Counting 2"),
+            ("first\n\r\n  \rlast", "first\nlast"),
+            ("Étape 1/2\r🐢 fini ✓\r\nΩ", "🐢 fini ✓\nΩ"),
+            ("no return\n\n  spaced \n", "no return\n\n  spaced \n"),
+            ("", ""),
+        ] {
+            assert_eq!(as_terminal_leaves(output), shown, "{output:?}");
+        }
+        assert!(matches!(
+            as_terminal_leaves("unchanged\n"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    /// A rebase run as a write reports its outcome line alone, where Git
+    /// wrote each step's progress before it on the same line.
+    #[test]
+    fn a_rebase_reports_its_outcome_without_its_progress() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("work");
+        let repo = GitRepository::init(&root, "main").unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=f@example.invalid",
+                ])
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+            output
+        };
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "f@example.invalid"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        git(&["branch", "side"]);
+        for step in ["one", "two", "three"] {
+            std::fs::write(root.join(step), step).unwrap();
+            git(&["add", step]);
+            git(&["commit", "-q", "-m", step]);
+        }
+        git(&["switch", "-q", "side"]);
+        std::fs::write(root.join("side"), "side").unwrap();
+        git(&["add", "side"]);
+        git(&["commit", "-q", "-m", "side"]);
+        git(&["switch", "-q", "main"]);
+        let plan = repo.integration_plan("side").unwrap();
+        let outcome = repo
+            .execute(&WriteCommand::Integration(IntegrationCommand::Rebase {
+                plan,
+            }))
+            .unwrap();
+        assert_eq!(
+            outcome.message,
+            "Successfully rebased and updated refs/heads/main."
+        );
+        let log = git(&["log", "--format=%s", "main"]);
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout),
+            "three\ntwo\none\nside\nbase\n",
+            "the three commits were replayed onto side"
+        );
+    }
+
     #[test]
     fn push_passes_set_upstream_only_for_a_branch_without_one() {
         let temp = tempfile::TempDir::new().unwrap();
