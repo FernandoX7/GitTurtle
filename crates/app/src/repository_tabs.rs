@@ -1086,7 +1086,7 @@ impl GitTurtle {
             inspections: std::mem::take(&mut self.revision_inspection),
             blame: std::mem::take(&mut self.blame),
             search: std::mem::take(&mut self.history_search),
-            paging: std::mem::take(&mut self.history_paging),
+            paging: self.history_paging.take_settled(),
             history_updates: std::mem::take(&mut self.history_updates),
             inputs: TabInputs::capture(self.tab_inputs(), window, cx),
             branches: std::mem::take(&mut self.branches),
@@ -1986,11 +1986,11 @@ impl GitTurtle {
         if let Some(pinned) = &saved.pinned
             && saved.offset > 0
         {
-            self.history_paging.scope = Some(pinned.scope());
-            let offset = saved.offset;
-            // A page refused, as while a write runs, leaves nothing to wait
-            // for: the restore ends in History.
-            if !self.request_history_page(offset, window, cx) {
+            // The saved scope becomes the window's only with its page's
+            // rows. A page refused, as while a write runs, leaves nothing to
+            // wait for: the restore ends in History, paging on the scope the
+            // snapshot shows.
+            if !self.request_history_page_in(pinned.scope(), saved.offset, window, cx) {
                 self.end_restore_in_history(window, cx);
             }
             return;
@@ -9794,6 +9794,113 @@ mod tests {
                 );
             });
             assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
+        }
+    }
+
+    /// A cold tab's restore whose saved page is not read, refused as a write
+    /// runs when its snapshot lands or failed as its saved scope's commit is
+    /// gone, leaves History's paging on the history the snapshot shows
+    /// (`request_history_page_in`), and Older then continues that history.
+    /// The saved scope, pinned as the page was asked for, stayed under the
+    /// snapshot's rows: Older read that scope's next page there, skipping
+    /// the commit between the two tips, or failed on every press where the
+    /// saved scope's commit was gone. Read, the page replaces the snapshot's
+    /// rows whatever its offset, since it lists another scope.
+    #[gpui::test]
+    async fn a_restores_unread_page_leaves_paging_on_the_shown_history(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = tempfile::tempdir().unwrap();
+        let repo = linear_history_fixture(root.path().join("history"), 3);
+        let path = repo.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        settle_tab_test(&app, cx).await;
+        let listed = |app: &GitTurtle| {
+            app.commits
+                .iter()
+                .map(|commit| commit.oid.clone())
+                .collect::<Vec<_>>()
+        };
+        let (history, bookmark) = app.read_with(cx, |app, cx| (listed(app), app.tab_bookmark(cx)));
+        assert_eq!(history.len(), 3, "the tab lists its history");
+        for when in ["its page refused", "its page failed", "its page landed"] {
+            let refused = when == "its page refused";
+            let landed = when == "its page landed";
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            if landed {
+                // A quiet read after the landing would replace rows at the
+                // top of History with the snapshot's own.
+                crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+            }
+            app.update(cx, |app, _| {
+                // The snapshot reads one row, which leaves Older a page.
+                app.limit = 1;
+                let tab = &mut app.repository_tabs.tabs[1];
+                tab.warm = None;
+                tab.saved = Bookmark {
+                    comparison: None,
+                    compare: false,
+                    selection: None,
+                    selected_oid: None,
+                    selected_file: None,
+                    query: String::new(),
+                    // A page into the history saved while the middle commit
+                    // was the tip, or of a commit the repository lost since.
+                    pinned: Some(SavedHistoryScope::Commit(if refused || landed {
+                        history[1].clone()
+                    } else {
+                        "1".repeat(40)
+                    })),
+                    offset: 1,
+                    ..bookmark.clone()
+                };
+            });
+            let held = hold_reads(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw_tab_frames(cx);
+            if refused {
+                // A write runs as the snapshot lands.
+                app.update(cx, |app, _| app.operation_busy = Some("Committing…"));
+            }
+            drop(held);
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            if refused {
+                app.update(cx, |app, _| app.operation_busy = None);
+            }
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            if landed {
+                // The saved scope's page, offset 1 of the middle commit's
+                // history, replaces the snapshot's row, whose offset it
+                // would continue: appended, it listed the tip and then the
+                // oldest commit, the middle one skipped at the seam.
+                app.read_with(cx, |app, _| {
+                    assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                    assert_eq!(app.error, None, "{when}: read");
+                    assert_eq!(listed(app), history[2..], "{when}: its page alone");
+                    assert_eq!(app.history_paging.offset, 1, "{when}: at its offset");
+                });
+                continue;
+            }
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                assert_eq!(listed(app), history[..1], "{when}: the snapshot's row");
+                assert_eq!(app.history_paging.next_offset, Some(1), "{when}");
+            });
+            let older = cx.debug_bounds("load-more").expect("Older is drawn");
+            cx.simulate_click(older.center(), Modifiers::default());
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.error, None, "{when}: Older read");
+                assert_eq!(listed(app), history, "{when}: Older continues it");
+            });
         }
     }
 

@@ -232,7 +232,7 @@ impl GitTurtle {
         self.error = None;
         if self.history_search.normal.is_none() {
             self.history_search.normal = Some(Retained {
-                paging: std::mem::take(&mut self.history_paging),
+                paging: self.history_paging.take_settled(),
                 commits: std::mem::take(&mut self.commits),
                 visible: std::mem::take(&mut self.visible),
                 graph: std::mem::take(&mut self.graph),

@@ -1213,6 +1213,8 @@ impl GitTurtle {
         self.cancel_automatic_read();
         self.generation += 1;
         let generation = self.generation;
+        // A history page read this one replaces never lands its scope.
+        self.history_paging.end_read();
         self.loading = Some(label);
         self.error = None;
         self.preview_read = PreviewRead::of(&job, generation);
@@ -1236,9 +1238,13 @@ impl GitTurtle {
                 // stays warm with what it shows. A restore that would have
                 // gone on to Compare stays in History then, where History's
                 // search asked for meanwhile opens (`run_pending_search`);
-                // held for that Compare, it was lost.
-                if !matches!(&reply, Ok(Ok(_))) && this.repository_tabs.restoring.take().is_some() {
-                    this.run_pending_search(window, cx);
+                // held for that Compare, it was lost. A history page's scope
+                // ends with it, paging left as it was.
+                if !matches!(&reply, Ok(Ok(_))) {
+                    this.history_paging.end_read();
+                    if this.repository_tabs.restoring.take().is_some() {
+                        this.run_pending_search(window, cx);
+                    }
                 }
                 // Dropped unanswered by the worker, the read is over all the
                 // same: left loading, it held quiet reads off, a write's
