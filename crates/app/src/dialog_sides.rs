@@ -1087,3 +1087,185 @@ fn the_ghost_room_lies_on_the_device_pixel(cx: &mut TestAppContext) {
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// The Reflog's ghost Buttons as its newest entry's details draw them, in
+/// its narrowest window, a 461 × 490 half tile, at 13 and 18 pt, each read
+/// at the Tab stop that reveals it whole: Review recovery branch… stands its
+/// label on the Reflog's text edge, a field's text inset past its padding,
+/// on one line, its frame its pull before that edge and as wide as its label
+/// and its inset on either side (186 px at 13 pt, 258 px at 18 pt); Copy
+/// commit ID stands its hash glyph there, its label after the glyph's room,
+/// on one 28 px line as wide as its glyph, its label and its insets. Tab
+/// draws each one's whole ring inside the dialog.
+#[gpui::test]
+async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_content(
+    cx: &mut TestAppContext,
+) {
+    let (_fixture, app, cx, _) = width_walk::open(width_walk::Page::History, cx).await;
+    sweep::prepare(&app, cx);
+    let mut failures = Vec::new();
+    for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        sweep::interface_size(cx, interface);
+        appearance::mark_controls(control_mark());
+        width_walk::frame(cx);
+        let at = format!("the Reflog at {interface} pt in {width} × {height}");
+        Site::Reflog.open(&app, cx).await;
+        let Some((panel, Some(edge))) = drawn(cx) else {
+            failures.push(format!("{at}: no dialog panel with text drawn"));
+            sweep::close_dialogs(cx, &at, interface, &mut Vec::new());
+            continue;
+        };
+        let (scale, pull, padding, icon, ring_room, one_line) = cx.update(|window, cx| {
+            (
+                window.scale_factor(),
+                crate::ghost_pull(window),
+                gpui_kit::component::dialog::dialog_side_padding(window, cx),
+                appearance::ui_size(16.) + appearance::ui_size(6.),
+                appearance::button_ring_room(cx),
+                appearance::ui_size(28.),
+            )
+        });
+        let (review_label, copy_label, space) = cx.update(|window, _| {
+            let width = |text| views::line_widths(&[(text, appearance::ui_text(12.))], window);
+            (
+                width("Review recovery branch…"),
+                width("Copy commit ID"),
+                width(" "),
+            )
+        });
+        let column = panel.right() - px(1.) - padding;
+        let device = |x: Pixels| (f32::from(x) * scale).round();
+        // Each Button as the first stop that shows it whole drew it, and
+        // whether Tab drew its ring whole inside the dialog's edge.
+        let mut read = std::collections::HashMap::new();
+        let mut ringed = std::collections::HashSet::new();
+        let mut sweep_findings = Vec::new();
+        sweep::walk_each(
+            &app,
+            cx,
+            "tab",
+            &at,
+            interface,
+            &mut sweep_findings,
+            &mut |cx, _, rings| {
+                for selector in ["review-reflog-recovery", "copy-reflog-oid"] {
+                    let Some(frame) = cx.debug_bounds(selector) else {
+                        continue;
+                    };
+                    if !read.contains_key(selector)
+                        && let Some(clip) = whole_in_view(cx, frame)
+                    {
+                        read.insert(selector, (frame, runs_in(cx, frame, clip)));
+                    }
+                    let around = frame.dilate(ring_room);
+                    let inside = inside(panel);
+                    if rings.iter().any(|ring| {
+                        ring.whole
+                            && (ring.bounds.left() - around.left()).abs() <= px(0.5)
+                            && (ring.bounds.right() - around.right()).abs() <= px(0.5)
+                            && (ring.bounds.top() - around.top()).abs() <= px(0.5)
+                            && (ring.bounds.bottom() - around.bottom()).abs() <= px(0.5)
+                            && ring.bounds.left() >= inside.left() - px(0.25)
+                            && ring.bounds.right() <= inside.right() + px(0.25)
+                    }) {
+                        ringed.insert(selector);
+                    }
+                }
+            },
+        );
+        for selector in ["review-reflog-recovery", "copy-reflog-oid"] {
+            if !ringed.contains(selector) {
+                failures.push(format!("{at}: Tab never draws {selector}'s whole ring"));
+            }
+        }
+        match read.get("review-reflog-recovery") {
+            Some((frame, runs)) => {
+                if device(frame.left() + pull) != device(edge) {
+                    failures.push(format!(
+                        "{at}: Review recovery branch…'s frame starts at {:?}, not its pull \
+                         {pull:?} before the edge {edge:?}",
+                        frame.left()
+                    ));
+                }
+                match runs.as_slice() {
+                    [line] if (line.left() - edge).abs() <= px(0.5) => {}
+                    runs => failures.push(format!(
+                        "{at}: Review recovery branch…'s label is drawn {runs:?}, not on one \
+                         line from the edge {edge:?}"
+                    )),
+                }
+                if (frame.size.width - (review_label + pull * 2.)).abs() > px(1.) {
+                    failures.push(format!(
+                        "{at}: Review recovery branch… is {:?} wide, not its {review_label:?} \
+                         label and its {pull:?} inset on either side",
+                        frame.size.width
+                    ));
+                }
+            }
+            None => failures.push(format!(
+                "{at}: Review recovery branch… is never drawn whole"
+            )),
+        }
+        match read.get("copy-reflog-oid") {
+            Some((frame, runs)) => {
+                if device(frame.left() + pull) != device(edge) {
+                    failures.push(format!(
+                        "{at}: Copy commit ID's frame starts at {:?}, not its pull {pull:?} \
+                         before the edge {edge:?}",
+                        frame.left()
+                    ));
+                }
+                if frame.right() > column + px(0.25) {
+                    failures.push(format!(
+                        "{at}: Copy commit ID at {frame:?} runs past the column, which ends at \
+                         {column:?}"
+                    ));
+                }
+                if let Some(first) = runs.first() {
+                    if (first.left() - icon - edge).abs() > px(1. / scale) {
+                        failures.push(format!(
+                            "{at}: Copy commit ID's glyph starts at about {:?}, not on the \
+                             edge {edge:?}",
+                            first.left() - icon
+                        ));
+                    }
+                    for line in runs {
+                        if (line.left() - first.left()).abs() > px(0.5) {
+                            failures.push(format!(
+                                "{at}: Copy commit ID has a line at {:?}, not where its first \
+                                 starts, {:?}",
+                                line.left(),
+                                first.left()
+                            ));
+                        }
+                    }
+                } else {
+                    failures.push(format!("{at}: Copy commit ID draws no label"));
+                }
+                let drawn: Pixels = runs.iter().map(|line| line.size.width).sum();
+                let lines = runs.len() as f32;
+                if drawn + space * (lines - 1.) + px(1.) * lines < copy_label {
+                    failures.push(format!(
+                        "{at}: Copy commit ID draws {drawn:?} of its {copy_label:?} label on \
+                         {lines} line(s)"
+                    ));
+                }
+                let content = pull + icon + copy_label + pull;
+                if runs.len() != 1
+                    || (frame.size.width - content).abs() > px(1.)
+                    || (frame.size.height - one_line).abs() > px(0.5)
+                {
+                    failures.push(format!(
+                        "{at}: Copy commit ID at {frame:?} draws {runs:?}, not one line \
+                         {content:?} wide and {one_line:?} tall"
+                    ));
+                }
+            }
+            None => failures.push(format!("{at}: Copy commit ID is never drawn whole")),
+        }
+        sweep::close_dialogs(cx, &at, interface, &mut failures);
+        views::tests::settle(&app, cx).await;
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
