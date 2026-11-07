@@ -141,7 +141,7 @@ impl GitRepository {
             .as_ref()
             .map(|target| {
                 let result = run_git(
-                    &self.path,
+                    self.target(),
                     &[
                         "rev-list",
                         "--count",
@@ -268,7 +268,7 @@ impl GitRepository {
     }
 
     pub fn remote_configs(&self) -> Result<Vec<RemoteConfig>> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.env("GIT_OPTIONAL_LOCKS", "0").args(["remote"]);
         let names = checked_write_output(command, None, GIT_TIMEOUT)?.stdout;
         let names = std::str::from_utf8(&names).context("A remote name is not valid UTF-8")?;
@@ -350,7 +350,7 @@ impl GitRepository {
             !self.bare,
             "Open a working copy to manage branches and remotes."
         );
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         let message = match operation {
             BranchCommand::CreateTracking { plan } => {
                 ensure!(
@@ -501,7 +501,7 @@ impl GitRepository {
             reference.len() <= 4096,
             "This branch reference is too long."
         );
-        run_git(&self.path, &["check-ref-format", reference])?;
+        run_git(self.target(), &["check-ref-format", reference])?;
         Ok(())
     }
 
@@ -518,7 +518,7 @@ impl GitRepository {
     }
 
     fn management_refs(&self, prefix: &str) -> Result<Vec<ManagementRef>> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command
             .env("GIT_OPTIONAL_LOCKS", "0")
             .env("GIT_NO_REPLACE_OBJECTS", "1")
@@ -551,7 +551,7 @@ impl GitRepository {
     }
 
     fn management_config_values(&self, key: &str, local_only: bool) -> Result<Vec<String>> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.env("GIT_OPTIONAL_LOCKS", "0").arg("config");
         if local_only {
             command.arg("--local");
@@ -584,7 +584,7 @@ impl GitRepository {
         pattern: &str,
         local_only: bool,
     ) -> Result<Vec<(String, String)>> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.env("GIT_OPTIONAL_LOCKS", "0").arg("config");
         if local_only {
             command.arg("--local");
@@ -701,7 +701,7 @@ impl GitRepository {
             );
         }
         let common = path_from_bytes(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )?));
         let transaction = RemoteConfigTransaction::acquire(common.join("config"))?;
@@ -725,7 +725,7 @@ impl GitRepository {
             ("fetch", &replacement.fetch_refspecs),
         ] {
             let key = format!("remote.{}.{suffix}", replacement.name);
-            let mut clear = normal_command(&self.path);
+            let mut clear = normal_command(self.target());
             clear
                 .arg("config")
                 .arg("--file")
@@ -738,7 +738,7 @@ impl GitRepository {
                 text(&output.stderr).trim()
             );
             for value in values {
-                let mut write = normal_command(&self.path);
+                let mut write = normal_command(self.target());
                 write
                     .arg("config")
                     .arg("--file")
@@ -766,7 +766,7 @@ impl GitRepository {
     fn validate_remote_configuration(&self, remote: &RemoteConfig) -> Result<()> {
         validate_remote_name(&remote.name)?;
         run_git(
-            &self.path,
+            self.target(),
             &[
                 "check-ref-format",
                 &format!("refs/remotes/{}/branch", remote.name),
@@ -828,7 +828,7 @@ impl GitRepository {
             "Enter a valid fetch reference pattern."
         );
         run_git(
-            &self.path,
+            self.target(),
             &[
                 "check-ref-format",
                 "--allow-onelevel",

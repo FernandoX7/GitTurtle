@@ -106,7 +106,7 @@ impl GitRepository {
         );
         let directories = self.git_directories()?;
         let storage = self.preview_lfs_storage()?;
-        let mut version = normal_command(&self.path);
+        let mut version = normal_command(self.target());
         version.args(["lfs", "version"]);
         let output = bounded_output(version, GIT_TIMEOUT)?;
         ensure!(
@@ -118,7 +118,7 @@ impl GitRepository {
         // `git lfs env` creates storage directories, even though it is a config
         // query. Redirect that side effect into our private temporary directory.
         let temporary = LfsTemporary::new()?;
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command
             .arg("-c")
             .arg(format!("remote.lfsdefault={remote}"))
@@ -145,7 +145,7 @@ impl GitRepository {
             !endpoints.is_empty(),
             "Git LFS did not report a download endpoint for this remote. Check its LFS URL configuration."
         );
-        let mut config = normal_command(&self.path);
+        let mut config = normal_command(self.target());
         config.args(["config", "--null", "--list"]);
         let output = bounded_output(config, GIT_TIMEOUT)?;
         ensure!(
@@ -183,7 +183,7 @@ impl GitRepository {
             oid.clone()
         } else {
             std::fs::create_dir(&objects)?;
-            let mut hash = normal_command(&self.path);
+            let mut hash = normal_command(self.target());
             hash.env("GIT_OBJECT_DIRECTORY", &objects)
                 .args(["hash-object", "-w", "--stdin"]);
             let oid = text(trim_line(
@@ -192,7 +192,7 @@ impl GitRepository {
             validate_oid(&oid)?;
             oid
         };
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         configure_network(&mut command, self)?;
         // A blob has no reachable commits or sibling files. Passing exactly one
         // pointer blob to --all scans and transfers exactly that object's OID.
@@ -227,8 +227,8 @@ impl GitRepository {
     }
 }
 
-pub(crate) fn lfs_storage_config(path: &Path) -> Result<Output> {
-    let mut command = normal_command(path);
+pub(crate) fn lfs_storage_config(target: GitTarget<'_>) -> Result<Output> {
+    let mut command = normal_command(target);
     command.env("GIT_OPTIONAL_LOCKS", "0").args([
         "config",
         "--null",

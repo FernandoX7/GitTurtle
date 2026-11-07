@@ -51,7 +51,7 @@ pub enum TagCommand {
 impl GitRepository {
     pub fn tags(&self) -> Result<TagList> {
         let bytes = run_git(
-            &self.path,
+            self.target(),
             &[
                 "for-each-ref",
                 "--sort=refname",
@@ -73,7 +73,7 @@ impl GitRepository {
     pub fn tag_details(&self, expected: &Tag) -> Result<TagDetails> {
         self.check_tag(expected)?;
         if expected.annotated {
-            let size = run_git(&self.path, &["cat-file", "-s", &expected.oid])?;
+            let size = run_git(self.target(), &["cat-file", "-s", &expected.oid])?;
             let size = text(trim_line(&size))
                 .parse::<u64>()
                 .context("Invalid tag object size")?;
@@ -82,7 +82,7 @@ impl GitRepository {
             }
         }
         let message = if expected.annotated {
-            let bytes = run_git(&self.path, &["cat-file", "tag", &expected.oid])?;
+            let bytes = run_git(self.target(), &["cat-file", "tag", &expected.oid])?;
             // An annotation is repository data; bound its inspector independently.
             ensure!(
                 bytes.len() <= 256 * 1024,
@@ -119,7 +119,7 @@ impl GitRepository {
             "Choose a commit for this tag."
         );
         let target_oid = text(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--verify",
@@ -151,7 +151,7 @@ impl GitRepository {
     }
 
     pub(super) fn execute_tag(&self, operation: &TagCommand) -> Result<WriteOutcome> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         let mut input = None;
         let mut signed_guard = None;
         let mut timeout = WRITE_TIMEOUT;
@@ -181,7 +181,7 @@ impl GitRepository {
                     }
                     if plan.signing {
                         signed_guard = Some(SignedTagGuard::prepare(
-                            &self.path,
+                            self.target(),
                             plan,
                             &bytes,
                             &mut command,
@@ -223,7 +223,7 @@ impl GitRepository {
                     "The remote configuration changed; review this tag's destination again."
                 );
                 self.validate_remote(&remote.name)?;
-                let mut urls = normal_command(&self.path);
+                let mut urls = normal_command(self.target());
                 urls.args(["remote", "get-url", "--push", "--all", "--", &remote.name]);
                 ensure!(
                     text(&checked_write_output(urls, None, GIT_TIMEOUT)?.stdout)
@@ -270,7 +270,7 @@ impl GitRepository {
             .into_iter()
             .chain(annotated.then_some("tag.forceSignAnnotated"))
         {
-            let mut command = normal_command(&self.path);
+            let mut command = normal_command(self.target());
             command.args(["config", "--bool", "--get", key]);
             let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
             ensure!(
@@ -289,7 +289,7 @@ impl GitRepository {
             "Enter a tag name up to 4096 bytes that does not begin with '-'."
         );
         run_git(
-            &self.path,
+            self.target(),
             &["check-ref-format", &format!("refs/tags/{name}")],
         )?;
         Ok(())
@@ -299,7 +299,7 @@ impl GitRepository {
         self.validate_tag_name(name)?;
         let reference = format!("refs/tags/{name}");
         let bytes = run_git(
-            &self.path,
+            self.target(),
             &[
                 "for-each-ref",
                 "--count=2",
@@ -367,12 +367,12 @@ struct SignedTagGuard {
 
 impl SignedTagGuard {
     fn prepare(
-        root: &Path,
+        target: GitTarget<'_>,
         plan: &CreateTagPlan,
         annotation: &[u8],
         command: &mut Command,
     ) -> Result<Self> {
-        let mut ident_command = normal_command(root);
+        let mut ident_command = normal_command(target);
         ident_command.args(["var", "GIT_COMMITTER_IDENT"]);
         let output = checked_write_output(ident_command, None, GIT_TIMEOUT)?;
         let ident = std::str::from_utf8(trim_line(&output.stdout))?;
@@ -394,7 +394,7 @@ impl SignedTagGuard {
         )
         .into_bytes();
         unsigned.extend_from_slice(annotation);
-        let mut hash = git_command(root);
+        let mut hash = git_command(target);
         hash.args(["hash-object", "-t", "tag", "--stdin"]);
         let output = checked_write_output(hash, Some(unsigned.clone()), GIT_TIMEOUT)?;
         let unsigned_oid = text(trim_line(&output.stdout));
@@ -407,7 +407,7 @@ impl SignedTagGuard {
     }
 
     fn check(self, repo: &GitRepository) -> Result<()> {
-        let mut symbolic = git_command(&repo.path);
+        let mut symbolic = git_command(repo.target());
         symbolic.args(["symbolic-ref", "--quiet", "--no-recurse", &self.reference]);
         let symbolic = bounded_write_output(symbolic, None, GIT_TIMEOUT)?;
         ensure!(
@@ -416,17 +416,17 @@ impl SignedTagGuard {
             self.reference
         );
         let oid = text(trim_line(&run_git(
-            &repo.path,
+            repo.target(),
             &["rev-parse", "--verify", "--end-of-options", &self.reference],
         )?));
         validate_oid(&oid)?;
-        let size = run_git(&repo.path, &["cat-file", "-s", &oid])?;
+        let size = run_git(repo.target(), &["cat-file", "-s", &oid])?;
         let size = std::str::from_utf8(trim_line(&size))?.parse::<usize>()?;
         ensure!(
             size <= self.unsigned.len().saturating_add(256 * 1024),
             "The created tag exceeds the signature inspection limit; its signature is unconfirmed. Inspect the tag before publishing; no retry was attempted"
         );
-        let object = run_git(&repo.path, &["cat-file", "tag", &oid]).context(
+        let object = run_git(repo.target(), &["cat-file", "tag", &oid]).context(
             "The created tag changed or is no longer annotated; its current reference was preserved. Inspect it before publishing",
         )?;
         if object
@@ -436,7 +436,7 @@ impl SignedTagGuard {
             return Ok(());
         }
         if oid == self.unsigned_oid && object == self.unsigned {
-            let mut rollback = normal_command(&repo.path);
+            let mut rollback = normal_command(repo.target());
             rollback.args([
                 "update-ref",
                 "--no-deref",

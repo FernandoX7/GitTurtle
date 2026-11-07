@@ -1,5 +1,6 @@
 use gitturtle_core::{
-    ChangeArea, ChangeStatus, FoundAtPath, GitRepository, TextPreview, WriteCommand,
+    BlameTarget, ChangeArea, ChangeStatus, FoundAtPath, GitRepository, HistoryCancellation,
+    TextPreview, WriteCommand,
 };
 use std::{
     fs,
@@ -1103,4 +1104,365 @@ fn a_write_refuses_once_its_repository_is_gone_from_its_path() {
     assert_eq!(repo.found_at_path().unwrap(), FoundAtPath::None);
     let error = format!("{:#}", repo.execute(&WriteCommand::StageAll).unwrap_err());
     assert!(error.contains("finds no repository there"), "{error}");
+}
+
+/// A nested repository `inner` inside the fixture's work tree, whose file
+/// `shared.txt` the enclosing repository also tracks, with one commit each.
+fn nested_repository(f: &Fixture) -> PathBuf {
+    f.write("inner/shared.txt", "outer line\n");
+    f.commit("outer");
+    let inner = f.root.join("inner");
+    git(&inner, &["init", "--quiet", "--initial-branch=main"]);
+    git(&inner, &["config", "user.name", "Inner Author"]);
+    git(&inner, &["config", "user.email", "inner@example.invalid"]);
+    git(&inner, &["config", "commit.gpgsign", "false"]);
+    fs::write(inner.join("shared.txt"), "inner line\n").unwrap();
+    git(&inner, &["add", "shared.txt"]);
+    git(&inner, &["commit", "--quiet", "-m", "inner"]);
+    inner
+}
+
+/// Every command of an opened repository is confined to it: with its
+/// `.git` gone, Git stops with "not a git repository" instead of reading
+/// the work tree enclosing it, as the old handle's status, history and
+/// attribution once did, each showing the enclosing repository's state.
+#[test]
+fn an_opened_repository_s_reads_never_reach_the_enclosing_repository() {
+    let f = Fixture::new();
+    let inner = nested_repository(&f);
+    let repo = GitRepository::open(&inner).unwrap();
+    assert_eq!(repo.history_page(0, 10).unwrap()[0].subject, "inner");
+
+    fs::rename(inner.join(".git"), f.temp.path().join("inner-git-away")).unwrap();
+    fs::write(inner.join("shared.txt"), "changed\n").unwrap();
+    let not_a_repository = |error: anyhow::Error| {
+        let error = format!("{error:#}");
+        assert!(error.contains("not a git repository"), "{error}");
+    };
+    not_a_repository(repo.status().map(|_| ()).unwrap_err());
+    not_a_repository(repo.history_page(0, 10).map(|_| ()).unwrap_err());
+    not_a_repository(
+        repo.blame(
+            &BlameTarget::Working {
+                path: "shared.txt".into(),
+            },
+            &HistoryCancellation::default(),
+        )
+        .map(|_| ())
+        .unwrap_err(),
+    );
+    // The diagnosis, unconfined, still names what Git finds there.
+    assert_eq!(
+        repo.verify_at_path().unwrap(),
+        FoundAtPath::Other(f.repo().path().to_owned())
+    );
+}
+
+/// The confinement's ceiling is the parent of the folder holding `.git`,
+/// so every layout Git discovers from the repository's root still works:
+/// a linked worktree, a repository opened from a subfolder, one whose
+/// `core.worktree` is a folder inside the one holding `.git`, and a
+/// submodule; a hook's `git -C ..` still finds the enclosing repository,
+/// and it sees the ceiling.
+#[cfg(unix)]
+#[test]
+fn confined_commands_keep_every_layout_git_discovers_from_the_root() {
+    let f = Fixture::new();
+    let inner = nested_repository(&f);
+    let outer_root = f.repo().path().to_owned();
+
+    let linked = f.temp.path().join("linked");
+    git(
+        &inner,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "linked",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let repo = GitRepository::open(&linked).unwrap();
+    fs::write(linked.join("shared.txt"), "linked\n").unwrap();
+    repo.execute(&WriteCommand::StageAll).unwrap();
+    repo.execute(&WriteCommand::Commit {
+        message: "linked".into(),
+    })
+    .unwrap();
+    assert_eq!(repo.status().unwrap().branch.as_deref(), Some("linked"));
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+
+    fs::create_dir(inner.join("sub")).unwrap();
+    let repo = GitRepository::open(inner.join("sub")).unwrap();
+    assert_eq!(repo.path(), inner.canonicalize().unwrap());
+    assert_eq!(repo.status().unwrap().branch.as_deref(), Some("main"));
+
+    // core.worktree a folder inside the one holding `.git`: a ceiling at
+    // the root's parent would stop Git before it reached that `.git`.
+    let holder = f.temp.path().join("holder");
+    git(
+        f.temp.path(),
+        &[
+            "init",
+            "--quiet",
+            "--initial-branch=main",
+            holder.to_str().unwrap(),
+        ],
+    );
+    let worktree = holder.join("tree");
+    fs::create_dir(&worktree).unwrap();
+    git(
+        &holder,
+        &["config", "core.worktree", worktree.to_str().unwrap()],
+    );
+    git(&holder, &["config", "user.name", "Redirected Author"]);
+    git(
+        &holder,
+        &["config", "user.email", "redirected@example.invalid"],
+    );
+    git(&holder, &["config", "commit.gpgsign", "false"]);
+    fs::write(worktree.join("file.txt"), "redirected\n").unwrap();
+    let repo = GitRepository::open(&worktree).unwrap();
+    assert_eq!(repo.path(), worktree.canonicalize().unwrap());
+    repo.execute(&WriteCommand::StageAll).unwrap();
+    repo.execute(&WriteCommand::Commit {
+        message: "redirected".into(),
+    })
+    .unwrap();
+    assert!(repo.status().unwrap().entries.is_empty());
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+
+    let module = Fixture::new();
+    module.write("module.txt", "module\n");
+    module.commit("module");
+    f.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "--quiet",
+        module.root.to_str().unwrap(),
+        "module",
+    ]);
+    let checkout = f.root.join("module");
+    fs::write(checkout.join("module.txt"), "changed in the checkout\n").unwrap();
+    let repo = GitRepository::open(&checkout).unwrap();
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+    assert_eq!(repo.status().unwrap().entries.len(), 1);
+    assert_eq!(repo.history_page(0, 1).unwrap()[0].subject, "module");
+
+    // A hook climbing above the repository's root still reaches the
+    // enclosing repository; Git never treats the folder it starts in as
+    // above a ceiling.
+    let hook = inner.join(".git/hooks/pre-commit");
+    fs::write(
+        &hook,
+        "#!/bin/sh\ngit -C .. rev-parse --show-toplevel > ../hook-found\nprintf '%s' \"$GIT_CEILING_DIRECTORIES\" > ../hook-ceiling\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let repo = GitRepository::open(&inner).unwrap();
+    fs::write(inner.join("shared.txt"), "hooked\n").unwrap();
+    repo.execute(&WriteCommand::StageAll).unwrap();
+    repo.execute(&WriteCommand::Commit {
+        message: "hooked".into(),
+    })
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(f.root.join("hook-found"))
+            .unwrap()
+            .trim_end(),
+        outer_root.to_str().unwrap()
+    );
+    let ceiling = fs::read_to_string(f.root.join("hook-ceiling")).unwrap();
+    assert!(
+        ceiling.ends_with(outer_root.to_str().unwrap()),
+        "the ceiling is the parent of the folder holding .git: {ceiling}"
+    );
+}
+
+/// The repository's identity is its root and the Git directory Git
+/// reported at open, compared as captured: a `.git` swapped for another
+/// repository's gitfile, or the root turned into a link to another
+/// repository, is another repository, and a write refuses before Git
+/// starts, leaving that repository's index alone. A clone made again at
+/// the same path is the same root and `.git` path, and keeps working.
+#[cfg(unix)]
+#[test]
+fn a_swapped_git_entry_or_a_linked_root_is_another_repository() {
+    let f = Fixture::new();
+    f.write("file.txt", "base\n");
+    f.commit("base");
+    let other = Fixture::new();
+    other.write("file.txt", "other\n");
+    other.commit("other");
+    let other_git = other.repo().git_dir().to_owned();
+    let repo = f.repo();
+    assert_eq!(repo.git_dir(), f.root.join(".git").canonicalize().unwrap());
+    f.write("file.txt", "changed\n");
+    let refused = |repo: &GitRepository| {
+        let error = format!("{:#}", repo.execute(&WriteCommand::StageAll).unwrap_err());
+        assert!(
+            error.contains("The repository changed") && error.contains("Git was not started"),
+            "{error}"
+        );
+        assert!(other.git(&["diff", "--cached", "--name-only"]).is_empty());
+    };
+
+    let away = f.temp.path().join("git-away");
+    fs::rename(f.root.join(".git"), &away).unwrap();
+    fs::write(
+        f.root.join(".git"),
+        format!("gitdir: {}\n", other_git.display()),
+    )
+    .unwrap();
+    assert_eq!(
+        repo.verify_at_path().unwrap(),
+        FoundAtPath::Other(other_git.clone())
+    );
+    refused(&repo);
+    fs::remove_file(f.root.join(".git")).unwrap();
+    fs::rename(&away, f.root.join(".git")).unwrap();
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+
+    let moved = f.temp.path().join("work-away");
+    fs::rename(&f.root, &moved).unwrap();
+    std::os::unix::fs::symlink(&other.root, &f.root).unwrap();
+    assert_eq!(
+        repo.verify_at_path().unwrap(),
+        FoundAtPath::Other(other.repo().path().to_owned())
+    );
+    refused(&repo);
+    fs::remove_file(&f.root).unwrap();
+
+    // Cloned again at the same path.
+    git(
+        f.temp.path(),
+        &[
+            "clone",
+            "--quiet",
+            moved.to_str().unwrap(),
+            f.root.to_str().unwrap(),
+        ],
+    );
+    git(&f.root, &["config", "user.name", "Fixture Author"]);
+    git(
+        &f.root,
+        &["config", "user.email", "fixture@example.invalid"],
+    );
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+    f.write("file.txt", "after the clone\n");
+    repo.execute(&WriteCommand::StageAll).unwrap();
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "file.txt");
+}
+
+/// `core.worktree` re-pointed after open moves the work tree without
+/// touching the `.git` entry: Stage all once staged the other folder's
+/// files. A changed configuration file makes the write ask Git first, and
+/// it refuses before Git starts; an edit that leaves the work tree where it
+/// was (a name) still writes.
+#[test]
+fn a_work_tree_moved_by_configuration_after_open_is_refused() {
+    let f = Fixture::new();
+    f.write("file.txt", "base\n");
+    f.commit("base");
+    let repo = f.repo();
+    let elsewhere = f.temp.path().join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    fs::write(elsewhere.join("foreign.txt"), "foreign\n").unwrap();
+    f.git(&["config", "core.worktree", elsewhere.to_str().unwrap()]);
+    let error = format!("{:#}", repo.execute(&WriteCommand::StageAll).unwrap_err());
+    assert!(
+        error.contains("The repository changed") && error.contains("Git was not started"),
+        "{error}"
+    );
+    assert!(f.git(&["diff", "--cached", "--name-only"]).is_empty());
+
+    f.git(&["config", "--unset", "core.worktree"]);
+    f.git(&["config", "user.name", "Renamed Author"]);
+    f.write("file.txt", "changed\n");
+    repo.execute(&WriteCommand::StageAll).unwrap();
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "file.txt");
+}
+
+/// A gitfile whose path differs from the captured Git directory only by a
+/// trailing space names another folder for Git, which strips only line
+/// ends: the look-alike is another repository and the write refuses,
+/// leaving its index alone.
+#[test]
+fn a_gitfile_naming_a_look_alike_git_directory_is_another_repository() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("work");
+    let store = temp.path().join("store.git");
+    git(
+        temp.path(),
+        &[
+            "init",
+            "--quiet",
+            "--separate-git-dir",
+            store.to_str().unwrap(),
+            root.to_str().unwrap(),
+        ],
+    );
+    let repo = GitRepository::open(&root).unwrap();
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+    let look_alike = PathBuf::from(format!("{} ", repo.git_dir().display()));
+    let other = Fixture::new();
+    fs::rename(other.root.join(".git"), &look_alike).unwrap();
+    fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", look_alike.display()),
+    )
+    .unwrap();
+    fs::write(root.join("file.txt"), "into the look-alike\n").unwrap();
+    let error = format!("{:#}", repo.execute(&WriteCommand::StageAll).unwrap_err());
+    assert!(
+        error.contains("The repository changed") && error.contains("Git was not started"),
+        "{error}"
+    );
+    let staged = Command::new("git")
+        .arg("--git-dir")
+        .arg(&look_alike)
+        .args(["ls-files", "--cached"])
+        .output()
+        .unwrap();
+    assert!(
+        staged.stdout.is_empty(),
+        "the look-alike's index is untouched"
+    );
+}
+
+/// A linked worktree's `commondir` re-pointed to another repository uses
+/// that repository's refs and objects with no `.git` entry changed: the
+/// changed file makes the write ask Git, and it refuses before Git starts.
+#[test]
+fn a_linked_worktree_whose_commondir_is_re_pointed_is_refused() {
+    let f = Fixture::new();
+    f.write("file.txt", "base\n");
+    f.commit("base");
+    let linked = f.temp.path().join("linked");
+    f.git(&[
+        "worktree",
+        "add",
+        "--quiet",
+        "-b",
+        "linked",
+        linked.to_str().unwrap(),
+    ]);
+    let repo = GitRepository::open(&linked).unwrap();
+    let other = Fixture::new();
+    other.write("other.txt", "other\n");
+    other.commit("other");
+    let other_git = other.repo().git_dir().to_owned();
+    fs::write(
+        repo.git_dir().join("commondir"),
+        format!("{}\n", other_git.display()),
+    )
+    .unwrap();
+    fs::write(linked.join("file.txt"), "changed\n").unwrap();
+    let error = format!("{:#}", repo.execute(&WriteCommand::StageAll).unwrap_err());
+    assert!(error.contains("Git was not started"), "{error}");
+    assert_eq!(other.git(&["diff", "--cached", "--name-only"]), "");
 }

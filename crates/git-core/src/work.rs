@@ -240,7 +240,7 @@ impl GitRepository {
     /// No index refresh, filesystem-monitor invocation, or automatic network access.
     pub fn status(&self) -> Result<RepositoryStatus> {
         ensure!(!self.bare, "A bare repository has no working copy");
-        let mut command = passive_status_command(&self.path)?;
+        let mut command = passive_status_command(self.target())?;
         command.args([
             "-c",
             "diff.renameLimit=1000",
@@ -261,7 +261,7 @@ impl GitRepository {
         let bytes = output.stdout;
         let mut status = parse_status(&bytes)?;
         let git_dir = path_from_bytes(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &["rev-parse", "--absolute-git-dir"],
         )?));
         for (file, name) in [
@@ -283,7 +283,7 @@ impl GitRepository {
     /// Unlike object inspection, this command intentionally reads normal Git config.
     pub fn profile(&self) -> Result<GitProfile> {
         let mut profile = self.profile_config()?;
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.args(["var", "GIT_AUTHOR_IDENT"]);
         let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
         if output.status.success() {
@@ -299,7 +299,7 @@ impl GitRepository {
     }
 
     pub fn remotes(&self) -> Result<Vec<Remote>> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.args(["remote"]);
         let bytes = checked_write_output(command, None, GIT_TIMEOUT)?.stdout;
         text(&bytes)
@@ -307,7 +307,7 @@ impl GitRepository {
             .map(|name| {
                 validate_remote_name(name)?;
                 let read = |push: bool| -> Result<String> {
-                    let mut command = normal_command(&self.path);
+                    let mut command = normal_command(self.target());
                     command.args(["remote", "get-url"]);
                     if push {
                         command.arg("--push");
@@ -327,7 +327,7 @@ impl GitRepository {
     }
 
     fn normal_config(&self, key: &str) -> Result<Option<String>> {
-        normal_config_at(&self.path, key)
+        normal_config_at(self.target(), key)
     }
 
     /// Worktree reads never run clean/smudge filters and never follow stored symlinks.
@@ -458,7 +458,7 @@ impl GitRepository {
         // check-attr is a passive read of normal attributes; it never invokes a
         // filter or a diff driver. Keep display bytes raw, and disclose cases in
         // which combining those bytes with index contents would be misleading.
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.env("GIT_OPTIONAL_LOCKS", "0").args([
             "check-attr",
             "-z",
@@ -525,7 +525,7 @@ impl GitRepository {
         // Holding the real index.lock prevents other cooperating Git writers
         // from changing the target between validation and atomic publication.
         let index = path_from_bytes(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &["rev-parse", "--path-format=absolute", "--git-path", "index"],
         )?));
         let transaction = PartialIndex::acquire(index)?;
@@ -558,7 +558,7 @@ impl GitRepository {
                 .context("Missing object identity for file removal")?;
             format!("0 {}\t", "0".repeat(oid.len())).into_bytes()
         } else {
-            let mut hash = normal_command(&self.path);
+            let mut hash = normal_command(self.target());
             hash.args(["hash-object", "-w", "--stdin"]);
             if diff.area == ChangeArea::Unstaged {
                 hash.arg("--path").arg(&diff.path);
@@ -570,7 +570,7 @@ impl GitRepository {
             ));
             validate_oid(&oid)?;
             if diff.area == ChangeArea::Unstaged {
-                let mut raw_hash = normal_command(&self.path);
+                let mut raw_hash = normal_command(self.target());
                 raw_hash.args(["hash-object", "--stdin", "--no-filters"]);
                 let raw_oid = checked_write_output(raw_hash, Some(bytes), WRITE_TIMEOUT)?.stdout;
                 ensure!(
@@ -588,7 +588,7 @@ impl GitRepository {
         input.extend_from_slice(diff.path.as_os_str().as_encoded_bytes());
         input.push(0);
         transaction.prepare(self)?;
-        let mut update = normal_command(&self.path);
+        let mut update = normal_command(self.target());
         update.env("GIT_INDEX_FILE", &transaction.lock).args([
             "update-index",
             "-z",
@@ -611,17 +611,25 @@ impl GitRepository {
     /// Must be called from the application's serialized explicit-operation worker.
     /// Never place this in a replaceable preview queue or automatically retry it.
     pub fn execute(&self, operation: &WriteCommand) -> Result<WriteOutcome> {
-        let mut outcome = self.execute_inner(operation)?;
+        // A command the confinement stopped (its `.git` gone mid-write) says
+        // what Git finds there now; the diagnosis runs only after a failure.
+        let mut outcome = self
+            .execute_inner(operation)
+            .map_err(|error| self.word_gone(error))?;
         outcome.message = authentication::redact_current(&outcome.message);
         Ok(outcome)
     }
 
     fn execute_inner(&self, operation: &WriteCommand) -> Result<WriteOutcome> {
         ensure!(!self.bare, "Open a working copy to perform Git operations");
-        // Every write runs at the repository's path: with its `.git` gone,
-        // Git would find the work tree enclosing it and write there.
+        // Every write runs at the repository's path, confined to it: with its
+        // `.git` gone, each command fails before it changes anything, the
+        // first of a multi-command write included, rather than write to the
+        // work tree enclosing it. Checked here first from the filesystem,
+        // with no process, so a write that cannot run never starts Git;
+        // where the commands cannot be confined, Git is asked instead.
         self.ensure_found_at_path()?;
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         let mut input = None;
         let mut timeout = WRITE_TIMEOUT;
         match operation {
@@ -714,7 +722,7 @@ impl GitRepository {
             WriteCommand::Checkout { branch } => {
                 self.validate_branch(branch)?;
                 run_git(
-                    &self.path,
+                    self.target(),
                     &["show-ref", "--verify", &format!("refs/heads/{branch}")],
                 )?;
                 command.args(["switch", "--no-guess", "--", branch]);
@@ -771,7 +779,7 @@ impl GitRepository {
                 self.validate_remote(remote)?;
                 self.validate_branch(local_branch)?;
                 self.validate_branch(remote_branch)?;
-                let mut urls = normal_command(&self.path);
+                let mut urls = normal_command(self.target());
                 urls.args(["remote", "get-url", "--push", "--all", "--", remote]);
                 ensure!(
                     text(&checked_write_output(urls, None, GIT_TIMEOUT)?.stdout)
@@ -781,7 +789,7 @@ impl GitRepository {
                     "This remote has multiple push destinations. Configure a remote with one push URL so the visible destination is unambiguous."
                 );
                 run_git(
-                    &self.path,
+                    self.target(),
                     &[
                         "show-ref",
                         "--verify",
@@ -792,7 +800,7 @@ impl GitRepository {
                 // upstream only for a branch without one. A configuration change
                 // between this read and the push is accepted: at worst an upstream
                 // added concurrently is replaced, as before this check existed.
-                let set_upstream = !branch_upstream_configured(&self.path, local_branch)?;
+                let set_upstream = !branch_upstream_configured(self.target(), local_branch)?;
                 configure_network(&mut command, self)?;
                 command.args(push_arguments(
                     remote,
@@ -822,7 +830,7 @@ impl GitRepository {
             .to_owned();
         let commit_oid = if matches!(operation, WriteCommand::Commit { .. }) {
             Some(text(trim_line(&run_git(
-                &self.path,
+                self.target(),
                 &["rev-parse", "--verify", "HEAD"],
             )?)))
         } else {
@@ -855,7 +863,7 @@ impl GitRepository {
         match operation {
             WriteCommand::Fetch { .. } => {
                 let records = run_git(
-                    &self.path,
+                    self.target(),
                     &[
                         "for-each-ref",
                         "--format=%(symref)%00%(objectname) %(refname)",
@@ -894,7 +902,7 @@ impl GitRepository {
                 }
             }
             WriteCommand::Pull { .. } => {
-                digest.update(run_git(&self.path, &["rev-parse", "--verify", "HEAD"]).ok()?);
+                digest.update(run_git(self.target(), &["rev-parse", "--verify", "HEAD"]).ok()?);
             }
             _ => return None,
         }
@@ -909,7 +917,7 @@ impl GitRepository {
     /// the directory; FETCH_HEAD itself is read without following one, only
     /// as a regular file within [`MAX_BLOB_BYTES`] (`read_worktree_file`).
     fn fetched_commits(&self) -> Option<Vec<String>> {
-        let location = run_git(&self.path, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
+        let location = run_git(self.target(), &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
         let location = self.path.join(path_from_bytes(trim_line(&location)));
         // `read_worktree_file` opens the directory it is given without
         // following a link, which a linked `.git` refuses.
@@ -942,8 +950,8 @@ impl GitRepository {
         let parent = destination
             .parent()
             .context("Choose a destination inside an existing folder")?;
-        validate_branch_at(parent, initial_branch)?;
-        let mut command = normal_command(parent);
+        validate_branch_at(GitTarget::unconfined(parent), initial_branch)?;
+        let mut command = normal_command(GitTarget::unconfined(parent));
         command
             .args(["init", "--initial-branch", initial_branch, "--"])
             .arg(&destination);
@@ -970,12 +978,12 @@ impl GitRepository {
         let parent = destination
             .parent()
             .context("Choose a destination inside an existing folder")?;
-        let mut command = normal_command(parent);
+        let mut command = normal_command(GitTarget::unconfined(parent));
         authentication::configure_askpass(
             &mut command,
-            normal_config_at(parent, "core.askPass")?.is_some(),
+            normal_config_at(GitTarget::unconfined(parent), "core.askPass")?.is_some(),
         )?;
-        if normal_config_at(parent, "core.sshCommand")?.is_none() {
+        if normal_config_at(GitTarget::unconfined(parent), "core.sshCommand")?.is_none() {
             configure_default_network(&mut command);
         }
         command
@@ -992,7 +1000,7 @@ impl GitRepository {
     }
 
     fn has_head(&self) -> Result<bool> {
-        let result = run_git_output(&self.path, &["rev-parse", "--verify", "--quiet", "HEAD"])?;
+        let result = run_git_output(self.target(), &["rev-parse", "--verify", "--quiet", "HEAD"])?;
         ensure!(
             result.status.success() || result.status.code() == Some(1),
             "Unable to resolve HEAD: {}",
@@ -1001,7 +1009,7 @@ impl GitRepository {
         Ok(result.status.success())
     }
     fn validate_branch(&self, name: &str) -> Result<()> {
-        validate_branch_at(&self.path, name)
+        validate_branch_at(self.target(), name)
     }
     fn validate_remote(&self, name: &str) -> Result<()> {
         validate_remote_name(name)?;
@@ -1017,10 +1025,10 @@ impl GitRepository {
                 name.starts_with("refs/heads/") || name.starts_with("refs/remotes/"),
                 "Choose an existing branch or commit as the starting point"
             );
-            run_git(&self.path, &["check-ref-format", name])?;
+            run_git(self.target(), &["check-ref-format", name])?;
         }
         Ok(text(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--verify",
@@ -1325,7 +1333,7 @@ impl PartialIndex {
                     .context("Unable to prepare the staged selection")?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let mut command = normal_command(&repository.path);
+                let mut command = normal_command(repository.target());
                 command
                     .env("GIT_INDEX_FILE", &self.lock)
                     .args(["read-tree", "--empty"]);
@@ -1491,7 +1499,7 @@ fn path_input(paths: &[PathBuf]) -> Result<Vec<u8>> {
     }
     Ok(input)
 }
-fn validate_branch_at(path: &Path, name: &str) -> Result<()> {
+fn validate_branch_at(target: GitTarget<'_>, name: &str) -> Result<()> {
     const INVALID_NAME: &str = "Invalid branch name. Use a name such as feature/my-change; avoid spaces, a leading '-' and Git-special characters.";
     ensure!(
         !name.is_empty()
@@ -1501,7 +1509,7 @@ fn validate_branch_at(path: &Path, name: &str) -> Result<()> {
             && !name.contains('\0'),
         INVALID_NAME
     );
-    let output = run_git_output(path, &["check-ref-format", &format!("refs/heads/{name}")])
+    let output = run_git_output(target, &["check-ref-format", &format!("refs/heads/{name}")])
         .context("Unable to validate the branch name")?;
     if !output.status.success() {
         let stderr = text(&output.stderr);
@@ -1586,9 +1594,9 @@ fn fresh_destination(path: &Path) -> Result<PathBuf> {
 /// Status may otherwise execute clean/process filters while verifying a dirty
 /// stat entry. Disable every configured local filter driver without touching the
 /// repository's config. Raw worktree bytes are also what our preview displays.
-fn passive_status_command(path: &Path) -> Result<Command> {
+fn passive_status_command(target: GitTarget<'_>) -> Result<Command> {
     let result = run_git_output(
-        path,
+        target,
         &[
             "config",
             "--includes",
@@ -1602,7 +1610,7 @@ fn passive_status_command(path: &Path) -> Result<Command> {
         result.status.success() || result.status.code() == Some(1),
         "Unable to inspect configured filters"
     );
-    let mut command = git_command(path);
+    let mut command = git_command(target);
     for key in result
         .stdout
         .split(|b| *b == 0)
@@ -1627,9 +1635,9 @@ fn passive_status_command(path: &Path) -> Result<Command> {
 /// Passive read of whether `branch` already records an upstream branch.
 /// Git treats a branch without `branch.<name>.merge` as having no upstream,
 /// which is also the condition `push.autoSetupRemote` uses.
-fn branch_upstream_configured(path: &Path, branch: &str) -> Result<bool> {
+fn branch_upstream_configured(target: GitTarget<'_>, branch: &str) -> Result<bool> {
     let output = run_git_output(
-        path,
+        target,
         &[
             "config",
             "--null",
@@ -1681,8 +1689,8 @@ fn push_arguments(
     ]);
     args
 }
-fn normal_config_at(path: &Path, key: &str) -> Result<Option<String>> {
-    let mut command = normal_command(path);
+fn normal_config_at(target: GitTarget<'_>, key: &str) -> Result<Option<String>> {
+    let mut command = normal_command(target);
     command.args(["config", "--null", "--get", key]);
     let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
     if output.status.code() == Some(1) {
@@ -1698,8 +1706,9 @@ fn normal_config_at(path: &Path, key: &str) -> Result<Option<String>> {
     )))
 }
 
-pub(super) fn normal_command(path: &Path) -> Command {
+pub(super) fn normal_command(target: GitTarget<'_>) -> Command {
     let mut command = Command::new("git");
+    target.confine(&mut command);
     command
         .args([
             "--no-pager",
@@ -1713,7 +1722,7 @@ pub(super) fn normal_command(path: &Path) -> Command {
             "protocol.ext.allow=never",
         ])
         .arg("-C")
-        .arg(path)
+        .arg(target.directory())
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("LC_ALL", "C")
@@ -2130,11 +2139,11 @@ mod tests {
         };
         // A branch.remote alone is not an upstream for Git either.
         git(&["config", "branch.main.remote", "origin"]);
-        let set = !branch_upstream_configured(&root, "main").unwrap();
+        let set = !branch_upstream_configured(GitTarget::unconfined(&root), "main").unwrap();
         assert!(set);
         assert_eq!(flagged(set), 1);
         git(&["config", "branch.main.merge", "refs/heads/main"]);
-        let set = !branch_upstream_configured(&root, "main").unwrap();
+        let set = !branch_upstream_configured(GitTarget::unconfined(&root), "main").unwrap();
         assert!(!set);
         assert_eq!(flagged(set), 0);
         let args = push_arguments("lan", "main", "trunk", set);
@@ -2142,7 +2151,7 @@ mod tests {
             args[args.len() - 3..],
             ["--", "lan", "refs/heads/main:refs/heads/trunk"]
         );
-        assert!(!branch_upstream_configured(&root, "other").unwrap());
+        assert!(!branch_upstream_configured(GitTarget::unconfined(&root), "other").unwrap());
     }
     #[test]
     fn mutation_deadline_includes_pipe_holding_hook_descendant_after_parent_exit() {

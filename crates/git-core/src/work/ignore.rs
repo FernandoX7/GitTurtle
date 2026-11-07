@@ -91,7 +91,7 @@ impl GitRepository {
             "The ignore file cannot ignore itself; choose repository-local excludes."
         );
         let snapshot = read_ignore_snapshot(&destination_path)?;
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command
             .args(["--literal-pathspecs", "ls-files", "-z", "--"])
             .arg(&path);

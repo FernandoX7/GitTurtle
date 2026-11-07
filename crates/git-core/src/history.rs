@@ -248,7 +248,7 @@ impl GitRepository {
             HistoryScope::AllRefs => self.pin_history_refs(cancellation)?,
             other => other.clone(),
         };
-        let mut command = history_command(&self.path);
+        let mut command = history_command(self.target());
         let input = match &scope {
             HistoryScope::PinnedRefs(refs) => {
                 ensure!(
@@ -315,7 +315,7 @@ impl GitRepository {
             }
             other => other.clone(),
         };
-        let mut command = history_command(&self.path);
+        let mut command = history_command(self.target());
         command.arg(format!("--skip={offset}"));
         let input = match &scope {
             HistoryScope::PinnedRefs(refs) => {
@@ -421,7 +421,7 @@ impl GitRepository {
     }
 
     fn pin_history_refs(&self, cancellation: &HistoryCancellation) -> Result<HistoryScope> {
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command.args(["rev-parse", "--revs-only", "--all", "HEAD"]);
         let mut bytes = Vec::new();
         let end = stream_history(command, None, cancellation, GIT_TIMEOUT, |chunk| {
@@ -487,7 +487,7 @@ impl GitRepository {
             .checked_add(limit)
             .and_then(|count| count.checked_add(1))
             .context("File-history offset overflow")?;
-        let mut command = history_command(&self.path);
+        let mut command = history_command(self.target());
         command
             .args([
                 "--follow",
@@ -540,8 +540,8 @@ impl GitRepository {
     }
 }
 
-pub(super) fn history_command(path: &Path) -> Command {
-    let mut command = git_command(path);
+pub(super) fn history_command(target: GitTarget<'_>) -> Command {
+    let mut command = git_command(target);
     command.arg("--literal-pathspecs").args([
         "-c",
         "log.follow=false",

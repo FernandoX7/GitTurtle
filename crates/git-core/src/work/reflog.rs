@@ -160,7 +160,7 @@ impl GitRepository {
             self.reflog_recovery_plan(&plan.entry, &plan.branch)? == *plan,
             "The recovery target changed. Refresh the reflog and review it again."
         );
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.args(["branch", "--no-track", "--", &plan.branch, &plan.entry.oid]);
         checked_write_output(command, None, WRITE_TIMEOUT)?;
         Ok(WriteOutcome {

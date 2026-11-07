@@ -91,7 +91,7 @@ impl GitRepository {
         );
         let head = if self.has_head()? {
             let oid = text(trim_line(&run_git(
-                &self.path,
+                self.target(),
                 &["rev-parse", "--verify", "HEAD^{commit}"],
             )?));
             validate_oid(&oid)?;
@@ -105,7 +105,7 @@ impl GitRepository {
         );
         if !entry.untracked {
             ensure_single_file_restore(
-                &self.path,
+                self.target(),
                 head.as_deref().context("Missing reviewed HEAD")?,
                 &entry.paths(),
             )?;
@@ -163,7 +163,7 @@ impl GitRepository {
             "The file, index, or HEAD changed after review. Review the discard again."
         );
         let paths = plan.paths();
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         // Keep normal write configuration (including filters), but bind its
         // target and raw objects to the same repository and commit reviewed by
         // passive reads. Replacement refs must not substitute another tree.
@@ -252,8 +252,8 @@ impl GitRepository {
 
 /// Even literal pathspecs select descendants. Refuse file/tree transitions
 /// whose restore would also change rows outside the reviewed file or rename.
-fn ensure_single_file_restore(root: &Path, head: &str, paths: &[PathBuf]) -> Result<()> {
-    let mut command = git_command(root);
+fn ensure_single_file_restore(target: GitTarget<'_>, head: &str, paths: &[PathBuf]) -> Result<()> {
+    let mut command = git_command(target);
     command
         .arg("--literal-pathspecs")
         .args(["ls-tree", "-z", "--full-tree", head, "--"])
@@ -282,7 +282,7 @@ fn ensure_single_file_restore(root: &Path, head: &str, paths: &[PathBuf]) -> Res
             path.display()
         );
     }
-    let mut command = git_command(root);
+    let mut command = git_command(target);
     command
         .arg("--literal-pathspecs")
         .args(["ls-files", "--cached", "-z", "--"])

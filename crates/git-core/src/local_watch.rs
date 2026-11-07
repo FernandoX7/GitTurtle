@@ -35,7 +35,7 @@ impl GitRepository {
     /// .gitignore files, common info/exclude, and effective global excludes.
     /// No hooks, filters, object reads, index refresh or networking are needed.
     pub fn local_watch_policy(&self) -> Result<LocalWatchPolicy> {
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command.args(["ls-files", "--cached", "-z"]);
         let output = bounded_output(command, GIT_TIMEOUT)?;
         ensure!(
@@ -83,7 +83,7 @@ impl GitRepository {
             tracked.insert(path);
         }
         let config = |key: &str| -> Result<Option<PathBuf>> {
-            let mut command = work::normal_command(&self.path);
+            let mut command = work::normal_command(self.target());
             command.arg("--no-optional-locks").args([
                 "config",
                 if key == "core.ignorecase" {

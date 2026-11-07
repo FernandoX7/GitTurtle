@@ -151,6 +151,43 @@ pub struct TextPreviewWithSources {
     pub new: Vec<u8>,
 }
 
+/// A repository [`GitRepository::open`] refused: Git, asked again once the
+/// files that can move its work tree or common directory were stamped,
+/// found another repository at its path (by what differs), or none, so
+/// what was captured is not what Git would act on.
+#[derive(Debug)]
+pub struct ChangedWhileOpening {
+    /// The work-tree root (a bare repository's Git directory) Git reported.
+    pub path: PathBuf,
+    /// What Git finds there now, if anything.
+    pub found: Option<PathBuf>,
+}
+
+impl std::fmt::Display for ChangedWhileOpening {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "The repository at {} changed while it was opened",
+            self.path.display()
+        )?;
+        match &self.found {
+            Some(found) => write!(f, ": Git now finds {} there.", found.display()),
+            None => write!(f, ": Git now finds no repository there."),
+        }?;
+        write!(f, " Open it again.")
+    }
+}
+
+impl std::error::Error for ChangedWhileOpening {}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs in [`GitRepository::open`] between the capture and Git's
+    /// confirmation on this thread: a test re-points what the capture read.
+    static OPEN_CHECKPOINT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// What Git finds at an opened repository's path now
 /// ([`GitRepository::found_at_path`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,7 +195,9 @@ pub enum FoundAtPath {
     /// The repository as it was opened.
     Same,
     /// Another repository: the work tree enclosing the path, its own `.git`
-    /// gone, by its work-tree root (a bare repository's Git directory).
+    /// gone, by its work-tree root (a bare repository's Git directory); or,
+    /// at the same root, another repository's Git directory, by that
+    /// directory (its `.git` swapped for another repository's gitfile).
     Other(PathBuf),
     /// No repository, or no folder at the path.
     None,
@@ -168,7 +207,280 @@ pub enum FoundAtPath {
 pub struct GitRepository {
     path: PathBuf,
     bare: bool,
+    identity: Arc<Identity>,
     batch: Arc<Mutex<Option<BatchReader>>>,
+}
+
+/// What an opened repository is, captured once at open: the Git directory
+/// Git reported and the `.git` entry Git discovery finds from the root. They
+/// confine every later command ([`GitTarget`]) and let a check compare them
+/// in-process, without starting Git ([`GitRepository::verify_at_path`]).
+#[derive(Debug)]
+struct Identity {
+    /// The work-tree root (a bare repository's Git directory), canonical.
+    root: PathBuf,
+    /// The Git directory Git reported at open, canonical.
+    git_dir: PathBuf,
+    /// Its common directory (a linked worktree's main Git directory, whose
+    /// refs and objects it uses), canonical; `git_dir` itself otherwise.
+    common: PathBuf,
+    /// The folder holding the `.git` entry (a directory or a gitfile) that
+    /// leads Git from the root to `git_dir`: the root itself, or a folder
+    /// above it whose repository sets `core.worktree` to a folder inside.
+    /// `None` for a bare repository, and where no such entry leads there.
+    holder: Option<PathBuf>,
+    /// The folder Git discovery must never enter from the repository's
+    /// folders: the parent of the folder holding `.git` (of a bare
+    /// repository's Git directory). `None` where there is none or where it
+    /// cannot be named ([`Identity::confined`]).
+    ceiling: Option<PathBuf>,
+    /// Whether every command is confined: a ceiling placed, or nothing above
+    /// to escape to. `false` where no `.git` entry leads to the Git
+    /// directory, and where the ceiling's path holds the platform's list
+    /// separator, which `GIT_CEILING_DIRECTORIES` would split into two paths
+    /// that confine nothing; there, every write and Changes' read ask Git
+    /// first ([`GitRepository::verify_at_path`]).
+    confined: bool,
+    /// The files that can move the work tree (`core.worktree`) or the
+    /// repository without touching the `.git` entry: the Git directory's
+    /// `config`, `config.worktree` and `commondir` (a linked worktree's
+    /// refs and objects), and a linked worktree's common `config`.
+    configs: Vec<PathBuf>,
+    /// Their file identities as last confirmed: unchanged, the work tree has
+    /// not moved; changed, Git is asked once and, the repository the same,
+    /// they are confirmed again.
+    stamps: Mutex<Vec<Option<FileStamp>>>,
+}
+
+/// A file's identity, as the app's retained repository identity reads it:
+/// device, inode and change time where the platform has them, size and
+/// modification time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileStamp {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed: (i64, i64),
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    fn read(path: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Some(Self {
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            #[cfg(unix)]
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+/// `GIT_CEILING_DIRECTORIES`' list separator.
+const LIST_SEPARATOR: &str = if cfg!(windows) { ";" } else { ":" };
+
+impl Identity {
+    fn capture(root: &Path, git_dir: &Path, bare: bool) -> Result<Self> {
+        let root = root
+            .canonicalize()
+            .context("Resolve the repository's folder")?;
+        let git_dir = git_dir
+            .canonicalize()
+            .context("Resolve the repository's Git directory")?;
+        let holder = if bare {
+            None
+        } else {
+            git_entry_holder(&root)
+                .filter(|holder| resolve_git_entry(holder).as_ref() == Some(&git_dir))
+                .map(Path::to_path_buf)
+        };
+        let enclosing = if bare {
+            Some(git_dir.as_path())
+        } else {
+            holder.as_deref()
+        };
+        let (ceiling, confined) = match enclosing.map(Path::parent) {
+            None => (None, false),
+            Some(None) => (None, true),
+            // Skipped where the variable would split the path and silently
+            // confine nothing: the per-operation check stays there.
+            Some(Some(parent))
+                if parent
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .contains(&LIST_SEPARATOR.as_bytes()[0]) =>
+            {
+                (None, false)
+            }
+            Some(Some(parent)) => (Some(parent.to_path_buf()), true),
+        };
+        let mut configs = vec![
+            git_dir.join("config"),
+            git_dir.join("config.worktree"),
+            git_dir.join("commondir"),
+        ];
+        let common = common_dir(&git_dir).unwrap_or_else(|| git_dir.clone());
+        if common != git_dir {
+            configs.push(common.join("config"));
+        }
+        let stamps = Mutex::new(configs.iter().map(|path| FileStamp::read(path)).collect());
+        Ok(Self {
+            root,
+            git_dir,
+            common,
+            holder,
+            ceiling,
+            confined,
+            configs,
+            stamps,
+        })
+    }
+
+    fn config_stamps(&self) -> Vec<Option<FileStamp>> {
+        self.configs
+            .iter()
+            .map(|path| FileStamp::read(path))
+            .collect()
+    }
+
+    /// Whether the repository is still at `path` as captured, by the
+    /// filesystem alone: the root resolves to the captured root (it was not
+    /// turned into a link to another folder), the `.git` entry Git finds
+    /// first from it is the captured one, and that entry still leads to the
+    /// captured Git directory (not swapped for another repository's). The
+    /// captured values are compared as they are, never resolved again.
+    fn holds(&self, path: &Path, bare: bool) -> bool {
+        if !path.canonicalize().is_ok_and(|now| now == self.root) {
+            return false;
+        }
+        if bare {
+            return true;
+        }
+        self.holder.as_deref().is_some_and(|holder| {
+            git_entry_holder(path) == Some(holder)
+                && resolve_git_entry(holder).as_ref() == Some(&self.git_dir)
+        })
+    }
+}
+
+/// A linked worktree's common Git directory, from its `commondir` file
+/// (relative to `git_dir`), canonical; `None` where there is none.
+fn common_dir(git_dir: &Path) -> Option<PathBuf> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(git_dir.join("commondir"))
+        .ok()?
+        .take(64 * 1024)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let end = bytes
+        .iter()
+        .rposition(|byte| *byte != b'\n' && *byte != b'\r')
+        .map_or(0, |last| last + 1);
+    git_dir
+        .join(path_from_bytes(&bytes[..end]))
+        .canonicalize()
+        .ok()
+}
+
+/// The nearest folder at or above `root` with a `.git` entry, where Git
+/// discovery from `root` stops.
+fn git_entry_holder(root: &Path) -> Option<&Path> {
+    root.ancestors()
+        .find(|folder| std::fs::symlink_metadata(folder.join(".git")).is_ok())
+}
+
+/// The Git directory the `.git` entry in `holder` leads to, canonical: the
+/// directory itself, or a gitfile's `gitdir:` path, relative to `holder`.
+fn resolve_git_entry(holder: &Path) -> Option<PathBuf> {
+    let entry = holder.join(".git");
+    if !std::fs::symlink_metadata(&entry).ok()?.is_file() {
+        return entry.canonicalize().ok();
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(&entry)
+        .ok()?
+        .take(64 * 1024)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let target = bytes.strip_prefix(b"gitdir: ")?;
+    // Git strips only trailing line ends: a path ending in a space is
+    // another folder, and one holding a NUL is not compared at all.
+    let end = target
+        .iter()
+        .rposition(|byte| *byte != b'\n' && *byte != b'\r')
+        .map_or(0, |last| last + 1);
+    let target = &target[..end];
+    if target.contains(&0) {
+        return None;
+    }
+    holder.join(path_from_bytes(target)).canonicalize().ok()
+}
+
+/// Whether a command failed because Git found no repository: how every
+/// command of an opened repository fails once its `.git` is gone.
+pub fn finds_no_repository(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains("not a git repository")
+}
+
+/// Where one Git process runs, and the folder Git discovery must not enter
+/// from there. Every command an opened repository starts takes its target
+/// from it ([`GitRepository::target`]); only open, init, clone and
+/// [`GitRepository::found_at_path`]'s diagnosis run unconfined.
+#[derive(Clone, Copy)]
+pub(crate) struct GitTarget<'a> {
+    directory: &'a Path,
+    ceiling: Option<&'a Path>,
+}
+
+impl<'a> GitTarget<'a> {
+    /// Discovery as Git does it with no repository opened yet.
+    pub(crate) fn unconfined(directory: &'a Path) -> Self {
+        Self {
+            directory,
+            ceiling: None,
+        }
+    }
+
+    pub(crate) fn directory(&self) -> &'a Path {
+        self.directory
+    }
+
+    /// Sets `GIT_CEILING_DIRECTORIES` to the person's own value, if any,
+    /// followed by this target's ceiling: with the repository's `.git` gone,
+    /// Git then stops with "not a git repository" instead of running on the
+    /// work tree enclosing it. Hooks, filters and helpers inherit it; a
+    /// hook's `git -C ..` still runs there, since Git never treats the folder
+    /// it starts in as above a ceiling.
+    fn confine(&self, command: &mut Command) {
+        if let Some(ceiling) = self.ceiling {
+            command.env(
+                "GIT_CEILING_DIRECTORIES",
+                ceiling_directories(std::env::var_os("GIT_CEILING_DIRECTORIES"), ceiling),
+            );
+        }
+    }
+}
+
+/// The person's `GIT_CEILING_DIRECTORIES` with `ceiling` appended, never
+/// replacing it.
+fn ceiling_directories(person: Option<OsString>, ceiling: &Path) -> OsString {
+    match person.filter(|value| !value.is_empty()) {
+        Some(mut value) => {
+            value.push(LIST_SEPARATOR);
+            value.push(ceiling);
+            value
+        }
+        None => ceiling.as_os_str().to_owned(),
+    }
 }
 
 impl std::fmt::Debug for GitRepository {
@@ -188,33 +500,87 @@ impl GitRepository {
             "Not a directory: {}",
             requested.display()
         );
-        let bare = run_git(requested, &["rev-parse", "--is-bare-repository"])?;
-        let bare = trim_line(&bare) == b"true";
-        let root = run_git(
-            requested,
-            &[
-                "rev-parse",
-                if bare {
-                    "--absolute-git-dir"
-                } else {
-                    "--show-toplevel"
-                },
-            ],
+        // Discovery from the requested folder, unconfined: a folder inside a
+        // work tree opens that work tree.
+        let reported = run_git(
+            GitTarget::unconfined(requested),
+            &["rev-parse", "--is-bare-repository", "--absolute-git-dir"],
         )?;
-        let path = path_from_bytes(trim_line(&root));
+        let split = reported
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .context("Git did not report the repository's Git directory")?;
+        let bare = &reported[..split] == b"true";
+        let git_dir = path_from_bytes(trim_line(&reported[split + 1..]));
+        let path = if bare {
+            git_dir.clone()
+        } else {
+            path_from_bytes(trim_line(&run_git(
+                GitTarget::unconfined(requested),
+                &["rev-parse", "--show-toplevel"],
+            )?))
+        };
         ensure!(
-            path.is_absolute(),
+            path.is_absolute() && git_dir.is_absolute(),
             "Git returned a non-absolute repository path"
         );
-        Ok(Self {
+        let identity = Arc::new(Identity::capture(&path, &git_dir, bare)?);
+        let repository = Self {
             path,
             bare,
+            identity,
             batch: Arc::new(Mutex::new(None)),
-        })
+        };
+        // Stamp, then ask, as `verify_at_path` orders it: the files that can
+        // move the work tree or the common directory were stamped after Git
+        // reported the root and `commondir` was read, so a rename between
+        // the two left a handle bound to another work tree or common
+        // directory whose stamps verified as its own. Git is asked once
+        // more, after the stamps (one `rev-parse` per fresh open).
+        #[cfg(test)]
+        OPEN_CHECKPOINT.with_borrow_mut(|hook| {
+            if let Some(hook) = hook {
+                hook();
+            }
+        });
+        match repository.found_at_path()? {
+            FoundAtPath::Same => Ok(repository),
+            FoundAtPath::Other(found) => Err(ChangedWhileOpening {
+                path: repository.path,
+                found: Some(found),
+            }
+            .into()),
+            FoundAtPath::None => Err(ChangedWhileOpening {
+                path: repository.path,
+                found: None,
+            }
+            .into()),
+        }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The Git directory Git reported when the repository was opened,
+    /// canonical.
+    pub fn git_dir(&self) -> &Path {
+        &self.identity.git_dir
+    }
+
+    /// The common directory of [`Self::git_dir`] when the repository was
+    /// opened, canonical: a linked worktree's main Git directory, whose refs
+    /// and objects it uses, and the Git directory itself otherwise.
+    pub fn common_dir(&self) -> &Path {
+        &self.identity.common
+    }
+
+    /// Where this repository's commands run: at its root, confined to it.
+    pub(crate) fn target(&self) -> GitTarget<'_> {
+        GitTarget {
+            directory: &self.path,
+            ceiling: self.identity.ceiling.as_deref(),
+        }
     }
 
     pub fn name(&self) -> String {
@@ -229,26 +595,29 @@ impl GitRepository {
         self.bare
     }
 
-    /// What Git finds at this repository's path now: every command runs
-    /// there, and Git looks for a repository in each folder above one that
-    /// has none, so a work tree whose `.git` is gone (deleted, moved, a
-    /// failed clone cleaned up) is found as the work tree enclosing it, if
-    /// any. A passive read, which never fetches or writes.
+    /// What Git discovery finds at this repository's path now, unconfined:
+    /// Git looks for a repository in each folder above one that has none, so
+    /// a work tree whose `.git` is gone (deleted, moved, a failed clone
+    /// cleaned up) is found as the work tree enclosing it, if any. Every
+    /// command of the repository itself is confined to it
+    /// ([`GitTarget::confine`]) and fails there instead; this diagnosis words
+    /// that failure. A passive read, which never fetches or writes; it
+    /// starts one Git process, one per path where a path holds a line
+    /// break.
     pub fn found_at_path(&self) -> Result<FoundAtPath> {
         if !self.path.is_dir() {
             return Ok(FoundAtPath::None);
         }
-        let output = run_git_output(
-            &self.path,
-            &[
-                "rev-parse",
-                if self.bare {
-                    "--absolute-git-dir"
-                } else {
-                    "--show-toplevel"
-                },
-            ],
-        )?;
+        let mut args = vec![
+            "rev-parse",
+            "--absolute-git-dir",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ];
+        if !self.bare {
+            args.push("--show-toplevel");
+        }
+        let output = run_git_output(GitTarget::unconfined(&self.path), &args)?;
         if !output.status.success() {
             let diagnostic = text(&output.stderr);
             ensure!(
@@ -258,24 +627,97 @@ impl GitRepository {
             );
             return Ok(FoundAtPath::None);
         }
-        let found = path_from_bytes(trim_line(&output.stdout));
-        let same = found == self.path
-            || matches!(
-                (found.canonicalize(), self.path.canonicalize()),
-                (Ok(found), Ok(own)) if found == own
-            );
-        Ok(if same {
-            FoundAtPath::Same
-        } else {
-            FoundAtPath::Other(found)
-        })
+        // The Git directory's line, its common directory's, and a work
+        // tree's root. A path holding a line break splits into more lines:
+        // each is then asked for alone, its whole output one path, since an
+        // open confirms what it captured here and such a repository once
+        // could not be opened at all.
+        let mut lines: Vec<_> = trim_line(&output.stdout)
+            .split(|byte| *byte == b'\n')
+            .map(path_from_bytes)
+            .collect();
+        let alone: &[&[&str]] = &[
+            &["rev-parse", "--absolute-git-dir"],
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            &["rev-parse", "--show-toplevel"],
+        ];
+        let alone = &alone[..if self.bare { 2 } else { 3 }];
+        if lines.len() != alone.len() {
+            lines = alone
+                .iter()
+                .map(|args| {
+                    run_git(GitTarget::unconfined(&self.path), args)
+                        .map(|output| path_from_bytes(trim_line(&output)))
+                })
+                .collect::<Result<_>>()?;
+        }
+        let (git_dir, common, found) = match (lines.as_slice(), self.bare) {
+            ([git_dir, common, root], false) => (git_dir, common, root.clone()),
+            ([git_dir, common], true) => (git_dir, common, git_dir.clone()),
+            _ => return Ok(FoundAtPath::Other(path_from_bytes(&output.stdout))),
+        };
+        let same_root = found == self.path
+            || found
+                .canonicalize()
+                .is_ok_and(|found| found == self.identity.root);
+        if !same_root {
+            return Ok(FoundAtPath::Other(found));
+        }
+        if !git_dir
+            .canonicalize()
+            .is_ok_and(|git_dir| git_dir == self.identity.git_dir)
+        {
+            return Ok(FoundAtPath::Other(git_dir.clone()));
+        }
+        // A linked worktree's `commondir` re-pointed: another repository's
+        // refs and objects.
+        Ok(
+            if common
+                .canonicalize()
+                .is_ok_and(|common| common == self.identity.common)
+            {
+                FoundAtPath::Same
+            } else {
+                FoundAtPath::Other(common.clone())
+            },
+        )
     }
 
-    /// Refuses, before Git starts, a write whose repository Git no longer
-    /// finds at its path ([`Self::found_at_path`]): run there, it would act
-    /// on the repository enclosing that path, or fail part way.
+    /// Whether this repository is still the one at its path, as Git would
+    /// find it there. Where every command is confined and the `.git` entry
+    /// and root still match what was captured at open, it answers from the
+    /// filesystem alone, starting no process; otherwise (an entry changed,
+    /// or a repository whose commands cannot be confined) it asks Git
+    /// ([`Self::found_at_path`]).
+    ///
+    /// A configuration edit also asks Git, once (`core.worktree` re-pointed
+    /// after open moves the work tree with no `.git` entry changed): the
+    /// repository the same, the edited files are confirmed again.
+    pub fn verify_at_path(&self) -> Result<FoundAtPath> {
+        if !(self.identity.confined && self.identity.holds(&self.path, self.bare)) {
+            return self.found_at_path();
+        }
+        let stamps = self.identity.config_stamps();
+        let mut confirmed = self
+            .identity
+            .stamps
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *confirmed == stamps {
+            return Ok(FoundAtPath::Same);
+        }
+        let found = self.found_at_path()?;
+        if found == FoundAtPath::Same {
+            *confirmed = stamps;
+        }
+        Ok(found)
+    }
+
+    /// Refuses, before Git starts, a write whose repository is no longer
+    /// the one at its path ([`Self::verify_at_path`]): run there, it would
+    /// act on the repository enclosing that path, or fail part way.
     fn ensure_found_at_path(&self) -> Result<()> {
-        match self.found_at_path()? {
+        match self.verify_at_path()? {
             FoundAtPath::Same => Ok(()),
             // Its own `.git` gone, or its work tree redirected elsewhere.
             FoundAtPath::Other(other) => bail!(
@@ -290,16 +732,41 @@ impl GitRepository {
         }
     }
 
+    /// A failed command's error, worded as the repository gone where Git
+    /// stopped at its confinement: "not a git repository" from a confined
+    /// command means the repository's `.git` went away while it ran or
+    /// just before, so the diagnosis ([`Self::found_at_path`]) says what Git
+    /// finds there now. The command's own error stays beneath it, uncertain
+    /// outcome included. Any other failure is returned as it is, with no
+    /// process started.
+    pub fn word_gone(&self, error: anyhow::Error) -> anyhow::Error {
+        if !finds_no_repository(&error) {
+            return error;
+        }
+        match self.found_at_path() {
+            Ok(FoundAtPath::Other(other)) => error.context(format!(
+                "The repository changed: at {} Git now finds the repository at {}",
+                self.path.display(),
+                other.display()
+            )),
+            Ok(FoundAtPath::None) => error.context(format!(
+                "The repository at {} is gone: Git finds no repository there",
+                self.path.display()
+            )),
+            Ok(FoundAtPath::Same) | Err(_) => error,
+        }
+    }
+
     /// Resolve actual administration directories for local notifications.
     /// Linked worktrees have a private HEAD/index but share refs and objects.
     /// These passive reads never create or update Git metadata.
     pub fn git_directories(&self) -> Result<(PathBuf, PathBuf)> {
         let private = path_from_bytes(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &["rev-parse", "--absolute-git-dir"],
         )?));
         let common = path_from_bytes(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &["rev-parse", "--git-common-dir"],
         )?));
         let absolute = |path: PathBuf| -> Result<PathBuf> {
@@ -317,13 +784,13 @@ impl GitRepository {
     /// Whether the repository is shallow, its history cut at grafted
     /// boundaries that a fetch can deepen without moving any reference.
     pub fn is_shallow(&self) -> Result<bool> {
-        let bytes = run_git(&self.path, &["rev-parse", "--is-shallow-repository"])?;
+        let bytes = run_git(self.target(), &["rev-parse", "--is-shallow-repository"])?;
         Ok(trim_line(&bytes) == b"true")
     }
 
     pub fn branches(&self) -> Result<Vec<Branch>> {
         let bytes = run_git(
-            &self.path,
+            self.target(),
             &[
                 "for-each-ref",
                 "--sort=-committerdate",
@@ -358,7 +825,7 @@ impl GitRepository {
     }
 
     pub fn worktrees(&self) -> Result<Vec<Worktree>> {
-        let bytes = run_git(&self.path, &["worktree", "list", "--porcelain", "-z"])?;
+        let bytes = run_git(self.target(), &["worktree", "list", "--porcelain", "-z"])?;
         let mut trees = Vec::new();
         let mut current: Option<Worktree> = None;
         for line in bytes.split(|b| *b == 0) {
@@ -423,7 +890,7 @@ impl GitRepository {
         let count = format!("--max-count={limit}");
         let skip = format!("--skip={offset}");
         let bytes = run_git(
-            &self.path,
+            self.target(),
             &[
                 "log",
                 "--topo-order",
@@ -528,7 +995,7 @@ impl GitRepository {
             args.push(oid);
         }
         args.push("--");
-        parse_changes(&run_git(&self.path, &args)?)
+        parse_changes(&run_git(self.target(), &args)?)
     }
 
     pub fn blob(&self, oid: &str) -> Result<Vec<u8>> {
@@ -542,7 +1009,7 @@ impl GitRepository {
             .lock()
             .map_err(|_| anyhow::anyhow!("Object reader lock was poisoned"))?;
         if guard.is_none() {
-            *guard = Some(BatchReader::spawn(&self.path)?);
+            *guard = Some(BatchReader::spawn(self.target())?);
         }
         let result = guard
             .as_mut()
@@ -564,7 +1031,7 @@ impl GitRepository {
             .lock()
             .map_err(|_| anyhow::anyhow!("Object reader lock was poisoned"))?;
         if guard.is_none() {
-            *guard = Some(BatchReader::spawn(&self.path)?);
+            *guard = Some(BatchReader::spawn(self.target())?);
         }
         let result = guard
             .as_mut()
@@ -765,11 +1232,11 @@ impl GitRepository {
 
     fn preview_lfs_storage(&self) -> Result<PathBuf> {
         let common = run_git(
-            &self.path,
+            self.target(),
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )?;
         let common = path_from_bytes(trim_line(&common));
-        let configured = work::lfs_storage_config(&self.path)?;
+        let configured = work::lfs_storage_config(self.target())?;
         let storage = if configured.status.success() {
             let value = configured
                 .stdout
@@ -867,8 +1334,9 @@ fn parse_changes(bytes: &[u8]) -> Result<Vec<FileChange>> {
     Ok(changes)
 }
 
-fn git_command(path: &Path) -> Command {
+fn git_command(target: GitTarget<'_>) -> Command {
     let mut cmd = Command::new("git");
+    target.confine(&mut cmd);
     isolate_process_group(&mut cmd);
     cmd.arg("--no-pager")
         .arg("--no-optional-locks")
@@ -885,7 +1353,7 @@ fn git_command(path: &Path) -> Command {
             "credential.helper=",
         ])
         .arg("-C")
-        .arg(path)
+        .arg(target.directory)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_NO_REPLACE_OBJECTS", "1")
@@ -915,8 +1383,8 @@ fn git_command(path: &Path) -> Command {
     cmd
 }
 
-fn run_git(path: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = run_git_output(path, args)?;
+fn run_git(target: GitTarget<'_>, args: &[&str]) -> Result<Vec<u8>> {
+    let output = run_git_output(target, args)?;
     ensure!(
         output.status.success(),
         "Git {} failed: {}",
@@ -926,8 +1394,8 @@ fn run_git(path: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn run_git_output(path: &Path, args: &[&str]) -> Result<Output> {
-    let mut command = git_command(path);
+fn run_git_output(target: GitTarget<'_>, args: &[&str]) -> Result<Output> {
+    let mut command = git_command(target);
     command.args(args);
     bounded_output(command, GIT_TIMEOUT)
 }
@@ -1035,8 +1503,8 @@ struct BatchWire {
 }
 
 impl BatchReader {
-    fn spawn(path: &Path) -> Result<Self> {
-        let mut command = git_command(path);
+    fn spawn(target: GitTarget<'_>) -> Result<Self> {
+        let mut command = git_command(target);
         command.args(["cat-file", "--batch-command"]);
         Self::spawn_command(command, GIT_TIMEOUT)
     }
@@ -1291,6 +1759,161 @@ fn null_device() -> &'static OsStr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs Git in `folder` with an empty system and global configuration
+    /// and a fixed identity.
+    fn git(folder: &Path, args: &[&str]) {
+        let mut command = Command::new("git");
+        command
+            .arg("-C")
+            .arg(folder)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "GitTurtle Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+            .env("GIT_COMMITTER_NAME", "GitTurtle Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.invalid");
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+        ] {
+            command.env_remove(name);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+    }
+
+    /// Opens `folder` with `change` run between the capture and Git's
+    /// confirmation.
+    fn open_changed_part_way(
+        folder: &Path,
+        change: impl FnMut() + 'static,
+    ) -> Result<GitRepository> {
+        OPEN_CHECKPOINT.with_borrow_mut(|hook| *hook = Some(Box::new(change)));
+        let opened = GitRepository::open(folder);
+        OPEN_CHECKPOINT.with_borrow_mut(|hook| *hook = None);
+        opened
+    }
+
+    /// An open stamps the files that can move the work tree or the common
+    /// directory after Git reported the root and `commondir` was read, then
+    /// asks Git again: a linked worktree's `commondir` re-pointed at another
+    /// repository, or `core.worktree` re-pointed, between the two is refused
+    /// with what Git finds. It once returned a handle bound to what it had
+    /// read, whose stamps verified the changed files as its own, so writes
+    /// went to the other repository or work tree.
+    #[test]
+    fn an_open_refuses_what_changed_while_it_was_captured() {
+        let fixture = tempfile::tempdir().unwrap();
+        let main = fixture.path().join("main");
+        std::fs::create_dir(&main).unwrap();
+        git(&main, &["init", "--quiet"]);
+        git(&main, &["commit", "--quiet", "--allow-empty", "-m", "main"]);
+        let linked = fixture.path().join("linked");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "linked",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let other = fixture.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        git(&other, &["init", "--quiet"]);
+        let other_git = other.join(".git").canonicalize().unwrap();
+        let commondir = GitRepository::open(&linked)
+            .unwrap()
+            .git_dir()
+            .join("commondir");
+        let pointed = other_git.clone();
+        let changed = commondir.clone();
+        let refused = open_changed_part_way(&linked, move || {
+            std::fs::write(&changed, format!("{}\n", pointed.display())).unwrap();
+        })
+        .unwrap_err()
+        .downcast::<ChangedWhileOpening>()
+        .expect("refused as changed");
+        assert_eq!(refused.found.as_deref(), Some(other_git.as_path()));
+
+        let elsewhere = fixture.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let elsewhere = elsewhere.canonicalize().unwrap();
+        let (folder, moved) = (main.clone(), elsewhere.clone());
+        let refused = open_changed_part_way(&main, move || {
+            git(
+                &folder,
+                &["config", "core.worktree", moved.to_str().unwrap()],
+            );
+        })
+        .unwrap_err()
+        .downcast::<ChangedWhileOpening>()
+        .expect("refused as changed");
+        assert_eq!(refused.found.as_deref(), Some(elsewhere.as_path()));
+    }
+
+    /// The confinement appends to the person's own ceilings, never
+    /// replacing them.
+    #[test]
+    fn the_ceiling_follows_the_person_s_own_ceilings() {
+        let ceiling = Path::new("/projects");
+        assert_eq!(ceiling_directories(None, ceiling), "/projects");
+        assert_eq!(ceiling_directories(Some("".into()), ceiling), "/projects");
+        assert_eq!(
+            ceiling_directories(Some(format!("/home{LIST_SEPARATOR}/srv").into()), ceiling),
+            format!("/home{LIST_SEPARATOR}/srv{LIST_SEPARATOR}/projects").as_str()
+        );
+    }
+
+    /// Where the parent of the folder holding `.git` holds the list
+    /// separator, `GIT_CEILING_DIRECTORIES` would split it and confine
+    /// nothing: no ceiling is set there, and the repository is unconfined,
+    /// so its writes and Changes' read ask Git first.
+    #[test]
+    fn a_ceiling_holding_the_list_separator_is_never_set() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let named = temp.path().join(format!("a{LIST_SEPARATOR}b"));
+        let root = named.join("repository");
+        std::fs::create_dir_all(&named).unwrap();
+        GitRepository::init(&root, "main").unwrap();
+        let repo = GitRepository::open(&root).unwrap();
+        assert_eq!(repo.identity.ceiling, None);
+        assert!(!repo.identity.confined);
+        let command = git_command(repo.target());
+        assert!(
+            !command
+                .get_envs()
+                .any(|(name, _)| name == "GIT_CEILING_DIRECTORIES")
+        );
+
+        let root = temp.path().join("plain").join("repository");
+        std::fs::create_dir_all(temp.path().join("plain")).unwrap();
+        GitRepository::init(&root, "main").unwrap();
+        let repo = GitRepository::open(&root).unwrap();
+        let parent = temp.path().join("plain").canonicalize().unwrap();
+        assert_eq!(repo.identity.ceiling.as_deref(), Some(parent.as_path()));
+        assert!(repo.identity.confined);
+        let command = work::normal_command(repo.target());
+        let set = command
+            .get_envs()
+            .find(|(name, _)| *name == "GIT_CEILING_DIRECTORIES")
+            .and_then(|(_, value)| value.map(OsStr::to_owned));
+        assert_eq!(
+            set,
+            Some(ceiling_directories(
+                std::env::var_os("GIT_CEILING_DIRECTORIES"),
+                &parent
+            ))
+        );
+    }
 
     #[cfg(unix)]
     #[test]

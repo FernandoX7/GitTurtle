@@ -306,7 +306,7 @@ impl GitRepository {
             !self.bare,
             "Open a working copy to perform recovery operations"
         );
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         let mut input = None;
         let creates_commit;
         match operation {
@@ -412,7 +412,7 @@ impl GitRepository {
         if output.status.success() {
             return Ok(output);
         }
-        let conflicted = run_git(&self.path, &["ls-files", "--unmerged", "-z"])
+        let conflicted = run_git(self.target(), &["ls-files", "--unmerged", "-z"])
             .map(|entries| !entries.is_empty());
         // Stash apply does not remove entries. Recheck the saved object rather
         // than its old ordinal, since another worktree can add a stash meanwhile.
@@ -441,7 +441,7 @@ impl GitRepository {
         // claiming it proves the cause or removing another writer's lock.
         let index_locked = !matches!(conflicted, Ok(true))
             && run_git(
-                &self.path,
+                self.target(),
                 &[
                     "rev-parse",
                     "--path-format=absolute",
@@ -505,7 +505,7 @@ impl GitRepository {
             .head
             .clone()
             .context("Create the first commit before using this recovery action")?;
-        let index = run_git(&self.path, &["ls-files", "--stage", "--debug", "-z"])?;
+        let index = run_git(self.target(), &["ls-files", "--stage", "--debug", "-z"])?;
         Ok((
             RecoveryHead {
                 branch: status
@@ -583,7 +583,7 @@ impl GitRepository {
     fn recovery_published_refs(&self, oid: &str) -> Result<Vec<BranchReference>> {
         validate_oid(oid)?;
         let bytes = run_git(
-            &self.path,
+            self.target(),
             &[
                 "for-each-ref",
                 "--format=%(refname)%00%(objectname)",
@@ -617,7 +617,7 @@ impl GitRepository {
         validate_oid(old)?;
         validate_oid(new)?;
         parse_changes(&run_git(
-            &self.path,
+            self.target(),
             &[
                 "diff-tree",
                 "--no-commit-id",
@@ -638,7 +638,7 @@ impl GitRepository {
 
     fn recovery_stash_entries(&self) -> Result<Vec<StashEntry>> {
         let exists = run_git_output(
-            &self.path,
+            self.target(),
             &["rev-parse", "--verify", "--quiet", "refs/stash"],
         )?;
         ensure!(
@@ -649,7 +649,7 @@ impl GitRepository {
             return Ok(Vec::new());
         }
         let bytes = run_git(
-            &self.path,
+            self.target(),
             &[
                 "log",
                 "--walk-reflogs",
@@ -741,7 +741,7 @@ impl GitRepository {
         );
         // Ignored files do not appear in porcelain status. Protect any existing
         // affected path that is absent from the current index as well.
-        let tracked = run_git(&self.path, &["ls-files", "-z"])?;
+        let tracked = run_git(self.target(), &["ls-files", "-z"])?;
         let tracked: std::collections::HashSet<_> = tracked
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())

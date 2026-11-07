@@ -640,7 +640,7 @@ mod tests {
         let global_config = directory.path().join("gitconfig");
         std::fs::write(&global_config, "").unwrap();
         run_controlled(OperationControl::default(), || {
-            let mut command = normal_command(directory.path());
+            let mut command = normal_command(crate::GitTarget::unconfined(directory.path()));
             command
                 .args(["-c", "credential.helper=", "-c"])
                 .arg(format!("core.askPass={}", helper.display()))

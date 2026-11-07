@@ -70,7 +70,7 @@ impl GitRepository {
     pub fn blame(&self, target: &BlameTarget, cancellation: &HistoryCancellation) -> Result<Blame> {
         validate_blame_path(target.path())?;
         check_cancel(cancellation)?;
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command.args(["rev-parse", "--is-shallow-repository"]);
         let shallow = trim_line(&read_attribution(command, cancellation, 1024)?) == b"true";
         match target {
@@ -133,7 +133,7 @@ impl GitRepository {
     ) -> Result<Option<Vec<u8>>> {
         validate_oid(oid)?;
         validate_blame_path(path)?;
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command
             .arg("--literal-pathspecs")
             .args(["ls-tree", "-z", oid, "--"])
@@ -174,7 +174,7 @@ impl GitRepository {
         if source.is_empty() {
             return Ok(Vec::new());
         }
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command
             .arg("--literal-pathspecs")
             .args([
@@ -217,7 +217,7 @@ impl GitRepository {
         );
         let mut range = OsString::from(format!("{line},{line}:"));
         range.push(path.as_os_str());
-        let mut command = history_command(&self.path);
+        let mut command = history_command(self.target());
         command
             .args([
                 "--first-parent",

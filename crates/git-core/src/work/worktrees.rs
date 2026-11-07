@@ -184,7 +184,7 @@ impl GitRepository {
             // Both status and ordinary `git worktree remove` can overlook
             // modified files marked assume-unchanged or skip-worktree. Never
             // treat an index that skips these checks as proof of a clean tree.
-            let index = run_git(&repo.path, &["ls-files", "-v", "-z"])?;
+            let index = run_git(repo.target(), &["ls-files", "-v", "-z"])?;
             let unchecked_index = index
                 .split(|byte| *byte == 0)
                 .filter_map(|entry| entry.first())
@@ -231,7 +231,7 @@ impl GitRepository {
             }
             // git worktree remove permits ignored files. Refuse those as well;
             // users must explicitly move/remove their content outside this UI.
-            let mut command = passive_status_command(repo.path())?;
+            let mut command = passive_status_command(repo.target())?;
             command.args([
                 "ls-files",
                 "--others",
@@ -313,7 +313,7 @@ impl GitRepository {
             // An initialized submodule keeps its repository under this
             // worktree's private Git directory or inside its own checkout;
             // a deinitialized one can leave a retained repository behind.
-            let stages = run_git(&repo.path, &["ls-files", "-s", "-z"])?;
+            let stages = run_git(repo.target(), &["ls-files", "-s", "-z"])?;
             let mut submodule = None;
             for record in stages
                 .split(|byte| *byte == 0)
@@ -440,7 +440,7 @@ impl GitRepository {
             &reference
         };
         let target_oid = text(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--verify",
@@ -460,7 +460,7 @@ impl GitRepository {
     }
 
     pub(super) fn execute_worktree(&self, operation: &WorktreeCommand) -> Result<WriteOutcome> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         let message = match operation {
             WorktreeCommand::Create(plan) => {
                 ensure!(

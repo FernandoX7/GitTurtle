@@ -195,7 +195,7 @@ impl GitRepository {
     pub fn operation_state(&self) -> Result<Option<OperationState>> {
         ensure!(!self.bare, "A bare repository has no operation in progress");
         let directory = path_from_bytes(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &["rev-parse", "--absolute-git-dir"],
         )?));
         let mut files = Vec::new();
@@ -304,7 +304,7 @@ impl GitRepository {
             digest.update(bytes);
             digest.update([0]);
         }
-        let index = run_git(&self.path, &["ls-files", "--stage", "-z"])?;
+        let index = run_git(self.target(), &["ls-files", "--stage", "-z"])?;
         Ok(Some(OperationState {
             kind,
             head,
@@ -341,7 +341,7 @@ impl GitRepository {
         let target_ref = self.resolve_integration_target(target)?;
         let target_oid = self.resolve_start(&target_ref)?;
         let counts = run_git(
-            &self.path,
+            self.target(),
             &[
                 "rev-list",
                 "--left-right",
@@ -361,7 +361,7 @@ impl GitRepository {
             .context("Missing target divergence count")?
             .parse()?;
         let paths = run_git(
-            &self.path,
+            self.target(),
             &[
                 "diff",
                 "--no-ext-diff",
@@ -398,7 +398,7 @@ impl GitRepository {
     /// tracking branch or a local branch. Never infer it from display text.
     pub fn upstream_integration_plan(&self) -> Result<IntegrationPlan> {
         let target = run_git(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--symbolic-full-name",
@@ -427,10 +427,12 @@ impl GitRepository {
         let mut candidates = Vec::new();
         for prefix in ["refs/heads/", "refs/remotes/"] {
             let candidate = format!("{prefix}{target}");
-            run_git(&self.path, &["check-ref-format", &candidate])
+            run_git(self.target(), &["check-ref-format", &candidate])
                 .context("Choose a valid existing branch name")?;
-            let output =
-                run_git_output(&self.path, &["show-ref", "--verify", "--quiet", &candidate])?;
+            let output = run_git_output(
+                self.target(),
+                &["show-ref", "--verify", "--quiet", &candidate],
+            )?;
             ensure!(
                 output.status.success() || output.status.code() == Some(1),
                 "Unable to resolve integration target"
@@ -457,7 +459,7 @@ impl GitRepository {
         let branch = self
             .current_branch()?
             .unwrap_or_else(|| "Detached HEAD".into());
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command
             .args(["--literal-pathspecs", "ls-files", "--unmerged", "-z", "--"])
             .arg(path);
@@ -549,7 +551,7 @@ impl GitRepository {
     /// Dispatch only through the serialized explicit-operation executor.
     pub fn execute_integration(&self, operation: &IntegrationCommand) -> Result<WriteOutcome> {
         ensure!(!self.bare, "Open a working copy to perform Git operations");
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         // GitTurtle presents the message and resolution itself. Continuing must
         // not launch a terminal editor, but normal hooks and signing still run.
         command.env("GIT_EDITOR", "true");
@@ -670,7 +672,7 @@ impl GitRepository {
 
     fn abort_resolution_paths(&self) -> Result<Vec<PathBuf>> {
         let output = run_git_output(
-            &self.path,
+            self.target(),
             &["rev-parse", "--verify", "--quiet", "AUTO_MERGE^{tree}"],
         )?;
         ensure!(
@@ -683,7 +685,7 @@ impl GitRepository {
         let tree = text(trim_line(&output.stdout));
         validate_oid(&tree)?;
         let paths = run_git(
-            &self.path,
+            self.target(),
             &[
                 "diff-tree",
                 "--no-commit-id",
@@ -711,14 +713,14 @@ impl GitRepository {
     /// ignored directories such as build outputs need no recursive traversal.
     pub(super) fn protect_untracked_rebase_paths(&self, plan: &IntegrationPlan) -> Result<()> {
         use std::collections::HashSet;
-        let tracked = run_git(&self.path, &["ls-files", "-z"])?;
+        let tracked = run_git(self.target(), &["ls-files", "-z"])?;
         let tracked: HashSet<PathBuf> = tracked
             .split(|b| *b == 0)
             .filter(|path| !path.is_empty())
             .map(path_from_bytes)
             .collect();
         let mut paths = run_git(
-            &self.path,
+            self.target(),
             &[
                 "diff-tree",
                 "--no-commit-id",
@@ -735,7 +737,7 @@ impl GitRepository {
             ],
         )?;
         let commits = run_git(
-            &self.path,
+            self.target(),
             &[
                 "rev-list",
                 &format!("{}..{}", plan.target_oid, plan.head),
@@ -747,7 +749,7 @@ impl GitRepository {
             "The rebase exceeds the local preflight limit; integrate fewer commits at a time"
         );
         if !commits.is_empty() {
-            let mut command = git_command(&self.path);
+            let mut command = git_command(self.target());
             command.args([
                 "diff-tree",
                 "--stdin",
@@ -813,7 +815,7 @@ impl GitRepository {
                         "Rebase would replace the checked-out submodule at {}. Move or resolve that checkout explicitly first; no rebase was started.",
                         prefix.display()
                     );
-                    let mut command = git_command(&self.path);
+                    let mut command = git_command(self.target());
                     // Omitting exclude-standard intentionally includes ignored
                     // files. --directory avoids enumerating whole untracked trees.
                     command
@@ -844,7 +846,7 @@ impl GitRepository {
     }
 
     fn current_head(&self) -> Result<Option<String>> {
-        let output = run_git_output(&self.path, &["rev-parse", "--verify", "--quiet", "HEAD"])?;
+        let output = run_git_output(self.target(), &["rev-parse", "--verify", "--quiet", "HEAD"])?;
         ensure!(
             output.status.success() || output.status.code() == Some(1),
             "Unable to resolve HEAD"
@@ -856,7 +858,10 @@ impl GitRepository {
     }
 
     fn current_branch(&self) -> Result<Option<String>> {
-        let output = run_git_output(&self.path, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+        let output = run_git_output(
+            self.target(),
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )?;
         ensure!(
             output.status.success() || output.status.code() == Some(1),
             "Unable to resolve current branch"
@@ -870,7 +875,7 @@ impl GitRepository {
     fn integration_commit_label(&self, oid: &str) -> Result<String> {
         validate_oid(oid)?;
         let bytes = run_git(
-            &self.path,
+            self.target(),
             &[
                 "for-each-ref",
                 "--count=4",
@@ -955,7 +960,7 @@ impl GitRepository {
                         side.content.mode != "160000",
                         "Resolve the submodule checkout explicitly, then mark it resolved"
                     );
-                    let mut command = normal_command(&self.path);
+                    let mut command = normal_command(self.target());
                     command
                         .args([
                             "--literal-pathspecs",
@@ -972,7 +977,7 @@ impl GitRepository {
                         "The chosen side may have been written; refresh before retrying",
                     )?;
                 } else {
-                    let mut command = normal_command(&self.path);
+                    let mut command = normal_command(self.target());
                     command
                         .args(["--literal-pathspecs", "rm", "--force", "--"])
                         .arg(&expected.path);
@@ -994,7 +999,7 @@ impl GitRepository {
                 }
             }
         }
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.args([
             "--literal-pathspecs",
             "add",

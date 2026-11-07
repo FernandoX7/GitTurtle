@@ -155,7 +155,7 @@ impl GitRepository {
             .head
             .context("Create commits before editing history")?;
         let base_oid = text(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--verify",
@@ -165,7 +165,7 @@ impl GitRepository {
         )?));
         validate_oid(&base_oid)?;
         let output = run_git(
-            &self.path,
+            self.target(),
             &[
                 "rev-list",
                 "--reverse",
@@ -213,7 +213,7 @@ impl GitRepository {
         // In a linear chain, a remote containing any later commit necessarily
         // contains the oldest commit. One containment walk covers the range.
         let refs = run_git(
-            &self.path,
+            self.target(),
             &[
                 "for-each-ref",
                 "--count=101",
@@ -296,7 +296,7 @@ impl GitRepository {
         &self,
         action: &InteractiveRebaseCommand,
     ) -> Result<WriteOutcome> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         let mut editor = MessageEditor::new(None)?;
         command.env("GIT_EDITOR", editor.command()?);
         match action {
@@ -386,7 +386,7 @@ impl GitRepository {
                         // Git's Continue deliberately skips a failed reword
                         // unless the user first amends it. Keep the real commit
                         // path, author, hooks, editor cleanup and signing.
-                        let mut amend = normal_command(&self.path);
+                        let mut amend = normal_command(self.target());
                         amend.env("GIT_EDITOR", editor.command()?);
                         amend.args(["commit", "--amend", "--edit", "--allow-empty"]);
                         checked_write_output(amend, None, WRITE_TIMEOUT)?;

@@ -85,9 +85,9 @@ fn check_cancelled() -> Result<()> {
     Ok(())
 }
 
-fn review_read(root: &Path, args: &[&str], input: Option<Vec<u8>>) -> Result<Vec<u8>> {
+fn review_read(target: GitTarget<'_>, args: &[&str], input: Option<Vec<u8>>) -> Result<Vec<u8>> {
     check_cancelled()?;
-    let mut command = git_command(root);
+    let mut command = git_command(target);
     command.args(args);
     Ok(checked_write_output(command, input, GIT_TIMEOUT)?.stdout)
 }
@@ -109,7 +109,7 @@ impl GitRepository {
             "Finish or abort the rebase before reviewing its rewritten series"
         );
         let rewritten_head = text(trim_line(&review_read(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--verify",
@@ -141,7 +141,7 @@ impl GitRepository {
         self.recovery_commit(base)?;
         self.recovery_commit(head)?;
         let output = review_read(
-            &self.path,
+            self.target(),
             &[
                 "rev-list",
                 "--reverse",
@@ -172,7 +172,7 @@ impl GitRepository {
                 "Only a linear series directly after the captured base can be matched"
             );
             let patch = review_read(
-                &self.path,
+                self.target(),
                 &[
                     "diff-tree",
                     "--no-ext-diff",
@@ -206,7 +206,7 @@ impl GitRepository {
             let patch_id = if patch.is_empty() {
                 None
             } else {
-                let id = review_read(&self.path, &["patch-id", "--stable"], Some(patch))?;
+                let id = review_read(self.target(), &["patch-id", "--stable"], Some(patch))?;
                 let text = std::str::from_utf8(&id)?;
                 let mut lines = text.lines();
                 let line = lines.next().context("Patch fingerprint unavailable")?;
@@ -222,7 +222,7 @@ impl GitRepository {
                 Some(oid.to_owned())
             };
             let author = review_read(
-                &self.path,
+                self.target(),
                 &["show", "--no-patch", "--format=%an%x00%ae", oid, "--"],
                 None,
             )?;
@@ -243,7 +243,7 @@ impl GitRepository {
 
     fn single_push_url(&self, remote: &str) -> Result<String> {
         self.validate_remote(remote)?;
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command
             .env("GIT_OPTIONAL_LOCKS", "0")
             .args(["remote", "get-url", "--push", "--all", "--", remote]);
@@ -268,7 +268,7 @@ impl GitRepository {
             "Finish the current Git operation before publication"
         );
         let fresh = text(trim_line(&review_read(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--verify",
@@ -337,7 +337,7 @@ impl GitRepository {
         self.validate_branch(remote_branch)?;
         let remote_url = self.single_push_url(remote)?;
         let remote_ref = format!("refs/heads/{remote_branch}");
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         configure_network(&mut command, self)?;
         command.args(["ls-remote", "--refs", "--", &remote_url, &remote_ref]);
         let output = checked_write_output(command, None, NETWORK_TIMEOUT)?.stdout;
@@ -383,7 +383,7 @@ impl GitRepository {
             self.single_push_url(&plan.remote)? == plan.remote_url,
             "Remote destination changed after review. Inspect it again before publishing"
         );
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         configure_network(&mut command, self)?;
         // Pin the reviewed destination after checking the named remote. Using
         // the name here would let a concurrent config edit retarget the write.
