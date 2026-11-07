@@ -331,6 +331,9 @@ pub struct ConflictView {
     /// The review's body, which scrolls as one where the window is too
     /// short for it, and reveals the control the keyboard moves onto.
     body: crate::focus_reveal::FocusReveal,
+    /// The frames left before the body reveals the result draft once more
+    /// after the person's action focused it ([`Self::focus_resolution`]).
+    redraw_reveal: u8,
 }
 
 impl EventEmitter<ConflictEvent> for ConflictView {}
@@ -358,6 +361,7 @@ impl ConflictView {
             block_task: None,
             block_executor: SerialExecutor::new("conflict-block-review"),
             body: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
+            redraw_reveal: 0,
             presentation,
             readers: [None, None, None],
             resolution: None,
@@ -409,6 +413,7 @@ impl ConflictView {
     fn focus_resolution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = &self.resolution {
             self.body.reveal_next_focus();
+            self.redraw_reveal = 2;
             window.focus(&editor.focus_handle(cx), cx);
         }
         cx.notify();
@@ -697,7 +702,35 @@ impl ConflictView {
 }
 
 impl Render for ConflictView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The review, laid out for the room it has in the frame it is drawn
+    /// ([`crate::in_frame`]), so its result draft takes the whole lines that
+    /// room shows it with its ring ([`draft_lines`]) in that same frame,
+    /// never one frame late after a resize or as the file opens.
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(crate::in_frame::in_frame(move |bounds, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.render_review(bounds.size.height, window, cx)
+                })
+                .unwrap_or_else(|_| div().into_any_element())
+            }))
+    }
+}
+
+impl ConflictView {
+    /// The review `height` tall: its body, which scrolls as one where it is
+    /// taller, with the result draft as many whole lines tall as `height`
+    /// shows whole with its ring ([`draft_lines`]).
+    fn render_review(
+        &mut self,
+        height: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         let current = self.presentation.label(1);
         let incoming = self.presentation.label(2);
@@ -726,6 +759,25 @@ impl Render for ConflictView {
         // room in the frame that first draws the focus. Each control reports
         // where it lies to the body.
         let room = crate::appearance::button_ring_room(cx);
+        let lines = draft_lines(height, room, window);
+        // The frame that first draws the draft focused lays the body out
+        // with the gutter the last frame's overflow kept, none in a view
+        // that opens with it, and the next keeps the gutter its overflow
+        // asks for, rewrapping the controls above the draft into the
+        // narrower column: the draft moved 70 px down past the body's foot
+        // after a reveal planned in the first frame, as the file opened in a
+        // 461 × 490 half tile. The draft holding focus is revealed again in
+        // that next frame, from where it lies there.
+        if self.redraw_reveal > 0 {
+            self.redraw_reveal -= 1;
+            if self.redraw_reveal > 0 {
+                window.defer(cx, |window, _| window.refresh());
+            } else if let Some(editor) = &self.resolution
+                && editor.focus_handle(cx).is_focused(window)
+            {
+                self.body.reveal_next_focus();
+            }
+        }
         self.body.reveal(window, cx);
         let [drafts, branches, base, block_mode, whole_mode, external] = [
             "saved-conflict-drafts",
@@ -833,7 +885,7 @@ impl Render for ConflictView {
                         .on_click(cx.listener(|this, _, window, cx| this.open_resolution_editor(window, cx)))))
                 .children(self.resolution.as_ref().zip(draft_focus).map(|(editor, focus)| div().capture_action(cx.listener(Self::check_paste))
                     .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Result draft · block choices and manual edits stay here until you explicitly save"))
-                    .child(div().debug_selector(|| "conflict-result-draft".into()).on_children_prepainted(self.body.control(focus, room)).child(resolution_textarea(editor, cx)))))
+                    .child(div().debug_selector(|| "conflict-result-draft".into()).on_children_prepainted(self.body.control(focus, room)).child(resolution_textarea(editor, lines, cx)))))
                 .children(self.draft_error.map(|issue| div().id("conflict-draft-error").alert(issue.explanation()).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
                 .child(div().flex().flex_wrap().items_center().gap_2()
                     .on_children_prepainted(self.body.controls(vec![Some(stage_working.clone()), self.resolution.as_ref().map(|_| save_draft.clone()), self.resolution.as_ref().map(|_| save_result.clone())], room))
@@ -853,15 +905,61 @@ impl Render for ConflictView {
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(self.body.scroll());
-        cue.list(body, "conflict-review-scrollbar").size_full()
+        cue.list(body, "conflict-review-scrollbar")
+            .size_full()
+            .into_any_element()
     }
 }
 
-/// The whole lines the manual result draft shows at every code size: as
-/// many as its fixed 160 px box held whole at the default code size, where
-/// the field's 16 px pitch, taken from the interface size, left a ninth line
-/// cut at its foot.
+/// The whole lines the manual result draft prefers at every code size, and
+/// shows wherever the review has the room: as many as its fixed 160 px box
+/// held whole at the default code size, where the field's 16 px pitch,
+/// taken from the interface size, left a ninth line cut at its foot.
 const DRAFT_LINES: f32 = 8.;
+
+/// The fewest whole lines the result draft gives way to in a review too
+/// short for [`DRAFT_LINES`]: a block's three lines, a marker, a line and
+/// the next marker, still read together. Below that the review's body
+/// scrolls instead and shows the draft by its top.
+const LEAST_DRAFT_LINES: f32 = 3.;
+
+/// The whole lines the result draft takes in a review `height` tall, whose
+/// body reveals a focused control `ring` clear of its edges: its preferred
+/// [`DRAFT_LINES`] where the body shows them whole with the ring, otherwise
+/// the most that it does, never fewer than [`LEAST_DRAFT_LINES`]. Kept at
+/// eight lines whatever the room, the draft was taller than the review's
+/// body in a 461 × 490 half tile, whose header, Git actions, merge banner
+/// and status bar leave the body about 145 px: 162 px at 13 pt with 12 pt
+/// code and 234 px at 18 pt with 18 pt code, so wherever it took focus,
+/// opening the file, Edit result or Shift+Tab, it showed from its top with
+/// its foot and its focus ring cut.
+fn draft_lines(height: Pixels, ring: Pixels, window: &Window) -> f32 {
+    let (line, inset) = draft_metrics();
+    let scale = window.scale_factor();
+    // As layout places the draft's set height: on a whole device pixel,
+    // counted here at the next one up so a fit is never a pixel over.
+    let placed = |lines: f32| {
+        let length = f32::from(line * lines + inset * 2.);
+        px((length * scale).ceil() / scale)
+    };
+    let fits = |lines: f32| placed(lines) + ring * 2. <= height + px(0.01);
+    let mut lines = DRAFT_LINES;
+    while lines > LEAST_DRAFT_LINES && !fits(lines) {
+        lines -= 1.;
+    }
+    lines
+}
+
+/// The result draft's line pitch, the code editor's
+/// [`CODE_LINE_HEIGHT`] of the code size on a whole pixel, and the room
+/// around its lines on each side: the multi-line field's padding above and
+/// below them, the kit's medium `input_py` at every size, and its 1 px
+/// border.
+fn draft_metrics() -> (Pixels, Pixels) {
+    let line = (crate::appearance::code_text() * CODE_LINE_HEIGHT).round();
+    let inset = gpui_kit::component::Size::default().input_py() + px(1.);
+    (line, inset)
+}
 
 /// The code editor's line height, a multiple of the code text (the kit's
 /// `EDITOR_LINE_HEIGHT`): the pitch the read-only versions above the draft
@@ -869,17 +967,15 @@ const DRAFT_LINES: f32 = 8.;
 const CODE_LINE_HEIGHT: f32 = 1.5;
 
 /// The manual result draft's editable text, drawn in the code font at the
-/// code size's own line height, [`DRAFT_LINES`] whole lines tall inside the
-/// field's padding and border, so it grows with the code size and its lines
-/// neither crowd nor overlap: a fixed 160 px box with the interface size's
-/// pitch drew 18 pt code at a 16 px pitch. A longer draft scrolls inside it.
-fn resolution_textarea(editor: &Entity<TextareaState>, cx: &App) -> Textarea {
-    let line = (crate::appearance::code_text() * CODE_LINE_HEIGHT).round();
-    // The multi-line field's padding above and below its lines, the kit's
-    // medium `input_py` at every size, and its 1 px border.
-    let inset = gpui_kit::component::Size::default().input_py() + px(1.);
+/// code size's own line height, `lines` whole lines tall inside the
+/// field's padding and border ([`draft_lines`]), so it grows with the code
+/// size and its lines neither crowd nor overlap: a fixed 160 px box with the
+/// interface size's pitch drew 18 pt code at a 16 px pitch. A longer draft
+/// scrolls inside it.
+fn resolution_textarea(editor: &Entity<TextareaState>, lines: f32, cx: &App) -> Textarea {
+    let (line, inset) = draft_metrics();
     Textarea::new(editor)
-        .h(line * DRAFT_LINES + inset * 2.)
+        .h(line * lines + inset * 2.)
         .text_size(crate::appearance::code_text())
         .line_height(line)
         .code_font(cx)
@@ -1035,7 +1131,10 @@ mod tests {
         let cx = cx.add_empty_window();
         let text = cx.update(|window, cx| {
             let editor = cx.new(|cx| TextareaState::new(window, cx));
-            resolution_textarea(&editor, cx).style().text.clone()
+            resolution_textarea(&editor, DRAFT_LINES, cx)
+                .style()
+                .text
+                .clone()
         });
         assert_eq!(text.font_family.as_deref(), Some("Desktop Mono"));
         let features = text.font_features.expect("code features");
@@ -1661,6 +1760,272 @@ mod tests {
             );
         }
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The whole window, built as the app opens its own
+    /// ([`crate::views::tests::history_window_from`]): its tab strip,
+    /// header, Git actions and status bar around the page, in Midnight. It
+    /// shows Working Changes, its rows read, on a merge stopped by a conflict
+    /// in notes.txt, so the merge banner stands above the page too. Every
+    /// text run is marked as the width walk marks it
+    /// ([`crate::width_walk::text_mark`]), so a test finds a run its clip
+    /// cuts among the painted quads. Keep the returned directory until the
+    /// test ends.
+    async fn merge_window(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        use crate::views::tests::{
+            fixture_git, fixture_git_output, history_script, styled_history_window,
+        };
+        let script = history_script(3, 3);
+        let (fixture, app, cx) = styled_history_window(cx, script.as_bytes(), |root| {
+            root.text_bg(crate::width_walk::text_mark())
+        })
+        .await;
+        let repository = fixture.path().join("narrow");
+        let committing = |arguments: &[&str]| {
+            let identity = [
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ];
+            fixture_git_output(&repository, &[&identity[..], arguments].concat())
+        };
+        fixture_git(&repository, &["reset", "--hard", "--quiet"]);
+        fixture_git(&repository, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repository.join("notes.txt"), "side\n").unwrap();
+        assert!(
+            committing(&["commit", "-q", "-am", "side"])
+                .status
+                .success()
+        );
+        fixture_git(&repository, &["checkout", "-q", "main"]);
+        std::fs::write(repository.join("notes.txt"), "main\n").unwrap();
+        assert!(
+            committing(&["commit", "-q", "-am", "main"])
+                .status
+                .success()
+        );
+        assert!(
+            !committing(&["merge", "-q", "side"]).status.success(),
+            "the merge stops on notes.txt"
+        );
+        cx.update(|window, cx| {
+            window.activate_window();
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            app.update(cx, |app, cx| app.show_working(window, cx));
+        });
+        for _ in 0..8 {
+            cx.executor().run_until_parked();
+            let tasks = app.update(cx, |app, _| {
+                [app.task.take(), app.status_task.take()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+            });
+            for task in tasks {
+                task.await;
+            }
+            // The rows are built on the path filter's own thread, which
+            // `run_until_parked` cannot wait for.
+            app.update(cx, |app, _| app.file_paths.executor().drain());
+            cx.executor().run_until_parked();
+            if !app.read_with(cx, |app, _| app.working_paths.pending) {
+                break;
+            }
+        }
+        assert!(
+            app.read_with(cx, |app, _| app.integration_state.is_some()),
+            "the merge banner stands above the page"
+        );
+        (fixture, app, cx)
+    }
+
+    /// Clicks notes.txt's row in [`merge_window`], choosing the file, and
+    /// waits for its conflict view, which the preview's read builds on the
+    /// worker's thread, or focuses again once it is open.
+    fn choose_notes(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Entity<ConflictView> {
+        let position = app.read_with(cx, |app, _| {
+            let status = app.work_status.as_ref().expect("a status");
+            app.actionable_working_rows()
+                .iter()
+                .position(|row| {
+                    matches!(row, crate::workspace::WorkingRow::File(index, _)
+                        if status.entries[*index].path == std::path::Path::new("notes.txt"))
+                })
+                .expect("notes.txt's row")
+        });
+        let selector: &'static str = format!("working-row-{position}").leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        for _ in 0..8 {
+            let chosen = cx.update(|window, cx| {
+                app.read(cx)
+                    .conflict_view
+                    .as_ref()
+                    .is_some_and(|view| view.read(cx).resolution_focused(window, cx))
+            });
+            if chosen {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        crate::views::tests::draw(cx);
+        app.read_with(cx, |app, _| app.conflict_view.clone())
+            .expect("the file's conflict view")
+    }
+
+    /// Whether the focused result draft is drawn whole with its ring's
+    /// `room` inside the review's body, and if so how many whole lines of
+    /// `pitch` it is tall.
+    fn draft_shown(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+        room: Pixels,
+        pitch: Pixels,
+        after: &str,
+    ) -> f32 {
+        assert_eq!(
+            focused_control(cx, view),
+            Some("conflict-result-draft"),
+            "{after}: the draft holds focus"
+        );
+        let review = rendered(cx, "conflict-review");
+        let draft = rendered(cx, "conflict-result-draft");
+        let ring = draft.dilate(room);
+        let slack = px(0.01);
+        assert!(
+            ring.top() + slack >= review.top() && ring.bottom() <= review.bottom() + slack,
+            "{after}: the draft with its ring, {ring:?}, lies outside the review's body, \
+             {review:?}"
+        );
+        let lines = (draft.size.height - px(18.)) / pitch;
+        assert_eq!(
+            lines,
+            lines.round(),
+            "{after}: the draft is whole lines tall"
+        );
+        lines
+    }
+
+    /// In the window the app opens, a 461 × 490 half tile leaves the conflict
+    /// review's body about 145 px beneath the tab strip, the header, the Git
+    /// actions, the merge banner and the review's own header, and above its
+    /// footer and the status bar. The result draft takes the whole lines that
+    /// body shows with its ring, so wherever it takes focus, opening the file
+    /// from its row, Edit result, Tab or Shift+Tab, it is drawn whole with
+    /// its ring, at 13 pt with 12 pt code and at 18 pt with 18 pt code. Kept
+    /// at its eight lines, 162 and 234 px, it was taller than that body and
+    /// showed from its top with its foot and its ring cut. In a 1,480 × 800
+    /// window it keeps its eight lines.
+    #[gpui::test]
+    async fn the_focused_draft_is_whole_in_a_half_tile_window(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = merge_window(cx).await;
+        let room = cx.read(crate::appearance::button_ring_room);
+        for (interface, code, pitch) in [(13, 12, px(18.)), (18, 18, px(27.))] {
+            let at = format!("461 × 490, {interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx);
+                window.blur(cx);
+            });
+            cx.simulate_resize(size(px(461.), px(490.)));
+            crate::views::tests::draw(cx);
+            let view = choose_notes(&app, cx);
+            let body = cx.read(|cx| view.read(cx).body.clone());
+            let opened = draft_shown(cx, &view, room, pitch, &format!("{at}: opened"));
+            assert!(
+                (LEAST_DRAFT_LINES..DRAFT_LINES).contains(&opened),
+                "{at}: the draft gives way to the body's room, to {opened} lines"
+            );
+
+            // Tab from the review's first control reaches every control and
+            // then the draft, each drawn whole with its ring in every frame.
+            let stops = walk(cx, &view, "tab", &at);
+            assert_eq!(
+                stops.last(),
+                Some(&"conflict-result-draft"),
+                "{at}: {stops:?}"
+            );
+            draft_shown(cx, &view, room, pitch, &format!("{at}: Tab"));
+
+            // Shift+Tab from Save draft…, the stop after the draft.
+            cx.update(|window, cx| {
+                body.focus("save-conflict-draft", cx).focus(window, cx);
+            });
+            settle(cx);
+            assert_eq!(
+                focused_control(cx, &view),
+                Some("save-conflict-draft"),
+                "{at}"
+            );
+            body.take_painted();
+            cx.simulate_keystrokes("shift-tab");
+            settle(cx);
+            draft_shown(cx, &view, room, pitch, &format!("{at}: Shift+Tab"));
+            for (index, frame) in body.take_painted().into_iter().enumerate() {
+                let ring = frame
+                    .control
+                    .expect("the frame draws the draft")
+                    .dilate(room);
+                assert!(
+                    ring.top() + px(0.01) >= frame.viewport.top()
+                        && ring.bottom() <= frame.viewport.bottom() + px(0.01),
+                    "{at}: frame {index} after Shift+Tab paints the draft with its ring, \
+                     {ring:?}, outside the body, {:?}",
+                    frame.viewport
+                );
+            }
+
+            // Edit result, revealed by the keyboard and clicked.
+            cx.update(|window, cx| {
+                body.focus("manual-resolution", cx).focus(window, cx);
+            });
+            settle(cx);
+            let edit = rendered(cx, "manual-resolution");
+            cx.simulate_click(edit.center(), Modifiers::default());
+            settle(cx);
+            draft_shown(cx, &view, room, pitch, &format!("{at}: Edit result"));
+        }
+
+        // Where the review has the room, the draft keeps its eight lines.
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        for (interface, code, pitch) in [(13, 12, px(18.)), (18, 18, px(27.))] {
+            let at = format!("1,480 × 800, {interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            crate::views::tests::draw(cx);
+            let view = choose_notes(&app, cx);
+            assert_eq!(
+                draft_shown(cx, &view, room, pitch, &at),
+                DRAFT_LINES,
+                "{at}: the draft keeps its eight lines"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The draft's lines follow the review's room: its eight where they fit
+    /// whole with the ring's room, each line fewer as the room shrinks past
+    /// a line, never fewer than three.
+    #[gpui::test]
+    fn the_draft_takes_the_whole_lines_its_room_shows(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+            let ring = px(3.);
+            // 18 px lines inside 9 px above and below, and the ring's 3 px.
+            let room = |lines: f32| px(18.) * lines + px(18.) + ring * 2.;
+            assert_eq!(draft_lines(px(800.), ring, window), DRAFT_LINES);
+            assert_eq!(draft_lines(room(8.), ring, window), 8.);
+            assert_eq!(draft_lines(room(8.) - px(0.5), ring, window), 7.);
+            assert_eq!(draft_lines(room(6.) + px(17.), ring, window), 6.);
+            assert_eq!(draft_lines(room(3.), ring, window), 3.);
+            assert_eq!(draft_lines(px(40.), ring, window), LEAST_DRAFT_LINES);
+        });
     }
 
     fn snapshot() -> ConflictPreview {
