@@ -163,13 +163,17 @@ fn panels(surface: Surface) -> &'static [Panel] {
         panel("inspector", Selector("commit-inspector")),
     ];
     const COMPARE: &[Panel] = &[panel("inspector", Selector("commit-inspector"))];
+    // The composer first, so its lines are its own: the files' area runs
+    // from the inspector's edge, the header's or, where the controls share
+    // one row and the header has left, the list/composer body's, past the
+    // list's 1 px margin.
     const WORKING: &[Panel] = &[
+        panel("composer", Selector("commit-composer")),
         icon_panel(
             "working files",
-            Union(&["working-header", "working-pane"]),
+            Union(&["working-header", "working-pane", "working-body"]),
             || appearance::ui_size(appearance::PANE_INSET) + px(2.),
         ),
-        panel("composer", Selector("commit-composer")),
     ];
     // The Conversations pane, bordered and padded to the panel's text edge, stands its
     // Buttons' frames at that edge rather than at the panel's box edge: a nested group, so

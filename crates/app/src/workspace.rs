@@ -305,21 +305,10 @@ struct WorkingFit {
     heading: bool,
 }
 
-/// The least height the composer keeps: its top border, the pinned heading
-/// row with the padding above it (unless `heading` has left), the title's
-/// label and one line of its field with the gaps around them, and the
-/// commit action with the padding below it, each snapped to device pixels as
-/// layout snaps them. The list/composer body keeps it and the file list's
-/// floor (`working_list_floor`), so the controls above the list give way
-/// first (`WorkingFit`).
-fn composer_minimum(short: bool, heading: bool, window: &Window) -> f32 {
-    f32::from(ComposerMetrics::new(short, heading, window).minimum())
-}
-
 /// The heights the composer's rows take, snapped to device pixels as layout
-/// snaps them, from which its minimum (`composer_minimum`), its preferred
-/// height, its Description section's field (`description_field`) and its
-/// drawn height (`content`) are predicted before layout.
+/// snaps them, from which its least height (`least`), its preferred height,
+/// its Description section's field (`description_field`) and its drawn
+/// height (`content`) are predicted before layout.
 struct ComposerMetrics {
     /// The composer's top border.
     border: Pixels,
@@ -400,16 +389,6 @@ impl ComposerMetrics {
         }
     }
 
-    /// The composer's least height: its border, the heading row with the
-    /// padding above it, the title's label and one line of its field with
-    /// the gaps around them, and the commit action with the padding below.
-    fn minimum(&self) -> Pixels {
-        // Without the heading the composer's padding leads the fields.
-        let lead = if self.heading { self.gap } else { px(0.) };
-        let fields = lead + self.branch + self.label + self.gap + self.field + self.gap;
-        self.border + self.padding + self.heading_row + fields + self.action + self.padding
-    }
-
     /// The composer drawn with its rows whole and nothing more: its chrome,
     /// the fields' `rows` (`GitTurtle::composer_rows`) and the description's
     /// `field`, or, where the Description section has left, those rows less
@@ -447,6 +426,20 @@ impl ComposerMetrics {
     /// below.
     fn description_least(&self) -> Pixels {
         px(16.) + self.text
+    }
+
+    /// The composer's least height: drawn with its rows whole and one line
+    /// of its description, whose label and wrapped hint count with it, for
+    /// fields' `rows` (`GitTurtle::composer_rows`) and a Description section
+    /// of `section`. The list/composer body keeps it beside the file list's
+    /// floor (`working_list_floor`) where it can, so the controls above the
+    /// list give way first, then the composer's heading (`WorkingFit`), and
+    /// only then do the list and the composer scroll together, below the
+    /// same height (`GitTurtle::render_working_body`), so no form keeps the
+    /// heading and scrolls. Counted without the description, it let the
+    /// heading scroll with the composer at 13 pt in a 461 × 490 window.
+    fn least(&self, rows: Pixels, section: Pixels) -> Pixels {
+        self.content(rows, section, Some(f32::from(self.description_least())))
     }
 
     /// The description's field in a composer `height` tall whose fields'
@@ -1393,29 +1386,20 @@ impl GitTurtle {
     }
 
     /// The inspector's `WorkingFit` at its measured `height` and `width`,
-    /// with a list floor of `floor` and, where `composer`, the composer.
-    #[allow(clippy::too_many_arguments)]
+    /// where the list/composer body needs `body`: the list's floor and, with
+    /// the composer, the composer's least height with its heading
+    /// (`ComposerMetrics::least`).
     fn working_fit(
         &self,
         forms: WorkingForms,
         height: Pixels,
         width: Pixels,
-        floor: f32,
-        composer: bool,
-        short: bool,
+        body: f32,
         window: &Window,
     ) -> WorkingFit {
         let height = f32::from(height);
-        let body = |heading: bool| {
-            floor
-                + if composer {
-                    composer_minimum(short, heading, window)
-                } else {
-                    0.
-                }
-        };
         let full = self.working_controls_height(forms, width, window) + WORKING_HEADER;
-        if full + body(true) <= height {
+        if full + body <= height {
             return WorkingFit {
                 tight: false,
                 heading: true,
@@ -1423,7 +1407,7 @@ impl GitTurtle {
         }
         WorkingFit {
             tight: true,
-            heading: working_toolbar_height(window) + body(true) <= height,
+            heading: working_toolbar_height(window) + body <= height,
         }
     }
 
@@ -3576,17 +3560,32 @@ impl GitTurtle {
                 window,
             )
         };
+        // The composer's least height with its heading, a one-line
+        // description counted (`ComposerMetrics::least`), chooses the form:
+        // the heading leaves before the body would scroll.
+        let least = if composer {
+            let metrics = ComposerMetrics::new(short, true, window);
+            let rows = self.composer_rows(
+                &metrics,
+                fitted_width,
+                identity_ready,
+                shown,
+                title_length,
+                window,
+            );
+            let section = self.description_section(&metrics, fitted_width, window);
+            f32::from(metrics.least(rows, section))
+        } else {
+            0.
+        };
         let fit = self.working_fit(
             forms,
             layout.read(cx).inspector,
             fitted_width,
-            floor,
-            composer,
-            short,
+            floor + least,
             window,
         );
         let metrics = ComposerMetrics::new(short, fit.heading, window);
-        let minimum = f32::from(metrics.minimum());
         // The fields' rows but the description's field, at the interface
         // size: the composer prefers room for them whole with that field.
         let rows = self.composer_rows(
@@ -3597,8 +3596,9 @@ impl GitTurtle {
             title_length,
             window,
         );
-        // The Description section's own rows, which leave with it.
+        // The Description section's own rows.
         let section = self.description_section(&metrics, fitted_width, window);
+        let minimum = f32::from(metrics.least(rows, section));
         // A row that its Stage or Unstage moved travels to its slot above
         // the rows and beneath the section headings, and the list keeps the
         // slot empty until it lands (`motion`).
@@ -4009,7 +4009,6 @@ impl GitTurtle {
         });
         let p = palette(cx);
         let available = f32::from(size.height);
-        let minimum = f32::from(metrics.minimum());
         let normal_description = if self.settings.density == appearance::Density::Compact {
             100.
         } else {
@@ -4023,8 +4022,9 @@ impl GitTurtle {
             (description_height + if short { 180. } else { 244. })
                 .max(f32::from(metrics.chrome() + rows) + description_height),
         );
-        // The list keeps its floor beside the composer's minimum.
-        let composer_height = composer_height.min(available - floor).max(minimum);
+        // The list keeps its floor; a share too short for the composer's
+        // least height is made up below.
+        let composer_height = composer_height.min(available - floor);
         // Where its rows overflow it, the list is a whole number of rows tall,
         // so no row is cut through its text at the list's edge: the composer
         // takes the remainder, or, without one, it stays below the list. At
@@ -4053,11 +4053,9 @@ impl GitTurtle {
             |height: f32| metrics.description_field(px(height), rows, description_height, window);
         let (composer_height, description) = match composer.then(|| fitted(composer_height)) {
             Some(None) => {
-                let line = f32::from(metrics.content(
-                    rows,
-                    section,
-                    Some(f32::from(metrics.description_least())),
-                ));
+                // As `WorkingFit` counts it, so a form that keeps the
+                // heading never scrolls.
+                let line = f32::from(metrics.least(rows, section));
                 let height = line.min(available - floor);
                 // What the list's whole rows leave below them, as above.
                 let height = height + leftover(available - height - border);
@@ -4172,9 +4170,11 @@ impl GitTurtle {
             .h(size.height)
             .flex()
             .flex_col()
-            .when(scrolls, |el| {
-                el.overflow_y_scroll().track_scroll(reveal.scroll())
-            })
+            // Tracked in both forms, so where the list and the composer fit,
+            // its reach is nothing: tracked only while it scrolled, it kept
+            // the last scrolling frame's.
+            .track_scroll(reveal.scroll())
+            .when(scrolls, |el| el.overflow_y_scroll())
             .map(|el| {
                 let pane = native_accessibility::clips_children(pane);
                 if scrolls {

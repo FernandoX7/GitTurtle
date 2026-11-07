@@ -24730,14 +24730,15 @@ pub(crate) mod tests {
 
     /// The Working Changes header's count leaves with its "Changes" label:
     /// alone it would repeat the count the Changes tab reads above it. At
-    /// 18 pt in a 461 × 1000 window the inspector has room for neither, and
+    /// 18 pt in a 461 × 1400 window the inspector has room for neither, and
     /// the header holds only Actions and Refresh, where it showed a lone
-    /// "3"; at 560 × 1000 and at the default size the count follows its
-    /// label.
+    /// "3"; at 560 × 1400 and at the default size the count follows its
+    /// label. (Shorter, at 18 pt the header gives way to the controls' one
+    /// row before the composer's one-line description would.)
     #[gpui::test]
     async fn working_header_count_leaves_with_its_label(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working_window(cx).await;
-        for (text, width, height) in [(18, 461., 1000.), (18, 560., 1000.), (13, 1000., 680.)] {
+        for (text, width, height) in [(18, 461., 1400.), (18, 560., 1400.), (13, 1000., 680.)] {
             let at = format!("{text} pt at {width} × {height}");
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
@@ -25694,10 +25695,10 @@ pub(crate) mod tests {
         // Refresh keeps its control there, and whether the composer keeps its
         // heading.
         for (width, height, text, tight, refresh, heading) in [
-            (461., 490., 13, true, true, true),
+            (461., 490., 13, true, true, false),
             (461., 490., 18, true, false, false),
             (640., 680., 13, false, true, true),
-            (640., 680., 18, true, true, true),
+            (640., 680., 18, true, true, false),
         ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             COMPACT_NAMES.with(|names| names.borrow_mut().clear());
@@ -26583,7 +26584,9 @@ pub(crate) mod tests {
     }
 
     /// From a 461 and a 640 px wide window's shortest height to a tall one,
-    /// at the default size and at 18 pt, the Working Changes inspector never
+    /// 1,010 px at the default size and 1,400 px at 18 pt, where the
+    /// controls keep their own rows beside the composer's one-line
+    /// description, the Working Changes inspector never
     /// cuts a control above its list: the selection controls are whole in
     /// their own rows, the icon-only ones in a narrow inspector included, or
     /// they have given way to the one row of the tight form, and the list
@@ -26594,8 +26597,9 @@ pub(crate) mod tests {
         let mut forms = std::collections::BTreeSet::new();
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let tallest = if text == 18 { 1400 } else { 1010 };
             for width in [461., 640.] {
-                for height in (490..=1010).step_by(26) {
+                for height in (490..=tallest).step_by(26) {
                     cx.simulate_resize(size(px(width), px(height as f32)));
                     draw(cx);
                     let at = format!("{text} pt in {width} × {height}");
@@ -30377,12 +30381,15 @@ pub(crate) mod tests {
         }
     }
 
-    /// With two staged files in a 461 × 490 window, the composer's heading
+    /// With two staged files in a 461 px wide window, the composer's heading
     /// is drawn whole or not at all, above the commit action, in a body that
-    /// ends above the status bar and scrolls the list and the composer
-    /// together: whole at the default size, and at 18 pt, where the inspector
-    /// cannot keep it beside the list's heading and first file and the
-    /// title's field, it leaves and the title's label leads the composer.
+    /// ends above the status bar: whole where the inspector keeps it beside
+    /// the list's floor and the composer's rows with a one-line description,
+    /// in a 640 px tall window at the default size and a 980 px one at 18 pt,
+    /// and in a 490 px tall one, where they do not fit even without it, it
+    /// leaves before the list and the composer scroll together, and the
+    /// title's label leads the composer. At the default size the heading
+    /// once stayed there and scrolled with the composer.
     #[gpui::test]
     async fn composer_heading_stays_whole_in_a_short_window(cx: &mut TestAppContext) {
         // The import leaves the index empty: both files are staged deletions.
@@ -30393,10 +30400,17 @@ pub(crate) mod tests {
             app.read_with(cx, |app, _| app.working_paths.staged_count),
             2
         );
-        for text in [13, 18] {
+        for (text, height, shown) in [
+            (13, 490., false),
+            (18, 490., false),
+            (13, 640., true),
+            (18, 980., true),
+        ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
-            cx.simulate_resize(size(px(461.), px(490.)));
+            cx.simulate_resize(size(px(461.), px(height)));
             draw(cx);
+            draw(cx);
+            let at = format!("{text} pt in 461 × {height}");
             let (status, line) = cx.update(|window, _| {
                 let text = window.text_style();
                 (
@@ -30412,23 +30426,23 @@ pub(crate) mod tests {
             let commit = cx.debug_bounds("commit-staged").unwrap();
             let body = cx.debug_bounds("working-body").unwrap();
             assert!(
-                body.bottom() <= px(490.) - status + px(0.01)
+                body.bottom() <= px(height) - status + px(0.01)
                     && commit.bottom() <= composer.bottom()
                     && label.top() >= composer.top(),
-                "{text} pt: {composer:?}, {label:?}, {commit:?} in {body:?}"
+                "{at}: {composer:?}, {label:?}, {commit:?} in {body:?}"
             );
             let heading = cx.debug_bounds("commit-composer-heading");
-            if text == 13 {
-                let heading = heading.unwrap();
+            if shown {
+                let heading = heading.unwrap_or_else(|| panic!("{at}: the heading"));
                 assert!(
                     heading.size.height >= line
                         && heading.top() >= composer.top()
                         && heading.bottom() <= label.top()
                         && heading.right() <= px(461.),
-                    "{text} pt: heading {heading:?} in {composer:?}"
+                    "{at}: heading {heading:?} in {composer:?}"
                 );
             } else {
-                assert!(heading.is_none(), "{text} pt: heading {heading:?}");
+                assert!(heading.is_none(), "{at}: heading {heading:?}");
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
@@ -31423,6 +31437,71 @@ pub(crate) mod tests {
         );
         assert_selected_shown(cx, "the selected file staged");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The Working inspector gives way in DESIGN.md's one order as its
+    /// window shortens, at the default size and at 18 pt and at scales 1,
+    /// 1.25 and 2: the controls share one row, then the composer's heading
+    /// leaves, and only then do the list and the composer scroll together,
+    /// so no height keeps the heading and scrolls. The composer's least
+    /// height counts its Description section with one line of its field,
+    /// as the body's layout does before it scrolls: counted without it, the
+    /// heading scrolled with the composer at 13 pt in a 461 × 490 window.
+    /// Each height is a whole device pixel, so a walk meets the very height
+    /// where the body holds the list's floor and that least height exactly.
+    #[gpui::test]
+    async fn the_composer_heading_leaves_before_the_short_body_scrolls(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        let default_scale = cx.update(|window, _| window.scale_factor());
+        // Whether a window `height` tall keeps the heading, and whether its
+        // body scrolls.
+        let form = |cx: &mut VisualTestContext, height: f32| {
+            cx.simulate_resize(size(px(461.), px(height)));
+            draw(cx);
+            let heading = cx.debug_bounds("commit-composer-heading").is_some();
+            let scrolls =
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.);
+            (heading, scrolls)
+        };
+        for scale in [1., 1.25, 2.] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                let at = |height: f32| format!("{text} pt at scale {scale} in 461 × {height}");
+                // The heights, in whole device pixels, between which the
+                // heading leaves.
+                let (mut low, mut high) = (400., 1100.);
+                assert_eq!(form(cx, high), (true, false), "{}", at(high));
+                let (heading, scrolls) = form(cx, low);
+                assert!(!heading && scrolls, "{}: the body scrolls", at(low));
+                while high - low > 1.5 / scale {
+                    let middle = ((low + high) / 2. * scale).round() / scale;
+                    if form(cx, middle).0 {
+                        high = middle;
+                    } else {
+                        low = middle;
+                    }
+                }
+                // Around it, a device pixel at a time: the heading leaves
+                // first, then the body scrolls.
+                let mut left = false;
+                for step in 0..=(12. * scale) as usize {
+                    let height = high + 6. - step as f32 / scale;
+                    let (heading, scrolls) = form(cx, height);
+                    assert!(!(heading && scrolls), "{}: the heading scrolls", at(height));
+                    left |= !heading && !scrolls;
+                }
+                assert!(
+                    left,
+                    "{}: the heading leaves before the body scrolls",
+                    at(high)
+                );
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(default_scale);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
     }
 
     /// Tab and Shift-Tab leave the commit description for the next and the
