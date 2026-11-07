@@ -2388,6 +2388,11 @@ impl Render for Panel {
         });
         // Where the line lies among the content this frame, its top and bottom, if it does.
         let flowing = std::rc::Rc::new(std::cell::Cell::new(None));
+        // Overview's captured identities, which the last section tab owns, are drawn only on
+        // a PR's Overview: elsewhere the tab owns nothing.
+        if self.pull.is_none() || self.review.section != Section::Overview {
+            self.review.identities.set(None);
+        }
         // A line the last frame stood above the body moves back among the content as the
         // conversation closes, and an element before the body moves the body's scroll by the
         // difference, read from where this frame lays the line out ([`Self::unpin_top_line`]).
@@ -2540,7 +2545,11 @@ impl Render for Panel {
                     .child(label("github-branch-context",format!("{} → {} · {}",pull.head.branch,pull.base.branch,if pull.draft{"Draft PR"}else{"Open PR"})).ml(text_inset()).text_color(rgb(p.muted))))
                 .child(self.render_tabs(cx)))
                 .when(self.review.section==Section::Overview,|element|element
-                    .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).ml(text_inset()).text_color(rgb(p.muted)))
+                    .child(div().on_children_prepainted({let (identities,scroll)=(self.review.identities.clone(),self.review.body_scroll.clone());move|children,_,_|{
+                        // Where they lie with the body at its top, for the last section tab,
+                        // which owns them (`review::Owned`).
+                        let offset=scroll.offset().y;identities.set(children.first().map(|drawn|(drawn.top()-offset,drawn.bottom()-offset)));}})
+                        .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).ml(text_inset()).text_color(rgb(p.muted))))
                     .when_some(self.description.as_ref(),|element,description|element.child(self.part("description",div(),cx).relative().h(px(120.)).flex_shrink_0()
                         // Each row of the description its viewport shows is a line of the body.
                         .child(review::editor_rows(description))
@@ -11357,7 +11366,11 @@ mod tests {
     /// (`connection_at_18_pt`), as the walk did on Linux from 470 to 495 px wide. The pane is
     /// a stop of its own now, which shows both from its top. The PR list at 17 pt in a
     /// 461 × 490 window is one too, where FU27-B's probe found its row's reveals leaving a line
-    /// cut ([`a_pr_rows_reveal_leaves_no_line_cut_at_17_pt`]).
+    /// cut ([`a_pr_rows_reveal_leaves_no_line_cut_at_17_pt`]). So is Overview at 17 pt in a
+    /// 440 × 490 window and at 18 pt in a 480 × 490 one, where the PR's captured identities,
+    /// six lines between the section tabs and the Conversations pane, lay below the last
+    /// tab's reveal and above the pane's, and no stop showed most of them, or any at 18 pt:
+    /// the last tab owns them now (`review::Owned`), and Tab onto it shows them with it.
     mod the_reveal_sweep_finds_nothing_where_it_found_reveals_to_trace {
         use super::*;
 
@@ -11376,6 +11389,8 @@ mod tests {
 
         found_walks! {
             overview_at_13_pt: Overview at (13, 461., 490.), by BOTH_WAYS;
+            overview_at_17_pt_in_a_440_px_window: Overview at (17, 440., 490.), by BOTH_WAYS;
+            overview_at_18_pt_in_a_480_px_window: Overview at (18, 480., 490.), by BOTH_WAYS;
             source_at_13_pt: Source at (13, 461., 490.), by BOTH_WAYS;
             connection_at_18_pt: Connection at (18, 461., 490.), by BOTH_WAYS;
             connection_at_18_pt_in_a_480_px_window: Connection at (18, 480., 490.), by BOTH_WAYS;

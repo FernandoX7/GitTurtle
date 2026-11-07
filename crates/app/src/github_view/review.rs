@@ -65,6 +65,10 @@ pub(super) struct ReviewState {
     pub section: Section,
     pub body_scroll: ScrollHandle,
     pub revealed_focus: std::rc::Rc<std::cell::RefCell<FocusObservation>>,
+    /// Where Overview's captured identities lay in the last frame that drew them, with the
+    /// body's scroll at zero, for the last section tab, which owns them ([`Owned`]); none
+    /// where no frame draws them.
+    pub identities: Owned,
     /// Where the body's blocks start, for its reveals.
     pub body_blocks: Blocks,
     /// A PR has just opened: the next frame shows it from its title ([`Panel::reveal_opened`]).
@@ -135,6 +139,7 @@ impl ReviewState {
             section: Section::Overview,
             body_scroll: ScrollHandle::new(),
             revealed_focus: Default::default(),
+            identities: Default::default(),
             body_blocks: Blocks::default(),
             opened: Default::default(),
             top_line: Default::default(),
@@ -1232,7 +1237,8 @@ fn scroll_edge_to(
 /// `key` holds that control, `scroll` scrolls to show the part's children, `inset` clear of
 /// its edges, its top edge at the start of one of `blocks` ([`reveal`]). The key context names
 /// the part on the focus path of the frame that drew the control, so a control needs no focus
-/// handle of the panel's. `edge` is the focus whose ring the part draws on its own edge.
+/// handle of the panel's. `edge` is the focus whose ring the part draws on its own edge, and
+/// `owned` the content below the part that it owns, if any ([`own`]).
 #[allow(clippy::too_many_arguments)]
 fn revealing(
     element: Div,
@@ -1243,6 +1249,7 @@ fn revealing(
     blocks: Blocks,
     inset: Pixels,
     edge: Option<FocusHandle>,
+    owned: Option<Owned>,
 ) -> Div {
     let mut context = KeyContext::default();
     context.set(key, name.clone());
@@ -1251,13 +1258,16 @@ fn revealing(
         .key_context(context)
         // Where tests find the part (`github_view::tests::sweep_reveals`).
         .debug_selector(move || format!("github-part-{part}"))
-        .on_children_prepainted(move |bounds, window, cx| {
+        .on_children_prepainted(move |mut bounds, window, cx| {
             let innermost = window
                 .context_stack()
                 .iter()
                 .rev()
                 .find_map(|context| context.get(key).cloned());
             if window.last_input_was_keyboard() && innermost.as_ref() == Some(&name) {
+                if let Some(owned) = &owned {
+                    own(&mut bounds, owned, &scroll, inset);
+                }
                 reveal(
                     &scroll,
                     &revealed,
@@ -1270,6 +1280,35 @@ fn revealing(
                 );
             }
         })
+}
+
+/// Where content that no control holds lay in the last frame that drew it, top and bottom with
+/// its container's scroll at zero, for the part before it that owns it ([`own`]): the stops
+/// on either side of it cannot always show it whole with every line whole, as Overview's
+/// captured identities, six lines at 17 pt in a 440 × 490 window, lay between the last
+/// section tab's reveal and the Conversations pane's, which no stop showed.
+pub(super) type Owned = std::rc::Rc<std::cell::Cell<Option<(Pixels, Pixels)>>>;
+
+/// Adds to `bounds`, the children of a part focus has moved into, the content it owns below
+/// it (`owned`), where the part and that content fit `scroll`'s view together with `inset`,
+/// the ring's room, above and below: the reveal then shows them both, and the content is
+/// whole at the part's stop. Where they do not fit, the part is revealed alone, so its stop
+/// still shows it whole.
+fn own(bounds: &mut Vec<Bounds<Pixels>>, owned: &Owned, scroll: &ScrollHandle, inset: Pixels) {
+    let (Some((top, bottom)), Some(part)) = (
+        owned.get(),
+        bounds.iter().copied().reduce(|a, b| a.union(&b)),
+    ) else {
+        return;
+    };
+    let offset = scroll.offset().y;
+    let (top, bottom) = (top + offset, bottom + offset);
+    if bottom.max(part.bottom()) - top.min(part.top()) + inset * 2. <= scroll.bounds().size.height {
+        bounds.push(Bounds::from_corners(
+            point(part.left(), top),
+            point(part.right(), bottom),
+        ));
+    }
 }
 
 impl Panel {
@@ -1372,6 +1411,7 @@ impl Panel {
             self.review.body_blocks.clone(),
             appearance::button_ring_room(cx),
             None,
+            None,
         )
     }
     /// [`Panel::part`] for a pane that draws `focus`'s ring on its own edge: taller than the
@@ -1392,6 +1432,28 @@ impl Panel {
             self.review.body_blocks.clone(),
             appearance::button_ring_room(cx),
             Some(focus.clone()),
+            None,
+        )
+    }
+    /// [`Panel::part`] for a part that owns the content below it (`owned`): Tab onto it
+    /// shows that content with it where both fit the body ([`own`]).
+    pub(super) fn owning_part(
+        &self,
+        name: &'static str,
+        element: Div,
+        owned: &Owned,
+        cx: &App,
+    ) -> Div {
+        revealing(
+            element,
+            PART,
+            name.into(),
+            self.review.body_scroll.clone(),
+            self.review.revealed_focus.clone(),
+            self.review.body_blocks.clone(),
+            appearance::button_ring_room(cx),
+            None,
+            Some(owned.clone()),
         )
     }
     /// `element`, the actions of the conversation at `index`, as a part of the conversation
@@ -1408,6 +1470,7 @@ impl Panel {
             self.conversations.list_revealed.clone(),
             self.conversations.list_blocks.clone(),
             appearance::button_ring_room(cx),
+            None,
             None,
         )
     }
@@ -1979,20 +2042,26 @@ impl Panel {
                     // Each tab is a part of its own: where the tabs wrap, their part may be
                     // taller than the body of a short window at a large text size, and Tab
                     // shows the tab it moves onto with its ring.
-                    self.part(["section-0", "section-1", "section-2"][i], div(), cx)
-                        .child(
-                            button(
-                                ("github-section", i),
-                                name,
-                                "",
-                                self.review.section == section,
-                            )
-                            .debug_selector(move || format!("github-section-{i}"))
-                            .toggled(self.review.section == section)
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| this.change_section(section, window, cx),
-                            )),
+                    // The last tab owns Overview's captured identities below the tabs, which
+                    // no other stop can show whole ([`Owned`]).
+                    let part = if i == 2 {
+                        self.owning_part("section-2", div(), &self.review.identities, cx)
+                    } else {
+                        self.part(["section-0", "section-1"][i], div(), cx)
+                    };
+                    part.child(
+                        button(
+                            ("github-section", i),
+                            name,
+                            "",
+                            self.review.section == section,
                         )
+                        .debug_selector(move || format!("github-section-{i}"))
+                        .toggled(self.review.section == section)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.change_section(section, window, cx),
+                        )),
+                    )
                 }),
             )
             .child(self.render_save_status(cx))
