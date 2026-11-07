@@ -76,6 +76,12 @@ pub(super) struct ReviewState {
     pub identities_focus: FocusHandle,
     /// Where the body's blocks start, for its reveals.
     pub body_blocks: Blocks,
+    /// The PR list's own scroll, the focus its reveals last showed and where its blocks start:
+    /// a PR row's title is revealed in the list first, then where it lands in the body
+    /// ([`Panel::pull_part`]).
+    pub pull_scroll: ScrollHandle,
+    pub pull_revealed: std::rc::Rc<std::cell::RefCell<FocusObservation>>,
+    pub pull_blocks: Blocks,
     /// A PR has just opened: the next frame shows it from its title ([`Panel::reveal_opened`]).
     pub opened: std::rc::Rc<std::cell::Cell<bool>>,
     /// The room the panel's top line took in the last frame: how tall it stood above the body
@@ -177,6 +183,9 @@ impl ReviewState {
             revealed_focus: Default::default(),
             identities: Default::default(),
             body_blocks: Blocks::default(),
+            pull_scroll: ScrollHandle::new(),
+            pull_revealed: Default::default(),
+            pull_blocks: Blocks::default(),
             opened: Default::default(),
             top_line: Default::default(),
             top_line_pinned: Default::default(),
@@ -310,6 +319,9 @@ pub(super) const PART: &str = "GitTurtleGithubPart";
 /// The key context entry that names a part of the conversation list, a conversation's
 /// actions ([`Panel::conversation_part`]).
 const CONVERSATION: &str = "GitTurtleGithubConversation";
+/// The key context entry that names a part of the PR list, a row's title
+/// ([`Panel::pull_part`]).
+pub(super) const PULL: &str = "GitTurtleGithubPull";
 /// The key context of the panel's scrolling body, on the focus path of whatever it draws.
 pub(super) const BODY: &str = "GitTurtleGithubBody";
 
@@ -1241,6 +1253,37 @@ pub(super) fn show(
     window: &mut Window,
     cx: &mut App,
 ) {
+    show_then(
+        scroll, blocks, bounds, inset, ringed, still, None, false, window, cx,
+    );
+}
+
+/// What a reveal does once its scroll has landed, with where what it showed lies then
+/// ([`show_then`]).
+type Landed = Box<dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App)>;
+
+/// [`show`], running `landed` with where `bounds` lie once the scroll has landed: at once
+/// where they are in view already, after the scroll where it moves, and not at all where a
+/// scroll or `still` supersedes it, as the PR list's reveal of a row's title then reveals
+/// where the title landed in the body ([`Panel::pull_part`]). With `clear`, bounds in view
+/// already still move the view where one of its edges cuts a line, to the nearest place that
+/// keeps them whole and cuts none ([`clear_of_lines`]), as a reveal's landing does: a list
+/// inside the view that scrolled its own rows moved lines under the view's edges without
+/// moving the view, and Shift+Tab onto the fourth of twelve PR rows at 13 pt in a 461 × 490
+/// window left the row above it cut at the body's top, its title in view.
+#[allow(clippy::too_many_arguments)]
+fn show_then(
+    scroll: &ScrollHandle,
+    blocks: &Blocks,
+    bounds: Vec<Bounds<Pixels>>,
+    inset: Pixels,
+    ringed: bool,
+    still: impl Fn(&Window, &App) -> bool + 'static,
+    mut landed: Option<Landed>,
+    clear: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(bounds) = bounds.into_iter().reduce(|a, b| a.union(&b)) else {
         return;
     };
@@ -1252,8 +1295,14 @@ pub(super) fn show(
         top - scroll.offset().y,
         bottom - scroll.offset().y,
     )));
-    if top >= viewport.top() && bottom <= viewport.bottom() {
-        return;
+    let in_view = top >= viewport.top() && bottom <= viewport.bottom();
+    if in_view {
+        if let Some(landed) = landed.take() {
+            landed(bounds, window, cx);
+        }
+        if !clear {
+            return;
+        }
     }
     let previous = scroll.offset();
     let (scroll, blocks) = (scroll.clone(), blocks.clone());
@@ -1265,11 +1314,19 @@ pub(super) fn show(
         let start = viewport.top() + previous.y;
         let end = start + scroll.max_offset().y;
         let starts = blocks.at(&scroll);
-        let edge = landing(viewport, top, bottom, &starts, inset, end, ringed);
+        let edge = if in_view {
+            viewport.top()
+        } else {
+            landing(viewport, top, bottom, &starts, inset, end, ringed)
+        };
         let starts: Vec<_> = starts.into_iter().map(|start| start - inset).collect();
         let lines = blocks.lines(cx);
         let edge = clear_of_lines(viewport, edge, (top, bottom), &lines, &starts, (start, end));
         scroll_edge_to(&scroll, viewport, previous, edge, window);
+        if let Some(landed) = landed {
+            let moved = scroll.offset().y - previous.y;
+            landed(bounds + point(px(0.), moved), window, cx);
+        }
     });
 }
 
@@ -1622,6 +1679,93 @@ impl Panel {
             None,
             Some(owned.clone()),
         )
+    }
+    /// `element`, a PR row's title, as the part of the PR list called `name`, which scrolls
+    /// inside the panel's body and clips its rows past its 206 px cap: when the keyboard moves
+    /// focus onto it, the list first scrolls by the least that shows the title with its ring's
+    /// room, its row's lines whole at the list's edges where a place allows ([`reveal`]), and the
+    /// body then shows where the title landed, with the ring's room and nothing more: neither
+    /// the list's padding, which left Previous PR page cut at the body's foot at 17 pt in a
+    /// 461 × 490 window, nor a place the list clips, to which the body once scrolled for a row
+    /// below the list's fold, away from the list. A change of the body's view, as a resize
+    /// makes, reveals the focused title again, as the body's own parts are.
+    pub(super) fn pull_part(&self, name: SharedString, element: Div, cx: &App) -> Div {
+        let mut context = KeyContext::default();
+        context.set(PULL, name.clone());
+        let part = name.clone();
+        let (list, revealed, blocks) = (
+            self.review.pull_scroll.clone(),
+            self.review.pull_revealed.clone(),
+            self.review.pull_blocks.clone(),
+        );
+        let (body, body_revealed, body_blocks) = (
+            self.review.body_scroll.clone(),
+            self.review.revealed_focus.clone(),
+            self.review.body_blocks.clone(),
+        );
+        let inset = appearance::button_ring_room(cx);
+        element
+            .key_context(context)
+            // Where tests find the part (`github_view::tests::over_wide`).
+            .debug_selector(move || format!("github-part-{part}"))
+            .on_children_prepainted(move |bounds, window, cx| {
+                let innermost = window
+                    .context_stack()
+                    .iter()
+                    .rev()
+                    .find_map(|context| context.get(PULL).cloned());
+                if !window.last_input_was_keyboard() || innermost.as_ref() != Some(&name) {
+                    return;
+                }
+                let due = to_reveal(&list, &revealed, None, window, cx)
+                    .or_else(|| to_reveal(&body, &body_revealed, None, window, cx));
+                let Some((_, focus)) = due else {
+                    return;
+                };
+                let still = move |window: &Window, cx: &App| window.focused(cx) == focus;
+                let (body, body_revealed, body_blocks) =
+                    (body.clone(), body_revealed.clone(), body_blocks.clone());
+                let then = still.clone();
+                let stood = bounds.iter().copied().reduce(|a, b| a.union(&b));
+                let landed: Landed = Box::new(move |title, window, cx| {
+                    // Where the list has moved the title, the body's lines, its rows among them,
+                    // are the frame's before it moved: the next frame, which lays them out where
+                    // the list put them, reveals the title in the body. Revealed with this
+                    // frame's, Shift+Tab onto a row at 13 pt left the row above it cut at the
+                    // body's top.
+                    if stood.is_some_and(|stood| (stood.top() - title.top()).abs() > px(0.01)) {
+                        *body_revealed.borrow_mut() = FocusObservation::default();
+                        window.refresh();
+                        return;
+                    }
+                    // Where the title is in the body's view already, the rows the list moved can
+                    // lie cut at the body's edges: the body moves to clear them all the same.
+                    show_then(
+                        &body,
+                        &body_blocks,
+                        vec![title],
+                        inset,
+                        false,
+                        then,
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                });
+                show_then(
+                    &list,
+                    &blocks,
+                    bounds,
+                    inset,
+                    false,
+                    still,
+                    Some(landed),
+                    false,
+                    window,
+                    cx,
+                );
+            })
     }
     /// `element`, the actions of the conversation at `index`, as a part of the conversation
     /// list, which scrolls inside the panel's body: when the keyboard moves focus onto one of

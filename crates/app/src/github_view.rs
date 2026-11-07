@@ -2558,7 +2558,10 @@ impl Render for Panel {
                 // margin, so the rows' text keeps the panel's edge, and above the first row and
                 // below the last the room is the list's own (a negative margin there collapsed
                 // the panel's scrolling body to its padding).
-                .child(review::clipped(crate::native_accessibility::clips_children(self.part("pr-list",div(),cx).id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
+                .child(review::clipped_lines(crate::native_accessibility::clips_children(div().on_children_prepainted({let (revealed,scroll,blocks)=(self.review.pull_revealed.clone(),self.review.pull_scroll.clone(),self.review.pull_blocks.clone());move|_,window,cx|{
+                    // The focus its rows' reveals showed ([`Panel::pull_part`]).
+                    review::record_shown(&revealed,&scroll,|context|context.contains(review::PULL),window,cx);blocks.finish();}})
+                    .id("github-pr-list").debug_selector(||"github-pr-list".into()).track_scroll(&self.review.pull_scroll).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().zip(&self.row_parts).map(|(pull,(_,part))|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         // A list row, as the Files list's rows are: it rests on the panel surface,
                         // the selected one on the selected surface, and lifts to the row hover under
@@ -2583,7 +2586,7 @@ impl Render for Panel {
                         let pressed=!pending&&self.pressed.get()==Some(number);let (down,up,out)=(self.pressed.clone(),self.pressed.clone(),self.pressed.clone());
                         div().id(("github-pr-card",pull.number)).debug_selector(move||format!("github-pr-card-{number}")).child(review::one_line()).flex_shrink_0().rounded(px(7.)).bg(rgb(if selected||pressed{p.selected}else{p.panel})).when(!pending&&!pressed,|row|row.hover(move|row|row.bg(rgb(hover))))
                             .when(!pending,|row|row.capture_any_mouse_down(move|event,window,_|if event.button==MouseButton::Left{down.set(Some(number));window.refresh();}).capture_any_mouse_up(move|_,window,_|if up.take().is_some(){window.refresh();}).on_mouse_up_out(MouseButton::Left,move|_,window,_|if out.take().is_some(){window.refresh();})).flex().flex_col()
-                            .child(self.part(part.clone(),div(),cx).child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx)))))
+                            .child(self.pull_part(part.clone(),div(),cx).child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx)))))
                             .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().px(text_inset()).pb_1().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).when(!pending,|line|line.on_click(cx.listener(move|this,_,window,cx|this.inspect(open.clone(),window,cx)))).child(row_text(format!("github-pr-context-{number}"),context)))
                     }))
                     // One line with the next step: a repository with no GitHub remote names
@@ -2592,7 +2595,7 @@ impl Render for Panel {
                     // repository moves to a name field, not a search, so it draws no glyph.
                     // The empty state, its line and action, is one line of the body: the body's
                     // reveals leave neither cut at its edge.
-                    .when(self.rows.is_empty(),|element|element.child(div().py_5().px(text_inset()).child(div().child(review::one_line()).child(if self.local_loaded&&self.destination.read(cx).value().trim().is_empty(){
+                    .when(self.rows.is_empty(),|element|element.child(self.part("pr-empty",div(),cx).py_5().px(text_inset()).child(div().child(review::one_line()).child(if self.local_loaded&&self.destination.read(cx).value().trim().is_empty(){
                         EmptyState::new("github-list-empty","No GitHub remote · Name the repository to load its pull requests").tooltip("Enter the destination as owner/repository or a GitHub.com remote URL. Opening this panel reads local settings and drafts only.")
                             .action(crate::empty_state::action("github-choose-destination","Name repository","").disabled(pending).on_click(cx.listener(|this,_,window,cx|{let focus=this.destination.read(cx).focus_handle(cx);window.focus(&focus,cx);
                                 // The field may hold focus already, as it does once the panel opens:
@@ -2600,7 +2603,7 @@ impl Render for Panel {
                                 *this.review.revealed_focus.borrow_mut()=Default::default();cx.notify();})))
                     }else{
                         EmptyState::new("github-list-empty","No pull requests shown · Refresh PRs loads the open ones").tooltip("Opening this panel reads local settings and drafts only.")
-                    }.block(cx))))))))
+                    }.block(cx)))))),&self.review.pull_blocks))
                 // A row that cannot hold its controls wraps them below, whole. A label after a
                 // Button takes the panel's text inset, which the Button gives back, so beside it
                 // nothing moves and on a line of its own the label starts at the panel's edge
@@ -9219,9 +9222,10 @@ mod tests {
     /// selector finds it ([`part_selector`]) with the focused control's ring and the content the
     /// part owns (`review::Owned`), all with the ring's room, or the finding names both. A part
     /// whose element the sweep cannot find groups nothing it can see with the control, and the
-    /// control with its ring's room bounds it: the PR list's own selector replaces its part's,
-    /// and its rows are parts of their own. [`needless_cut`] holds a stop to what its reveal
-    /// kept, so it could not
+    /// control with its ring's room bounds it. A row of the PR list, which scrolls its rows
+    /// itself, is bounded by name, whatever parts and selectors lie around it: its title with
+    /// its ring's room, which is all the body may show for it (`review::Panel::pull_part`).
+    /// [`needless_cut`] holds a stop to what its reveal kept, so it could not
     /// tell a reveal kept too much: revealed as the PR list, the row's reveal kept the list's
     /// room below the row's context line, and the sweep passed it at 17 pt in a 461 × 490
     /// window, where that room left Previous PR page cut at the body's foot.
@@ -9246,8 +9250,15 @@ mod tests {
                 .rev()
                 .find_map(|context| context.get(review::PART).cloned())
         });
+        let row = cx.update(|window, _| {
+            window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains(review::PULL))
+        });
         let grouped = part
             .as_ref()
+            .filter(|_| !row)
             .and_then(|part| cx.debug_bounds(part_selector(part)));
         let mut bound = grouped.map_or(ring, |element| element.union(&ring));
         if part.as_deref() == Some("section-2")
@@ -11335,8 +11346,8 @@ mod tests {
                 let on_row = cx.update(|window, _| {
                     window.context_stack().iter().any(|context| {
                         context
-                            .get(review::PART)
-                            .is_some_and(|part| part.as_ref() == "pr-list")
+                            .get(review::PULL)
+                            .is_some_and(|part| part.as_ref() == format!("pr-{}", pull.number))
                     })
                 });
                 if !on_row {
@@ -11362,6 +11373,106 @@ mod tests {
             );
             assert_eq!(rows, 1, "{key} reaches the PR row once");
             crate::focus_ring::sweep::assert_whole(walked);
+        }
+    }
+
+    /// Tab and Shift+Tab through a PR list of twelve rows, taller than the list's 206 px cap, at
+    /// 13, 17 and 18 pt in a 461 × 490 window, across the list's fold and the body's: each row's
+    /// title takes focus with its ring whole, inside both the list and the body, the list
+    /// scrolling first and the body then showing where the title landed, and no more than the
+    /// title with its ring's room ([`over_wide`]), leaving no line cut where a place would not
+    /// ([`needless_cut`]). Rows start below the list's fold, so the walk cannot pass without
+    /// scrolling it. Revealed as parts of the body, the rows below the fold had the body scroll
+    /// to where the list clipped them, away from the list, their rings undrawn.
+    #[gpui::test]
+    async fn a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let rows: Vec<PullRequest> = (0..12)
+            .map(|index| {
+                let mut row = pull.clone();
+                row.number = pull.number + index;
+                row.title = format!("Fixture row {index} of twelve in a list past its cap");
+                row
+            })
+            .collect();
+        let count = rows.len();
+        panel.update(cx, |panel, _| panel.rows = rows);
+        for size in [(13, 461., 490.), (17, 461., 490.), (18, 461., 490.)] {
+            for key in BOTH_WAYS {
+                show_surface((&app, &panel, &pull, &[]), Surface::Pulls, size, cx).await;
+                // Laid out, a row the list clips draws nothing a debug selector records.
+                let scroll = cx.read(|cx| panel.read(cx).review.pull_scroll.clone());
+                let list = scroll.bounds();
+                let last = scroll.bounds_for_item(count - 1).expect("the last row");
+                assert!(
+                    last.top() > list.bottom(),
+                    "{size:?}: the last row {last:?} starts below the list's fold {list:?}"
+                );
+                let mut reached = Vec::new();
+                let mut findings = Vec::new();
+                let mut each =
+                    |cx: &mut VisualTestContext,
+                     stop: &str,
+                     ring: &[crate::focus_ring::PaintedOutline]| {
+                        let row = cx.update(|window, _| {
+                            window
+                                .context_stack()
+                                .iter()
+                                .find_map(|context| context.get(review::PULL).cloned())
+                        });
+                        let Some(row) = row else {
+                            return;
+                        };
+                        reached.push(row.to_string());
+                        let Some(title) = ring
+                            .iter()
+                            .map(|outline| outline.bounds)
+                            .reduce(|a, b| a.union(&b))
+                        else {
+                            return;
+                        };
+                        let list = cx.debug_bounds("github-pr-list").expect("the list");
+                        let body = cx.debug_bounds("github-panel").expect("the body");
+                        for (name, clip) in [("list", list), ("body", body)] {
+                            if title.top() < clip.top() - px(0.5)
+                                || title.bottom() > clip.bottom() + px(0.5)
+                            {
+                                findings.push(format!(
+                                    "{stop}: the ring {title:?} not whole in the {name} {clip:?}"
+                                ));
+                            }
+                        }
+                        findings.extend(over_wide(cx, &panel, ring, stop));
+                        let (body, drawn) = frame_lines(cx, &panel);
+                        if let Ok(Some(finding)) =
+                            needless_cut(cx, &panel, (body, &drawn), ring, stop)
+                        {
+                            findings.push(finding);
+                        }
+                    };
+                let mut walked = Vec::new();
+                crate::focus_ring::sweep::walk_each(
+                    &app,
+                    cx,
+                    key,
+                    &format!("Twelve PR rows at {size:?} by {key}"),
+                    size.0,
+                    &mut walked,
+                    &mut each,
+                );
+                reached.sort();
+                reached.dedup();
+                assert_eq!(
+                    reached.len(),
+                    12,
+                    "{size:?} by {key}: every row takes focus"
+                );
+                crate::focus_ring::sweep::assert_whole(walked);
+                assert_eq!(findings, Vec::<String>::new(), "{size:?} by {key}");
+            }
         }
     }
 
@@ -11452,7 +11563,7 @@ mod tests {
                     .context_stack()
                     .iter()
                     .rev()
-                    .find_map(|context| context.get(review::PART).cloned())
+                    .find_map(|context| context.get(review::PULL).cloned())
             });
             assert_eq!(
                 part.as_deref(),
