@@ -70,7 +70,9 @@ pub(super) struct ReviewState {
     pub identities: Owned,
     /// Overview's captured identities as a group stop of their own, revealed from their top,
     /// where they cannot fit the body with the last section tab that owns them
-    /// ([`Owned::apart`]): its ring on their edge, as the connection pane's is.
+    /// ([`Owned::apart`]): its ring on their edge, as the connection pane's is. The block
+    /// tracks it only there, and while it holds focus, so a click where they fit focuses
+    /// nothing no Tab reaches, and a resize that makes them fit moves no focus.
     pub identities_focus: FocusHandle,
     /// Where the body's blocks start, for its reveals.
     pub body_blocks: Blocks,
@@ -141,8 +143,9 @@ pub(super) struct ReviewState {
     /// their focus ([`Panel::closing`]): a disabled Button tracks none, and focus given to
     /// one is drawn nowhere.
     pub closers_drawn: std::cell::RefCell<Vec<FocusHandle>>,
-    /// The focus that a pane which can go with it, the Conversations pane or the connection
-    /// pane, held in the frame the window last drew, on the pane itself or on a control
+    /// The focus that a pane which can go with it, the Conversations pane, the connection
+    /// pane or Overview's captured identities where they are a stop of their own, held in the
+    /// frame the window last drew, on the pane itself or on a control
     /// inside it, as Tab after a click on the pane puts it there: recorded while the panel
     /// renders, so the guard knows the focus it finds on nothing drawn went with a pane
     /// ([`Panel::hand_off_lost_pane_focus`]).
@@ -201,7 +204,7 @@ impl ReviewState {
             mode: 0,
             file_focus: cx.focus_handle().tab_stop(true),
             line_focus: cx.focus_handle().tab_stop(true),
-            identities_focus: cx.focus_handle(),
+            identities_focus: cx.focus_handle().tab_stop(true),
             section_focus: cx.focus_handle().tab_stop(true),
             connection_focus: cx.focus_handle().tab_stop(true),
             account_focus: cx.focus_handle().tab_stop(true),

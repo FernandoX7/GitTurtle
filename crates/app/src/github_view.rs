@@ -2305,8 +2305,8 @@ impl Panel {
 }
 impl Panel {
     /// The panel's one guard for focus a pane takes with it as it goes, run once a frame has
-    /// drawn the window with focus on nothing it drew: where the Conversations pane or the
-    /// connection pane held that focus in the frame before, on the pane, as a click inside
+    /// drawn the window with focus on nothing it drew: where the Conversations pane, the
+    /// connection pane or Overview's captured identities held that focus in the frame before, on the pane, as a click inside
     /// either leaves it, or on a control inside it, as Tab from there leaves it
     /// ([`review::ReviewState::pane_held`]), the control whose press took the pane away
     /// takes it ([`review::ReviewState::closer`]), as Account options
@@ -2363,9 +2363,13 @@ impl Render for Panel {
         // The focus a pane that can go with it holds in the frame the window last drew
         // ([`Panel::hand_off_lost_pane_focus`]).
         let review = &self.review;
-        let held = [&review.section_focus, &review.connection_focus]
-            .into_iter()
-            .any(|pane| pane.contains_focused(window, cx));
+        let held = [
+            &review.section_focus,
+            &review.connection_focus,
+            &review.identities_focus,
+        ]
+        .into_iter()
+        .any(|pane| pane.contains_focused(window, cx));
         self.review.pane_held = window.focused(cx).filter(|_| held);
         let p = palette(cx);
         let pending = self.pending;
@@ -2623,7 +2627,7 @@ impl Render for Panel {
                     // text edge and becoming a stop moves nothing.
                     .child(div().on_children_prepainted(self.review.identities.lay_out_content(self.review.body_scroll.clone()))
                         .child(self.ringed_part("identities",div(),&self.review.identities_focus,cx)
-                            .child(div().id("github-identities").role(Role::Group).aria_label("Captured identities: the base and head commits this review is pinned to").track_focus(&self.review.identities_focus.clone().tab_stop(self.review.identities.apart())).border_1().border_color(if self.ringed(&self.review.identities_focus,cx){rgb(p.accent).into()}else{gpui_kit::transparent_black()}).rounded(px(6.)).px(text_inset()-px(1.))
+                            .child(div().id("github-identities").role(Role::Group).aria_label("Captured identities: the base and head commits this review is pinned to").when(self.review.identities.apart()||self.review.identities_focus.is_focused(window),|block|block.track_focus(&self.review.identities_focus)).border_1().border_color(if self.ringed(&self.review.identities_focus,cx){rgb(p.accent).into()}else{gpui_kit::transparent_black()}).rounded(px(6.)).px(text_inset()-px(1.))
                                 .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).text_color(rgb(p.muted))))))
                     .when_some(self.description.as_ref(),|element,description|element.child(self.part("description",div(),cx).relative().h(px(120.)).flex_shrink_0()
                         // Each row of the description its viewport shows is a line of the body.
@@ -11891,6 +11895,94 @@ mod tests {
                 reached, apart,
                 "{size:?}: the identities a stop of their own"
             );
+        }
+    }
+
+    /// A click on Overview's captured identities focuses them only where they are a stop of
+    /// their own (`review::Owned::apart`), and New pull request, which replaces the PR, then
+    /// takes their focus as it takes the Conversations pane's
+    /// ([`Panel::hand_off_lost_pane_focus`]): at 13 pt in a 1,480 × 800 window, where the last
+    /// section tab shows them with it, a click leaves focus where it was; at 17 pt in a
+    /// 440 × 400 one, scrolled to them, it focuses them. Tracked at every size, a click
+    /// focused them at rest, where no Tab reaches them, and New pull request then left that
+    /// focus on nothing drawn.
+    #[gpui::test]
+    async fn a_click_focuses_the_identities_only_where_they_are_a_stop(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let (identities, create, scroll) = cx.read(|cx| {
+            let review = &panel.read(cx).review;
+            (
+                review.identities_focus.clone(),
+                review.create_focus.clone(),
+                review.body_scroll.clone(),
+            )
+        });
+        let settle = |cx: &mut VisualTestContext| {
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        for (size, apart) in [((13, 1480., 800.), false), ((17, 440., 400.), true)] {
+            show_surface((&app, &panel, &pull, &[]), Surface::Overview, size, cx).await;
+            // The offline fixture offers no New pull request.
+            panel.update(cx, |panel, cx| {
+                panel.review.fixture = false;
+                cx.notify();
+            });
+            settle(cx);
+            // Scrolled as a wheel would, the identities' top at the body's.
+            let shown = cx
+                .debug_bounds("github-captured-identities")
+                .expect("the identities");
+            let body = scroll.bounds();
+            let offset = scroll.offset();
+            scroll.set_offset(point(
+                offset.x,
+                (offset.y - (shown.top() - body.top())).clamp(-scroll.max_offset().y, px(0.)),
+            ));
+            settle(cx);
+            let at = cx
+                .debug_bounds("github-captured-identities")
+                .expect("the identities")
+                .center();
+            assert!(
+                body.contains(&at),
+                "{size:?}: the identities' middle {at:?} lies in the body {body:?}"
+            );
+            cx.simulate_click(at, Modifiers::none());
+            settle(cx);
+            assert_eq!(
+                cx.update(|window, _| identities.is_focused(window)),
+                apart,
+                "{size:?}: a click focuses the identities only where they are a stop"
+            );
+            // Back to the toolbar, as a wheel would, which moves no focus.
+            scroll.set_offset(point(offset.x, px(0.)));
+            settle(cx);
+            let at = cx
+                .debug_bounds("github-create")
+                .expect("New pull request")
+                .center();
+            cx.simulate_click(at, Modifiers::none());
+            settle(cx);
+            assert!(
+                panel.read_with(cx, |panel, _| panel.create && panel.pull.is_none()),
+                "{size:?}: New pull request replaces the PR"
+            );
+            if apart {
+                assert!(
+                    cx.update(
+                        |window, _| create.is_focused(window) && !window.context_stack().is_empty()
+                    ),
+                    "{size:?}: the identities' focus moves to New pull request, which replaced them"
+                );
+            }
+            panel.update(cx, |panel, cx| {
+                panel.create = false;
+                panel.review.fixture = true;
+                cx.notify();
+            });
         }
     }
 
