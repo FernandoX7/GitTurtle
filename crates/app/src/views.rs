@@ -33641,7 +33641,10 @@ pub(crate) mod tests {
     /// short of the body's right and otherwise the composer's inset, the
     /// frames drawn on the way lay the composer's rows out at another width
     /// once at most, never back, and a frame drawn once settled changes
-    /// nothing.
+    /// nothing. The frame that stops scrolling, which keeps the gutter the
+    /// frame before kept, lays the rows fitted beside it out at that width,
+    /// the gutter less their inset short of the body's right, not across
+    /// the body's whole width.
     #[gpui::test]
     async fn the_working_body_settles_on_one_form_at_its_scroll_threshold(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working_window(cx).await;
@@ -33672,6 +33675,7 @@ pub(crate) mod tests {
         }
         let steps = (0..12).map(|step| high + 6. - step as f32);
         let heights: Vec<f32> = steps.clone().chain(steps.rev()).collect();
+        let (mut before, mut stopped) = (None, 0);
         for height in heights {
             let at = format!("18 pt in 461 × {height}");
             app.read_with(cx, |app, _| {
@@ -33724,6 +33728,21 @@ pub(crate) mod tests {
                         .is_some_and(|right| (*right - rows).abs() < px(0.5)),
                 "{at}: the composer's rows laid out at {laid_out:?}, settling at {rows:?}"
             );
+            // The frame that stops scrolling keeps the gutter the frame
+            // before it kept, and lays the rows fitted beside it out at that
+            // width; the next gives it back.
+            if before == Some(true) && !scrolled {
+                stopped += 1;
+                let beside = body.right() - (gutter - inset);
+                assert!(
+                    laid_out
+                        .first()
+                        .is_some_and(|right| (*right - beside).abs() < px(0.5)),
+                    "{at}: the frame that stops scrolling laid the composer's rows out at \
+                     {laid_out:?}, not beside the gutter at {beside:?}"
+                );
+            }
+            before = Some(scrolled);
             app.update(cx, |_, cx| cx.notify());
             draw(cx);
             assert_eq!(
@@ -33732,6 +33751,10 @@ pub(crate) mod tests {
                 "{at}: a frame drawn once settled moves nothing"
             );
         }
+        assert_eq!(
+            stopped, 1,
+            "the walk grows past the height where it stops scrolling"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
