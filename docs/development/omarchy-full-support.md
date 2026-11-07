@@ -766,10 +766,11 @@ cover current upstream x86-64 Omarchy.
        moves) (FU25-A, with the palette taking FU24-C's returned-row rule and one shared timing owner).
        The exact-fit strip tests run undecorated, so a decorated window's `strip_width` fit is
        untested (low).
-       FU26-C review (2026-11-06): the profiles menu's rebuild key ranks saving over storage over the repository
-       while its rows rank their own reason first, so a reason could stay stale until a save ends (no reachable path
-       found; fails safe); one helper per group's reason would feed both (`profiles.rs:200`, `:447`); an open menu
-       misses a storage read failure once profiles are loaded (no Retry until reopened; pre-existing; low).
+       FU27-A landed 2026-11-06 (one reason per group feeds the profiles menu's rebuild key and its rows; the open menu
+       shows and drops Retry as the store fails and recovers); its review's nits (low): the "Profiles: …" line can keep an
+       older failure's text while the menu stays open (only `load_profiles` replaces an error without clearing it, at
+       startup and from Retry; probably unreachable); `docs/profiles.md:3` says Retry goes once a read succeeds (it also
+       goes as a save starts, which clears the error; pre-existing).
        FU26-B review (2026-11-06): `dialog_sides`' stretched-Button check measures text runs only, so a future ghost
        Button reserving "Copied" beside a shorter label or carrying a trailing icon would fail it (widest content);
        Copy commit ID's `flex_shrink(1.)` would clip rather than wrap a label too long for the column; two
@@ -789,11 +790,6 @@ cover current upstream x86-64 Omarchy.
        `.git` vanishing and the mark: Blame, Quick Open's working scope, profile and remotes reads, the
        watcher's setup; decided 2026-11-06, brief `FU26-E2.md`); an old session's subfolder-path tab reads
        "is gone" for good (message); a deleted folder's quiet read gives an I/O error, no mark (low).
-     - **Tests that fail under a long `TMPDIR` (found by FU25-C, 2026-11-06; possible macOS reds, as FU24-B's):**
-       `a_test_build_reaches_a_real_keyring_only_on_a_private_test_bus`, `the_connection_walk_shows_every_help_line_whole`
-       and the two `a_quiet_read_*` tab-mark tests failed under FU25-C's private long `TMPDIR` on its base (as
-       `dialogs_pad_their_sides_for_a_ghost_buttons_ring` did before FU24-B); reproduce each with a 74-character
-       `TMPDIR` (macOS's length) and fix the route or the layout as FU24-B did.
      - **Test infrastructure (2026-11-06; FU20-M and FU22-A (the PDF helper test's torn status read)
        landed, the testing skill names the recurring races; FU23-A in review: `564d0be6`'s cause was
        macOS's long `TMPDIR` wrapping the fixture path, and the paging test's seed caches):
@@ -801,10 +797,9 @@ cover current upstream x86-64 Omarchy.
        by the next run); its review's nits: `make_writable`'s `chmod` follows a link swapped in after its
        check (same user, permissions only), a kill between `tempdir_in` and the rename leaves a
        `.gitturtle-app-tests-staging-*` directory, and `working_selection.rs:1158` and `text_review.rs:1028`
-       still name directories by pid and nanoseconds (single-test, self-removing; low);
-       `views::tests::narrow_history_keeps_paging_in_the_column` reads status
-       layouts kept from its first seed (fails at `ITERATIONS=2`: 214 of 216 after Older; several caches
-       to empty; FU19-F1c's sweep).
+       still name directories by pid and nanoseconds (single-test, self-removing; low). FU26-A landed 2026-11-06 (the
+       long- and in-checkout-`TMPDIR` test causes; `narrow_history_keeps_paging_in_the_column`'s seed caches were
+       already emptied by `59a5a3ef`).
      - **FU19 (B, C, D, G and E+H landed 2026-11-05 afternoon, D5 the same evening; A (with A2, A3) and C2 (with C3, C4) in flight; F waits for FU19-A's kit dialog file and FU20-A's profile dialogs):**
        - (A) Focus return: FU19-A, A2, A3 and A4 landed 2026-11-05 night (a closing dialog's
          focus returned once, never over a later click; a dialog opened as another closes keeps
