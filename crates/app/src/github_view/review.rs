@@ -341,7 +341,18 @@ pub(super) struct Blocks {
     /// of those worked them out ([`TextLines::measure`]).
     #[cfg(test)]
     text_counts: std::rc::Rc<std::cell::Cell<(usize, usize)>>,
+    /// What the last reveal of the container kept whole ([`show`]): the focus it revealed and
+    /// the part with its ring's room, top and bottom with the container's scroll at zero, so
+    /// the reveal sweep holds a stop to what its reveal kept rather than to a part it finds by
+    /// a debug selector, which the part's own element can replace
+    /// (`github_view::tests::needless_cut`).
+    #[cfg(test)]
+    kept: std::rc::Rc<std::cell::RefCell<Option<Kept>>>,
 }
+/// What a reveal kept whole ([`Blocks::kept`]): the focus it revealed, and the top and bottom
+/// of the part with its ring's room, with the container's scroll at zero.
+#[cfg(test)]
+type Kept = (Option<FocusHandle>, Pixels, Pixels);
 /// The lines of a text of the panel ([`text_lines`]): how far apart its lines are drawn and
 /// how many each of its children draws, with what they follow from, so a frame that draws the
 /// text unchanged takes them as the last frame left them instead of reading the window's
@@ -863,6 +874,20 @@ impl Blocks {
     pub(super) fn text_counts(&self) -> (usize, usize) {
         self.text_counts.get()
     }
+    /// What the last reveal of `scroll`'s container kept whole, where `scroll` lies now, if
+    /// it revealed the focus the window holds ([`Blocks::kept`]).
+    #[cfg(test)]
+    pub(super) fn kept(
+        &self,
+        scroll: &ScrollHandle,
+        window: &Window,
+        cx: &App,
+    ) -> Option<(Pixels, Pixels)> {
+        let kept = self.kept.borrow();
+        let (focus, top, bottom) = kept.as_ref()?;
+        let offset = scroll.offset().y;
+        (*focus == window.focused(cx)).then(|| (*top + offset, *bottom + offset))
+    }
     /// Forgets the lines of every text, so the next frame works each text's out afresh.
     #[cfg(test)]
     pub(super) fn forget_texts(&self) {
@@ -1156,6 +1181,12 @@ pub(super) fn show(
     };
     let viewport = scroll.bounds();
     let (top, bottom) = (bounds.top() - inset, bounds.bottom() + inset);
+    #[cfg(test)]
+    blocks.kept.replace(Some((
+        window.focused(cx),
+        top - scroll.offset().y,
+        bottom - scroll.offset().y,
+    )));
     if top >= viewport.top() && bottom <= viewport.bottom() {
         return;
     }
@@ -1331,7 +1362,7 @@ impl Panel {
     /// body scrolls by the least that shows the part's children with their focus rings. The
     /// part's key context names it on the focus path of the frame that drew the control, so
     /// a control needs no focus handle of the panel's to be revealed.
-    pub(super) fn part(&self, name: &'static str, element: Div, cx: &App) -> Div {
+    pub(super) fn part(&self, name: impl Into<SharedString>, element: Div, cx: &App) -> Div {
         revealing(
             element,
             PART,

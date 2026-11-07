@@ -2490,13 +2490,19 @@ impl Render for Panel {
                         // title draws no fill of its own, at rest, hovered, pressed or selected,
                         // so the row's surface shows through it: the row lifts and darkens once,
                         // under both lines, where the title once pressed its own line alone.
+                        // The title is a part of the body of its own, named by the PR's number:
+                        // Tab onto it shows the title with its ring, and the row's line keeps
+                        // its context line in view with it wherever a place cuts no line.
+                        // Revealed as the list, with the room the list keeps below its last
+                        // row, a reveal found no such place at 17 pt in a 461 × 490 window and
+                        // left the next line cut at the body's edge, though one showed the row.
                         let hover=p.row_hover(selected);let open=pull.clone();
                         let flat=gpui_kit::component::button::ButtonVariant::Custom(gpui_kit::component::button::ButtonCustomVariant::new(cx).foreground(rgb(p.control_label()).into()));
                         let title=crate::button_frame(("github-pr",number),&name,"",false).with_variant(flat).selected(selected);
                         let pressed=!pending&&self.pressed.get()==Some(number);let (down,up,out)=(self.pressed.clone(),self.pressed.clone(),self.pressed.clone());
                         div().id(("github-pr-card",pull.number)).debug_selector(move||format!("github-pr-card-{number}")).child(review::one_line()).flex_shrink_0().rounded(px(7.)).bg(rgb(if selected||pressed{p.selected}else{p.panel})).when(!pending&&!pressed,|row|row.hover(move|row|row.bg(rgb(hover))))
                             .when(!pending,|row|row.capture_any_mouse_down(move|event,window,_|if event.button==MouseButton::Left{down.set(Some(number));window.refresh();}).capture_any_mouse_up(move|_,window,_|if up.take().is_some(){window.refresh();}).on_mouse_up_out(MouseButton::Left,move|_,window,_|if out.take().is_some(){window.refresh();})).flex().flex_col()
-                            .child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
+                            .child(self.part(format!("pr-{number}"),div(),cx).child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx)))))
                             .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().px(text_inset()).pb_1().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).when(!pending,|line|line.on_click(cx.listener(move|this,_,window,cx|this.inspect(open.clone(),window,cx)))).child(row_text(format!("github-pr-context-{number}"),context)))
                     }))
                     // One line with the next step: a repository with no GitHub remote names
@@ -9061,11 +9067,14 @@ mod tests {
     /// What the reveal that brought the body to this frame left cut where it need not have
     /// ([`sweep_reveals`]), at the stop named `stop` whose focus drew `ring`: the lines drawn
     /// cut at the edges of `body` (`drawn`, [`frame_lines`]), where a place the body's top
-    /// edge can take keeps the focus whole with its ring, and the part the reveal shows whole
-    /// with its ring's room, and draws no line cut there ([`clear_stops`], [`verified_stop`]).
-    /// `Err(())` for a part too tall for the body with its ring's room, which keeps the half of
-    /// the body on the side it shows, as the reveal's own tests hold; `Ok(None)` where nothing
-    /// is cut or no such place exists.
+    /// edge can take keeps the focus whole with its ring, and what the reveal kept whole, the
+    /// part with its ring's room (`review::Blocks::kept`), and draws no line cut there
+    /// ([`clear_stops`], [`verified_stop`]). `Err(())` for a part too tall for the body with its
+    /// ring's room, which keeps the half of the body on the side it shows, as the reveal's own
+    /// tests hold; `Ok(None)` where nothing is cut or no such place exists. The part was once
+    /// found by its debug selector, which the PR list's and the destination field's own
+    /// selectors replace: the sweep held those stops to the focused control's ring alone, and
+    /// took a reveal that kept the list's room below its last row for a needless cut.
     fn needless_cut(
         cx: &mut VisualTestContext,
         panel: &Entity<Panel>,
@@ -9085,22 +9094,18 @@ mod tests {
             return Ok(None);
         }
         let room = cx.update(|_, cx| appearance::button_ring_room(cx));
-        let part = cx.update(|window, _| {
-            window
-                .context_stack()
-                .iter()
-                .rev()
-                .find_map(|context| context.get(review::PART).cloned())
-        });
-        if let Some(part) = part
-            && let Some(bounds) = cx.debug_bounds(part_selector(&part))
-        {
-            if bounds.size.height + room * 2. > body.size.height + px(0.5) {
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let kept =
+            cx.update(|window, cx| panel.read(cx).review.body_blocks.kept(&scroll, window, cx));
+        if let Some((top, bottom)) = kept {
+            if bottom - top > body.size.height + px(0.5) {
                 return Err(());
             }
-            shown = shown.union(&bounds.dilate(room));
+            shown = shown.union(&Bounds::from_corners(
+                point(shown.left(), top),
+                point(shown.right(), bottom),
+            ));
         }
-        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
         let first = body.top() + scroll.offset().y;
         let last = first + scroll.max_offset().y;
         let stops = clear_stops(
@@ -11151,6 +11156,63 @@ mod tests {
         );
     }
 
+    /// Tab onto the PR list's row from Account options, and Shift+Tab onto it from Recover
+    /// drafts, at 17 pt in a 461 × 490 window, leave no line cut at the body's edges, the
+    /// title whole with its ring and its row's context line with it: the title is a part of
+    /// its own. Revealed as the list, the row's reveal kept the room the list keeps below its
+    /// last row, which no place with every line whole showed, and left Previous PR page cut
+    /// at the body's foot (Tab, the body's top edge could stop clear of every line 43.5 px
+    /// higher) or the second line of Drafts stay on this computer (Shift+Tab, 199 px higher),
+    /// as FU27-B's probe found.
+    #[gpui::test]
+    async fn a_pr_rows_reveal_leaves_no_line_cut_at_17_pt(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        for key in BOTH_WAYS {
+            show_surface(
+                (&app, &panel, &pull, &[]),
+                Surface::Pulls,
+                (17, 461., 490.),
+                cx,
+            )
+            .await;
+            let mut rows = 0;
+            let mut each = |cx: &mut VisualTestContext,
+                            stop: &str,
+                            _: &[crate::focus_ring::PaintedOutline]| {
+                let on_row = cx.update(|window, _| {
+                    window.context_stack().iter().any(|context| {
+                        context
+                            .get(review::PART)
+                            .is_some_and(|part| part.as_ref() == "pr-list")
+                    })
+                });
+                if !on_row {
+                    return;
+                }
+                rows += 1;
+                let (body, drawn) = frame_lines(cx, &panel);
+                assert_eq!(
+                    cut_at_edges(body, &drawn),
+                    Vec::<String>::new(),
+                    "{stop}: the row's reveal leaves no line cut at the body's edges {body:?}"
+                );
+            };
+            let mut walked = Vec::new();
+            crate::focus_ring::sweep::walk_each(
+                &app,
+                cx,
+                key,
+                &format!("Pulls at 17 pt in 461 × 490 by {key}"),
+                17,
+                &mut walked,
+                &mut each,
+            );
+            assert_eq!(rows, 1, "{key} reaches the PR row once");
+            crate::focus_ring::sweep::assert_whole(walked);
+        }
+    }
+
     /// Tab onto the destination field, the part the panel reopens onto, from the banner's Move
     /// fixture head before it, and Shift+Tab onto it from Refresh PRs after it, draw the
     /// field's accent edge and the ring outside it whole on the field's frame, as every kit
@@ -11293,7 +11355,9 @@ mod tests {
     /// controls can show its "Local worktree:" line or its help's first line with every line
     /// whole, and hosted run 42333458175 found neither shown at any stop on macOS
     /// (`connection_at_18_pt`), as the walk did on Linux from 470 to 495 px wide. The pane is
-    /// a stop of its own now, which shows both from its top.
+    /// a stop of its own now, which shows both from its top. The PR list at 17 pt in a
+    /// 461 × 490 window is one too, where FU27-B's probe found its row's reveals leaving a line
+    /// cut ([`a_pr_rows_reveal_leaves_no_line_cut_at_17_pt`]).
     mod the_reveal_sweep_finds_nothing_where_it_found_reveals_to_trace {
         use super::*;
 
@@ -11315,6 +11379,7 @@ mod tests {
             source_at_13_pt: Source at (13, 461., 490.), by BOTH_WAYS;
             connection_at_18_pt: Connection at (18, 461., 490.), by BOTH_WAYS;
             connection_at_18_pt_in_a_480_px_window: Connection at (18, 480., 490.), by BOTH_WAYS;
+            pulls_at_17_pt: Pulls at (17, 461., 490.), by BOTH_WAYS;
             pulls_at_18_pt: Pulls at (18, 461., 490.), by BOTH_WAYS;
             review_at_18_pt: Review at (18, 461., 490.), by BOTH_WAYS;
             changes_at_18_pt: Changes at (18, 461., 490.), by BOTH_WAYS;
