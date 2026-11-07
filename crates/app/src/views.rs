@@ -22871,6 +22871,16 @@ pub(crate) mod tests {
             )),
             "Changes: Projects' tooltip"
         );
+        // The status read Changes asks for as it opens installs the
+        // repository's identity and working status, which the steps below
+        // set by hand, and `draw` does not wait for the operations thread
+        // it runs on: on a slower host it landed after "Ada Lovelace" was
+        // drawn, during that identity's frames at rest, so the shared
+        // configuration was set on the fixture's identity, already drawn
+        // in History, and formatted no tooltip. Land it, and the watcher's
+        // setup queued with it, before the frames at rest.
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
         at_rest("Changes at 1480 × 800", cx);
 
         let before = counts();
