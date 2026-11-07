@@ -45,20 +45,19 @@ pub(crate) fn shown(id: &str) -> Option<SharedString> {
 
 /// The text a state's line is drawn with that is built from its parts,
 /// kept for the state's id ([`EmptyState::built`]): the line's element id,
-/// `{id}-line`, and the tooltip and glyph asset path it drew last, each
-/// with what it was built from. A state is built again in every frame that
-/// draws it, by a host that holds only its parts, so the state keeps what
-/// it built here and builds again only what a change of part makes stale:
-/// formatted in each frame, the id, the tooltip and the glyph path were up
-/// to three strings built a frame for a line that had not changed. One entry
+/// `{id}-line`, and the tooltip it drew last, with what it was built from.
+/// A state is built again in every frame that draws it, by a host that
+/// holds only its parts, so the state keeps what it built here and builds
+/// again only what a change of part makes stale: formatted in each frame,
+/// the id, the tooltip and the glyph path were up to three strings built a
+/// frame for a line that had not changed. A glyph's asset path is the one
+/// the shared helpers keep for its symbol ([`crate::icon_path`]). One entry
 /// for each state id, which are static, so what is kept is bounded by the
 /// states the app has.
 struct Built {
     line: SharedString,
     /// The whole line and the explanation the tooltip joins, and the join.
     tooltip: Option<(SharedString, SharedString, SharedString)>,
-    /// The glyph and its asset's path.
-    glyph: Option<(&'static str, SharedString)>,
 }
 
 thread_local! {
@@ -186,10 +185,11 @@ impl EmptyState {
 
     /// The line's element id, its tooltip, if it has one, and the path of
     /// the glyph drawn in its place, if one is: kept for the state's id
-    /// ([`Built`]) and built only where a part they are made of has changed
-    /// since the state was last drawn. A glyph says nothing itself, so its
-    /// tooltip always leads with the whole line, as one does where the
-    /// drawn line says less.
+    /// ([`Built`]), and the glyph's for its symbol ([`crate::icon_path`]),
+    /// and built only where a part they are made of has changed since they
+    /// were last drawn. A glyph says nothing itself, so its tooltip always
+    /// leads with the whole line, as one does where the drawn line says
+    /// less.
     fn built(&self) -> (SharedString, Option<SharedString>, Option<SharedString>) {
         #[cfg(test)]
         let before = crate::test_support::allocations();
@@ -198,7 +198,6 @@ impl EmptyState {
             let kept = built.entry(id).or_insert_with(|| Built {
                 line: format!("{id}-line").into(),
                 tooltip: None,
-                glyph: None,
             });
             let name = self.name.as_ref().unwrap_or(&self.line);
             let tooltip = self.tooltip.as_ref().map(|explanation| {
@@ -216,15 +215,7 @@ impl EmptyState {
                     }
                 }
             });
-            let glyph = self.glyph.map(|glyph| match &kept.glyph {
-                Some((drawn, path)) if *drawn == glyph => path.clone(),
-                _ => {
-                    let path = SharedString::from(format!("icons/{glyph}.svg"));
-                    kept.glyph = Some((glyph, path.clone()));
-                    path
-                }
-            });
-            (kept.line.clone(), tooltip, glyph)
+            (kept.line.clone(), tooltip, self.glyph.map(crate::icon_path))
         });
         #[cfg(test)]
         BUILT_TEXT.with(|counted| {

@@ -772,11 +772,7 @@ impl ProjectHub {
                                 .h(crate::appearance::ui_size(32.))
                                 .rounded(px(7.))
                                 .label(label)
-                                .icon(
-                                    Icon::default()
-                                        .path(format!("icons/{symbol}.svg"))
-                                        .size(px(14.)),
-                                )
+                                .icon(Icon::default().path(hub_icon_path(symbol)).size(px(14.)))
                                 .selected(self.mode == mode)
                                 .disabled(unavailable)
                                 .debug_selector(move || format!("project-mode-{label}"))
@@ -860,20 +856,29 @@ impl ProjectHub {
                             .flex_col()
                             .gap_4()
                             .children(
+                                // Each feature's icon, and its title and
+                                // detail, each with its id,
+                                // `hub-open-feature-<symbol>-…`, spelled out
+                                // rather than formatted in every frame.
                                 [
                                     (
                                         "clock",
-                                        "Explore history",
-                                        "Follow branches and inspect any commit.",
+                                        ("hub-open-feature-clock-title", "Explore history"),
+                                        (
+                                            "hub-open-feature-clock-detail",
+                                            "Follow branches and inspect any commit.",
+                                        ),
                                     ),
                                     (
                                         "changes",
-                                        "Review and commit",
-                                        "Compare files, stage changes, and commit.",
+                                        ("hub-open-feature-changes-title", "Review and commit"),
+                                        (
+                                            "hub-open-feature-changes-detail",
+                                            "Compare files, stage changes, and commit.",
+                                        ),
                                     ),
                                 ]
                                 .map(|(symbol, title, detail)| {
-                                    let id = format!("hub-open-feature-{symbol}");
                                     div()
                                         .flex()
                                         .items_start()
@@ -887,12 +892,12 @@ impl ProjectHub {
                                                 .flex_col()
                                                 .gap_1()
                                                 .child(
-                                                    hub_text(format!("{id}-title"), title)
+                                                    hub_text(title.0, title.1)
                                                         .text_size(crate::appearance::ui_text(12.))
                                                         .font_weight(FontWeight::MEDIUM),
                                                 )
                                                 .child(
-                                                    hub_text(format!("{id}-detail"), detail)
+                                                    hub_text(detail.0, detail.1)
                                                         .text_size(crate::appearance::ui_text(11.))
                                                         .line_height(relative(1.5))
                                                         .text_color(colors.muted_foreground),
@@ -1021,11 +1026,7 @@ impl ProjectHub {
                                     .primary()
                                     .h(crate::appearance::ui_size(40.))
                                     .w_full()
-                                    .icon(
-                                        Icon::default()
-                                            .path(format!("icons/{symbol}.svg"))
-                                            .size(px(16.)),
-                                    )
+                                    .icon(Icon::default().path(hub_icon_path(symbol)).size(px(16.)))
                                     .disabled(self.unavailable())
                                     .loading(self.busy)
                                     .label(if self.busy {
@@ -1203,9 +1204,36 @@ impl Render for ProjectHub {
     }
 }
 
+/// The hub's icon asset for `symbol`, `icons/<symbol>.svg`, as the shared
+/// helpers keep it ([`crate::icon_path`]): formatted the first time the
+/// symbol is drawn, by the hub or any other view, and kept, so a frame at
+/// rest formats none. The hub formatted every icon's path, its action tabs',
+/// its panel's and each recent row's, on every frame.
+fn hub_icon_path(symbol: &str) -> SharedString {
+    #[cfg(test)]
+    let before = crate::test_support::allocations();
+    let path = crate::icon_path(symbol);
+    #[cfg(test)]
+    HUB_ICON_PATHS.with(|counted| {
+        let (paths, allocations) = counted.get();
+        counted.set((
+            paths + 1,
+            allocations + crate::test_support::allocations() - before,
+        ));
+    });
+    path
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the icon paths the hub has drawn ([`hub_icon_path`]), and
+    /// the allocations it made finding them.
+    static HUB_ICON_PATHS: std::cell::Cell<(usize, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
 fn hub_icon(name: &str, dimension: f32, color: Hsla) -> Svg {
     svg()
-        .path(format!("icons/{name}.svg"))
+        .path(hub_icon_path(name))
         .size(px(dimension))
         .text_color(color)
         .flex_shrink_0()
@@ -2039,6 +2067,109 @@ mod tests {
         );
         cx.read(|cx| assert!(!hub.read(cx).busy));
         drop(subscription);
+    }
+
+    /// The hub draws every icon from the path the shared helpers keep for
+    /// its symbol ([`hub_icon_path`]): frames at rest find each icon's path
+    /// without an allocation, on Open, its tabs', its panel's, its two
+    /// features' and each recent row's, and on Clone, whose panel and submit
+    /// draw the tab's own symbol, which a mode change formats again nowhere;
+    /// with the kept paths forgotten, the next frame formats each symbol
+    /// once, however many icons draw it, and frames after it none. The hub
+    /// formatted every icon's path in every frame, at least eleven on Open.
+    #[gpui::test]
+    fn the_hub_formats_no_icon_path_at_rest(cx: &mut TestAppContext) {
+        // Empty, as a GPUI test's seeds share the thread and its cache.
+        crate::forget_symbol_text();
+        cx.update(gpui_kit::init);
+        let recent = vec![
+            PathBuf::from("/projects/turtle-client"),
+            PathBuf::from("/projects/turtle-core"),
+        ];
+        let captured = Rc::new(RefCell::new(None));
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let hub =
+                cx.new(|cx| ProjectHub::new(recent, HashMap::new(), "main".into(), window, cx));
+            *captured.borrow_mut() = Some(hub.clone());
+            gpui_kit::component::Root::new(hub, window, cx)
+        });
+        let hub = observed.borrow_mut().take().unwrap();
+        cx.simulate_resize(size(px(1280.), px(800.)));
+        let draw = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        };
+        let formatted = || crate::SYMBOL_TEXT_FORMATTED.get();
+        let kept = || crate::SYMBOL_TEXT.with_borrow(|kept| kept.len());
+        // The icon paths each frame at rest draws, none allocating or
+        // formatting.
+        let at_rest = |at: &str, cx: &mut VisualTestContext| {
+            let before = formatted();
+            HUB_ICON_PATHS.set((0, 0));
+            for _ in 0..3 {
+                hub.update(cx, |_, cx| cx.notify());
+                draw(cx);
+            }
+            let (paths, allocations) = HUB_ICON_PATHS.get();
+            assert_eq!(paths % 3, 0, "{at}: each frame draws the same icons");
+            assert_eq!(allocations, 0, "{at}: frames at rest allocate no icon path");
+            assert_eq!(formatted(), before, "{at}: frames at rest format no symbol");
+            paths / 3
+        };
+        draw(cx);
+        assert!(formatted() > 0, "the first frame formats the hub's symbols");
+        let open = at_rest("Open", cx);
+        assert!(
+            open >= 11,
+            "each frame draws at least Open's three tabs', its panel's, two \
+             features', the recent heading's and two rows' two icons each: {open}"
+        );
+
+        let before = formatted();
+        cx.update(|window, cx| {
+            hub.update(cx, |hub, cx| {
+                hub.change_mode(ProjectMode::Clone, window, cx)
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            formatted(),
+            before,
+            "Clone's panel and submit draw its tab's symbol, kept"
+        );
+        let clone = at_rest("Clone", cx);
+        assert!(
+            clone >= 10,
+            "each frame draws at least Clone's three tabs', its panel's, its \
+             submit's, the recent heading's and two rows' two icons each: {clone}"
+        );
+
+        crate::forget_symbol_text();
+        let before = formatted();
+        HUB_ICON_PATHS.set((0, 0));
+        draw(cx);
+        let (paths, allocations) = HUB_ICON_PATHS.get();
+        assert!(allocations > 0, "forgotten, the paths are formatted again");
+        assert_eq!(
+            formatted() - before,
+            kept(),
+            "each symbol drawn is formatted once"
+        );
+        assert!(
+            paths > kept(),
+            "though some symbols draw more than one icon: {paths} paths, {} symbols",
+            kept()
+        );
+        assert_eq!(at_rest("Clone again", cx), clone);
+        assert_eq!(
+            hub_icon_path("remote").as_ref(),
+            "icons/remote.svg",
+            "a symbol's kept path"
+        );
     }
 
     #[test]
