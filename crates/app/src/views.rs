@@ -31284,6 +31284,147 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// At 18 pt in a 461 × 490 window, where the list and the composer
+    /// scroll together and the list keeps only its floor, staging the
+    /// selected file from the keyboard keeps it among the rows the list
+    /// shows, whole, with the list in the body's view. With nothing staged
+    /// the floor is three rows and End selects Unstaged's last file, which
+    /// the list scrolls to below its others. The rows there draw no Stage
+    /// control, so Shift+F10 opens the row's menu on Stage and Enter stages
+    /// the file: it moves to the Staged group's first row, the floor gives up
+    /// the Unstaged heading, and the list's own scroll shows the file there.
+    #[gpui::test]
+    async fn staging_from_the_list_keeps_the_selected_file_among_its_rows(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+            // The app's keys, which a test window binds none of.
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--quiet"]);
+        watcher_reload(&app, cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        draw(cx);
+        let max = app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y);
+        assert!(max > px(0.), "the body scrolls");
+        let path_of = |app: &GitTurtle, index: usize| {
+            app.work_status.as_ref().expect("a status").entries[index]
+                .path
+                .clone()
+        };
+        let last = app.read_with(cx, |app, _| {
+            app.working_rows
+                .iter()
+                .filter_map(|row| match row {
+                    workspace::WorkingRow::File(index, area) => Some((*index, *area)),
+                    _ => None,
+                })
+                .next_back()
+                .expect("a file row")
+        });
+        let selected_path = app.read_with(cx, |app, _| path_of(app, last.0));
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| window.focus(&list, cx));
+        draw(cx);
+        cx.simulate_keystrokes("end");
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_selected),
+            Some(last),
+            "End selects the last file"
+        );
+        // The selected file's row, whole among the rows the list shows, and
+        // the list whole in the body's view.
+        let assert_selected_shown = |cx: &mut VisualTestContext, at: &str| {
+            let position = app.read_with(cx, |app, _| {
+                let selected = app.working_selected.expect("a selected file");
+                app.working_rows
+                    .iter()
+                    .position(|row| {
+                        matches!(row, workspace::WorkingRow::File(index, area)
+                            if (*index, *area) == selected)
+                    })
+                    .expect("the selected file's row")
+            });
+            let (row, border) = cx.update(|window, cx| {
+                (
+                    window.pixel_snap(px(app.read(cx).settings.density.file_row_height())),
+                    window.pixel_snap(px(1.)),
+                )
+            });
+            let body = cx.debug_bounds("working-body").expect("the body");
+            let pane = cx.debug_bounds("working-pane").expect("the list");
+            let selector: &'static str = format!("working-row-{position}").leak();
+            let item = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{at}: the selected row {position} drawn"));
+            let slack = px(0.01);
+            assert!(
+                item.size.height >= row - slack
+                    && item.top() + slack >= pane.top() + border
+                    && item.bottom() <= pane.bottom() - border + slack,
+                "{at}: the selected row {item:?} whole in the list {pane:?}"
+            );
+            assert!(
+                pane.top() + slack >= body.top() && pane.bottom() <= body.bottom() + slack,
+                "{at}: the list {pane:?} in the body {body:?}"
+            );
+        };
+        assert_selected_shown(cx, "the last file selected");
+        // Its menu, from the keyboard, opens on Stage.
+        cx.simulate_keystrokes("shift-f10");
+        cx.executor().run_until_parked();
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.file_menu.is_some()),
+            "Shift+F10 opens the row's menu"
+        );
+        cx.simulate_keystrokes("enter");
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("Enter on Stage runs the Stage");
+        write.await;
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        draw(cx);
+        let staged = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .expect("a status")
+                .entries
+                .iter()
+                .filter(|entry| entry.staged.is_some())
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            staged,
+            std::slice::from_ref(&selected_path),
+            "the selected file staged"
+        );
+        assert!(app.read_with(cx, |app, _| matches!(
+            app.working_rows[..2],
+            [
+                workspace::WorkingRow::Heading(..),
+                workspace::WorkingRow::File(..)
+            ]
+        )));
+        let selected = app.read_with(cx, |app, _| app.working_selected);
+        assert_eq!(
+            selected.map(|(index, area)| (app.read_with(cx, |app, _| path_of(app, index)), area)),
+            Some((selected_path, gitturtle_core::ChangeArea::Staged)),
+            "the selection follows the file into Staged"
+        );
+        assert_selected_shown(cx, "the selected file staged");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Tab and Shift-Tab leave the commit description for the next and the
     /// previous stop, as on every other stop, and add nothing to its text:
     /// the kit's multi-line field indents with them, so focus never left it.
