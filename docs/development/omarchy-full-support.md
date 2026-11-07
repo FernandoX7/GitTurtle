@@ -777,19 +777,23 @@ cover current upstream x86-64 Omarchy.
        `select_newest` test helpers in `reflog.rs` (low).
        A field's caret may keep blinking unfocused when its context menu closes with focus elsewhere
        (`on_blur` returns early while the menu is open, `vendor/gpui-base/src/input/base/state.rs:2569`; FU26-D re-check, low).
-       The GitHub connection pane's "Local worktree: <path>" line wraps with the path (6 lines at
-       ~120 characters, 17 pt, 440 × 490), and then no Tab stop shows its help's first line whole (every
-       control stays whole; FU26-A's review, `github_view.rs:11683`): the long path line against the
-       reveal rule (`review::clear_of_lines`), low.
+       FU27-B landed 2026-11-06 (the GitHub connection pane's "Local worktree:" line keeps to one line, its path
+       elided in the middle as the header's; the panel's stops all draw their rings, checked over 1,526 stops); found
+       by its probe (low): Pulls at 17 pt in 461 × 490, stops 2 and 3 leave a line cut at the body's edge; Overview at
+       17 pt (461, 440 px) and 18 pt (480 px): no stop shows `github-captured-identities` (below every stop's view).
      - **A Refresh moves a tab whose `.git` vanished to an enclosing repository (found by FU26-A, 2026-11-06; FU26-E):**
        `RepositorySession::open` rediscovers from the tab's path, so with an enclosing work tree (a dotfiles
        repository in the home directory) the tab silently shows, and later writes would target, that repository.
        Decided: a passive reopen that resolves to another root shows the tab unavailable, never switches.
-       Left after FU26-E (its review): the hardening round FU26-E2 (every command of an opened repository
-       with `GIT_CEILING_DIRECTORIES` at the captured root's parent, closing the old handle's reads between
-       `.git` vanishing and the mark: Blame, Quick Open's working scope, profile and remotes reads, the
-       watcher's setup; decided 2026-11-06, brief `FU26-E2.md`); an old session's subfolder-path tab reads
-       "is gone" for good (message); a deleted folder's quiet read gives an I/O error, no mark (low).
+       FU26-E landed 2026-11-06 (writes refused and tabs marked once Git finds another repository, or none, at the
+       path; with none, `repository_access::explain`'s reasons on every surface; a quiet read that finds none marks the
+       tab; release: +1.4 ms per Changes read and per write, one `rev-parse` each). Left: the hardening round FU26-E2
+       (every command of an opened repository with `GIT_CEILING_DIRECTORIES` at the parent of the folder holding
+       `.git`, closing the old handle's reads between `.git` vanishing and the mark, the Git directory captured,
+       FU26-E's per-operation `rev-parse` removed; Show latest marking; a running quiet read's banner beside the mark;
+       brief `FU26-E2.md`); an old session's subfolder-path tab reads "is gone" for good (message); `Path::is_dir()` is
+       false on any metadata error, so a network-volume blip marks a tab until the next quiet read; a marked tab's
+       explicit Refresh in Changes keeps the mark's old reason after Git starts finding another repository (low).
      - **Test infrastructure (2026-11-06; FU20-M and FU22-A (the PDF helper test's torn status read)
        landed, the testing skill names the recurring races; FU23-A in review: `564d0be6`'s cause was
        macOS's long `TMPDIR` wrapping the fixture path, and the paging test's seed caches):
@@ -834,8 +838,7 @@ cover current upstream x86-64 Omarchy.
          rest (never fewer than five lines), the mode row wrapping inside the body's width,
          every ring whole (FU18-F's sweep at 461 × 490: the mode Buttons' rings reach x 449.5 /
          607 past the body's 423; at 18 pt the patch and Source have zero height under the fixed
-         324 px `FILE_LIST_HEIGHT`; the list taller than the body); stops that paint no ring
-         (a conversation's actions, the Source editor); the sweep's never-whole lines analysed;
+         324 px `FILE_LIST_HEIGHT`; the list taller than the body); the sweep's never-whole lines analysed;
          the D+E review's bounded list span, scrolled-editor test and padding rows;
          `the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn` always-on once green
          (`github_view*`, `focus_reveal.rs`).
@@ -867,7 +870,7 @@ cover current upstream x86-64 Omarchy.
        palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
        animated AVIF caption on macOS (`native.rs`); VoiceOver's reading of check menu items
        and of copy announcements from dialogs (the backlog line above).
-     - **Performance, S-M:** FU20-P2 landed 2026-11-05 night (`render_git_actions` builds its text only on a change); `branch_actions.rs`'s picker label still formats each frame (FU22-D landed 2026-11-06: empty states build their line text only on a change); FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); the profile button's accessible name and tooltip format each header render (`profiles.rs:272-285`); FU25-D landed 2026-11-06 (the header's labels, tooltips, picker names and badge kept per input; release: no CPU change, allocation hygiene; `tags.rs`'s read already ran only on a change, `bd8a67f5`); left from its count: the shared Button helpers in `main.rs` format per frame for every Button (`button_frame`'s placeholder label, `control_icon`'s path, `app_icon`'s URL parse; an app-wide round), `header_plan`/`chrome()` read `window.text_style()` 17 times a frame (read the line height once per frame), `fit_status_bar`'s `key_hints`, and a dialog error line's state key and text copy;
+     - **Performance, S-M:** FU20-P2 landed 2026-11-05 night (`render_git_actions` builds its text only on a change); `branch_actions.rs`'s picker label still formats each frame (FU22-D landed 2026-11-06: empty states build their line text only on a change); FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); the profile button's accessible name and tooltip format each header render (`profiles.rs:272-285`); FU25-D landed 2026-11-06 (the header's labels, tooltips, picker names and badge kept per input; release: no CPU change, allocation hygiene; `tags.rs`'s read already ran only on a change, `bd8a67f5`); FU26-F landed 2026-11-06 (the shared Button helpers' icon paths and names kept per symbol, the header's line height read once per frame, the status bar's hints and Settings' Back tooltip built only on a change; release: −2.3 to −2.7 % UI-thread CPU per frame at rest); left: a dialog error line's state key and text copy, per-frame `format!("icons/{…}.svg")` in `projects.rs` (:777, :1026, :1208) and `empty_state.rs:222`, and the kit's `Button::new` parsing a key context per frame;
        hayro's full-resolution decode profile and the grained-alpha peak on x86-64 (measure);
        read tags after the history page when only one CPU is available (+5.9 ms on one core,
        brief 10's follow-up in `c219a6f2`), M; a release scroll measurement for the per-row
