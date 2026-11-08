@@ -367,6 +367,9 @@ pub(crate) struct SeriesBrowser {
     /// the review.
     back: FocusHandle,
     rows_scroll: UniformListScrollHandle,
+    /// How many whole rows the series list showed, and how tall they were,
+    /// as last drawn ([`Self::follow_rows`]).
+    rows_layout: Option<(usize, Pixels)>,
     files_scroll: UniformListScrollHandle,
     inspecting: bool,
     messages: Option<[Option<Entity<EditorState>>; 2]>,
@@ -440,6 +443,7 @@ impl SeriesBrowser {
             focus: cx.focus_handle().tab_stop(true),
             back: cx.focus_handle().tab_stop(true),
             rows_scroll: UniformListScrollHandle::new(),
+            rows_layout: None,
             files_scroll: UniformListScrollHandle::new(),
             inspecting: false,
             messages: None,
@@ -606,8 +610,7 @@ impl SeriesBrowser {
                 this.task = None;
                 match result {
                     Ok(Some(review)) => {
-                        this.review = Some(Arc::new(review));
-                        this.selected = 0;
+                        this.list(review, window, cx);
                         this.focus.focus(window, cx);
                     }
                     Ok(None) => {}
@@ -806,6 +809,40 @@ impl SeriesBrowser {
         let top = top.clamp(least, most).clamp(0., reach);
         scroll.set_offset(point(offset.x, px(-top)));
     }
+    /// Keeps the selected row whole as the series list's rows change under
+    /// it with no key, in the frame that changes them: where the list shows
+    /// another count of whole rows (`shown`), as a resize or a text size
+    /// makes it, or its rows take another snapped height (`height`), as a
+    /// display scale or a text size makes them, its offset is carried over
+    /// in rows and the list scrolled the least that shows the selected row
+    /// whole ([`Self::keep_row_whole`]). Only a key revealed it: tiled from a
+    /// 1,480 × 800 window, where the list showed five rows, to a 461 × 490
+    /// half tile, where it shows one, it showed row 1 with row 5 selected,
+    /// and Return inspected a row nobody saw.
+    fn follow_rows(&mut self, shown: usize, height: Pixels, window: &Window, cx: &App) {
+        let Some((was_shown, was_height)) = self.rows_layout.replace((shown, height)) else {
+            return;
+        };
+        if (was_shown, was_height) == (shown, height) {
+            return;
+        }
+        if was_height != height && was_height > Pixels::ZERO {
+            let scroll = self.rows_scroll.0.borrow().base_handle.clone();
+            let offset = scroll.offset();
+            let rows = f32::from(offset.y) / f32::from(was_height);
+            scroll.set_offset(point(offset.x, height * rows));
+        }
+        self.keep_row_whole(self.selected, window, cx);
+    }
+    /// Lists `review` with its first row selected, shown whole by the least
+    /// scroll: a reload, and a destination check that found the remote
+    /// changed, selected row 0 and left the list where the last series had
+    /// scrolled it, showing another row.
+    fn list(&mut self, review: RewriteReview, window: &Window, cx: &App) {
+        self.review = Some(Arc::new(review));
+        self.selected = 0;
+        self.keep_row_whole(0, window, cx);
+    }
     fn inspect(&mut self, original: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(review) = &self.review else {
             return;
@@ -996,7 +1033,7 @@ impl SeriesBrowser {
                         if form.closed || page != AppPage::Repository || path.as_deref() != Some(form.repo.path()) { return; }
                         match result {
                             Ok(PublicationInspection::Ready(plan)) => { form.publication = Some(plan); form.notice = None; },
-                            Ok(PublicationInspection::RemoteChanged(review)) => { form.review = Some(Arc::new(review)); form.selected = 0; form.publication = None; form.notice = Some("The remote changed. Original now shows its newly inspected series. Review these commits and files, then check the destination again to prepare a fresh lease.".into()); },
+                            Ok(PublicationInspection::RemoteChanged(review)) => { form.list(review, window, cx); form.publication = None; form.notice = Some("The remote changed. Original now shows its newly inspected series. Review these commits and files, then check the destination again to prepare a fresh lease.".into()); },
                             Ok(PublicationInspection::AlreadyPublished { remote, remote_ref, oid }) => { form.publication = None; form.notice = Some(format!("{remote} · {remote_ref} already points to {oid}. No publication is needed.")); },
                             Err(error) => form.error = Some(format!("{error:#}"))
                         }
@@ -1408,7 +1445,11 @@ impl Render for SeriesBrowser {
         // cut at the rest of the body's room ended mid-row with nothing to
         // say more lay below.
         let row_height = series_row_height(window);
-        let list_height = row_height * rows_shown(row_count, window, cx) as f32 + px(2.);
+        let shown = rows_shown(row_count, window, cx);
+        if row_count > 0 {
+            self.follow_rows(shown, row_height, window, cx);
+        }
+        let list_height = row_height * shown as f32 + px(2.);
         let rows_cue =
             crate::tags::ScrollCue::new(&self.rows_scroll.0.borrow().base_handle, Pixels::ZERO);
         let gutter = crate::tags::ScrollCue::gutter();
@@ -4017,6 +4058,107 @@ mod tests {
         }
     }
 
+    /// The rows of `rows` the series list draws inside its border in the
+    /// last frame painted, each with whether it lies whole there.
+    fn rows_seen(cx: &mut gpui::VisualTestContext, rows: usize) -> Vec<(usize, bool)> {
+        let border = cx.update(|window, _| window.pixel_snap(px(1.)));
+        let list = crate::tags::tests::rendered(cx, "series-focus-list");
+        let inside = Bounds::from_corners(
+            list.origin + point(border, border),
+            list.bottom_right() - point(border, border),
+        );
+        let slack = px(0.05);
+        (0..rows)
+            .filter_map(|index| {
+                let selector: &'static str = format!("series-row-{index}").leak();
+                let bounds = cx.debug_bounds(selector)?;
+                let seen = bounds.top() < inside.bottom() - slack
+                    && bounds.bottom() > inside.top() + slack;
+                let whole = bounds.top() >= inside.top() - slack
+                    && bounds.bottom() <= inside.bottom() + slack;
+                seen.then_some((index, whole))
+            })
+            .collect()
+    }
+
+    /// Whether the series list draws row `row` whole inside its border, and
+    /// no other row, in the last frame painted.
+    fn shows_only(cx: &mut gpui::VisualTestContext, row: usize, rows: usize) -> bool {
+        rows_seen(cx, rows) == [(row, true)]
+    }
+
+    /// The selected row stays whole in the series list, by the least scroll,
+    /// in the first frame after its rows change under it with no key: row 5
+    /// of eight, selected at 13 pt in a 1,480 × 800 window, where the list
+    /// shows five rows, row 5 at their foot, stays the row the list shows
+    /// as the window is tiled to a 461 × 490 half tile, where it shows one,
+    /// as the text grows to 18 pt there, and as the display's scale goes
+    /// from 2× to 1.25×, where a row's snapped height goes from 94 to
+    /// 94.4 px. Only a key revealed it: the half tile's list showed row 1
+    /// with row 5 selected, and Return inspected a row nobody saw.
+    #[gpui::test]
+    async fn the_selected_row_stays_whole_as_its_rows_change(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let rows = 8;
+        let browser = listed_review(&app, cx, rows);
+        size_to(&app, cx, 13, 1480., 800.);
+        cx.update(|window, cx| browser.update(cx, |browser, cx| browser.select(5, window, cx)));
+        draw(cx);
+        let shown = cx.update(|window, cx| rows_shown(rows, window, cx));
+        assert_eq!(
+            rows_seen(cx, rows),
+            (6 - shown..6).map(|row| (row, true)).collect::<Vec<_>>(),
+            "the larger window's list shows its {shown} whole rows, row 5 at their foot"
+        );
+        assert!(
+            shown > 1,
+            "the larger window's list shows more than one row"
+        );
+        // One frame after each change, which no key follows.
+        let frame = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+        };
+        cx.simulate_resize(size(px(461.), px(490.)));
+        frame(cx);
+        assert!(
+            shows_only(cx, 5, rows),
+            "tiled to 461 × 490, the one-row list shows the selected row 5 whole"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = 18;
+                appearance::apply_text_sizes(18, app.settings.code_text_size, window, cx);
+                cx.notify();
+            })
+        });
+        frame(cx);
+        assert!(
+            shows_only(cx, 5, rows),
+            "at 18 pt there, the list shows row 5 whole"
+        );
+        let before = cx.update(|window, _| series_row_height(window));
+        cx.update(|window, _| window.set_scale_factor(1.25));
+        frame(cx);
+        let after = cx.update(|window, _| series_row_height(window));
+        assert_ne!(before, after, "the scale changes a row's snapped height");
+        assert!(
+            shows_only(cx, 5, rows),
+            "at 1.25×, the list shows row 5 whole, {after:?} tall"
+        );
+        assert_eq!(
+            browser.read_with(cx, |browser, _| browser.selected),
+            5,
+            "nothing changed the selection"
+        );
+    }
+
     /// The text modes keep their row for every preview, Diagrams among
     /// them, refused with their reason where it has no text or no Mermaid
     /// diagrams, so the preview's box keeps its place and size before a file
@@ -4446,7 +4588,11 @@ mod tests {
 
     /// A rebase run through Edit local commits' Start rebase is reviewed
     /// from the palette, as QA-106e reviewed one: its capture is found and
-    /// the review lists its series, and Refresh series lists it again.
+    /// the review lists its series, and Refresh series lists it again,
+    /// selecting its first row and showing it whole at 18 pt in a 461 × 490
+    /// half tile, where the list shows one row: with the last row selected
+    /// by Down before it, the reload selected row 0 and went on showing the
+    /// last.
     #[gpui::test]
     async fn a_rebase_started_in_edit_local_commits_is_reviewed_from_the_palette(
         cx: &mut gpui_kit::TestAppContext,
@@ -4482,13 +4628,49 @@ mod tests {
             cx.debug_bounds("series-empty").is_none(),
             "a listed series draws no empty state"
         );
-        let reload = cx.debug_bounds("reload-series").expect("Refresh series");
-        cx.simulate_click(reload.center(), Modifiers::none());
+        cx.simulate_keystrokes("down down");
+        crate::tags::tests::draw(cx);
+        assert!(
+            shows_only(cx, 2, rows.len()),
+            "Down selects the last row and shows it alone"
+        );
+        // Refresh series, reached by Tab, which reveals it below the half
+        // tile's fold, and pressed with Return: a click at its place there
+        // reached nothing, so the series was never read again.
+        let reload = cx.update(|_, cx| review.read(cx).body.focus("reload-series", cx));
+        for _ in 0..6 {
+            if cx.update(|window, _| reload.is_focused(window)) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            crate::tags::tests::draw(cx);
+        }
+        assert!(
+            cx.update(|window, _| reload.is_focused(window)),
+            "Tab moves onto Refresh series"
+        );
+        let read = review.read_with(cx, |review, _| review.generation);
+        enter(cx, true);
+        enter(cx, false);
         lands(&review, cx);
+        assert_ne!(
+            review.read_with(cx, |review, _| review.generation),
+            read,
+            "Refresh series reads the series again"
+        );
         assert_eq!(
             listed(cx).1.map(|rows| rows.len()),
             Some(3),
             "Refresh series lists it again"
+        );
+        assert_eq!(
+            review.read_with(cx, |review, _| review.selected),
+            0,
+            "the reload selects the series' first row"
+        );
+        assert!(
+            shows_only(cx, 0, rows.len()),
+            "the list shows the selected first row whole"
         );
     }
 
