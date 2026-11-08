@@ -8,7 +8,35 @@ use std::{
     sync::{Arc, Mutex, PoisonError, mpsc},
 };
 
-type Operation = Box<dyn FnOnce(bool) + Send>;
+type Operation = Box<dyn FnOnce(Admission) + Send>;
+
+/// What a [`SerialExecutor`] did with a job.
+#[derive(Clone, Copy)]
+enum Admission {
+    Accepted,
+    /// The bounded queue had no room: the thread is alive and behind.
+    Busy,
+    /// The thread has stopped, so no later attempt can be accepted either.
+    Stopped,
+}
+
+const REFUSED: &str =
+    "Background executor is busy or unavailable. Try again after the current operation finishes.";
+
+/// The error of a job refused because the bounded queue had no room. A save
+/// the person did not ask for tells it apart with `error.is::<Busy>()` and
+/// asks again ([`crate::workspace::REFUSED_SAVE_RETRY`]) rather than report
+/// a writer that is merely behind.
+#[derive(Debug)]
+pub(crate) struct Busy;
+
+impl std::fmt::Display for Busy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(REFUSED)
+    }
+}
+
+impl std::error::Error for Busy {}
 
 /// Reads waiting in a [`SerialExecutor`]'s queue, at most one for each key,
 /// which a newer request for the same key takes over while they still wait
@@ -137,7 +165,7 @@ impl SerialExecutor {
                 #[cfg(test)]
                 crate::preferences::inherit_test_settings_directory(test_settings);
                 for operation in receiver {
-                    operation(true);
+                    operation(Admission::Accepted);
                 }
             });
         Self {
@@ -243,6 +271,32 @@ impl SerialExecutor {
         Held { _release: release }
     }
 
+    /// [`hold`](Self::hold), returning only once the thread has reached the
+    /// hold, so that exactly the queue's bound of jobs fits behind it.
+    #[cfg(test)]
+    #[track_caller]
+    pub fn hold_reached(&self) -> Held {
+        let limit = test_wait();
+        let (release, released) = mpsc::channel::<()>();
+        let (reached, at_hold) = mpsc::channel::<()>();
+        self.queue_within(
+            Box::new(move |_| {
+                let _ = reached.send(());
+                let _ = released.recv();
+            }),
+            limit,
+            std::time::Instant::now() + limit,
+            "hold",
+        );
+        if at_hold.recv_timeout(limit).is_err() {
+            panic!(
+                "the {} executor did not reach the hold within {limit:?}: a job ahead of it never answered or is still held",
+                self.name
+            );
+        }
+        Held { _release: release }
+    }
+
     /// Queues a test's `job`, named `what`, waiting for room in the bounded
     /// queue until `deadline`. A blocking send waited for good behind a job
     /// the waiting thread itself held, an earlier hold's guard among them.
@@ -306,13 +360,13 @@ impl SerialExecutor {
         let answers = Arc::clone(&read);
         waiting.waiting.retain(|(read, _)| *read != key);
         waiting.waiting.push((key, read));
-        self.send(Box::new(move |accepted| {
+        self.send(Box::new(move |admission| {
             // Its own statement, so the lock is let go before the read runs:
             // held through the read, a request for the key while it ran
             // waited for it on the UI thread.
             let reply = std::mem::replace(&mut *lock(&answers), Reply::Started);
             if let Reply::Waiting(reply) = reply {
-                answer(reply, accepted, true, operation);
+                answer(reply, admission, true, operation);
             }
         }));
         response
@@ -324,8 +378,8 @@ impl SerialExecutor {
         skip_cancelled: bool,
     ) -> oneshot::Receiver<Result<T>> {
         let (reply, response) = oneshot::channel();
-        self.send(Box::new(move |accepted| {
-            answer(reply, accepted, skip_cancelled, operation);
+        self.send(Box::new(move |admission| {
+            answer(reply, admission, skip_cancelled, operation);
         }));
         response
     }
@@ -335,32 +389,31 @@ impl SerialExecutor {
     fn send(&self, job: Operation) {
         if let Err(error) = self.sender.try_send(job) {
             match error {
-                mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job) => job(false),
+                mpsc::TrySendError::Full(job) => job(Admission::Busy),
+                mpsc::TrySendError::Disconnected(job) => job(Admission::Stopped),
             }
         }
     }
 }
 
-/// Runs `operation` for `reply` once the executor reaches it, `accepted`,
-/// or answers that the executor is busy; a read (`skip_cancelled`) whose
-/// reply has been dropped is skipped.
+/// Runs `operation` for `reply` once the executor reaches it, or answers
+/// that the executor refused it; a read (`skip_cancelled`) whose reply has
+/// been dropped is skipped.
 fn answer<T>(
     reply: oneshot::Sender<Result<T>>,
-    accepted: bool,
+    admission: Admission,
     skip_cancelled: bool,
     operation: impl FnOnce() -> Result<T>,
 ) {
     if skip_cancelled && reply.is_canceled() {
         return;
     }
-    let result = if accepted {
-        catch_unwind(AssertUnwindSafe(operation)).unwrap_or_else(|_| {
+    let result = match admission {
+        Admission::Accepted => catch_unwind(AssertUnwindSafe(operation)).unwrap_or_else(|_| {
             Err(anyhow!("Operation interrupted unexpectedly. Refresh the repository before retrying; it may have changed."))
-        })
-    } else {
-        Err(anyhow!(
-            "Background executor is busy or unavailable. Try again after the current operation finishes."
-        ))
+        }),
+        Admission::Busy => Err(anyhow::Error::new(Busy)),
+        Admission::Stopped => Err(anyhow!(REFUSED)),
     };
     let _ = reply.send(result);
 }

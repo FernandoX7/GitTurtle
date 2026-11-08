@@ -3256,6 +3256,166 @@ mod tests {
         .await;
     }
 
+    /// Lets everything the preference writer has been given answer, and the
+    /// window handle the replies.
+    fn writer_answers(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        cx.executor().run_until_parked();
+    }
+
+    /// A new repository called `name`, opened in a tab of its own and read.
+    /// Returns its canonical path, as the store records it.
+    async fn opened_in_a_tab(
+        name: &str,
+        fixture: &tempfile::TempDir,
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> std::path::PathBuf {
+        use crate::views::tests::{fixture_git, fixture_repository, settle};
+        let path = fixture_repository(fixture.path().join(name))
+            .path()
+            .to_owned();
+        std::fs::write(path.join("notes.txt"), "notes\n").unwrap();
+        fixture_git(&path, &["add", "notes.txt"]);
+        fixture_git(&path, &["commit", "--quiet", "-m", "Notes"]);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(path.clone(), window, cx)
+            })
+        });
+        settle(app, cx).await;
+        let path = path.canonicalize().unwrap();
+        assert_eq!(
+            app.read_with(cx, |app, _| app.path.clone())
+                .and_then(|shown| shown.canonicalize().ok()),
+            Some(path.clone()),
+            "{name} is the tab shown"
+        );
+        path
+    }
+
+    /// The newest projects the store's recent list holds, newest first.
+    fn stored_recents(count: usize) -> Vec<std::path::PathBuf> {
+        let mut recent = crate::preferences::Preferences::load().recent_repositories;
+        recent.truncate(count);
+        recent
+    }
+
+    /// Every snapshot that lands remembers its repository, so projects
+    /// opened and Refresh pressed while the preference writer is behind
+    /// once took a slot of its bounded queue each, and the next save was
+    /// refused as busy: the person read an error about a save they never
+    /// asked for and the project was not remembered. They now share one
+    /// job, which keeps one slot and leaves the queue to other saves, and
+    /// once the writer frees the store lists them, the newest first, and
+    /// the pane each of them.
+    #[gpui::test]
+    async fn projects_opened_while_the_writer_is_behind_share_one_save(cx: &mut TestAppContext) {
+        use crate::views::tests::settle;
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        writer_answers(&app, cx);
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+
+        let mut opened = Vec::new();
+        for name in ["first", "second", "third"] {
+            opened.push(opened_in_a_tab(name, &fixture, &app, cx).await);
+        }
+        for _ in 0..9 {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+            settle(&app, cx).await;
+        }
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
+        );
+        assert!(
+            !stored_recents(3).contains(&opened[2]),
+            "nothing has reached the store while the writer is stalled"
+        );
+        // The recent-project job, the session's and a draft's leave room: a
+        // job for each snapshot would have filled the queue.
+        let others: Vec<_> = (0..5)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut other in others {
+            assert!(
+                matches!(other.try_recv(), Ok(None)),
+                "the queue keeps room for other saves"
+            );
+        }
+
+        drop(held);
+        writer_answers(&app, cx);
+        assert_eq!(
+            stored_recents(3),
+            vec![opened[2].clone(), opened[1].clone(), opened[0].clone()],
+            "the newest project leads the stored list"
+        );
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_error, None);
+            for project in &opened {
+                assert!(
+                    app.project_library.contains_project(project),
+                    "the pane lists {}",
+                    project.display()
+                );
+            }
+        });
+    }
+
+    /// A queue that other saves have filled refuses the recent-project job
+    /// at once. Nothing is reported, since the writer is only behind, the
+    /// save asks again for as long as the queue stays full, and the newest
+    /// list reaches the store once there is room.
+    #[gpui::test]
+    async fn recent_projects_a_full_queue_refuses_ask_again(cx: &mut TestAppContext) {
+        use crate::workspace::REFUSED_SAVE_RETRY;
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        writer_answers(&app, cx);
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        let fillers: Vec<_> = (0..8)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut filler in fillers {
+            assert!(matches!(filler.try_recv(), Ok(None)), "the queue fills");
+        }
+
+        let first = opened_in_a_tab("first", &fixture, &app, cx).await;
+        let second = opened_in_a_tab("second", &fixture, &app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
+        );
+
+        // Still full: refused again, and still nothing to report.
+        cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+        cx.executor().run_until_parked();
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
+        );
+
+        drop(held);
+        writer_answers(&app, cx);
+        assert!(
+            !stored_recents(2).contains(&second),
+            "the refused save has not run: only asking again brings it"
+        );
+        cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+        cx.executor().run_until_parked();
+        writer_answers(&app, cx);
+        assert_eq!(
+            stored_recents(2),
+            vec![second.clone(), first.clone()],
+            "the newest project leads the stored list"
+        );
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_error, None);
+            assert!(app.project_library.contains_project(&first));
+            assert!(app.project_library.contains_project(&second));
+        });
+    }
+
     /// History's Refresh drops a plan History is preparing, Amend last
     /// commit, a branch's actions or a paused rebase's Continue, and waits
     /// for its read as a switch that drops it does

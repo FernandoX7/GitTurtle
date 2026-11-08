@@ -999,6 +999,11 @@ pub(super) const DESCRIPTION_PLACEHOLDER: &str = "Explain why this change is nee
 const LONG_TITLE_NOTE: &str = "A shorter title is easier to scan. This title is still valid.";
 /// How long a busy spell runs before it looks busy (`GitTurtle::busy_shown`).
 pub(crate) const BUSY_LOOK_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+/// How long a save the person did not ask for waits, refused by the
+/// preference writer's full queue, before it asks again
+/// (`GitTurtle::retry_refused_save`). Asking costs one attempt to queue, so
+/// it keeps asking for as long as the writer stays behind.
+pub(crate) const REFUSED_SAVE_RETRY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The look of a busy spell: the progress label, Cancel, the tab's
 /// "· working", "Refreshing…" and the disabled styling of the controls a
@@ -2488,28 +2493,22 @@ impl GitTurtle {
             return;
         };
         let recent = self.begin_recent_project_save(&path);
-        let response = self.preferences_writer.submit(move || {
-            // Remembering rebuilds the whole store from disk; nothing is read here first.
-            let mut prefs = Preferences::default();
-            prefs.remember_repository(&path)?;
-            Ok(prefs)
-        });
+        self.queue_recent_project_save(path, recent, window, cx);
+    }
+
+    /// Runs `retry` once [`REFUSED_SAVE_RETRY`] has passed, for a save the
+    /// person did not ask for that the preference writer's full queue
+    /// refused. The returned task ends the wait when it drops.
+    pub(super) fn retry_refused_save(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        retry: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Task<()> {
         cx.spawn_in(window, async move |this, cx| {
-            if let Ok(result) = response.await {
-                let _ = this.update_in(cx, |this, window, cx| match result {
-                    Ok(prefs) => {
-                        this.absorb_remembered_project(recent, &prefs, window, cx);
-                        this.hub
-                            .update(cx, |hub, cx| hub.set_recent(prefs.recent_repositories, cx));
-                    }
-                    Err(error) => {
-                        this.operation_error =
-                            Some(format!("Could not save recent projects: {error:#}"))
-                    }
-                });
-            }
+            cx.background_executor().timer(REFUSED_SAVE_RETRY).await;
+            let _ = this.update_in(cx, retry);
         })
-        .detach();
     }
 
     /// The UI generation rejects late replies, while the worker cancellation

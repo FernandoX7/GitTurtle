@@ -5,7 +5,10 @@
 
 use crate::native_accessibility::LiveRegion as _;
 use crate::{
-    AppContextMenu, AppMenu, AppPage, GitTurtle, button, icon, native_accessibility,
+    AppContextMenu, AppMenu, AppPage, GitTurtle, button,
+    commit_drafts::CoalescingSaver,
+    icon, native_accessibility,
+    operations::Busy,
     preferences::Preferences,
     project_library::{LibraryRow, MAX_DEPTH, ProjectLibrary},
 };
@@ -22,7 +25,7 @@ use gpui_kit::*;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 /// What the group dialog will do when the user confirms it.
@@ -208,11 +211,29 @@ pub fn move_destinations(library: &ProjectLibrary, target: &RowKey) -> Vec<Desti
 /// A recent-project save awaiting its reply. The preference writer adds the
 /// opened project to the stored list; the reply merges that addition into the
 /// pane instead of replacing the pane's list.
+#[derive(Clone, Copy)]
 pub(super) struct RecentProjectSave {
     save: u64,
-    /// The pane already listed the project when the save was submitted, so
+    /// The pane already listed the project when the save was asked for, so
     /// its current list, including a removal made since, stands.
     listed: bool,
+}
+
+/// A project's save and what the job answered for it.
+type AnsweredSave = (RecentProjectSave, anyhow::Result<Preferences>);
+
+/// The recent-project saves of a window, which share one job on the
+/// preference writer ([`GitTurtle::queue_recent_project_save`]).
+#[derive(Default)]
+struct RecentProjectSaves {
+    saver: CoalescingSaver<PathBuf, RecentProjectSave>,
+    /// What the job has answered for each project, which its reply takes.
+    answered: Arc<Mutex<Vec<AnsweredSave>>>,
+    /// The newest project asked for, which a refused job asks for again and
+    /// so schedules everything still waiting.
+    newest: Option<(PathBuf, RecentProjectSave)>,
+    /// The wait before asking again, one at a time.
+    retry: Option<Task<()>>,
 }
 
 pub struct State {
@@ -238,6 +259,7 @@ pub struct State {
     /// The newest pane save answered with a failure: the list on screen is
     /// unsaved until Retry, which the user starts.
     pane_save_failed: bool,
+    recent_saves: RecentProjectSaves,
     /// The row whose actions button's menu is open, by its group or project.
     menu_open: Option<RowKey>,
     keyboard_menu: Option<native_accessibility::KeyboardMenu>,
@@ -307,6 +329,7 @@ impl State {
             latest_save: 0,
             latest_pane_save: 0,
             pane_save_failed: false,
+            recent_saves: RecentProjectSaves::default(),
             menu_open: None,
             keyboard_menu: None,
             drawn: false,
@@ -362,6 +385,119 @@ impl GitTurtle {
             save: self.project_pane.latest_save,
             listed: self.project_library.contains_project(path),
         }
+    }
+
+    /// Asks the preference writer to remember `path`. Every snapshot that
+    /// lands remembers its repository, so nine Refresh presses while the
+    /// writer was behind took nine slots of its bounded queue and the next
+    /// was refused as busy, which showed the person an error about a save
+    /// they never asked for and lost the project. The projects asked for
+    /// now share one job, oldest first so the newest ends the list, which
+    /// keeps one slot however many open; a full queue of other saves refuses
+    /// it, and it asks again until there is room.
+    ///
+    /// The job answers with the number of the request that scheduled it,
+    /// its place in the writer's order: a pane save numbered after that
+    /// wrote the list after it, whichever request joined the job later.
+    pub(super) fn queue_recent_project_save(
+        &mut self,
+        path: PathBuf,
+        recent: RecentProjectSave,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let answered = Arc::clone(&self.project_pane.recent_saves.answered);
+        let job = recent.save;
+        let response = self.project_pane.recent_saves.saver.queue_with(
+            &self.preferences_writer,
+            path.clone(),
+            recent,
+            move |projects| {
+                let mut projects: Vec<_> = projects.iter().collect();
+                projects.sort_by_key(|(_, recent)| recent.save);
+                for (path, recent) in projects {
+                    // Remembering rebuilds the whole store from disk; nothing is read here first.
+                    let mut preferences = Preferences::default();
+                    let result = preferences.remember_repository(path).map(|()| preferences);
+                    let answer = RecentProjectSave {
+                        save: job,
+                        ..*recent
+                    };
+                    answered
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push((answer, result));
+                }
+                // Each project answers for itself: failing the job would keep
+                // a project that can no longer be saved ahead of every later one.
+                Ok(())
+            },
+        );
+        self.project_pane.recent_saves.newest = Some((path, recent));
+        let Some(response) = response else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = response.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.land_recent_project_saves(outcome, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn land_recent_project_saves(
+        &mut self,
+        outcome: Result<anyhow::Result<()>, futures::channel::oneshot::Canceled>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let answered = std::mem::take(
+            &mut *self
+                .project_pane
+                .recent_saves
+                .answered
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        for (recent, result) in answered {
+            match result {
+                Ok(preferences) => {
+                    self.absorb_remembered_project(recent, &preferences, window, cx);
+                    self.hub.update(cx, |hub, cx| {
+                        hub.set_recent(preferences.recent_repositories, cx)
+                    });
+                }
+                Err(error) => {
+                    self.operation_error =
+                        Some(format!("Could not save recent projects: {error:#}"))
+                }
+            }
+        }
+        match outcome {
+            Ok(Err(error)) if error.is::<Busy>() => self.ask_again_for_recent_projects(window, cx),
+            Ok(Err(error)) => {
+                self.operation_error = Some(format!("Could not save recent projects: {error:#}"))
+            }
+            Ok(Ok(())) | Err(_) => {}
+        }
+    }
+
+    /// Asks again, after the wait, for the projects a full queue refused.
+    fn ask_again_for_recent_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_pane.recent_saves.retry.is_some() {
+            return;
+        }
+        let retry = self.retry_refused_save(window, cx, |this, window, cx| {
+            this.project_pane.recent_saves.retry = None;
+            if !this.project_pane.recent_saves.saver.is_pending() {
+                return;
+            }
+            if let Some((path, recent)) = this.project_pane.recent_saves.newest.clone() {
+                this.queue_recent_project_save(path, recent, window, cx);
+            }
+        });
+        self.project_pane.recent_saves.retry = Some(retry);
     }
 
     /// Merge the project a recent-project save added into the pane's current
