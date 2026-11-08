@@ -1289,6 +1289,79 @@ mod tests {
         assert!(!row_in_view(cx, 5), "the list stayed away from the cursor");
     }
 
+    /// The cursor on row 5 and the person scrolled down to row 45: a file
+    /// made outside the app changes the rows' number, and the watcher's
+    /// read leaves the list on the rows they were reading. The draw that
+    /// follows a change in their number brought the cursor's row back into
+    /// view instead, which only the person's own keys may do.
+    #[gpui::test]
+    async fn a_passive_read_that_changes_the_row_count_keeps_a_list_scrolled_from_its_cursor(
+        cx: &mut TestAppContext,
+    ) {
+        // [Staged 40, f00…f39, Unstaged 20, f40…f59]
+        let (fixture, app, cx) = long_list(cx, 40, 20).await;
+        let cursor_row = row(cx, 5).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        let cursor = app.read_with(cx, |app, _| app.working_selected);
+        assert!(cursor.is_some(), "the cursor on row 5");
+        scroll_list(&app, cx, 45);
+        assert!(
+            !row_in_view(cx, 5) && row_in_view(cx, 45),
+            "scrolled away from the cursor, row 45 shown"
+        );
+        let (offset, height) = (list_offset(&app, cx), row(cx, 45).size.height);
+        // Named to sort above every other new file, so the rows the person
+        // reads each move down one.
+        std::fs::write(fixture.path().join("narrow/a.txt"), "a\n").unwrap();
+        quietly_refreshed(&app, cx);
+        draw(cx);
+        draw(cx);
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 63);
+        assert!(!row_in_view(cx, 5), "the list stayed away from the cursor");
+        assert_eq!(
+            list_offset(&app, cx),
+            offset - height,
+            "the list follows the row at its top down one row"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_selected),
+            cursor,
+            "the cursor stayed on its file"
+        );
+    }
+
+    /// The cursor on the last row drawn whole, in view: a file made outside
+    /// the app between the list's top row and the cursor's moves the row
+    /// past the foot of the list, and the read brings it back by the least
+    /// move, as it does when lists change.
+    #[gpui::test]
+    async fn a_passive_read_that_moves_a_cursor_in_view_keeps_it_in_view(cx: &mut TestAppContext) {
+        // [Staged 40, f00…f39, Unstaged 60, f40…f99]
+        let (fixture, app, cx) = long_list(cx, 40, 60).await;
+        scroll_list(&app, cx, 45);
+        let foot = (45..102)
+            .rev()
+            .find(|position| row_in_view(cx, *position))
+            .expect("rows in view");
+        let cursor_row = row(cx, foot).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        assert!(row_in_view(cx, foot), "the cursor on the foot's row");
+        // f45a.txt sorts just after f45.txt, the row below the list's top.
+        std::fs::write(fixture.path().join("narrow/f45a.txt"), "a\n").unwrap();
+        quietly_refreshed(&app, cx);
+        draw(cx);
+        draw(cx);
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 103);
+        assert!(
+            row_in_view(cx, foot + 1),
+            "the cursor's row, one lower, is still in view"
+        );
+    }
+
     /// The cursor's row in view, which the write moves out of it: the list
     /// centres the row where it lands, with context around it, as it decided
     /// for a row the person could see.

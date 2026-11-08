@@ -428,9 +428,10 @@ impl GitTurtle {
     /// the rows drawn hold it and no part of it lies in the list's viewport.
     /// A write's landing then keeps the list's offset, so the row they
     /// pressed and its confirmation stay in view: with the cursor on row 5,
-    /// a Stage pressed at row 50 moved the list back to row 5. `false` where
-    /// no such row is drawn or the list was never laid out, which no scroll
-    /// of theirs explains.
+    /// a Stage pressed at row 50 moved the list back to row 5. A passive
+    /// read's rows then stay on the rows the person was reading. `false`
+    /// where no such row is drawn or the list was never laid out, which no
+    /// scroll of theirs explains.
     fn working_cursor_scrolled_away(&self, window: &Window) -> bool {
         let Some(cursor) = self.shown_working_cursor() else {
             return false;
@@ -453,7 +454,8 @@ impl GitTurtle {
     /// number, which brings the selected row into view as the list is next
     /// drawn (`render_working_inspector`), leaves the list where it is. A
     /// partly staged file's row leaving Unstaged takes one row away, and the
-    /// list moved back to a cursor the person had scrolled away from.
+    /// list moved back to a cursor the person had scrolled away from; a file
+    /// made outside the app, adding a row, moved it back the same way.
     fn keep_working_offset(&self, window: &Window) {
         let height = window.pixel_snap(px(self.settings.density.file_row_height()))
             * self.working_rows.len() as f32;
@@ -861,8 +863,9 @@ impl GitTurtle {
                         this.working_paths.visible_count = visible_count;
                         this.working_paths.conflicted = conflicted;
                         let vacated = this.vacated_working_place(window, cx);
-                        // Asked of the rows still drawn, before these replace them.
-                        let scrolled_away = center_selected && this.working_cursor_scrolled_away(window);
+                        // Asked of the rows still drawn, before these replace
+                        // them, for a write's rows and a passive read's alike.
+                        let scrolled_away = (center_selected || anchor.is_some()) && this.working_cursor_scrolled_away(window);
                         this.working_rows = rows;
                         this.working_paths.retained = None;
                         this.release_departed_row_control(window, cx);
