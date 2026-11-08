@@ -597,7 +597,7 @@ fn help_entries() -> Vec<HelpEntry> {
         ("Next Control", "tab"),
         ("Previous Control", "shift-tab"),
         ("Activate Focused Button", "space"),
-        ("Select Changed Lines to Stage in a Working Diff", "space"),
+        ("Select Lines to Stage or Unstage in a Diff", "space"),
         ("Branch / Worktree Actions in Navigator", "shift-f10"),
         ("Project Actions in the Project List", "shift-f10"),
         ("Commit Actions in History", "shift-f10"),

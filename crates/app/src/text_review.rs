@@ -2134,6 +2134,147 @@ mod tests {
         );
     }
 
+    /// Presses and releases each of `keys` in turn, as a keyboard does.
+    fn press(cx: &mut gpui::VisualTestContext, keys: &str) {
+        for key in keys.split(' ') {
+            cx.simulate_keystrokes(key);
+            let keystroke = gpui::Keystroke::parse(key).unwrap();
+            cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        }
+        crate::tags::tests::draw(cx);
+    }
+
+    /// The shown diff's text and its view.
+    fn shown_diff(
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> (
+        gpui::Entity<gpui_kit::component::input::EditorState>,
+        gpui::Entity<crate::diff_view::DiffView>,
+    ) {
+        app.read_with(cx, |app, _| {
+            (
+                app.patch_editor.clone().expect("the patch's editor"),
+                app.patch_view.clone().expect("the Diff view"),
+            )
+        })
+    }
+
+    /// The window's primary modifier with `key`, Command on a Mac and
+    /// Control elsewhere.
+    fn primary(key: &str) -> String {
+        if cfg!(target_os = "macos") {
+            format!("cmd-{key}")
+        } else {
+            format!("ctrl-{key}")
+        }
+    }
+
+    /// Every changed line of the shown file selected from the keyboard,
+    /// Select All and Space, then Tab to the selection bar's action and
+    /// Enter: a real partial write stages them all, the file leaves
+    /// Unstaged, and focus lands on the file list where the file was, its
+    /// ring drawn, rather than on nothing. Shift+Tab from the action goes
+    /// back to the text first.
+    #[gpui::test]
+    async fn a_keyboard_stage_of_every_line_leaves_focus_on_the_drawn_file_list(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx) = working_diff(cx).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let accent: gpui::Hsla =
+            cx.read(|cx| gpui::rgb(crate::appearance::palette(cx).accent).into());
+        let (editor, view) = shown_diff(&app, cx);
+        cx.update(|window, cx| {
+            let focus = view.read(cx).focus_handle(cx);
+            window.focus(&focus, cx)
+        });
+        crate::tags::tests::draw(cx);
+        press(cx, &primary("a"));
+        press(cx, "space");
+        let (apply, text) = cx.update(|_, cx| {
+            let view = view.read(cx);
+            (view.apply_focus_handle(), view.focus_handle(cx))
+        });
+        press(cx, "tab");
+        assert!(
+            cx.update(|window, _| apply.is_focused(window)),
+            "Tab reaches the action"
+        );
+        press(cx, "shift-tab");
+        assert!(
+            cx.update(|window, _| text.is_focused(window)),
+            "Shift+Tab goes back to the text, focus on {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+        press(cx, "tab");
+        assert!(cx.update(|window, _| apply.is_focused(window)));
+        press(cx, "enter");
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        let staged = crate::views::tests::fixture_git_output(
+            &fixture.path().join("narrow"),
+            &["diff", "--cached", "--name-only"],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&staged.stdout).trim(),
+            "notes.txt",
+            "the lines were staged"
+        );
+        let unstaged = app.read_with(cx, |app, _| {
+            app.work_status.as_ref().map(|status| {
+                status
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.unstaged.is_some())
+                    .count()
+            })
+        });
+        assert_eq!(unstaged, Some(0), "the file left Unstaged");
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus lands on the file list, not on {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+        let rings = crate::focus_ring::painted_outlines(cx, accent);
+        assert!(
+            rings.iter().any(|ring| ring.whole),
+            "the focused list draws its ring whole: {rings:?}"
+        );
+        let _ = editor;
+    }
+
+    /// Space in Find's field over the diff types a space there and selects
+    /// no line, though the text it searches has per-line checkboxes.
+    #[gpui::test]
+    async fn space_in_find_types_a_space_and_selects_no_line(cx: &mut gpui::TestAppContext) {
+        let (_fixture, app, cx) = working_diff(cx).await;
+        let (editor, view) = shown_diff(&app, cx);
+        cx.update(|window, cx| {
+            let focus = view.read(cx).focus_handle(cx);
+            window.focus(&focus, cx)
+        });
+        crate::tags::tests::draw(cx);
+        press(cx, &primary("f"));
+        assert_eq!(
+            cx.update(|_, cx| crate::editor_find::query(&editor, cx)),
+            Some("".into()),
+            "Find opens"
+        );
+        press(cx, "space");
+        assert_eq!(
+            cx.update(|_, cx| crate::editor_find::query(&editor, cx)),
+            Some(" ".into()),
+            "Space types a space in Find's field"
+        );
+        assert!(
+            view.read_with(cx, |view, _| view.selected_lines() == 0),
+            "and selects no line"
+        );
+    }
+
     #[test]
     fn change_navigation_wraps_and_accumulates_before_layout() {
         assert_eq!(next_change(&[], None, 0, true), None);

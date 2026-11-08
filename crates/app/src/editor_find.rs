@@ -320,6 +320,13 @@ fn panel(editor: &Entity<EditorState>, cx: &App) -> Option<Entity<FindBar>> {
         .cloned()
 }
 
+/// What the field of `editor`'s Find bar holds, if it has a bar, open or
+/// not.
+#[cfg(test)]
+pub(crate) fn query(editor: &Entity<EditorState>, cx: &App) -> Option<SharedString> {
+    panel(editor, cx).map(|bar| bar.read(cx).query.read(cx).value())
+}
+
 /// The open find bar's height as it last prepainted, for a view that fits
 /// whole lines below it (the GitHub review's source).
 pub fn panel_height(editor: &Entity<EditorState>, cx: &App) -> Pixels {

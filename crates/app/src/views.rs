@@ -9171,7 +9171,8 @@ impl GitTurtle {
 
     /// Whether the shown diff's text holds focus with its per-line
     /// checkboxes, and then whether they unstage
-    /// (`diff_view::DiffView::line_keys`): Space selects lines there.
+    /// (`diff_view::DiffView::line_keys`): Space selects lines there, but
+    /// for while a partial write runs, when it selects nothing.
     fn partial_line_keys(&self, window: &Window, cx: &App) -> Option<bool> {
         let Some(ShownText::Editor(editor)) = self.shown_text() else {
             return None;
@@ -9179,8 +9180,10 @@ impl GitTurtle {
         let view = self
             .patch_view
             .as_ref()
-            .filter(|_| self.patch_editor.as_ref() == Some(editor))?;
-        view.read(cx).line_keys(window, cx)
+            .filter(|_| self.patch_editor.as_ref() == Some(editor))?
+            .read(cx);
+        view.line_keys(window, cx)
+            .filter(|_| !view.partial_suspended())
     }
 
     /// How the status bar lays out in this window, in the one responsive

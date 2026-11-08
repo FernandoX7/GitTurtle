@@ -152,7 +152,7 @@ Open **Help → Keyboard Shortcuts** on macOS or **Menu → Keyboard Shortcuts**
 | Command-Shift-C | Compare local revisions |
 | Command-Shift-A | Open local operation activity |
 | Option-Up / Option-Down in a text preview | Previous / next change |
-| Shift-Up / Shift-Down in Working Changes | Extend file selection |
+| Shift-Up / Shift-Down in the file list | Extend file selection |
 | Command-A in the Working Changes file list | Select visible file rows |
 | Space in a Working Changes diff | Select the changed line under the caret, or every changed line you selected, for **Stage N lines**; press again to clear them. Shift-Up / Shift-Down extend the selection, and Tab moves to the action |
 | Command-1 / Command-2 | Open History / Working Changes |
