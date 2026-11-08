@@ -5319,6 +5319,24 @@ impl GitTurtle {
         }
     }
 
+    /// Whether the row drawn for the file at `index` in `area` tells
+    /// assistive technology it is the item focused in the list
+    /// (`aria_active_descendant`): the cursor's row, and never a `picture` of
+    /// it (`motion::TravellingRow`). The list draws a slot where a flying row
+    /// lands, so the copy of the cursor's row would be the only claimant:
+    /// GPUI reports that claim as the tree's focus, and adapters read focus
+    /// before they check that a node is hidden, so assistive technology
+    /// would be given the row at takeoff and again at landing. The row is
+    /// met only where it lands.
+    pub(super) fn working_row_claims_focus(
+        &self,
+        index: usize,
+        area: ChangeArea,
+        picture: bool,
+    ) -> bool {
+        !picture && self.shown_working_cursor() == Some((index, area))
+    }
+
     fn render_working_row(
         &self,
         position: usize,
@@ -5625,7 +5643,7 @@ impl GitTurtle {
                     ))
                     .debug_selector(move || format!("working-row-{position}"))
                     .aria_selected(active)
-                    .when(self.shown_working_cursor() == Some((index, area)), |row| {
+                    .when(self.working_row_claims_focus(index, area, picture), |row| {
                         row.aria_active_descendant()
                     })
                     .h(px(self.settings.density.file_row_height()))

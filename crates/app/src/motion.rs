@@ -891,6 +891,42 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// The cursor's own row in flight: the list draws a slot at its landing
+    /// and the copy above it, so the copy would be the only row that tells
+    /// assistive technology it is the list's focused item, inside the node
+    /// `working-travelling-row` hides. The copy claims nothing, and the row
+    /// the list draws where it lands does. The test platform builds no
+    /// accessibility tree and GPUI keeps the claim to itself, so this reads
+    /// the decision each row is drawn with.
+    #[gpui::test]
+    async fn the_cursors_row_claims_assistive_focus_only_where_it_lands(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working(cx, false).await;
+        // [Staged 2, alpha, beta, Unstaged 1, notes]: the cursor on notes.txt,
+        // which goes with its file to its new group.
+        let cursor_row = row(cx, 4).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        toggle(&app, cx, 4).await;
+        draw(cx);
+        assert_eq!(flying(&app, cx), Some(3), "notes.txt flies to its slot");
+        let cursor = app.read_with(cx, |app, _| app.working_selected.expect("the cursor"));
+        assert!(
+            app.read_with(cx, |app, _| matches!(
+                app.working_rows[3],
+                workspace::WorkingRow::File(index, ChangeArea::Staged) if index == cursor.0
+            )),
+            "the cursor went with its file to the row in flight"
+        );
+        let claims = |cx: &mut VisualTestContext, picture| {
+            app.read_with(cx, |app, _| {
+                app.working_row_claims_focus(cursor.0, cursor.1, picture)
+            })
+        };
+        assert!(!claims(cx, true), "the travelling copy claims nothing");
+        assert!(claims(cx, false), "the row in its slot claims the focus");
+    }
+
     /// What the last frame painted over the heading at row `heading`: each
     /// quad's part inside it, clipped as it is drawn, with its fill and
     /// border, in a stable order. A part thinner than half a device pixel,
