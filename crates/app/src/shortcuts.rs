@@ -2000,28 +2000,58 @@ impl Render for ShortcutHelpView {
         )
         .track_scroll(&self.scroll)
         .size_full();
-        div().id("keyboard-shortcuts-view").debug_selector(|| "keyboard-shortcuts-view".into()).key_context("GitTurtleShortcuts")
-            .relative().flex().flex_col().min_h_0().gap_3().pt(appearance::button_ring_room(cx)).text_size(appearance::ui_text(12.))
-            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
-                this.close(window, cx); cx.stop_propagation();
-            }))
+        div()
+            .id("keyboard-shortcuts-view")
+            .debug_selector(|| "keyboard-shortcuts-view".into())
+            .key_context("GitTurtleShortcuts")
+            .relative()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .gap_3()
+            .pt(appearance::button_ring_room(cx))
+            .text_size(appearance::ui_text(12.))
+            .on_action(
+                cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
+                    this.close(window, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| {
-                this.close(window, cx); cx.stop_propagation();
+                this.close(window, cx);
+                cx.stop_propagation();
             }))
-            .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| {
-                this.close(window, cx); cx.stop_propagation();
-            }))
+            .on_action(cx.listener(
+                |this, _: &gpui_kit::component::dialog::Cancel, window, cx| {
+                    this.close(window, cx);
+                    cx.stop_propagation();
+                },
+            ))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.modifiers.modified() { return; }
-                let step = match event.keystroke.key.as_str() { "down" => Step::Next, "up" => Step::Previous, _ => return };
+                if event.keystroke.modifiers.modified() {
+                    return;
+                }
+                let step = match event.keystroke.key.as_str() {
+                    "down" => Step::Next,
+                    "up" => Step::Previous,
+                    _ => return,
+                };
                 this.step(step, cx);
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &FirstShortcut, _, cx| this.step(Step::First, cx)))
             .on_action(cx.listener(|this, _: &LastShortcut, _, cx| this.step(Step::Last, cx)))
-            .on_action(cx.listener(|this, _: &PreviousShortcutPage, _, cx| this.step(Step::PageUp, cx)))
-            .on_action(cx.listener(|this, _: &NextShortcutPage, _, cx| this.step(Step::PageDown, cx)))
-            .child(Input::new(&self.query).aria_label("Search keyboard shortcuts").cleanable(true))
+            .on_action(
+                cx.listener(|this, _: &PreviousShortcutPage, _, cx| this.step(Step::PageUp, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NextShortcutPage, _, cx| this.step(Step::PageDown, cx)),
+            )
+            .child(
+                Input::new(&self.query)
+                    .aria_label("Search keyboard shortcuts")
+                    .cleanable(true),
+            )
             // The count is text read by what it draws, each key's count at
             // once: it was named "61 matching shortcuts" while it drew "61
             // shortcuts". It is no live region: the dialog's one status
@@ -2034,75 +2064,119 @@ impl Render for ShortcutHelpView {
                 #[cfg(test)]
                 DRAWN_COUNT.with_borrow_mut(|drawn| drawn.clone_from(&counted));
                 let legend = legend_fits(count, help_width(window, cx), window).then(|| {
-                    native_accessibility::static_text(div().id("shortcut-help-legend"), modifier_legend())
-                        .child(format!("{LEGEND_SEPARATOR}{}", modifier_legend()))
+                    native_accessibility::static_text(
+                        div().id("shortcut-help-legend"),
+                        modifier_legend(),
+                    )
+                    .child(format!("{LEGEND_SEPARATOR}{}", modifier_legend()))
                 });
-                div().flex().text_color(rgb(p.muted))
-                    .child(native_accessibility::static_text(div().id("shortcut-help-count"), counted.clone()).child(counted))
+                div()
+                    .flex()
+                    .text_color(rgb(p.muted))
+                    .child(
+                        native_accessibility::static_text(
+                            div().id("shortcut-help-count"),
+                            counted.clone(),
+                        )
+                        .child(counted),
+                    )
                     .children(legend)
             })
-            .child(crate::native_accessibility::clips_children(div().id("shortcut-help-results").debug_selector(|| "shortcut-help-results".into()).role(Role::ListBox)
-                .aria_label("Keyboard shortcuts by group").h(height).min_h(list_floor()).overflow_hidden()
-                // Prepainted before the rows, so the scroll lands in the
-                // frame whose height changed: a list given up to its floor,
-                // as at 18 pt in a 461 × 490 window, shows the selected entry
-                // whole rather than its group's heading over a sliver of it.
-                // It scrolls the least that shows the entry whole, with its
-                // group's heading where it is the group's first and the list
-                // holds both: the toolkit's nearest row brought a first entry
-                // the wheel had passed back alone to the list's top, its
-                // heading cut above it.
-                //
-                // A window resized under the list moves it only to keep a
-                // selected entry it showed whole from being cut, and
-                // otherwise leaves it where the wheel or a key left it, as
-                // the toolkit clamps it to its rows: the person put it
-                // there. It brought the selection back on every frame of a
-                // resize, undoing the wheel. As the list opens, and after a
-                // text size chosen with it open, which changes every row's
-                // height under the scroll, the selection comes into view.
-                .on_prepaint({
-                    let (seen, scroll) = (self.list_height.clone(), self.scroll.clone());
-                    let (span, tops, scale) = (self.layout.span(&self.rows, self.selected), self.layout.tops.clone(), self.layout.scale);
-                    move |bounds, _, _| {
-                        // The canvas fills the list inside its 1 px border,
-                        // as the rows' list does, so its height is the
-                        // list's view. Taken 2 px shorter, it ended an entry
-                        // it revealed from below 2 px above the list's foot
-                        // and, at the floor, cut the entry's top.
-                        let now = Laid { view: bounds.size.height, scale };
-                        let was = seen.replace(now);
-                        let offset = scroll.offset();
-                        if let Some(span) = span
-                            && span.follows(was, now, -offset.y)
-                            && let Some(to) = span.reveal(-offset.y, now.view, &tops, Reveal::Nearest)
-                        {
-                            scroll.set_offset(point(offset.x, -to));
+            .child(crate::native_accessibility::clips_children(
+                div()
+                    .id("shortcut-help-results")
+                    .debug_selector(|| "shortcut-help-results".into())
+                    .role(Role::ListBox)
+                    .aria_label("Keyboard shortcuts by group")
+                    .h(height)
+                    .min_h(list_floor())
+                    .overflow_hidden()
+                    // Prepainted before the rows, so the scroll lands in the
+                    // frame whose height changed: a list given up to its floor,
+                    // as at 18 pt in a 461 × 490 window, shows the selected entry
+                    // whole rather than its group's heading over a sliver of it.
+                    // It scrolls the least that shows the entry whole, with its
+                    // group's heading where it is the group's first and the list
+                    // holds both: the toolkit's nearest row brought a first entry
+                    // the wheel had passed back alone to the list's top, its
+                    // heading cut above it.
+                    //
+                    // A window resized under the list moves it only to keep a
+                    // selected entry it showed whole from being cut, and
+                    // otherwise leaves it where the wheel or a key left it, as
+                    // the toolkit clamps it to its rows: the person put it
+                    // there. It brought the selection back on every frame of a
+                    // resize, undoing the wheel. As the list opens, and after a
+                    // text size chosen with it open, which changes every row's
+                    // height under the scroll, the selection comes into view.
+                    .on_prepaint({
+                        let (seen, scroll) = (self.list_height.clone(), self.scroll.clone());
+                        let (span, tops, scale) = (
+                            self.layout.span(&self.rows, self.selected),
+                            self.layout.tops.clone(),
+                            self.layout.scale,
+                        );
+                        move |bounds, _, _| {
+                            // The canvas fills the list inside its 1 px border,
+                            // as the rows' list does, so its height is the
+                            // list's view. Taken 2 px shorter, it ended an entry
+                            // it revealed from below 2 px above the list's foot
+                            // and, at the floor, cut the entry's top.
+                            let now = Laid {
+                                view: bounds.size.height,
+                                scale,
+                            };
+                            let was = seen.replace(now);
+                            let offset = scroll.offset();
+                            if let Some(span) = span
+                                && span.follows(was, now, -offset.y)
+                                && let Some(to) =
+                                    span.reveal(-offset.y, now.view, &tops, Reveal::Nearest)
+                            {
+                                scroll.set_offset(point(offset.x, -to));
+                            }
                         }
-                    }
-                })
-                .rounded(px(7.)).border_1().border_color(rgb(p.raised_edge()))
-                // The list shows its scroll while it holds more than it
-                // draws, as the message and the Reflog's lists do: given up
-                // to a few rows, as three of 61 at 18 pt in a 461 × 490
-                // window, it showed no sign of the rest. The bar hides while
-                // every row fits. Its track rests over the rows' end, so each
-                // key chip ends the rows' trailing inset before the track
-                // rather than the list's side, its margin taking the bar's
-                // width, and the thumb never covers a chip.
-                .relative()
-                .when(count > 0, |view| view.child(list).child(
-                    gpui_kit::base::Scrollbar::vertical(&self.scroll)
-                        .id("shortcut-help-scrollbar")
-                        .mode(gpui_kit::base::ScrollbarMode::Always)
-                        // The track rests on the picker's raised surface, as
-                        // the dialogs' list tracks rest on theirs; the kit's
-                        // track is the page's canvas.
-                        .styles(|styles| styles.track(|track| track.bg(rgb(p.raised()).into()))),
-                ))
-                .when(count == 0, |view| view.child(native_accessibility::text("shortcut-help-empty",
-                    if self.query.read(cx).value().len() > 4096 { "Search is limited to 4,096 bytes." }
-                    else { "No shortcuts match. Try tabs, compare, editing or Ctrl." }).p_4().text_color(rgb(p.muted))))))
+                    })
+                    .rounded(px(7.))
+                    .border_1()
+                    .border_color(rgb(p.raised_edge()))
+                    // The list shows its scroll while it holds more than it
+                    // draws, as the message and the Reflog's lists do: given up
+                    // to a few rows, as three of 61 at 18 pt in a 461 × 490
+                    // window, it showed no sign of the rest. The bar hides while
+                    // every row fits. Its track rests over the rows' end, so each
+                    // key chip ends the rows' trailing inset before the track
+                    // rather than the list's side, its margin taking the bar's
+                    // width, and the thumb never covers a chip.
+                    .relative()
+                    .when(count > 0, |view| {
+                        view.child(list).child(
+                            gpui_kit::base::Scrollbar::vertical(&self.scroll)
+                                .id("shortcut-help-scrollbar")
+                                .mode(gpui_kit::base::ScrollbarMode::Always)
+                                // The track rests on the picker's raised surface, as
+                                // the dialogs' list tracks rest on theirs; the kit's
+                                // track is the page's canvas.
+                                .styles(|styles| {
+                                    styles.track(|track| track.bg(rgb(p.raised()).into()))
+                                }),
+                        )
+                    })
+                    .when(count == 0, |view| {
+                        view.child(
+                            native_accessibility::text(
+                                "shortcut-help-empty",
+                                if self.query.read(cx).value().len() > 4096 {
+                                    "Search is limited to 4,096 bytes."
+                                } else {
+                                    "No shortcuts match. Try tabs, compare, editing or Ctrl."
+                                },
+                            )
+                            .p_4()
+                            .text_color(rgb(p.muted)),
+                        )
+                    }),
+            ))
             // The dialog's one status draws nothing, so it takes no place in
             // the column: laid out between the list and the hint, its 1 px
             // took a gap of its own, which stood the hint two gaps below the
@@ -2121,19 +2195,50 @@ impl Render for ShortcutHelpView {
             // name and macOS's adapter its value, so both carry it, as the
             // window's announcement node's do.
             .child(native_accessibility::static_text(
-                div().id("shortcut-help-status").role(Role::Status)
-                    .live_region(if self.quiet { gpui::accesskit::Live::Off } else { gpui::accesskit::Live::Polite }, false)
+                div()
+                    .id("shortcut-help-status")
+                    .role(Role::Status)
+                    .live_region(
+                        if self.quiet {
+                            gpui::accesskit::Live::Off
+                        } else {
+                            gpui::accesskit::Live::Polite
+                        },
+                        false,
+                    )
                     .aria_value(self.status.clone())
-                    .absolute().left_0().top_0().w_full().h(px(1.)).overflow_hidden(),
-                self.status.clone()))
-            .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted))
-                // Every key the list takes: it named Up and Down alone. The
-                // search keeps its other editing keys, Shift-Home and
-                // Shift-End among them; it said text editing kept its own
-                // keys, while its Home and End browse the list.
-                .child(dialog_help("shortcut-help-keys", format!("↑ / ↓, {} / {}, {} / {} browse · {} · Shortcuts act in the focused view; the search keeps its other editing keys.",
-                    key_label("pageup"), key_label("pagedown"), key_label("home"), key_label("end"), DialogKeys::Shortcuts.escape_help()))))
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w_full()
+                    .h(px(1.))
+                    .overflow_hidden(),
+                self.status.clone(),
+            ))
+            .child(
+                div()
+                    .text_size(appearance::ui_text(11.))
+                    .text_color(rgb(p.muted))
+                    // Every key the list takes: it named Up and Down alone. The
+                    // search keeps its other editing keys, Shift-Home and
+                    // Shift-End among them; it said text editing kept its own
+                    // keys, while its Home and End browse the list.
+                    .child(dialog_help("shortcut-help-keys", help_keys())),
+            )
     }
+}
+
+/// Keyboard Shortcuts' inline help: every key its list takes, in the
+/// platform's key labels.
+fn help_keys() -> String {
+    format!(
+        "↑ / ↓, {} / {}, {} / {} browse · {} · Shortcuts act in the focused view; the search keeps its other editing keys.",
+        key_label("pageup"),
+        key_label("pagedown"),
+        key_label("home"),
+        key_label("end"),
+        DialogKeys::Shortcuts.escape_help()
+    )
 }
 
 #[cfg(test)]
