@@ -526,6 +526,46 @@ mod tests {
         assert_eq!(error(&app, cx), None);
     }
 
+    /// A store no write can replace is a real failure and no busy writer.
+    #[gpui::test]
+    async fn an_activity_save_that_fails_still_reports(cx: &mut gpui_kit::TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        let path = crate::preferences::settings_path()
+            .unwrap()
+            .with_file_name("activity.json");
+        let _ = std::fs::remove_file(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        recorded(&app, "Failed", cx);
+        writer_answers(&app, cx);
+        let error = app
+            .read_with(cx, |app, _| app.activity.error.clone())
+            .expect("the failure is reported");
+        assert!(error.starts_with("Could not save activity:"), "{error}");
+    }
+
+    /// A writer whose thread has stopped can never take the save, so asking
+    /// again could not help: the Activity browser says so.
+    #[gpui::test]
+    async fn a_stopped_writer_still_reports_an_activity_save(cx: &mut gpui_kit::TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.preferences_writer = crate::operations::SerialExecutor::stopped("stopped");
+            })
+        });
+        recorded(&app, "Stopped", cx);
+        let error = app
+            .read_with(cx, |app, _| app.activity.error.clone())
+            .expect("the failure is reported");
+        assert!(error.starts_with("Could not save activity:"), "{error}");
+        assert!(
+            app.read_with(cx, |app, _| app.activity.retry.is_none()),
+            "nothing asks again"
+        );
+    }
+
     /// A refused save's wait that ends with nothing left to save writes
     /// nothing: a later write's save took the refused list along, as the
     /// recent-project save's wait already found.

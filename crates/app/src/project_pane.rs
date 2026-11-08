@@ -2013,6 +2013,47 @@ mod recent_save_tests {
         });
     }
 
+    /// A project the store cannot take is a real failure and no busy writer.
+    #[gpui::test]
+    async fn a_project_that_cannot_be_saved_still_reports(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        ask_to_remember(&app, &fixture.path().join("never-created"), cx);
+        writer_answers(&app, cx);
+        let error = app
+            .read_with(cx, |app, _| app.operation_error.clone())
+            .expect("the failure is reported");
+        assert!(
+            error.starts_with("Could not save recent projects:"),
+            "{error}"
+        );
+    }
+
+    /// A writer whose thread has stopped can never take the save, so asking
+    /// again could not help: the person hears about it.
+    #[gpui::test]
+    async fn a_stopped_writer_still_reports_a_recent_project_save(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.preferences_writer = crate::operations::SerialExecutor::stopped("stopped");
+            })
+        });
+        ask_to_remember(&app, fixture.path(), cx);
+        let error = app
+            .read_with(cx, |app, _| app.operation_error.clone())
+            .expect("the failure is reported");
+        assert!(
+            error.starts_with("Could not save recent projects:"),
+            "{error}"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.project_pane.recent_saves.retry.is_none()),
+            "nothing asks again"
+        );
+    }
+
     #[gpui::test]
     async fn a_retry_leaves_a_project_removed_since_its_refusal(cx: &mut TestAppContext) {
         a_removal_since_the_refusal_stands(false, cx).await;

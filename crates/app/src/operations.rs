@@ -175,6 +175,16 @@ impl SerialExecutor {
         }
     }
 
+    /// An executor whose thread has stopped, which refuses every job.
+    #[cfg(test)]
+    pub fn stopped(name: &str) -> Self {
+        let (sender, _receiver) = mpsc::sync_channel::<Operation>(8);
+        Self {
+            sender,
+            name: name.into(),
+        }
+    }
+
     pub fn submit<T: Send + 'static>(
         &self,
         operation: impl FnOnce() -> Result<T> + Send + 'static,
