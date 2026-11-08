@@ -11152,6 +11152,11 @@ mod tests {
                     focused(cx, &id) && kept(cx, &id) == before,
                     "{at}: the Button, focused as the panel closed, takes focus back as it reopens"
                 );
+                assert!(
+                    drawn.len() >= 2,
+                    "{at}: the reopened panel drew {} frames",
+                    drawn.len()
+                );
                 for (index, frame) in drawn.iter().enumerate() {
                     let find = |name: &str| {
                         frame
@@ -14152,6 +14157,83 @@ mod tests {
             }
         }
         assert!(scrolled > 0, "some case closes with the body scrolled");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The destination field that held focus inside the body's view as Escape closed the panel
+    /// takes it back as the panel reopens, with the body at its top though it closed a little
+    /// scrolled and the field's ring whole, at 13 and 18 pt in a 461 × 490 window: the reopen
+    /// lands on the body's first part, as it does with nothing held
+    /// (`reopening_after_scrolling_returns_the_body_to_its_top`).
+    #[gpui::test]
+    async fn reopening_onto_the_held_destination_field_returns_the_body_to_its_top(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (scroll, field) = cx.read(|cx| {
+            let panel = panel.read(cx);
+            (
+                panel.review.body_scroll.clone(),
+                panel.destination.read(cx).focus_handle(cx),
+            )
+        });
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        for interface in [13, 18] {
+            let at = format!("{interface} pt");
+            open_notice_panel(&app, &panel, (interface, 461., 490.), cx).await;
+            assert!(
+                cx.update(|window, _| field.is_focused(window)),
+                "{at}: the panel opens onto its destination field"
+            );
+            assert!(scroll.max_offset().y > px(12.), "{at}: the body scrolls");
+            scroll.set_offset(point(px(0.), px(-12.)));
+            draw(cx);
+            draw(cx);
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let shown = cx.debug_bounds("github-destination").expect("the field");
+            assert!(
+                shown.top() < body.bottom() && shown.bottom() > body.top(),
+                "{at}: the field {shown:?} is in view in {body:?} as the panel closes"
+            );
+            escape(cx);
+            assert!(
+                panel.read_with(cx, |panel, _| panel
+                    .review
+                    .held
+                    .as_ref()
+                    .and_then(|held| held.upgrade())
+                    .is_some_and(|held| held == field)),
+                "{at}: closing holds the field"
+            );
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+            settle_panel(&app, cx).await;
+            for _ in 0..3 {
+                draw(cx);
+            }
+            assert!(
+                cx.update(|window, _| field.is_focused(window)),
+                "{at}: the field takes focus back"
+            );
+            assert_eq!(
+                scroll.offset().y,
+                px(0.),
+                "{at}: the body is back at its top"
+            );
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let shown = cx.debug_bounds("github-destination").expect("the field");
+            let ring = crate::focus_ring::painted_outlines(cx, accent)
+                .into_iter()
+                .any(|ring| ring.whole && ring.bounds.contains(&shown.center()));
+            assert!(
+                ring && shown.top() - room >= body.top() - px(0.5)
+                    && shown.bottom() + room <= body.bottom() + px(0.5),
+                "{at}: the field {shown:?} is whole with its ring in the body {body:?}"
+            );
+            escape(cx);
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
