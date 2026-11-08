@@ -394,7 +394,8 @@ impl Opener {
     /// beneath one of its controls is drawn, as each frame prepaints it:
     /// `drawn` is given the line's answer, the same for every frame that
     /// draws one click's answer, and the line's bounds in the window. The
-    /// rewrite review scrolls its body to a line that lands below its view;
+    /// rewrite review records every line that lands and scrolls its body,
+    /// once for each click's answer, to one that lands outside its view;
     /// where the bounds reached only tests, a click whose control lay at
     /// the view's foot answered out of sight.
     pub(crate) fn on_line(

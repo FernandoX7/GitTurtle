@@ -142,11 +142,19 @@ fn series_row_height(window: &Window) -> Pixels {
 /// rest of the room as its height, at 13 pt in a 461 × 490 window it cut its
 /// second row 13.5 px down.
 fn rows_shown(rows: usize, window: &Window, cx: &App) -> usize {
-    let room = content_room(window, cx) - appearance::ui_size(210.) - px(2.);
+    let room = content_room(window, cx) - appearance::ui_size(210.) - list_border(window) * 2.;
     let fit = (f32::from(room) / f32::from(series_row_height(window))).floor();
     // Never past the series' rows, nor below one where there are none:
     // `clamp(fit, 1, 0)` panics.
     (fit.max(0.) as usize).clamp(1, rows.clamp(1, 6))
+}
+
+/// The series list's 1 px border as layout draws it, on the window's
+/// device pixels: two thirds of a pixel at 1.5× and eight sevenths at
+/// 1.75×, where a flat 2 px for both sides showed a device pixel of the
+/// next row, or cut one off the last.
+fn list_border(window: &Window) -> Pixels {
+    window.pixel_snap(px(1.))
 }
 
 /// Scrolls `scroll` the least that shows `bounds`, drawn in this frame,
@@ -413,8 +421,9 @@ pub(crate) struct SeriesBrowser {
     /// The scroll of a failure taller than the preview's box
     /// ([`Self::preview_prompt`]), from its top for each showing.
     failure_scroll: ScrollHandle,
-    /// The last answer beneath an open control in the preview that the body
-    /// was scrolled to as it landed ([`Self::opener`]).
+    /// The answer of the last line beneath an open control in the preview
+    /// that landed, recorded for every line as it lands, in view or not, so
+    /// the body scrolls to each click's line once ([`Self::opener`]).
     line_revealed: std::rc::Rc<std::cell::Cell<Option<usize>>>,
     network_pending: bool,
     error: Option<String>,
@@ -1534,7 +1543,7 @@ impl Render for SeriesBrowser {
         if row_count > 0 {
             self.follow_rows(shown, row_height, window, cx);
         }
-        let list_height = row_height * shown as f32 + px(2.);
+        let list_height = row_height * shown as f32 + list_border(window) * 2.;
         let rows_cue =
             crate::tags::ScrollCue::new(&self.rows_scroll.0.borrow().base_handle, Pixels::ZERO);
         let gutter = crate::tags::ScrollCue::gutter();
@@ -4060,11 +4069,15 @@ mod tests {
     /// The series list is as tall as the whole rows the content's room
     /// holds, inside its 1 px border, at least one, and scrolls by whole
     /// rows, its scrollbar cueing the rest: with eight pairs at 13 and 18 pt
-    /// in a 461 × 490 window and in a 1,480 × 800 one, every row it draws
-    /// lies whole inside it as Down selects each row in turn and Up each one
-    /// back. Cut at the rest of the body's room, at 13 pt in the 461 × 490
-    /// window it showed one 70 px row and 13.5 px of the next, and centred
-    /// the selection between half rows.
+    /// in a 461 × 490 window and in a 1,480 × 800 one, at the test display's
+    /// 2× and at 13 pt in the larger window at 1.5× and 1.75× too, every row
+    /// it draws lies whole inside it as Down selects each row in turn and Up
+    /// each one back. Cut at the rest of the body's room, at 13 pt in the
+    /// 461 × 490 window it showed one 70 px row and 13.5 px of the next, and
+    /// centred the selection between half rows; with a flat 2 px for its
+    /// border, which layout snaps to a device pixel on each side, it showed
+    /// a device pixel of the next row at 1.5× and cut one off the last at
+    /// 1.75×.
     #[gpui::test]
     async fn the_series_list_shows_whole_rows(cx: &mut gpui_kit::TestAppContext) {
         use crate::tags::tests::{draw, rendered, tagged_repository, window};
@@ -4075,14 +4088,21 @@ mod tests {
         let rows = 8;
         let browser = listed_review(&app, cx, rows);
         let slack = px(0.05);
-        for (text, width, height) in [
-            (13, 461., 490.),
-            (18, 461., 490.),
-            (13, 1480., 800.),
-            (18, 1480., 800.),
+        for (text, width, height, scale) in [
+            (13, 461., 490., 2.),
+            (18, 461., 490., 2.),
+            (13, 1480., 800., 2.),
+            (18, 1480., 800., 2.),
+            (13, 1480., 800., 1.5),
+            (13, 1480., 800., 1.75),
         ] {
-            let at = format!("{text} pt in {width} × {height}");
+            let at = format!("{text} pt in {width} × {height} at {scale}×");
             size_to(&app, cx, text, width, height);
+            // A resize takes the test display's 2×, so the scale follows it.
+            cx.update(|window, _| window.set_scale_factor(scale));
+            draw(cx);
+            // The border as layout draws it, a device pixel at 1.5×.
+            let border = cx.update(|window, _| window.pixel_snap(px(1.)));
             // From the top, as the review opens.
             cx.update(|window, cx| {
                 browser.update(cx, |browser, cx| {
@@ -4098,7 +4118,7 @@ mod tests {
             draw(cx);
             let row = cx.update(|window, _| series_row_height(window));
             let list = rendered(cx, "series-focus-list");
-            let shown = (list.size.height - px(2.)) / row;
+            let shown = (list.size.height - border * 2.) / row;
             assert!(
                 shown >= 1. && (shown - shown.round()).abs() * f32::from(row) < 0.05,
                 "{at}: the list {list:?} holds whole rows of {row:?} inside its border"
@@ -4112,8 +4132,8 @@ mod tests {
                 "{at}: the list's scrollbar cues the rows past its foot"
             );
             let inside = Bounds::from_corners(
-                list.origin + point(px(1.), px(1.)),
-                list.bottom_right() - point(px(1.), px(1.)),
+                list.origin + point(border, border),
+                list.bottom_right() - point(border, border),
             );
             let mut walk = vec!["down"; rows - 1];
             walk.extend(vec!["up"; rows - 1]);
