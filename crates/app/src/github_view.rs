@@ -562,6 +562,7 @@ impl GitTurtle {
             cx.new(|cx| Panel::new(owner, repo, branch, window, cx))
         };
         let focus_form = form.clone();
+        let ring = self.focus_ring.clone();
         window.defer(cx, move |window, cx| {
             focus_form.update(cx, |panel, cx| {
                 panel.load_local(window, cx);
@@ -577,6 +578,10 @@ impl GitTurtle {
                     panel.focus_visible_section(window, cx);
                 }
             });
+            // Opened or reopened, by a click as by a key, the focus the panel lands on draws
+            // its ring, as Settings opens, until the next pointer press: reopened by a click on
+            // the header's Pull requests, it gave Files' patch back with no ring.
+            ring.mark(window);
         });
         window.open_alert_dialog(cx, move |dialog, window, _| {
             let close = form.clone();
@@ -10671,11 +10676,12 @@ mod tests {
     /// 18 pt, the panel gives focus back to the control that held it as Escape closed it where
     /// a frame draws that control inside the body's view, revealed whole, and otherwise to the
     /// shown section's first stop, revealed whole: in a 461 × 490 window Files' patch, which
-    /// Tab had moved onto, takes focus back whole with its ring after the keyboard, and in a
-    /// 461 × 360 one Files' changed-file list, focused with the body scrolled past it, is shown
-    /// whole as it takes focus. The panel gave focus to the changed-file list wherever the
-    /// body had last scrolled it, above the body's top at both sizes after a click, drawn
-    /// nowhere in view, and Tab went on to Changes below it (QA-106d).
+    /// Tab had moved onto, takes focus back whole, and in a 461 × 360 one Files' changed-file
+    /// list, focused with the body scrolled past it, is shown whole as it takes focus, each
+    /// with its ring after a click as after the keyboard. The panel gave focus to the
+    /// changed-file list wherever the body had last scrolled it, above the body's top at both
+    /// sizes after a click, drawn nowhere in view, and Tab went on to Changes below it
+    /// (QA-106d); reopened by a click, it gave the patch back with no ring.
     #[gpui::test]
     async fn reopening_focuses_only_what_the_body_shows_whole(cx: &mut TestAppContext) {
         let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
@@ -10792,9 +10798,9 @@ mod tests {
                         .into_iter()
                         .all(|(a, b)| (a - b).abs() <= px(1.01))
                 });
-                assert_eq!(
-                    ring, keyboard,
-                    "{at}: the patch draws its ring after the keyboard only"
+                assert!(
+                    ring,
+                    "{at}: the patch draws its ring, reopened by a click as by the keyboard"
                 );
 
                 // The changed-file list, focused with the body scrolled past it, in a window
@@ -10825,7 +10831,71 @@ mod tests {
                 );
                 let (shown, place) = whole(cx, "github-file-focus");
                 assert!(shown, "{at}: the list is whole: {place}");
+                assert!(
+                    outlined(cx, "github-file-focus"),
+                    "{at}: the list draws its ring, reopened by a click as by the keyboard"
+                );
             }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Opened for the first time by a click on the header's Pull requests, at 13 and 18 pt, the
+    /// panel marks the window's keyboard ring on the focus it lands on, its destination field,
+    /// whose ring is drawn whole, as a reopen does and as Settings opens: a pane focus then
+    /// moves onto before the next pointer press draws its ring. A first open by a click left
+    /// the window's ring unmarked.
+    #[gpui::test]
+    async fn a_first_open_by_a_click_marks_the_ring_on_its_focus(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::styled_history_window(
+            cx,
+            b"commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 13\nfixture notes\nM 100644 inline notes.txt\ndata 6\nnotes\n\ndone\n",
+            |root| root,
+        )
+        .await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        let accent = cx.update(|_, cx| Hsla::from(rgb(palette(cx).accent)));
+        for interface in [13, 18] {
+            let at = format!("{interface} pt");
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            cx.update(|_, cx| cx.default_global::<WarmPanels>().0.clear());
+            crate::copy_feedback::tests::click(cx, "pull-requests");
+            settle_panel(&app, cx).await;
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: a click on the header's Pull requests opens the panel"
+            );
+            let (focused, marked) = cx.update(|window, cx| {
+                let focused = window.focused(cx).expect("the panel takes focus");
+                let marked = app.read(cx).focus_ring.shows(&focused);
+                (focused, marked)
+            });
+            assert!(
+                marked,
+                "{at}: the window's ring is on the focus the panel opens with"
+            );
+            let field = cx.debug_bounds("github-destination").expect("the field");
+            let ring = crate::focus_ring::painted_outlines(cx, accent)
+                .into_iter()
+                .any(|ring| ring.whole && ring.bounds.contains(&field.center()));
+            assert!(
+                ring,
+                "{at}: the destination field {field:?} draws its ring whole"
+            );
+            escape(cx);
+            let destination = cx.update(|_, cx| {
+                let warm = cx.default_global::<WarmPanels>();
+                let panel = warm.0.last().expect("the closed panel").panel.clone();
+                panel.read(cx).destination.read(cx).focus_handle(cx)
+            });
+            assert!(
+                focused == destination,
+                "{at}: the panel opens with focus on its destination field"
+            );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
