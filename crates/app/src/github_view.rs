@@ -44,25 +44,23 @@ fn label(
     .text_size(crate::appearance::ui_text(12.))
 }
 /// A [`label`] of " · "-separated phrases that keeps each phrase whole: a line
-/// breaks after a separator, between two phrases, and inside a phrase only
-/// where that phrase alone is wider than the line. Each phrase draws as
-/// `{id}-{index}`, the separator ending the phrase before it; on one line
-/// they read as the text does, and the accessible name is the whole text.
-/// Like a [`label`]'s, its lines are never left cut at the body's edge.
+/// breaks between two phrases, and inside a phrase only where that phrase
+/// alone is wider than the line, there between two of its words, never inside
+/// a key name or before its separator ([`crate::PhraseLine`]). Each phrase
+/// draws as `{id}-{index}`, the separator ending the phrase before it; on one
+/// line they read as the text does, and the accessible name is the whole
+/// text. Like a [`label`]'s, its lines are never left cut at the body's edge.
 ///
 /// A phrase wider than the line wraps at the line's width, the width the
-/// label is drawn in: as a wrapping item it may shrink below its text's
-/// unwrapped width, which its least width otherwise is (GPUI measures text
-/// for a least width without wrapping it). Changes' range hint, in a 461 ×
-/// 490 window at 18 pt, laid its second phrase out on one line 649 px wide in
-/// a 344 px label and drew it under the body's scrollbar, cut at the body's
-/// edge (QA-106d).
+/// label is drawn in: as a wrapping item it may shrink below its width on one
+/// line. Changes' range hint, in a 461 × 490 window at 18 pt, laid its second
+/// phrase out on one line 649 px wide in a 344 px label and drew it under the
+/// body's scrollbar, cut at the body's edge (QA-106d).
 fn phrases(
     id: &'static str,
     text: impl Into<SharedString>,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
     let text = text.into();
-    let parts = crate::phrase_runs(&text);
     let lines = ElementId::from(id);
     native_accessibility::static_text(
         div()
@@ -70,18 +68,11 @@ fn phrases(
                 review::text_lines(&lines, children, window, cx)
             })
             .id(id)
-            .debug_selector(move || id.into()),
+            .debug_selector(move || id.into())
+            .child(crate::PhraseLine::new(id, &text)),
         text,
     )
-    .flex()
-    .flex_wrap()
     .text_size(crate::appearance::ui_text(12.))
-    .children(parts.into_iter().enumerate().map(move |(index, phrase)| {
-        div()
-            .debug_selector(move || format!("{id}-{index}"))
-            .min_w_0()
-            .child(phrase)
-    }))
 }
 /// A path's line of the panel, its label and the path, built once for the path it names
 /// ([`PathText::new`]), so a frame builds none of its text: the panel's frames clone its

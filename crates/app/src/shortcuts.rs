@@ -875,10 +875,13 @@ pub(super) fn dialog_help(
 }
 
 /// [`dialog_help`] laid out by phrase, each " · "-separated phrase a
-/// wrapping item (`crate::phrase_runs`), drawn as `dialog-help-phrase-{index}`:
-/// where the line wraps, it breaks between phrases, so Quick Open's hint at
-/// 18 pt in a 461 px window no longer leaves "cancels" alone on its last
-/// line. On one line it reads as the text does.
+/// wrapping item drawn as one run of text (`crate::phrase_runs`, `Phrase::text`),
+/// `dialog-help-phrase-{index}`: where the line wraps, it breaks between
+/// phrases, so Quick Open's hint at 18 pt in a 461 px window no longer leaves
+/// "cancels" alone on its last line. On one line it reads as the text does.
+/// A phrase cannot shrink, so none wraps inside itself: no key name breaks
+/// and no separator starts a line, which the GitHub panel's phrases, which
+/// can shrink, keep by laying out their runs (`crate::PhraseLine`).
 pub(super) fn dialog_help_by_phrase(text: String) -> Div {
     let phrases = crate::phrase_runs(&text);
     let escape = text
@@ -893,7 +896,7 @@ pub(super) fn dialog_help_by_phrase(text: String) -> Div {
         .children(phrases.into_iter().enumerate().map(|(index, phrase)| {
             div()
                 .debug_selector(move || format!("dialog-help-phrase-{index}"))
-                .child(phrase)
+                .child(phrase.text)
         }))
 }
 
@@ -2321,6 +2324,41 @@ mod tests {
         ] {
             assert_eq!(span.follows(was, now, scrolled), follows, "{what}");
         }
+    }
+
+    /// Quick Open's hint, laid out by phrase in a box swept from 461 px down to its widest
+    /// phrase at 13 and 18 pt, never starts a line with its separator or breaks a key name,
+    /// and reads as its text does inside the box, its accessible text the whole hint: each
+    /// phrase is one run of text that cannot shrink, so none wraps inside itself, and it draws
+    /// the run it always drew (`crate::phrase_runs`, `Phrase::text`).
+    #[gpui::test]
+    fn quick_opens_hint_keeps_its_key_names_and_separators_whole(cx: &mut TestAppContext) {
+        let help = format!(
+            "{} · ↑/↓ select · {ENTER} opens · {}",
+            crate::counted(2, "match", "matches"),
+            DialogKeys::QuickOpen.escape_help()
+        );
+        let keys = ["↑/↓".to_owned(), ENTER.to_owned(), "Escape".to_owned()];
+        let texts: Vec<SharedString> = crate::phrase_runs(&help)
+            .into_iter()
+            .map(|phrase| phrase.text)
+            .collect();
+        let line = help.clone();
+        crate::phrase_tests::sweep(
+            cx,
+            ("quick-open-help", "dialog-help-phrase"),
+            &help,
+            &keys,
+            move |window| crate::phrase_tests::widest(&texts, appearance::ui_text(12.), window),
+            move || {
+                native_accessibility::static_text(
+                    dialog_help_by_phrase(line.clone()).id("quick-open-help"),
+                    line.clone(),
+                )
+                .text_size(appearance::ui_text(12.))
+                .into_any_element()
+            },
+        );
     }
 }
 

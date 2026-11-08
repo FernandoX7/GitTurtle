@@ -6552,4 +6552,32 @@ mod tests {
         }
         sweep::assert_whole(failures);
     }
+
+    /// Changes' range hint, laid out in a box swept from 461 px down to its widest run at 13
+    /// and 18 pt, breaks only between whole words: no line starts with a phrase's "·" and no
+    /// key name breaks across two lines, its lines read as its text does inside the box, and
+    /// its accessible text is the whole hint. Where only a phrase's trailing space ran past the
+    /// line, the "·" before it wrapped onto a line of its own, and where the second phrase
+    /// wrapped, GPUI broke "Shift+Down" before its "+" (review of FU30-D2).
+    #[gpui::test]
+    fn the_range_hint_keeps_its_key_names_and_separators_whole(cx: &mut TestAppContext) {
+        let keys = [
+            shortcuts::SHIFT_CLICK.to_owned(),
+            shortcuts::key_label("shift-up"),
+            shortcuts::key_label("shift-down"),
+            shortcuts::ENTER.to_owned(),
+        ];
+        let runs: Vec<SharedString> = crate::phrase_runs(&range_hint())
+            .into_iter()
+            .flat_map(|phrase| phrase.runs)
+            .collect();
+        crate::phrase_tests::sweep(
+            cx,
+            ("github-range-hint", "github-range-hint"),
+            &range_hint(),
+            &keys,
+            move |window| crate::phrase_tests::widest(&runs, appearance::ui_text(12.), window),
+            || super::super::phrases("github-range-hint", range_hint()).into_any_element(),
+        );
+    }
 }

@@ -2989,18 +2989,139 @@ fn format_bytes(bytes: usize) -> String {
 fn changed_files(count: usize) -> String {
     counted(count, "changed file", "changed files")
 }
-/// The " · "-separated phrases of `text`, each but the last ending in its
-/// separator, for a line laid out as one wrapping item per phrase: it breaks
-/// between two phrases, and inside one only where that phrase alone is wider
-/// than the line, so no word of a phrase is left alone on a line.
-fn phrase_runs(text: &str) -> Vec<SharedString> {
-    let mut parts: Vec<&str> = text.split(" · ").collect();
-    let last = parts.pop().unwrap_or_default().to_owned();
+/// One " · "-separated phrase of a line of phrases ([`phrase_runs`]).
+#[derive(Clone, Debug, PartialEq)]
+struct Phrase {
+    /// The phrase as one text run, ending in its separator and the space after it where
+    /// another phrase follows ("Click a changed line · "), as a line whose phrases cannot
+    /// shrink draws it (`shortcuts::dialog_help_by_phrase`): such a phrase never wraps inside
+    /// itself, and moves to the next line whole.
+    text: SharedString,
+    /// The phrase's words in the runs a line never breaks inside ([`PhraseLine`]): each key
+    /// name is one run, "Page Up" with its space included; a "/" between two keys ends the
+    /// run before it; and the separator ("·") ends the phrase's last run, so no line starts
+    /// with either. GPUI's line wrapper breaks before `+`, `/`, `↑` and `·` wherever they
+    /// stand, so inside one wrapping text "Shift+↑" could end a line at "Shift" and the
+    /// separator could start one alone.
+    runs: Vec<SharedString>,
+}
+/// The " · "-separated phrases of `text`, for a line laid out by phrase: it breaks between
+/// two phrases, and inside one only where that phrase alone is wider than the line, so no
+/// word of a phrase is left alone on a line, and there only between its runs.
+fn phrase_runs(text: &str) -> Vec<Phrase> {
+    let parts: Vec<&str> = text.split(" · ").collect();
+    let last = parts.len() - 1;
     parts
         .into_iter()
-        .map(|phrase| format!("{phrase} · ").into())
-        .chain([last.into()])
+        .enumerate()
+        .map(|(index, part)| {
+            let separated = index < last;
+            Phrase {
+                text: if separated {
+                    format!("{part} · ")
+                } else {
+                    part.to_owned()
+                }
+                .into(),
+                runs: unbreakable_runs(part, separated),
+            }
+        })
         .collect()
+}
+/// The key names the toolkit spells with a space ("Page Up", "Page Down"), whose space a
+/// phrase never breaks at ([`Phrase::runs`]).
+static SPACED_KEY_NAMES: std::sync::LazyLock<[String; 2]> =
+    std::sync::LazyLock::new(|| ["pageup", "pagedown"].map(shortcuts::key_label));
+/// `phrase`'s words in the runs a line never breaks inside ([`Phrase::runs`]), the separator
+/// ending the last of them where `separated`.
+fn unbreakable_runs(phrase: &str, separated: bool) -> Vec<SharedString> {
+    let held: Vec<std::ops::Range<usize>> = SPACED_KEY_NAMES
+        .iter()
+        .flat_map(|name| phrase.match_indices(name.as_str()))
+        .map(|(at, name)| at..at + name.len())
+        .collect();
+    let breaks = phrase
+        .match_indices(' ')
+        .map(|(at, _)| at)
+        .filter(|at| !held.iter().any(|name| name.contains(at)))
+        .chain([phrase.len()]);
+    let mut runs: Vec<String> = Vec::new();
+    let mut start = 0;
+    for end in breaks {
+        let word = &phrase[start..end];
+        start = end + 1;
+        match runs.last_mut() {
+            _ if word.is_empty() => {}
+            Some(run) if word == "/" => run.push_str(" /"),
+            _ => runs.push(word.to_owned()),
+        }
+    }
+    if separated {
+        match runs.last_mut() {
+            Some(run) => run.push_str(" ·"),
+            None => runs.push("·".to_owned()),
+        }
+    }
+    runs.into_iter().map(Into::into).collect()
+}
+/// A line of " · "-separated phrases laid out by phrase ([`phrase_runs`]): one wrapping item
+/// per phrase, each a wrapping row of its runs ([`Phrase::runs`]), drawn as `{id}-{index}`
+/// and its runs as `{id}-{index}-{run}`. Phrases and the runs of a phrase are spaced by the
+/// column gap, a space's width in the text's style, so on one line they read as the text
+/// does; a gap never ends a line, where a separator's trailing space, laid out as text, ran
+/// past the line's end and wrapped the "·" before it onto a line of its own. A phrase may
+/// shrink below its width on one line, to the line's width, where its runs wrap.
+#[derive(IntoElement)]
+struct PhraseLine {
+    id: &'static str,
+    phrases: Vec<Phrase>,
+}
+impl PhraseLine {
+    fn new(id: &'static str, text: &str) -> Self {
+        Self {
+            id,
+            phrases: phrase_runs(text),
+        }
+    }
+}
+impl RenderOnce for PhraseLine {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        // In the style of the text this line is drawn in, which its parent sets.
+        let style = window.text_style();
+        let size = style.font_size.to_pixels(window.rem_size());
+        let text_system = window.text_system();
+        // Each run as wide as its text, which a text element would round up to a whole
+        // pixel, and in 1/64 px, so a line sums its runs and gaps exactly in any order and
+        // one laid out at its own width keeps them on one line.
+        let width = |text: &str| {
+            let width = text_system
+                .layout_line(text, size, &[style.to_run(text.len())], None)
+                .width;
+            px((f32::from(width) * 64.).ceil() / 64.)
+        };
+        let gap = width(" ");
+        let id = self.id;
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_x(gap)
+            .children(self.phrases.into_iter().enumerate().map(|(index, phrase)| {
+                div()
+                    .debug_selector(move || format!("{id}-{index}"))
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .gap_x(gap)
+                    .children(phrase.runs.into_iter().enumerate().map(|(place, run)| {
+                        div()
+                            .debug_selector(move || format!("{id}-{index}-{place}"))
+                            .flex_none()
+                            .w(width(&run))
+                            .whitespace_nowrap()
+                            .child(run)
+                    }))
+            }))
+    }
 }
 /// `count` with the noun that agrees with it: `one` for exactly one, `many`
 /// otherwise, as in "1 match", "0 matches" and "2 matches". Every count shown
@@ -4304,5 +4425,287 @@ mod icon_symbol_tests {
             );
         }
         assert!(checked > 50, "only {checked} literal icon names were found");
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod phrase_tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// The phrases keep the text: each as one run of text ends in its separator and the space
+    /// after it, as the lines that draw a phrase whole always drew it, and its runs read as
+    /// the phrase does, the separator ending its last and a "/" between keys the run before
+    /// it, with a key name spelled with a space one run.
+    #[test]
+    fn phrases_keep_their_text_and_their_key_names_whole() {
+        let page = format!(
+            "{} / {} pages · Esc closes",
+            shortcuts::key_label("pageup"),
+            shortcuts::key_label("shift-pagedown")
+        );
+        for (text, runs) in [
+            (
+                "Click a changed line · Shift+click or Shift+↑ / Shift+↓ selects a range · Enter comments",
+                vec![
+                    vec!["Click", "a", "changed", "line ·"],
+                    vec![
+                        "Shift+click",
+                        "or",
+                        "Shift+↑ /",
+                        "Shift+↓",
+                        "selects",
+                        "a",
+                        "range ·",
+                    ],
+                    vec!["Enter", "comments"],
+                ],
+            ),
+            (page.as_str(), vec![vec![]; 2]),
+            ("one phrase", vec![vec!["one", "phrase"]]),
+            ("", vec![vec![]]),
+        ] {
+            let phrases = phrase_runs(text);
+            let whole: Vec<&str> = text.split(" · ").collect();
+            assert_eq!(phrases.len(), whole.len(), "{text:?}");
+            for (index, phrase) in phrases.iter().enumerate() {
+                let separated = index + 1 < whole.len();
+                let old = if separated {
+                    format!("{} · ", whole[index])
+                } else {
+                    whole[index].to_owned()
+                };
+                assert_eq!(phrase.text.as_ref(), old, "{text:?}");
+                let read = phrase.runs.join(" ");
+                let expected = if separated {
+                    format!("{} ·", whole[index])
+                } else {
+                    whole[index].to_owned()
+                };
+                assert_eq!(read, expected.trim(), "{text:?}: {:?}", phrase.runs);
+                if !runs[index].is_empty() {
+                    let drawn: Vec<&str> = phrase.runs.iter().map(|run| run.as_ref()).collect();
+                    assert_eq!(drawn, runs[index], "{text:?}");
+                }
+            }
+        }
+        let phrases = phrase_runs(&page);
+        let (up, down) = (
+            shortcuts::key_label("pageup"),
+            shortcuts::key_label("shift-pagedown"),
+        );
+        assert_eq!(
+            phrases[0].runs,
+            vec![
+                SharedString::from(format!("{up} /")),
+                down.into(),
+                "pages ·".into()
+            ],
+            "{page:?}"
+        );
+    }
+
+    /// A box of the window's width at most, `width` wide, drawing what `build` builds.
+    pub(crate) struct Probe {
+        pub(crate) width: Pixels,
+        build: Box<dyn Fn() -> AnyElement>,
+    }
+
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .debug_selector(|| "phrase-probe".into())
+                .w(self.width)
+                .child((self.build)())
+        }
+    }
+
+    /// One line in a [`drawn_lines`] reading: where it lies and its words.
+    #[derive(Debug)]
+    pub(crate) struct Line {
+        pub(crate) top: Pixels,
+        pub(crate) left: Pixels,
+        pub(crate) right: Pixels,
+        pub(crate) text: String,
+    }
+
+    /// The lines the phrases of `text` drew in the last frame, `prefix` naming each
+    /// (`{prefix}-{index}`), top to bottom, each as its words read: a phrase drawn by its
+    /// runs ([`PhraseLine`]) by where each run lies, and one drawn as one text, as Quick
+    /// Open's are, in the lines GPUI's text element wraps it into at its width, shaped as
+    /// that element shapes it, at `size` in the window's text style.
+    pub(crate) fn drawn_lines(
+        cx: &mut VisualTestContext,
+        prefix: &str,
+        text: &str,
+        size: Pixels,
+    ) -> Vec<Line> {
+        let mut pieces: Vec<Line> = Vec::new();
+        for (index, phrase) in phrase_runs(text).into_iter().enumerate() {
+            let item = cx
+                .debug_bounds(format!("{prefix}-{index}").leak())
+                .unwrap_or_else(|| panic!("{prefix}-{index} is drawn"));
+            if cx
+                .debug_bounds(format!("{prefix}-{index}-0").leak())
+                .is_some()
+            {
+                for (place, run) in phrase.runs.iter().enumerate() {
+                    let bounds = cx
+                        .debug_bounds(format!("{prefix}-{index}-{place}").leak())
+                        .unwrap_or_else(|| panic!("{prefix}-{index}-{place} is drawn"));
+                    pieces.push(Line {
+                        top: bounds.top(),
+                        left: bounds.left(),
+                        right: bounds.right(),
+                        text: run.to_string(),
+                    });
+                }
+                continue;
+            }
+            let shaped: Vec<(String, Pixels)> = cx.update(|window, _| {
+                let text = phrase.text.clone();
+                let wrapped = window
+                    .text_system()
+                    .shape_text(
+                        text.clone(),
+                        size,
+                        &[window.text_style().to_run(text.len())],
+                        Some(item.size.width),
+                        None,
+                    )
+                    .unwrap();
+                let mut lines = Vec::new();
+                for line in &wrapped {
+                    let mut start = 0;
+                    let ends = line.wrap_boundaries().iter().map(|boundary| {
+                        line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index
+                    });
+                    for end in ends.chain([text.len()]) {
+                        let part = &text[start..end];
+                        let width = window
+                            .text_system()
+                            .layout_line(
+                                part,
+                                size,
+                                &[window.text_style().to_run(part.len())],
+                                None,
+                            )
+                            .width;
+                        lines.push((part.to_owned(), width));
+                        start = end;
+                    }
+                }
+                lines
+            });
+            let height = item.size.height / shaped.len() as f32;
+            for (line, (part, width)) in shaped.into_iter().enumerate() {
+                pieces.push(Line {
+                    top: item.top() + height * line as f32,
+                    left: item.left(),
+                    right: item.left() + width,
+                    text: part,
+                });
+            }
+        }
+        pieces.sort_by(|a, b| a.top.cmp(&b.top).then(a.left.cmp(&b.left)));
+        let mut lines: Vec<Line> = Vec::new();
+        for piece in pieces {
+            let words = piece.text.trim().to_owned();
+            match lines.last_mut() {
+                Some(line) if (line.top - piece.top).abs() < px(0.5) => {
+                    line.right = line.right.max(piece.right);
+                    line.text = format!("{} {words}", line.text);
+                }
+                _ => lines.push(Line {
+                    text: words,
+                    ..piece
+                }),
+            }
+        }
+        lines
+    }
+
+    /// Lays `text`'s phrases out, as `build` draws them with the label `label` and names them
+    /// `prefix`, in a box swept from 461 px down to `least` at 13 and 18 pt, and asserts at
+    /// each width that no line starts with the separator, none of `keys` is split across two
+    /// lines, the lines read as the text does, each lies inside the box, and the label's
+    /// accessible text is the whole text. `least` takes the interface's text size.
+    pub(crate) fn sweep(
+        cx: &mut TestAppContext,
+        (label, prefix): (&'static str, &'static str),
+        text: &str,
+        keys: &[String],
+        least: impl Fn(&mut Window) -> Pixels,
+        build: impl Fn() -> AnyElement + 'static,
+    ) {
+        crate::views::tests::init_app(cx);
+        let (probe, cx) = cx.add_window_view(move |_, _| Probe {
+            width: px(461.),
+            build: Box::new(build),
+        });
+        cx.simulate_resize(size(px(500.), px(400.)));
+        let mut failures = Vec::new();
+        let mut swept = 0;
+        for interface in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            crate::width_walk::frame(cx);
+            let least = cx.update(|window, _| least(window)).ceil();
+            let size = appearance::ui_text(12.);
+            let mut width = px(461.);
+            while width >= least {
+                probe.update(cx, |probe, cx| {
+                    probe.width = width;
+                    cx.notify();
+                });
+                crate::width_walk::frame(cx);
+                swept += 1;
+                let at = format!("{interface} pt, {width:?}");
+                let label_text = crate::native_accessibility::written::get(label)
+                    .and_then(|written| written.node.value().map(str::to_owned));
+                if label_text.as_deref() != Some(text) {
+                    failures.push(format!("{at}: the label reads {label_text:?}"));
+                }
+                let lines = drawn_lines(cx, prefix, text, size);
+                let shown = cx.debug_bounds("phrase-probe").expect("the probe's box");
+                let read: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+                if read.join(" ") != text {
+                    failures.push(format!("{at}: the lines {read:?} do not read as {text:?}"));
+                }
+                for line in &lines {
+                    if line.text.starts_with('·') {
+                        failures.push(format!("{at}: a line starts with the separator: {read:?}"));
+                    }
+                    if line.left < shown.left() - px(0.5) || line.right > shown.right() + px(0.5) {
+                        failures.push(format!("{at}: {line:?} is cut by the box {shown:?}"));
+                    }
+                }
+                for key in keys {
+                    let whole: usize = read
+                        .iter()
+                        .map(|line| line.matches(key.as_str()).count())
+                        .sum();
+                    if whole != text.matches(key.as_str()).count() {
+                        failures.push(format!("{at}: {key:?} is split across lines: {read:?}"));
+                    }
+                }
+                width -= px(1.);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(swept > 200, "the sweep laid out only {swept} widths");
+        assert!(
+            failures.is_empty(),
+            "{} of {swept} layouts fail:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// The width of the widest of `runs` in the window's text style at `size`, the least a
+    /// line of them takes.
+    pub(crate) fn widest(runs: &[SharedString], size: Pixels, window: &Window) -> Pixels {
+        runs.iter()
+            .map(|run| crate::views::shaped_width(run, size, FontWeight::NORMAL, window))
+            .fold(px(0.), Pixels::max)
     }
 }
