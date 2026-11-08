@@ -2746,7 +2746,7 @@ impl Render for Panel {
                     );
                     blocks.finish();
                     #[cfg(test)]
-                    review::record_body_frame(&scroll, &list_scroll);
+                    review::record_body_frame(&scroll, &list_scroll, window, cx);
                     let panel = panel.clone();
                     reopening.settle(
                         &scroll,
@@ -11498,6 +11498,80 @@ mod tests {
         }
         sweep::assert_whole(failures);
         cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Reopening draws no confirmation, so focus held on its region, Send or Keep editing as
+    /// Escape closed the panel goes to Review's first stop, there from the first frame the
+    /// reopened panel draws. The reopen once gave it back to the handle the panel still kept,
+    /// which nothing drew, and it sat there for two frames before the fallback moved it.
+    #[gpui::test]
+    async fn reopening_gives_no_focus_to_the_confirmation_it_drops(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let summary = cx.read(|cx| panel.read(cx).body.read(cx).focus_handle(cx));
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        for control in [
+            "github-confirm-region",
+            "github-confirm-send",
+            "github-edit-submission",
+        ] {
+            let at = format!("closed with focus on {control}");
+            open_confirmation((&panel, &pull), confirmed_comment(), (13, 1480., 973.), cx);
+            frames(cx);
+            let focus = panel.read_with(cx, |panel, _| match control {
+                "github-confirm-region" => panel.conversations.confirm_focus.clone(),
+                button => panel
+                    .review
+                    .buttons
+                    .kept(button)
+                    .unwrap_or_else(|| panic!("the panel keeps {button}'s handle")),
+            });
+            cx.update(|window, cx| focus.focus(window, cx));
+            frames(cx);
+            assert!(
+                cx.update(|window, _| focus.is_focused(window)),
+                "{at}: the control holds focus"
+            );
+            escape(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: Escape closes the panel"
+            );
+            assert!(
+                panel.read_with(cx, |panel, _| panel.review.held.is_none()),
+                "{at}: closing holds none of the confirmation's controls"
+            );
+            review::BODY_FRAMES.set(Some(Vec::new()));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+            settle_panel(&app, cx).await;
+            frames(cx);
+            let drawn = review::BODY_FRAMES.take().expect("watched");
+            assert!(
+                drawn.len() >= 2,
+                "{at}: the reopened panel drew {} frames",
+                drawn.len()
+            );
+            for (index, frame) in drawn.iter().enumerate() {
+                assert_eq!(
+                    frame.focused.as_ref(),
+                    Some(&summary),
+                    "{at}: frame {index} draws focus on Review's first stop"
+                );
+            }
+            assert!(
+                cx.update(|window, _| summary.is_focused(window)),
+                "{at}: focus stays on Review's first stop"
+            );
+            assert!(
+                cx.debug_bounds("github-confirm-send").is_none(),
+                "{at}: the reopened panel draws no confirmation"
+            );
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

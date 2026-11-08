@@ -96,7 +96,6 @@ impl Buttons {
         focus.clone()
     }
     /// The handle the Button `id` was last drawn with, if the panel keeps one.
-    #[cfg(test)]
     pub(super) fn kept(&self, id: impl Into<ElementId>) -> Option<FocusHandle> {
         self.0
             .borrow()
@@ -416,11 +415,19 @@ pub(super) struct BodyFrame {
     pub parts: Vec<(SharedString, Bounds<Pixels>)>,
     /// The conversation list's view, where the frame draws the list.
     pub list: Option<Bounds<Pixels>>,
+    /// What held the window's focus as the frame drew.
+    pub focused: Option<FocusHandle>,
 }
 /// For the body's `on_children_prepainted`: ends the frame of the body `scroll` scrolls, with
 /// the conversation list `list` scrolls, recording it where a test watches ([`BODY_FRAMES`]).
 #[cfg(test)]
-pub(super) fn record_body_frame(scroll: &ScrollHandle, list: &ScrollHandle) {
+pub(super) fn record_body_frame(
+    scroll: &ScrollHandle,
+    list: &ScrollHandle,
+    window: &Window,
+    cx: &App,
+) {
+    let focused = window.focused(cx);
     let parts = PART_BOUNDS.take();
     // The list's handle holds this frame's view only where the frame drew the list.
     let list = parts
@@ -433,6 +440,7 @@ pub(super) fn record_body_frame(scroll: &ScrollHandle, list: &ScrollHandle) {
                 view: scroll.bounds(),
                 parts,
                 list,
+                focused,
             });
         }
     });
@@ -2411,8 +2419,20 @@ impl Panel {
                 .and_then(|held| held.upgrade())
                 .is_none_or(|held| held == self.destination.read(cx).focus_handle(cx))
     }
+    /// Whether `focus` is the outbound confirmation's region, Send or Keep editing, while a
+    /// confirmation is open.
+    fn confirmation_holds(&self, focus: &FocusHandle) -> bool {
+        self.confirm.is_some()
+            && (*focus == self.conversations.confirm_focus
+                || ["github-confirm-send", "github-edit-submission"]
+                    .into_iter()
+                    .any(|id| self.review.buttons.kept(id).as_ref() == Some(focus)))
+    }
     /// Records the control that holds focus as the panel closes, if the last frame drew it
     /// inside the body's view, for reopening to give focus back to ([`Self::focus_reopened`]).
+    /// A control that cannot take focus back holds nothing, so the reopen goes straight to the
+    /// shown section's first stop: the confirmation's controls, which reopening drops, where
+    /// focus sat on what no frame drew until the fallback moved it two frames later.
     pub(super) fn hold_closing_focus(&mut self, window: &Window, cx: &App) {
         let shown = self
             .review
@@ -2420,7 +2440,7 @@ impl Panel {
             .shows_focus(&self.review.body_scroll, window);
         self.review.held = window
             .focused(cx)
-            .filter(|_| shown)
+            .filter(|focus| shown && !self.confirmation_holds(focus))
             .map(|focus| focus.downgrade());
         // The innermost part on the focus path of the frame the window last drew, the panel's.
         self.review.held_part = self.review.held.as_ref().and_then(|_| {
