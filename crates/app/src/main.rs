@@ -3002,10 +3002,15 @@ struct Phrase {
 }
 /// The " · "-separated phrases of `text`, for a line laid out by phrase: it breaks between
 /// two phrases, and inside one only where that phrase alone is wider than the line, so no
-/// word of a phrase is left alone on a line, and there only between its runs.
+/// word of a phrase is left alone on a line, and there only between its runs. An empty
+/// phrase, as in " · b", "a ·  · b" or "a · ", draws nothing, and a separator ends only a
+/// phrase another is drawn after, so no "·" stands alone, starts a line or ends the text.
 fn phrase_runs(text: &str) -> Vec<Phrase> {
-    let parts: Vec<&str> = text.split(" · ").collect();
-    let last = parts.len() - 1;
+    let parts: Vec<&str> = text
+        .split(" · ")
+        .filter(|part| !part.trim_matches(' ').is_empty())
+        .collect();
+    let last = parts.len().saturating_sub(1);
     parts
         .into_iter()
         .enumerate()
@@ -3042,11 +3047,8 @@ fn unbreakable_runs(phrase: &str, separated: bool) -> Vec<SharedString> {
             _ => runs.push(word.to_owned()),
         }
     }
-    if separated {
-        match runs.last_mut() {
-            Some(run) => run.push_str(" ·"),
-            None => runs.push("·".to_owned()),
-        }
+    if separated && let Some(run) = runs.last_mut() {
+        run.push_str(" ·");
     }
     runs.into_iter().map(Into::into).collect()
 }
@@ -4680,7 +4682,6 @@ pub(crate) mod phrase_tests {
             ),
             (page.as_str(), vec![vec![]; 2]),
             ("one phrase", vec![vec!["one", "phrase"]]),
-            ("", vec![vec![]]),
         ] {
             let phrases = phrase_runs(text);
             let whole: Vec<&str> = text.split(" · ").collect();
@@ -4714,6 +4715,27 @@ pub(crate) mod phrase_tests {
             ],
             "{page:?}"
         );
+    }
+
+    /// An empty phrase draws nothing, and a separator ends only a phrase another is drawn
+    /// after, so no "·" stands alone, starts a line or ends the text: " · b" and "a ·  · b"
+    /// each gave the separator a run of its own (code review of FU30-D6).
+    #[test]
+    fn an_empty_phrase_leaves_no_separator_alone() {
+        for (text, runs) in [
+            (" · b", vec![vec!["b"]]),
+            ("a ·  · b", vec![vec!["a ·"], vec!["b"]]),
+            ("a · ", vec![vec!["a"]]),
+            (" ·  · ", vec![]),
+            ("", vec![]),
+        ] {
+            let phrases = phrase_runs(text);
+            let drawn: Vec<Vec<&str>> = phrases
+                .iter()
+                .map(|phrase| phrase.runs.iter().map(|run| run.as_ref()).collect())
+                .collect();
+            assert_eq!(drawn, runs, "{text:?}");
+        }
     }
 
     thread_local! {
@@ -4865,9 +4887,9 @@ pub(crate) mod phrase_tests {
 
     /// Lays `text`'s phrases out, as `build` draws them with the label `label` and names them
     /// `prefix`, in a box swept from 461 px down to `least` at 13 and 18 pt, and asserts at
-    /// each width that no line starts with the separator, none of `keys` is split across two
-    /// lines, the lines read as the text does, each lies inside the box, and the label's
-    /// accessible text is the whole text. `least` takes the interface's text size.
+    /// each width that no line starts with the separator or a "/", none of `keys` is split
+    /// across two lines, the lines read as the text does, each lies inside the box, and the
+    /// label's accessible text is the whole text. `least` takes the interface's text size.
     pub(crate) fn sweep(
         cx: &mut TestAppContext,
         (label, prefix): (&'static str, &'static str),
@@ -4909,8 +4931,8 @@ pub(crate) mod phrase_tests {
                     failures.push(format!("{at}: the lines {read:?} do not read as {text:?}"));
                 }
                 for line in &lines {
-                    if line.text.starts_with('·') {
-                        failures.push(format!("{at}: a line starts with the separator: {read:?}"));
+                    if line.text.starts_with(['·', '/']) {
+                        failures.push(format!("{at}: a line starts with \"·\" or \"/\": {read:?}"));
                     }
                     if line.left < shown.left() - px(0.5) || line.right > shown.right() + px(0.5) {
                         failures.push(format!("{at}: {line:?} is cut by the box {shown:?}"));
