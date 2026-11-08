@@ -614,6 +614,9 @@ impl Render for DiffView {
             .readonly(true)
             .bordered(false)
             .aria_label(self.label.clone())
+            .when(self.partial.is_some(), |editor| {
+                editor.aria_description(line_keys_description(self.action()))
+            })
             .text_size(crate::appearance::code_text());
         let editor = match &find_partner {
             // Split's headings give their row to the shared bar, which names
@@ -978,6 +981,17 @@ impl DiffView {
             )
             .into_any_element()
     }
+}
+
+/// What the diff text's accessible description says while the per-line
+/// controls show: what Space and Tab do there, as the GitHub panel's patch
+/// lines say what their keys do. `action` is the partial actions' verb.
+fn line_keys_description(action: &str) -> String {
+    let verb = action.to_lowercase();
+    format!(
+        "Space selects the changed line at the caret, or the selected lines, to {verb}. \
+         Tab reaches {action}."
+    )
 }
 
 /// The selection bar's room beside its sides, above and below its controls
@@ -2484,6 +2498,44 @@ mod tests {
             });
             crate::tags::tests::draw(cx);
             count
+        }
+
+        /// While the per-line controls show, the diff text says what Space
+        /// and Tab do there, in its accessible description, as the GitHub
+        /// panel's patch lines say what their keys do; in the staged area
+        /// they unstage.
+        #[gpui::test]
+        async fn the_text_describes_space_and_tab_while_lines_can_be_selected(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (fixture, app, cx) = working(cx).await;
+            let shown = Shown::at(&app, cx, SIZES[0]);
+            let node = crate::views::tests::input_node(cx, &shown.editor);
+            assert_eq!(
+                node.description(),
+                Some(
+                    "Space selects the changed line at the caret, or the selected lines, \
+                     to stage. Tab reaches Stage."
+                )
+            );
+            fixture_git(&fixture.path().join("narrow"), &["add", "notes.txt"]);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            settle(&app, cx).await;
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.select_working(0, ChangeArea::Staged, window, cx)
+                })
+            });
+            settle(&app, cx).await;
+            let shown = Shown::at(&app, cx, SIZES[0]);
+            let node = crate::views::tests::input_node(cx, &shown.editor);
+            assert_eq!(
+                node.description(),
+                Some(
+                    "Space selects the changed line at the caret, or the selected lines, \
+                     to unstage. Tab reaches Unstage."
+                )
+            );
         }
 
         /// The selection bar keeps its action and Clear whole inside it,

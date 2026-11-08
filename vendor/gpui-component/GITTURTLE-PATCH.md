@@ -2488,17 +2488,27 @@ GitTurtle's width-step regressions compare it with a window opened at each
 width (`cargo test --locked -p gitturtle draws_one_frame_where_it_settles`).
 
 The field-description patch, paired with the [base patch](../gpui-base/GITTURTLE-PATCH.md)'s
-`InputAccessibility::description`, modifies `src/input/input.rs` and
-`src/input/textarea.rs`: the styled `Input` and `Textarea` take an
-accessible description (`aria_description`), as the patched `Switch` does,
-and the editing element that owns the field's focus writes it as its node's
-description, which AT-SPI reports as the object's description and assistive
-technology reads after the field's name, role and value, so a field's
-visible helper text can be read with it. A field given none writes none, as
-upstream. The application's
+`InputAccessibility::description`, modifies `src/input/input.rs`,
+`src/input/textarea.rs` and `src/input/editor.rs`: the styled `Input`,
+`Textarea` and `Editor` take an accessible description (`aria_description`),
+as the patched `Switch` does, and the editing element that owns the field's
+focus writes it as its node's description, which AT-SPI reports as the
+object's description and assistive technology reads after the field's name,
+role and value, so a field's visible helper text can be read with it. A
+field given none writes none, as upstream. `Editor` forwards it to the
+`Input` it renders, which an application cannot build for an editor's state
+(`Input::from_state` is private to the crate); the consumer is the Diff
+view, whose text says what Space and Tab do while its per-line staging
+controls show (`crates/app/src/diff_view.rs`, through
+`editor_find::Editor::aria_description`). The application's
 `native_accessibility::input_tests::a_field_carries_its_accessible_description`
-reads it from a single-line and a multi-line field's node. Remove it when
-upstream's Input and Textarea take a description.
+reads it from a single-line and a multi-line field's node,
+`diff_view::tests::keyboard::the_text_describes_space_and_tab_while_lines_can_be_selected`
+from the Diff view's in the unstaged and the staged area, and the kit's
+`input::editor::tests::the_description_reaches_the_editing_element`
+(`scripts/vendor-crate-test.sh vendor/gpui-component input::editor`) from a
+bare Editor's, with one set and with none. Remove it when upstream's Input,
+Textarea and Editor take a description.
 
 The modal-test patch modifies only the test module of
 `src/text/window_selection.rs` and changes no built code. Its

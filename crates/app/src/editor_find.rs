@@ -448,6 +448,13 @@ impl Editor {
         self.native = self.native.aria_label(self.label.clone());
         self
     }
+    /// What assistive technology reads after the text's name, role and
+    /// value, as the Diff view says what Space and Tab do beside its
+    /// per-line controls.
+    pub fn aria_description(mut self, description: impl Into<SharedString>) -> Self {
+        self.native = self.native.aria_description(description);
+        self
+    }
 }
 impl Styled for Editor {
     fn style(&mut self) -> &mut StyleRefinement {

@@ -26,6 +26,8 @@ pub struct Editor {
     tab_index: isize,
     role: RoleOverride,
     aria_label: Option<SharedString>,
+    /// GitTurtle patch: the accessible description ([`Self::aria_description`]).
+    aria_description: Option<SharedString>,
 
     /// An optional context menu builder to allow a custom context menu.
     ///
@@ -46,6 +48,7 @@ impl Editor {
             tab_index: 0,
             role: RoleOverride::default(),
             aria_label: None,
+            aria_description: None,
             context_menu_builder: None,
         }
     }
@@ -95,6 +98,13 @@ impl Editor {
         self
     }
 
+    /// GitTurtle patch: set the editor's accessible description, as
+    /// [`Input::aria_description`] does.
+    pub fn aria_description(mut self, description: impl Into<SharedString>) -> Self {
+        self.aria_description = Some(description.into());
+        self
+    }
+
     /// Replace the built-in context menu shown on right-click.
     ///
     /// The closure receives an empty menu and returns the one to show, so it
@@ -133,6 +143,9 @@ impl RenderOnce for Editor {
             .role(self.role)
             .when_some(self.height, |this, height| this.h(height))
             .when_some(self.aria_label, |this, label| this.aria_label(label))
+            .when_some(self.aria_description, |this, description| {
+                this.aria_description(description)
+            })
             .when_some(self.context_menu_builder, |this, build| {
                 this.context_menu(move |menu, window, cx| build(menu, window, cx))
             })
@@ -146,20 +159,25 @@ mod tests {
     use crate::input::EditorState;
     use gpui::{
         AppContext as _, Context, ParentElement as _, Pixels, Render, TestAppContext,
-        VisualTestContext, div, px,
+        VisualTestContext, div, point, px,
     };
 
     struct Harness {
         state: Entity<EditorState>,
         /// A text size set on the editor, as `.text_sm()` would.
         text_size: Option<Pixels>,
+        /// The accessible description set on the editor.
+        description: Option<&'static str>,
     }
 
     impl Render for Harness {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div().size_full().child(
                 Editor::new(&self.state)
-                    .when_some(self.text_size, |this, size| this.text_size(size)),
+                    .when_some(self.text_size, |this, size| this.text_size(size))
+                    .when_some(self.description, |this, description| {
+                        this.aria_description(description)
+                    }),
             )
         }
     }
@@ -174,6 +192,7 @@ mod tests {
             Harness {
                 state: editor,
                 text_size,
+                description: None,
             }
         });
         let state = state.unwrap();
@@ -194,5 +213,56 @@ mod tests {
         // A text style set on the editor refines over that, rows and all.
         assert_eq!(line_height(cx, Some(px(24.))), px(36.));
         assert_eq!(line_height(cx, Some(px(40.))), px(60.));
+    }
+
+    /// The description the editing element writes as its node's, built
+    /// inside a draw, whose arena is cleared.
+    fn written_description(
+        cx: &mut VisualTestContext,
+        state: &Entity<EditorState>,
+    ) -> Option<String> {
+        use gpui::Element as _;
+        let mut written = None;
+        let viewport = cx.update(|window, _| window.viewport_size());
+        cx.draw(point(px(0.), px(0.)), viewport, |window, cx| {
+            state.update(cx, |state, cx| {
+                let input = Render::render(state, window, cx).into_element();
+                let mut node = gpui::accesskit::Node::new(input.a11y_role().unwrap());
+                input.write_a11y_info(&mut node);
+                written = Some(node.description().map(ToOwned::to_owned));
+            });
+            div()
+        });
+        written.expect("the editing element was built")
+    }
+
+    /// The node the editing element writes carries the description set on
+    /// the editor, and none once the editor sets none.
+    #[gpui::test]
+    fn the_description_reaches_the_editing_element(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let mut state = None;
+        let (harness, cx) = cx.add_window_view(|window, cx| {
+            let editor = cx.new(|cx| EditorState::new(window, cx).default_value("fn main() {}"));
+            state = Some(editor.clone());
+            Harness {
+                state: editor,
+                text_size: None,
+                description: Some("Space selects a line"),
+            }
+        });
+        let state = state.unwrap();
+        VisualTestContext::update(cx, |window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            written_description(cx, &state).as_deref(),
+            Some("Space selects a line")
+        );
+
+        harness.update(cx, |harness, cx| {
+            harness.description = None;
+            cx.notify();
+        });
+        VisualTestContext::update(cx, |window, cx| window.draw(cx).clear(cx));
+        assert_eq!(written_description(cx, &state), None);
     }
 }
