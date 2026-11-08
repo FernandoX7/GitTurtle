@@ -2207,6 +2207,41 @@ mod tests {
             assert_eq!(error.to_string(), "Markdown local-image capture cancelled");
         });
     }
+    /// A blank Mermaid fence in a Markdown preview is no diagram: no page
+    /// and no error page, where a fence with no text once parsed as an empty
+    /// diagram and drew a render error. With nothing else in the document to
+    /// draw, Diagrams has nothing for it either.
+    #[test]
+    fn a_blank_mermaid_fence_draws_no_page_and_no_error_page() {
+        let prepared = |source: &str, present: bool| {
+            prepare_document(source, std::path::Path::new("README.md"), present, &|| {
+                Ok(())
+            })
+            .unwrap()
+        };
+        for (name, source) in [
+            ("an empty fence", "```mermaid\n```\n"),
+            ("a fence of blank lines", "```mermaid\n\n\n```\n"),
+            ("a fence of spaces and tabs", "```mermaid\n \t\n```\n"),
+        ] {
+            let document = prepared(source, true);
+            assert!(
+                !document
+                    .blocks
+                    .iter()
+                    .any(|block| matches!(block.kind, Kind::Diagram(_) | Kind::Notice(_))),
+                "{name} draws no page, no error page and no notice"
+            );
+            let comparison = Comparison {
+                old: Arc::new(prepared("", false)),
+                new: Arc::new(document),
+            };
+            assert!(
+                comparison.diagrams().is_none(),
+                "{name} leaves Diagrams nothing to show"
+            );
+        }
+    }
     /// A blank fence draws nothing, so it leaves all four diagram slots to
     /// the fences that draw, and the fifth real fence is where the notice
     /// lands. A fence that fails to render still takes its slot, so the
