@@ -4769,7 +4769,10 @@ pub(crate) mod phrase_tests {
     /// frame its panel or dialog drew (code review of FU30-D6).
     #[gpui::test]
     fn a_phrase_line_prepares_its_phrases_once_per_text(cx: &mut TestAppContext) {
-        use std::{cell::RefCell, rc::Rc};
+        use std::{
+            cell::{Cell, RefCell},
+            rc::Rc,
+        };
         // From zero before the window opens, which draws its first frame, and for each seed
         // that follows another on this thread.
         PREPARED.with(|count| count.set(0));
@@ -4778,11 +4781,14 @@ pub(crate) mod phrase_tests {
         let text: Rc<RefCell<Option<&'static str>>> =
             Rc::new(RefCell::new(Some("Click a changed line · Enter comments")));
         let shown = text.clone();
+        let weight = Rc::new(Cell::new(FontWeight::NORMAL));
+        let drawn_weight = weight.clone();
         let (probe, cx) = cx.add_window_view(move |_, _| Probe {
             width: px(461.),
             build: Box::new(move || {
                 div()
                     .text_size(appearance::ui_text(12.))
+                    .font_weight(drawn_weight.get())
                     .children(
                         shown
                             .borrow()
@@ -4825,9 +4831,12 @@ pub(crate) mod phrase_tests {
             "a new text size measures the same phrases"
         );
         assert!(first_run(cx), "the runs are measured again at the new size");
+        weight.set(FontWeight::BOLD);
+        draw(cx, 3);
+        assert_eq!(counts(), (1, 3), "a new font measures the same phrases");
         *text.borrow_mut() = Some("Click a line · Enter comments");
         draw(cx, 3);
-        assert_eq!(counts(), (2, 3), "a new text builds its phrases once");
+        assert_eq!(counts(), (2, 4), "a new text builds its phrases once");
         let read: Vec<String> = drawn_lines(cx, "probe-line", "Click a line · Enter comments")
             .into_iter()
             .map(|line| line.text)
@@ -4837,7 +4846,7 @@ pub(crate) mod phrase_tests {
         draw(cx, 1);
         *text.borrow_mut() = Some("Click a line · Enter comments");
         draw(cx, 2);
-        assert_eq!(counts(), (3, 4), "a frame without the line dropped them");
+        assert_eq!(counts(), (3, 5), "a frame without the line dropped them");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
