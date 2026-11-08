@@ -414,17 +414,25 @@ thread_local! {
 pub(super) struct BodyFrame {
     pub view: Bounds<Pixels>,
     pub parts: Vec<(SharedString, Bounds<Pixels>)>,
+    /// The conversation list's view, where the frame draws the list.
+    pub list: Option<Bounds<Pixels>>,
 }
-/// For the body's `on_children_prepainted`: ends the frame of the body `scroll` scrolls,
-/// recording it where a test watches ([`BODY_FRAMES`]).
+/// For the body's `on_children_prepainted`: ends the frame of the body `scroll` scrolls, with
+/// the conversation list `list` scrolls, recording it where a test watches ([`BODY_FRAMES`]).
 #[cfg(test)]
-pub(super) fn record_body_frame(scroll: &ScrollHandle) {
+pub(super) fn record_body_frame(scroll: &ScrollHandle, list: &ScrollHandle) {
     let parts = PART_BOUNDS.take();
+    // The list's handle holds this frame's view only where the frame drew the list.
+    let list = parts
+        .iter()
+        .any(|(name, _)| name == "conversation-list")
+        .then(|| list.bounds());
     BODY_FRAMES.with_borrow_mut(|frames| {
         if let Some(frames) = frames {
             frames.push(BodyFrame {
                 view: scroll.bounds(),
                 parts,
+                list,
             });
         }
     });

@@ -2724,6 +2724,8 @@ impl Render for Panel {
             self.review.pull_revealed.clone(),
             self.conversations.list_revealed.clone(),
         );
+        #[cfg(test)]
+        let list_scroll = self.conversations.list_scroll.clone();
         // In the frame that first draws the reopened panel, the part holding the control focus
         // went back to is revealed from that frame's layout ([`review::Reopened`]).
         let content = review::reopened(
@@ -2744,7 +2746,7 @@ impl Render for Panel {
                     );
                     blocks.finish();
                     #[cfg(test)]
-                    review::record_body_frame(&scroll);
+                    review::record_body_frame(&scroll, &list_scroll);
                     let panel = panel.clone();
                     reopening.settle(
                         &scroll,
@@ -11018,10 +11020,14 @@ mod tests {
     }
 
     /// A Button of the body that held focus as Escape closed the panel takes it back as a click
-    /// on the header's Pull requests reopens it, drawn whole in the body: Overview's Open
-    /// captured local comparison and Files' Comment on selection, at 13 pt in a 1,480 × 973
-    /// window, each reached by Tab. Each kept its focus handle in its own element state, which
-    /// went with the closed dialog's frame, so reopening gave focus to the section's first stop.
+    /// on the header's Pull requests reopens it, drawn whole in the body with its ring:
+    /// Overview's Open captured local comparison, Files' Comment on selection and Overview's
+    /// first conversation's Reply, each reached by Tab, at 13 pt in a 1,480 × 973 window, and
+    /// at 18 pt in a 461 × 490 one with the body scrolled until one of its edges runs through
+    /// the Button as the panel closes. Every frame the reopened panel draws shows the part
+    /// holding the Button whole, and Reply's conversation actions whole in the conversation
+    /// list and the body. Each kept its focus handle in its own element state, which went with
+    /// the closed dialog's frame, so reopening gave focus to the section's first stop.
     #[gpui::test]
     async fn reopening_gives_focus_back_to_a_body_button(cx: &mut TestAppContext) {
         let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
@@ -11031,66 +11037,164 @@ mod tests {
             .files(&captured, 1, &OperationControl::default())
             .unwrap()
             .items;
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
         let room = cx.update(|_, cx| appearance::button_ring_room(cx));
         let frames = |cx: &mut VisualTestContext| {
             for _ in 0..4 {
                 crate::width_walk::frame(cx);
             }
         };
-        let kept = |cx: &mut VisualTestContext, id: &'static str| {
-            panel.read_with(cx, |panel, _| panel.review.buttons.kept(id))
+        let whole = |part: Bounds<Pixels>, view: Bounds<Pixels>| {
+            part.top() - room >= view.top() - px(0.5)
+                && part.bottom() + room <= view.bottom() + px(0.5)
         };
-        let focused = |cx: &mut VisualTestContext, id: &'static str| {
+        let kept = |cx: &mut VisualTestContext, id: &ElementId| {
+            panel.read_with(cx, |panel, _| panel.review.buttons.kept(id.clone()))
+        };
+        let focused = |cx: &mut VisualTestContext, id: &ElementId| {
             let focus = kept(cx, id);
             cx.update(|window, _| focus.is_some_and(|focus| focus.is_focused(window)))
         };
-        crate::focus_ring::sweep::interface_size(cx, 13);
-        cx.simulate_resize(size(px(1480.), px(973.)));
-        for (section, id) in [
-            (Section::Overview, "github-open-changes"),
-            (Section::Files, "github-inline-start"),
-        ] {
-            cx.update(|window, cx| {
-                panel.update(cx, |panel, cx| {
-                    panel.pull = Some(pull.clone());
-                    panel.review.show_list = false;
-                    panel.review.section = section;
-                    panel.review.files = files.clone();
-                    panel.review.selected_file = None;
-                    if section == Section::Files {
-                        panel.select_review_file(1, window, cx);
-                    }
-                    panel.focus_visible_section(window, cx);
-                    cx.notify();
-                })
-            });
-            settle_panel(&app, cx).await;
-            frames(cx);
-            for _ in 0..40 {
-                if focused(cx, id) {
-                    break;
-                }
-                cx.simulate_keystrokes("tab");
+        let buttons: [(Section, ElementId, &'static str); 3] = [
+            (
+                Section::Overview,
+                "github-open-changes".into(),
+                "github-open-changes",
+            ),
+            (
+                Section::Files,
+                "github-inline-start".into(),
+                "github-inline-start",
+            ),
+            (
+                Section::Overview,
+                ("github-thread-reply", 0usize).into(),
+                "github-thread-reply-0",
+            ),
+        ];
+        // Each case: its text size, its window, and whether the body cuts the Button as the
+        // panel closes.
+        for (interface, width, height, cut) in [(13u8, 1480., 973., false), (18, 461., 490., true)]
+        {
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(width), px(height)));
+            for (section, id, selector) in buttons.clone() {
+                let at = format!("{selector} at {interface} pt in {width} × {height}");
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.pull = Some(pull.clone());
+                        panel.review.show_list = false;
+                        panel.review.section = section;
+                        panel.review.files = files.clone();
+                        panel.review.selected_file = None;
+                        if section == Section::Files {
+                            panel.select_review_file(1, window, cx);
+                        }
+                        panel.review.body_scroll.set_offset(point(px(0.), px(0.)));
+                        panel
+                            .conversations
+                            .list_scroll
+                            .set_offset(point(px(0.), px(0.)));
+                        panel.focus_visible_section(window, cx);
+                        cx.notify();
+                    })
+                });
+                settle_panel(&app, cx).await;
                 frames(cx);
+                for _ in 0..40 {
+                    if focused(cx, &id) {
+                        break;
+                    }
+                    cx.simulate_keystrokes("tab");
+                    frames(cx);
+                }
+                assert!(focused(cx, &id), "{at}: Tab reaches the Button");
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let shown = cx.debug_bounds(selector).expect(selector);
+                assert!(
+                    whole(shown, body),
+                    "{at}: Tab shows the Button {shown:?} whole in {body:?}"
+                );
+                if cut {
+                    // The body's foot, or else its top, runs through the Button's middle.
+                    let (y, max) = (scroll.offset().y, scroll.max_offset().y);
+                    let (down, up) = (
+                        body.bottom() - shown.center().y,
+                        shown.center().y - body.top(),
+                    );
+                    let target = if y + down <= px(0.) { y + down } else { y - up };
+                    assert!(
+                        target <= px(0.) && target >= -max,
+                        "{at}: the body scrolls from {y:?} to {target:?} within {max:?}"
+                    );
+                    scroll.set_offset(point(px(0.), target));
+                    frames(cx);
+                    let shown = cx.debug_bounds(selector).expect(selector);
+                    assert!(
+                        !whole(shown, body)
+                            && shown.top() < body.bottom()
+                            && shown.bottom() > body.top(),
+                        "{at}: the body {body:?} cuts the Button {shown:?} as the panel closes"
+                    );
+                }
+                let before = kept(cx, &id);
+                escape(cx);
+                assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+                let part = panel
+                    .read_with(cx, |panel, _| panel.review.held_part.clone())
+                    .unwrap_or_else(|| panic!("{at}: closing holds the Button's part"));
+                review::BODY_FRAMES.set(Some(Vec::new()));
+                crate::copy_feedback::tests::click(cx, "pull-requests");
+                settle_panel(&app, cx).await;
+                frames(cx);
+                let drawn = review::BODY_FRAMES.take().expect("watched");
+                assert!(
+                    focused(cx, &id) && kept(cx, &id) == before,
+                    "{at}: the Button, focused as the panel closed, takes focus back as it reopens"
+                );
+                for (index, frame) in drawn.iter().enumerate() {
+                    let find = |name: &str| {
+                        frame
+                            .parts
+                            .iter()
+                            .find(|(drawn, _)| drawn == name)
+                            .map(|(_, bounds)| *bounds)
+                            .unwrap_or_else(|| {
+                                panic!("{at}: frame {index} draws {name}: {frame:?}")
+                            })
+                    };
+                    let held = find(&part);
+                    assert!(
+                        whole(held, frame.view),
+                        "{at}: frame {index} draws {part} {held:?} whole in {:?}",
+                        frame.view
+                    );
+                    if selector == "github-thread-reply-0" {
+                        // The first conversation's actions, Reply first among them.
+                        let actions = find("0");
+                        let viewport = frame.list.expect("the frame draws the conversation list");
+                        assert!(
+                            whole(actions, viewport) && whole(actions, frame.view),
+                            "{at}: frame {index} draws Reply's actions {actions:?} whole in the \
+                             list {viewport:?} and the body {:?}",
+                            frame.view
+                        );
+                    }
+                }
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let shown = cx.debug_bounds(selector).expect(selector);
+                assert!(
+                    whole(shown, body) && ringed(cx, selector),
+                    "{at}: the Button {shown:?} is whole in the body {body:?} with its ring"
+                );
+                if selector == "github-thread-reply-0" {
+                    let viewport = cx.debug_bounds("github-threads").expect("the list");
+                    assert!(
+                        whole(shown, viewport),
+                        "{at}: Reply {shown:?} is whole in the list {viewport:?}"
+                    );
+                }
             }
-            assert!(focused(cx, id), "Tab reaches {id}");
-            let before = kept(cx, id);
-            escape(cx);
-            assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
-            crate::copy_feedback::tests::click(cx, "pull-requests");
-            settle_panel(&app, cx).await;
-            frames(cx);
-            assert!(
-                focused(cx, id) && kept(cx, id) == before,
-                "{id}, focused as the panel closed, takes focus back as it reopens"
-            );
-            let body = cx.debug_bounds("github-panel").expect("the body");
-            let shown = cx.debug_bounds(id).expect(id);
-            assert!(
-                shown.top() - room >= body.top() - px(0.5)
-                    && shown.bottom() + room <= body.bottom() + px(0.5),
-                "{id} {shown:?} is whole in the body {body:?}"
-            );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
