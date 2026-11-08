@@ -821,6 +821,7 @@ impl GitTurtle {
                         let vacated = this.vacated_working_place(window, cx);
                         this.working_rows = rows;
                         this.working_paths.retained = None;
+                        this.release_departed_row_control(window, cx);
                         this.reconcile_working_selection();
                         let selected = this.working_selected.and_then(|(i, a)| this.working_rows.iter().position(|r| matches!(r, workspace::WorkingRow::File(index, area) if *index == i && *area == a)));
                         if this.working_selected.is_some() && selected.is_none() {

@@ -719,6 +719,76 @@ mod tests {
         );
     }
 
+    /// The travelling copy of a row in flight is no Tab stop: Tab from the
+    /// list through the window's stops while notes.txt's row travels to
+    /// Staged never focuses inside the copy's bounds, and focus never rests
+    /// on nothing. The copy's Stage, keeping the kit's own handle, was a
+    /// stop, which took focus and lost it as the row landed.
+    #[gpui::test]
+    async fn tab_during_a_flight_never_focuses_inside_the_travelling_row(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working(cx, false).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        draw(cx);
+        // [Staged 2, alpha, beta, Unstaged 1, notes]: notes.txt's Stage, the
+        // write held across the press so the press is seen to start it.
+        let stage = cx
+            .debug_bounds("working-stage-4")
+            .expect("notes.txt's Stage");
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.simulate_click(stage.center(), Modifiers::default());
+        let started = app.read_with(cx, |app, _| app.operation_busy.is_some());
+        drop(held);
+        assert!(started, "the press starts the write");
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        // [Staged 3, alpha, beta, notes, Unstaged 0]: notes.txt travels to
+        // row 3 on the test clock, which stands still below.
+        assert_eq!(flying(&app, cx), Some(3));
+        let accent: Hsla = cx.read(|cx| rgb(crate::appearance::palette(cx).accent).into());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                window.focus(&app.file_focus, cx);
+                app.focus_ring.mark(window);
+            })
+        });
+        draw(cx);
+        let mut failures = Vec::new();
+        for step in 1..=16 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert_eq!(
+                flying(&app, cx),
+                Some(3),
+                "Tab {step}: the row still travels"
+            );
+            let copy = row(cx, 3);
+            // Its control's ring, 2 px outside it, lies within 4 px of it.
+            let inside = Bounds::from_corners(
+                point(copy.left() - px(4.), copy.top() - px(4.)),
+                point(copy.right() + px(4.), copy.bottom() + px(4.)),
+            );
+            let rings = crate::focus_ring::painted_outlines(cx, accent);
+            if rings.is_empty() {
+                failures.push(format!("Tab {step}: no ring"));
+            }
+            for ring in rings {
+                if inside.contains(&ring.bounds.origin)
+                    && inside.contains(&ring.bounds.bottom_right())
+                {
+                    failures.push(format!(
+                        "Tab {step}: a ring {:?} inside the travelling row {copy:?}",
+                        ring.bounds
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
     /// What the last frame painted over the heading at row `heading`: each
     /// quad's part inside it, clipped as it is drawn, with its fill and
     /// border, in a stable order. A part thinner than half a device pixel,
@@ -1272,6 +1342,9 @@ mod tests {
         line: bool,
         list: Bounds<Pixels>,
         composer: Bounds<Pixels>,
+        /// The focus ring the list drew, on its edge or around a row's
+        /// control, if any.
+        ring: Option<&'static str>,
     }
 
     /// The frames the window drew since the last call, as the probe recorded
@@ -1293,6 +1366,7 @@ mod tests {
                     composer: frame
                         .composer
                         .unwrap_or_else(|| panic!("{at}: the composer")),
+                    ring: frame.ring,
                     at,
                 }
             })
@@ -1373,17 +1447,27 @@ mod tests {
         })
     }
 
-    /// Presses the Stage or Unstage control of `name`'s row in `area` and
-    /// draws a frame for each step of the write, two where a step can ask
-    /// for another: the press, the write's outcome, its status read, the
-    /// rows that read produces, each 16 ms of the row's flight; then the
-    /// same for a quiet read of the same status, as the local watcher's
-    /// after a write.
+    /// How [`write_frames`] presses a row's Stage or Unstage.
+    #[derive(Clone, Copy)]
+    enum Press {
+        /// A click on it.
+        Click,
+        /// Enter, the control holding focus.
+        Enter,
+    }
+
+    /// Presses the Stage or Unstage control of `name`'s row in `area` as
+    /// `press` says and draws a frame for each step of the write, two where
+    /// a step can ask for another: the press, the write's outcome, its
+    /// status read, the rows that read produces, each 16 ms of the row's
+    /// flight; then the same for a quiet read of the same status, as the
+    /// local watcher's after a write.
     async fn write_frames(
         app: &Entity<GitTurtle>,
         cx: &mut VisualTestContext,
         name: &str,
         area: ChangeArea,
+        press: Press,
         frames: &mut Vec<Frame>,
     ) {
         let what = format!("{name} from {area:?}");
@@ -1392,7 +1476,18 @@ mod tests {
         let control = cx.debug_bounds(selector).expect(selector);
         // The rows wait for the frames before them to be drawn.
         let mut held = Some(app.update(cx, |app, _| app.file_paths.executor().hold()));
-        cx.simulate_click(control.center(), Modifiers::default());
+        match press {
+            Press::Click => cx.simulate_click(control.center(), Modifiers::default()),
+            Press::Enter => {
+                let enter = gpui::Keystroke::parse("enter").unwrap();
+                cx.simulate_event(gpui::KeyDownEvent {
+                    keystroke: enter.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                });
+                cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+            }
+        }
         one_frame(app, cx, frames, format!("{what}: the press"));
         let write = app
             .update(cx, |app, _| app.operation_task.take())
@@ -1480,7 +1575,7 @@ mod tests {
             for (name, area) in [("delta.txt", unstaged), ("alpha.txt", staged)] {
                 let from = frames.len();
                 app.update(cx, |app, _| app.working_probe.line.set(ProbeLine::Once));
-                write_frames(&app, cx, name, area, &mut frames).await;
+                write_frames(&app, cx, name, area, Press::Click, &mut frames).await;
                 frames.extend(recorded(&app, cx, &format!("after {name}")));
                 let lines = frames[from..].iter().filter(|frame| frame.line).count();
                 assert_eq!(lines, 1, "{text} pt: {name}'s write draws the line once");
@@ -1513,9 +1608,100 @@ mod tests {
                 moved.join("; ")
             );
             // Back as it was for the next size.
-            write_frames(&app, cx, "delta.txt", staged, &mut Vec::new()).await;
-            write_frames(&app, cx, "alpha.txt", unstaged, &mut Vec::new()).await;
+            write_frames(&app, cx, "delta.txt", staged, Press::Click, &mut Vec::new()).await;
+            write_frames(
+                &app,
+                cx,
+                "alpha.txt",
+                unstaged,
+                Press::Click,
+                &mut Vec::new(),
+            )
+            .await;
         }
+    }
+
+    /// Enter on a row's Stage draws a focus ring in every frame the window
+    /// draws from the press through the row's departure, its flight and the
+    /// quiet read after it, as no Tab stop leaves focus on an element the
+    /// frame does not draw (DESIGN.md, "Keyboard focus"): the Stage's own
+    /// while its row is drawn, then the list's edge once the rows without it
+    /// land. Handed to the list in the deferred work of the frame that first
+    /// drew those rows, focus lay for that frame on a handle no element drew,
+    /// and it drew no ring.
+    #[gpui::test]
+    async fn a_stage_from_the_keyboard_draws_a_ring_in_every_frame(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        draw(cx);
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]:
+        // Tab from the list onto delta's Stage.
+        let accent: Hsla = cx.read(|cx| rgb(crate::appearance::palette(cx).accent).into());
+        let stage = cx.debug_bounds("working-stage-4").expect("delta's Stage");
+        let ringed = |cx: &mut VisualTestContext| {
+            crate::focus_ring::painted_outlines(cx, accent)
+                .iter()
+                .any(|ring| {
+                    ring.bounds.intersects(&stage)
+                        && (ring.bounds.size.width - stage.size.width).abs() <= px(10.)
+                })
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                window.focus(&app.file_focus, cx);
+                app.focus_ring.mark(window);
+            })
+        });
+        draw(cx);
+        for _ in 0..8 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            if ringed(cx) {
+                break;
+            }
+        }
+        assert!(ringed(cx), "Tab reaches delta's Stage");
+        app.update(cx, |app, _| {
+            app.working_probe.line.set(workspace::ProbeLine::Watch)
+        });
+        let mut frames = Vec::new();
+        write_frames(
+            &app,
+            cx,
+            "delta.txt",
+            ChangeArea::Unstaged,
+            Press::Enter,
+            &mut frames,
+        )
+        .await;
+        frames.extend(recorded(&app, cx, "after delta.txt"));
+        app.update(cx, |app, _| {
+            app.working_probe.line.set(workspace::ProbeLine::Off)
+        });
+        let ringless: Vec<_> = frames
+            .iter()
+            .filter(|frame| frame.ring.is_none())
+            .map(|frame| frame.at.as_str())
+            .collect();
+        assert!(
+            ringless.is_empty(),
+            "{} frames; drawn with no ring: {ringless:#?}",
+            frames.len()
+        );
+        assert_eq!(
+            frames.first().and_then(|frame| frame.ring),
+            Some("a row's control"),
+            "the press's frame rings the Stage"
+        );
+        assert_eq!(
+            frames.last().and_then(|frame| frame.ring),
+            Some("the list's edge"),
+            "the last frame rings the list"
+        );
+        assert!(
+            cx.update(|window, cx| app.read(cx).file_focus.is_focused(window)),
+            "the list holds focus"
+        );
     }
 
     /// Whether the last frame drew the busy look: the progress label,

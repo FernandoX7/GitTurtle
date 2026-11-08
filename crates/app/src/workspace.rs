@@ -47,18 +47,44 @@ pub(crate) struct WorkingInspectorLayout {
 /// short of (`floor_fades`). Keyed by the kit inside each Button, a
 /// control's handle was out of the list's reach, so the floor's fades lay
 /// over a focused Stage's ring at the floor's edge. A handle whose row the
-/// last frame did not draw is given up, unless it holds focus, so focus on
-/// a control scrolled out of the list stays on it and shows again with its
-/// row, as a revealing container keeps its controls' handles
-/// (`FocusReveal::focus`).
+/// last frame did not draw is given up, unless it holds focus while its
+/// row is still among the list's rows, scrolled out of view, so focus there
+/// stays on it and shows again with its row, as a revealing container
+/// keeps its controls' handles (`FocusReveal::focus`). One that holds focus
+/// as its row leaves the list, as a Stage's file moves to Staged, is given
+/// up too, and focus goes to the list itself: kept, it went to the row's
+/// Stage when a refresh brought the row back, which took the ring, and
+/// Enter staged the file again. Rows that land from the path filter hand
+/// that focus on before the frame that draws them
+/// (`GitTurtle::release_departed_row_control`); the list's render hands it
+/// on in that frame's deferred work only where the rows go otherwise, as
+/// after a failed status read or a tab's rows replaced, and that one frame
+/// draws no ring.
 #[derive(Clone, Default)]
 pub(crate) struct RowControls(Rc<RefCell<RowControlsState>>);
 
+/// The row whose control a handle tracks, as the list's rows name it.
+#[derive(Clone)]
+enum RowControl {
+    /// A section heading's Stage all or Unstage all.
+    Heading(ChangeArea),
+    /// A file's Stage or Unstage, by its path in its area.
+    File(std::path::PathBuf, ChangeArea),
+}
+
+/// A row control's handle, the row it stands in, where the list last drew
+/// that row, and whether the frame being drawn has drawn it.
+struct KeptControl {
+    focus: FocusHandle,
+    row: RowControl,
+    position: usize,
+    drawn: bool,
+}
+
 #[derive(Default)]
 struct RowControlsState {
-    /// Each control's handle by its row's id, and whether the frame being
-    /// drawn has drawn its row.
-    handles: std::collections::HashMap<ElementId, (FocusHandle, bool)>,
+    /// Each control's handle by its row's id.
+    handles: std::collections::HashMap<ElementId, KeptControl>,
     /// The bounds of the control holding focus, as its row was prepainted in
     /// the frame being drawn; none where no row drawn holds it.
     focused: Option<Bounds<Pixels>>,
@@ -67,39 +93,93 @@ struct RowControlsState {
 impl RowControls {
     /// For the list's render, in each frame before its rows are drawn: gives
     /// up the handles of the controls the last frame did not draw, but one
-    /// holding focus, and forgets where the focused one lay.
-    fn begin(&self, window: &Window) {
-        let mut state = self.0.borrow_mut();
-        state
-            .handles
-            .retain(|_, (focus, drawn)| std::mem::take(drawn) || focus.is_focused(window));
-        state.focused = None;
-    }
-
-    /// The handle of the control in the row `row`, which a Button takes
-    /// through `track_focus`.
-    fn focus(&self, row: ElementId, cx: &App) -> FocusHandle {
-        let mut state = self.0.borrow_mut();
-        let (focus, drawn) = state
-            .handles
-            .entry(row)
-            .or_insert_with(|| (cx.focus_handle(), false));
-        *drawn = true;
-        focus.clone()
-    }
-
-    /// For a row's `on_children_prepainted`, whose last child is its control
-    /// tracking `focus`: records where that control lies while it holds
-    /// focus.
-    fn record(
+    /// holding focus whose row the list still holds (`listed`), and forgets
+    /// where the focused one lay. A handle holding focus whose row has left
+    /// the list is given up whether or not the last frame drew it, and focus
+    /// goes to the list itself (`list`), as it does when the selected row
+    /// leaves, in the frame's deferred work: only the focused handle asks
+    /// whether its row is listed, from where the list last drew it, so a
+    /// list draws its rows at no cost for the others.
+    fn begin(
         &self,
-        focus: FocusHandle,
-    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
-        let this = self.clone();
-        move |bounds, window, _| {
-            if let Some(control) = bounds.last().filter(|_| focus.is_focused(window)) {
-                this.0.borrow_mut().focused = Some(*control);
+        listed: impl Fn(&RowControl, usize) -> bool,
+        list: &FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let mut departed = None;
+        {
+            let mut state = self.0.borrow_mut();
+            state.handles.retain(|_, kept| {
+                let drawn = std::mem::take(&mut kept.drawn);
+                if !kept.focus.is_focused(window) {
+                    return drawn;
+                }
+                if listed(&kept.row, kept.position) {
+                    return true;
+                }
+                departed = Some(kept.focus.clone());
+                false
+            });
+            state.focused = None;
+        }
+        if let Some(departed) = departed {
+            let list = list.clone();
+            window.defer(cx, move |window, cx| {
+                if departed.is_focused(window) {
+                    window.focus(&list, cx);
+                }
+            });
+        }
+    }
+
+    /// The handle of the control in the row `id`, drawn at `position` among
+    /// the list's rows, which a Button takes through `track_focus`; `row`
+    /// names that row the first time.
+    fn focus(
+        &self,
+        id: ElementId,
+        row: impl FnOnce() -> RowControl,
+        position: usize,
+        cx: &App,
+    ) -> FocusHandle {
+        let mut state = self.0.borrow_mut();
+        let kept = state.handles.entry(id).or_insert_with(|| KeptControl {
+            focus: cx.focus_handle(),
+            row: row(),
+            position,
+            drawn: false,
+        });
+        kept.position = position;
+        kept.drawn = true;
+        kept.focus.clone()
+    }
+
+    /// `control`, a row's Stage or Unstage or a heading's Stage all or
+    /// Unstage all, in the wrapper whose bounds stand for it, its only child:
+    /// where `focus`, the handle it tracks, holds focus as its row is
+    /// rendered, the wrapper records where it lies as it is prepainted. A
+    /// focus change draws the list again, so no other row listens, and the
+    /// wrapper reads the control's own bounds wherever it stands in its row.
+    /// The travelling copy of a row in flight tracks no handle (`focus`
+    /// none): its control would have tracked the one its row's does.
+    fn control(
+        controls: Option<&Self>,
+        control: impl IntoElement,
+        focus: Option<&FocusHandle>,
+        window: &Window,
+    ) -> Div {
+        let wrapper = div().flex_none().flex().child(control);
+        match controls.filter(|_| focus.is_some_and(|focus| focus.is_focused(window))) {
+            Some(controls) => {
+                let this = controls.clone();
+                wrapper.on_children_prepainted(move |bounds, _, _| {
+                    if let Some(control) = bounds.first() {
+                        this.0.borrow_mut().focused = Some(*control);
+                    }
+                })
             }
+            None => wrapper,
         }
     }
 
@@ -107,6 +187,16 @@ impl RowControls {
     /// the list drew it.
     fn focused(&self) -> Option<Bounds<Pixels>> {
         self.0.borrow().focused
+    }
+
+    /// Whether the handle holding focus stands in a row that `listed`,
+    /// asked from where the list last drew that row, no longer finds.
+    fn departed(&self, listed: impl Fn(&RowControl, usize) -> bool, window: &Window) -> bool {
+        self.0
+            .borrow()
+            .handles
+            .values()
+            .any(|kept| kept.focus.is_focused(window) && !listed(&kept.row, kept.position))
     }
 }
 
@@ -299,6 +389,10 @@ pub(super) struct ProbeFrame {
     pub(super) composer: Option<Bounds<Pixels>>,
     /// The composer's rows, inside the room they keep at its right.
     pub(super) rows: Option<Bounds<Pixels>>,
+    /// The focus ring the list drew as the frame was painted, on its own
+    /// edge or around the row control holding focus; none where it drew
+    /// neither.
+    pub(super) ring: Option<&'static str>,
 }
 
 #[cfg(test)]
@@ -340,6 +434,37 @@ impl WorkingProbe {
                     }
                 },
                 |_, _, _, _| (),
+            )
+            .absolute()
+            .inset_0()
+        })
+    }
+
+    /// A canvas that records which focus ring the list draws as the frame
+    /// is painted: its own edge, where `ring` shows `list`, or the ring of
+    /// the row control holding focus, which a focused Button draws, where
+    /// the list drew that control (`controls`).
+    fn ring_recorder(
+        &self,
+        ring: crate::focus_ring::FocusRing,
+        list: FocusHandle,
+        controls: RowControls,
+    ) -> Option<impl IntoElement + use<>> {
+        let frames = self.frames.clone();
+        (self.line.get() != ProbeLine::Off).then(|| {
+            canvas(
+                |_, _, _| (),
+                move |_, _, _, _| {
+                    if let Some(frame) = frames.borrow_mut().last_mut() {
+                        frame.ring = if ring.shows(&list) {
+                            Some("the list's edge")
+                        } else if controls.focused().is_some() {
+                            Some("a row's control")
+                        } else {
+                            None
+                        };
+                    }
+                },
             )
             .absolute()
             .inset_0()
@@ -3022,6 +3147,48 @@ impl GitTurtle {
         !self.file_focus.is_focused(window) && self.file_focus.contains_focused(window, cx)
     }
 
+    /// Whether the shown rows still list the row a row control stands in
+    /// (`RowControls`): a heading's area, or a file's path in its area. The
+    /// row at `drawn`, where the list last drew it, is asked first, and the
+    /// other rows only where that one is another now, so a control holding
+    /// focus costs a frame one row's check while its rows stay put.
+    fn lists_row_control(&self, control: &RowControl, drawn: usize) -> bool {
+        let status = self.shown_working_status();
+        let stands_in = |row: &WorkingRow| match (control, row) {
+            (RowControl::Heading(area), WorkingRow::Heading(at, _)) => at == area,
+            (RowControl::File(path, area), WorkingRow::File(index, at)) => {
+                at == area
+                    && status
+                        .and_then(|status| status.entries.get(*index))
+                        .is_some_and(|entry| crate::working_selection::same_path(&entry.path, path))
+            }
+            _ => false,
+        };
+        self.working_rows.get(drawn).is_some_and(stands_in)
+            || self.working_rows.iter().any(stands_in)
+    }
+
+    /// Gives focus to the list itself where a row control holds it whose row
+    /// the shown rows no longer list, as the rows that took that row away
+    /// land, as a row's Stage after Enter or Space sends its file to the
+    /// other group: the frame that first draws those rows then draws the
+    /// list's ring. Left to that frame's render (`RowControls::begin`), the
+    /// hand-off waited for its deferred work, and the frame was drawn with
+    /// focus on a handle no element drew, with no ring.
+    pub(super) fn release_departed_row_control(&self, window: &mut Window, cx: &mut App) {
+        let Some(layout) = self.working_layout.take() else {
+            return;
+        };
+        self.working_layout.set(Some(layout.clone()));
+        let departed = layout.read(cx).row_controls.departed(
+            |control, drawn| self.lists_row_control(control, drawn),
+            window,
+        );
+        if departed {
+            window.focus(&self.file_focus, cx);
+        }
+    }
+
     pub(super) fn move_working_selection(
         &mut self,
         direction: i32,
@@ -3897,7 +4064,12 @@ impl GitTurtle {
         // The rows' controls take their handles from the layout, which keeps
         // where the focused one lies for the floor's fades.
         let controls = layout.read(cx).row_controls.clone();
-        controls.begin(window);
+        controls.begin(
+            |control, drawn| self.lists_row_control(control, drawn),
+            &self.file_focus,
+            window,
+            cx,
+        );
         let row_controls = controls.clone();
         let list = uniform_list(
             "working-files",
@@ -3914,7 +4086,7 @@ impl GitTurtle {
                             {
                                 slot.heading(i);
                             }
-                            this.render_working_row(i, forms, &row_controls, window, cx)
+                            this.render_working_row(i, forms, Some(&row_controls), window, cx)
                         }
                     })
                     .collect::<Vec<_>>()
@@ -3923,7 +4095,9 @@ impl GitTurtle {
         .size_full()
         .track_scroll(&self.working_scroll);
         let travelling = flight.map(|flight| {
-            let row = self.render_working_row(flight.position, forms, &controls, window, cx);
+            // Its copy tracks no handle and is no Tab stop: the row's own,
+            // where it lands, does and is.
+            let row = self.render_working_row(flight.position, forms, None, window, cx);
             crate::motion::TravellingRow::new(flight, row)
         });
         let refresh = button("refresh-working", "", "refresh", false)
@@ -4176,7 +4350,13 @@ impl GitTurtle {
                 .inset_0(),
             );
         #[cfg(test)]
-        let pane = pane.children(self.working_probe.recorder(|frame| &mut frame.list));
+        let pane = pane
+            .children(self.working_probe.recorder(|frame| &mut frame.list))
+            .children(self.working_probe.ring_recorder(
+                self.focus_ring.clone(),
+                self.file_focus.clone(),
+                layout.read(cx).row_controls.clone(),
+            ));
         let inspector_layout = layout.clone();
         #[cfg(test)]
         let probe = self.working_probe.frame(self.working_paths.pending);
@@ -5107,7 +5287,7 @@ impl GitTurtle {
         &self,
         position: usize,
         forms: WorkingForms,
-        controls: &RowControls,
+        controls: Option<&RowControls>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -5217,18 +5397,18 @@ impl GitTurtle {
                     )
                 }
                 .when_some(named, |control, named| control.accessibility_label(named));
-                let focus = controls.focus(selector.into(), cx);
-                let control = control.track_focus(&focus);
+                let focus = controls.map(|controls| {
+                    controls.focus(selector.into(), || RowControl::Heading(area), position, cx)
+                });
+                let control =
+                    control.when_some(focus.as_ref(), |control, focus| control.track_focus(focus));
                 let part = move |part: &'static str| -> String {
                     format!(
                         "{}-heading-{part}",
                         if staged { "staged" } else { "unstaged" }
                     )
                 };
-                // Its control is its last child, whose ring the floor's fades
-                // stop short of while it holds focus.
                 div()
-                    .on_children_prepainted(controls.record(focus))
                     .debug_selector(move || format!("working-row-{position}"))
                     .w_full()
                     .h(px(self.settings.density.file_row_height()))
@@ -5275,44 +5455,51 @@ impl GitTurtle {
                             .child(count.to_string()),
                     )
                     .child(
-                        refusing(control, move || selector.into(), refused, unavailable)
-                            .debug_selector(move || selector.into())
-                            .ml_auto()
-                            // The write it confirms leaves it unavailable, its
-                            // group emptied or the reads after it pending, and
-                            // the disabled colour, 3.19:1 on Midnight's heading,
-                            // read the outcome as unavailable. While it confirms
-                            // it stays inert in its resting label colour, which
-                            // the kit replays over the disabled one; it takes
-                            // the disabled look when the confirmation ends.
-                            .when(unavailable && confirming, |control| {
-                                control.text_color(rgb(p.control_label()))
-                            })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                // Refused at once while a write runs or the
-                                // rows it counts are prepared, whatever it
-                                // looks like yet, its look showing why at
-                                // once (`refuse_busy_press`).
-                                if this.refuse_busy_press(cx) {
-                                    return;
-                                }
-                                this.write_from(
-                                    if staged {
-                                        WriteCommand::UnstageAll
-                                    } else {
-                                        WriteCommand::StageAll
-                                    },
-                                    if staged {
-                                        "Unstaging files…"
-                                    } else {
-                                        "Staging files…"
-                                    },
-                                    Some(origin.clone().into()),
-                                    window,
-                                    cx,
-                                )
-                            }))
-                            .node_recorded(),
+                        RowControls::control(
+                            controls,
+                            refusing(control, move || selector.into(), refused, unavailable)
+                                .debug_selector(move || selector.into())
+                                // The write it confirms leaves it unavailable, its
+                                // group emptied or the reads after it pending, and
+                                // the disabled colour, 3.19:1 on Midnight's heading,
+                                // read the outcome as unavailable. While it confirms
+                                // it stays inert in its resting label colour, which
+                                // the kit replays over the disabled one; it takes
+                                // the disabled look when the confirmation ends.
+                                .when(unavailable && confirming, |control| {
+                                    control.text_color(rgb(p.control_label()))
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    // Refused at once while a write runs or the
+                                    // rows it counts are prepared, whatever it
+                                    // looks like yet, its look showing why at
+                                    // once (`refuse_busy_press`).
+                                    if this.refuse_busy_press(cx) {
+                                        return;
+                                    }
+                                    this.write_from(
+                                        if staged {
+                                            WriteCommand::UnstageAll
+                                        } else {
+                                            WriteCommand::StageAll
+                                        },
+                                        if staged {
+                                            "Unstaging files…"
+                                        } else {
+                                            "Staging files…"
+                                        },
+                                        Some(origin.clone().into()),
+                                        window,
+                                        cx,
+                                    )
+                                }))
+                                .node_recorded(),
+                            focus.as_ref(),
+                            window,
+                        )
+                        // Its wrapper, which records the ring the floor's
+                        // fades stop short of, stands at the row's end.
+                        .ml_auto(),
                     )
                     .into_any_element()
             }
@@ -5371,17 +5558,19 @@ impl GitTurtle {
                 } else {
                     format!("{path_detail} · {status_label}")
                 };
-                // Its Stage or Unstage, where it draws one, is its last child,
-                // whose ring the floor's fades stop short of while it holds
-                // focus.
+                // Its Stage or Unstage, where it draws one, tracks the
+                // handle the list keeps for it, whose ring the floor's fades
+                // stop short of while it holds focus.
                 let row_id = self.working_row_key(index, area);
-                let stage_focus = forms
-                    .file_action
-                    .then(|| controls.focus(row_id.clone(), cx));
+                let stage_focus = controls.filter(|_| forms.file_action).map(|controls| {
+                    controls.focus(
+                        row_id.clone(),
+                        || RowControl::File(entry.path.clone(), area),
+                        position,
+                        cx,
+                    )
+                });
                 div()
-                    .when_some(stage_focus.clone(), |row, focus| {
-                        row.on_children_prepainted(controls.record(focus))
-                    })
                     .id(row_id)
                     .role(Role::ListBoxOption)
                     .aria_label(format!(
@@ -5519,11 +5708,12 @@ impl GitTurtle {
                                 .child(status_label),
                         )
                     })
-                    .when_some(stage_focus, |row, focus| {
+                    .when(forms.file_action, |row| {
                         // Icon-only, it reads its confirmation in its tooltip
                         // once the Stage or Unstage that moved its file here
                         // succeeded, and keeps its name.
-                        row.child(
+                        row.child(RowControls::control(
+                            controls,
                             feedback(
                                 confirmations::file(&self.path, &entry.path, area),
                                 if staged {
@@ -5535,7 +5725,14 @@ impl GitTurtle {
                                 stage_label.clone(),
                                 cx,
                             )
-                            .track_focus(&focus)
+                            .when_some(stage_focus.as_ref(), |control, focus| {
+                                control.track_focus(focus)
+                            })
+                            // The travelling copy of a row in flight, drawn
+                            // with no controls' handles, is no Tab stop: its
+                            // control's own handle took focus and lost it as
+                            // the row landed.
+                            .when(controls.is_none(), |control| control.tab_stop(false))
                             .debug_selector(move || format!("working-stage-{position}"))
                             .accessibility_label(stage_label)
                             .map(|control| {
@@ -5562,7 +5759,9 @@ impl GitTurtle {
                                     );
                                 },
                             )),
-                        )
+                            stage_focus.as_ref(),
+                            window,
+                        ))
                     })
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         // Command-click (Ctrl-click on Linux, as Select All

@@ -33486,6 +33486,200 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A row's Stage that stages its file leaves no focus behind it: at 13 pt
+    /// in a 1480 × 973 window, with omega.txt untracked after notes.txt, the
+    /// cursor on notes.txt, Tab from the list onto its Stage and Enter stages
+    /// the file, its Unstaged row leaving the list; focus returns to the list
+    /// itself, which draws its ring, the cursor going with notes.txt to its
+    /// Staged row, as a read that finds the selected file staged moves the
+    /// selection, not to omega.txt. A passive refresh that brings
+    /// that row back, the file edited again, finds its Stage unfocused and
+    /// ringless, and Enter stages nothing more. Kept focused while its row
+    /// had left, the control's handle went to the returning row's Stage,
+    /// which took its ring, and Enter staged the file again.
+    #[gpui::test]
+    async fn a_stage_whose_row_leaves_gives_focus_back_to_the_list(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = working_window(cx).await;
+        let root = fixture.path().join("narrow");
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        std::fs::write(root.join("omega.txt"), "omega\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        let quiet = |cx: &mut VisualTestContext| {
+            for _ in 0..8 {
+                if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                    break;
+                }
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+            }
+            crate::path_filter::filters_land(&app, cx);
+            draw(cx);
+        };
+        quiet(cx);
+        let unstaged = |cx: &mut VisualTestContext, name: &str| {
+            app.read_with(cx, |app, _| {
+                let status = app.shown_working_status().expect("a status");
+                app.working_rows.iter().find_map(|row| match row {
+                    crate::workspace::WorkingRow::File(index, area)
+                        if *area == gitturtle_core::ChangeArea::Unstaged
+                            && status.entries[*index].path == std::path::Path::new(name) =>
+                    {
+                        Some(*index)
+                    }
+                    _ => None,
+                })
+            })
+        };
+        let unstaged_notes = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let status = app.shown_working_status().expect("a status");
+                app.working_rows.iter().position(|row| {
+                    matches!(row, crate::workspace::WorkingRow::File(index, area)
+                        if *area == gitturtle_core::ChangeArea::Unstaged
+                            && status.entries[*index].path == std::path::Path::new("notes.txt"))
+                })
+            })
+        };
+        let cursor =
+            |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.shown_working_cursor());
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        // Whether the accent ring is drawn around notes.txt's Stage in row
+        // `position`.
+        let ringed = |cx: &mut VisualTestContext, position: usize| {
+            let selector: &'static str = format!("working-stage-{position}").leak();
+            let stage = cx.debug_bounds(selector).expect(selector);
+            crate::focus_ring::painted_outlines(cx, accent)
+                .iter()
+                .any(|ring| {
+                    ring.bounds.intersects(&stage)
+                        && (ring.bounds.size.width - stage.size.width).abs() <= px(10.)
+                })
+        };
+        let enter = |cx: &mut VisualTestContext| {
+            let enter = gpui::Keystroke::parse("enter").unwrap();
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: enter.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+            draw(cx);
+        };
+        let notes = unstaged_notes(cx).expect("notes.txt's Unstaged row");
+        let notes_index = unstaged(cx, "notes.txt").expect("notes.txt among Unstaged");
+        assert!(
+            unstaged(cx, "omega.txt").is_some(),
+            "omega.txt among Unstaged"
+        );
+        // [Staged 2, alpha, beta, Unstaged 2, notes, omega]: notes.txt
+        // chosen, as a click chooses it.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.choose_working_selection(
+                    notes_index,
+                    gitturtle_core::ChangeArea::Unstaged,
+                    false,
+                    false,
+                    window,
+                    cx,
+                );
+                window.focus(&app.file_focus, cx);
+                app.focus_ring.mark(window);
+            })
+        });
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            cursor(cx),
+            Some((notes_index, gitturtle_core::ChangeArea::Unstaged)),
+            "the cursor on notes.txt"
+        );
+        for _ in 0..8 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            if ringed(cx, notes) {
+                break;
+            }
+        }
+        assert!(ringed(cx, notes), "Tab reaches notes.txt's Stage");
+        enter(cx);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("Enter runs the Stage");
+        write.await;
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        assert_eq!(
+            unstaged_notes(cx),
+            None,
+            "notes.txt's Unstaged row left the list"
+        );
+        let list_focused = cx.update(|window, cx| app.read(cx).file_focus.is_focused(window));
+        // The list draws its ring on its own edge, whole.
+        let pane = cx.debug_bounds("working-pane").expect("the list");
+        let list_ring = crate::focus_ring::painted_outlines(cx, accent)
+            .into_iter()
+            .find(|outline| {
+                (outline.bounds.left() - pane.left()).abs() < px(0.5)
+                    && (outline.bounds.right() - pane.right()).abs() < px(0.5)
+                    && (outline.bounds.top() - pane.top()).abs() < px(0.5)
+            });
+        assert!(
+            list_ring.as_ref().is_some_and(|ring| ring.whole),
+            "the list's ring on {pane:?}: {list_ring:?}"
+        );
+        // [Staged 3, alpha, beta, notes, Unstaged 1, omega]: the cursor goes
+        // with notes.txt to its Staged row, not to omega.txt, the row that
+        // took its place among Unstaged.
+        assert!(unstaged(cx, "omega.txt").is_some(), "omega.txt stays");
+        assert_eq!(
+            cursor(cx),
+            Some((notes_index, gitturtle_core::ChangeArea::Staged)),
+            "the cursor on notes.txt's Staged row"
+        );
+
+        // The file edited again, a passive refresh brings its row back.
+        std::fs::write(root.join("notes.txt"), "edited again\n").unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        quiet(cx);
+        let returned = unstaged_notes(cx).expect("notes.txt's Unstaged row returns");
+        assert!(
+            !ringed(cx, returned),
+            "the returning row's Stage draws no ring"
+        );
+        assert!(
+            !cx.update(|window, cx| app.read(cx).working_control_focused(window, cx)),
+            "no control in the list holds focus"
+        );
+        enter(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_task.is_none()),
+            "Enter stages nothing more"
+        );
+        assert!(list_focused, "focus returned to the list as the row left");
+        assert!(
+            cx.update(|window, cx| app.read(cx).file_focus.is_focused(window)),
+            "the list keeps focus"
+        );
+    }
+
     /// The short Working body's track lies over the list's rows and its
     /// focus ring, so it paints no fill and no edge there: at 13 and 18 pt in
     /// a 461 × 490 window, with the list focused from the keyboard, nothing
