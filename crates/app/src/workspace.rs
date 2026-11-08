@@ -5552,30 +5552,40 @@ impl GitTurtle {
                                 .when(unavailable && confirming, |control| {
                                     control.text_color(rgb(p.control_label()))
                                 })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    // Refused at once while a write runs or the
-                                    // rows it counts are prepared, whatever it
-                                    // looks like yet, its look showing why at
-                                    // once (`refuse_busy_press`).
-                                    if this.refuse_busy_press(cx) {
-                                        return;
-                                    }
-                                    this.write_from(
-                                        if staged {
-                                            WriteCommand::UnstageAll
-                                        } else {
-                                            WriteCommand::StageAll
-                                        },
-                                        if staged {
-                                            "Unstaging files…"
-                                        } else {
-                                            "Staging files…"
-                                        },
-                                        Some(origin.clone().into()),
-                                        window,
-                                        cx,
-                                    )
-                                }))
+                                .on_click(cx.listener(
+                                    move |this, event: &ClickEvent, window, cx| {
+                                        // A double-click's second press, on the
+                                        // heading the first press's write moved
+                                        // under the pointer, does nothing, as on
+                                        // a row's control: it wrote every
+                                        // remaining file, which nobody aimed at.
+                                        if event.click_count() > 1 && this.still_over_moved_rows() {
+                                            return;
+                                        }
+                                        // Refused at once while a write runs or the
+                                        // rows it counts are prepared, whatever it
+                                        // looks like yet, its look showing why at
+                                        // once (`refuse_busy_press`).
+                                        if this.refuse_busy_press(cx) {
+                                            return;
+                                        }
+                                        this.write_from(
+                                            if staged {
+                                                WriteCommand::UnstageAll
+                                            } else {
+                                                WriteCommand::StageAll
+                                            },
+                                            if staged {
+                                                "Unstaging files…"
+                                            } else {
+                                                "Staging files…"
+                                            },
+                                            Some(origin.clone().into()),
+                                            window,
+                                            cx,
+                                        )
+                                    },
+                                ))
                                 .node_recorded(),
                             focus.as_ref(),
                             window,

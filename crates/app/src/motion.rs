@@ -968,6 +968,123 @@ mod tests {
         );
     }
 
+    /// One press of the Stage or Unstage of the row at `position`, whose
+    /// write lands and puts a heading's `action` under the pointer, which
+    /// has not moved since. Returns that pointer.
+    async fn heading_action_under_a_still_pointer(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        position: usize,
+        action: &'static str,
+    ) -> Point<Pixels> {
+        let selector: &'static str = format!("working-stage-{position}").leak();
+        let pointer = cx.debug_bounds(selector).expect(selector).center();
+        counted_click(cx, pointer, 1);
+        press_lands(app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.still_over_moved_rows()),
+            "the rows moved under the still pointer"
+        );
+        let arrived = cx.debug_bounds(action).expect(action);
+        assert!(
+            arrived.contains(&pointer),
+            "{action} {arrived:?} arrives under the pointer {pointer:?}"
+        );
+        pointer
+    }
+
+    /// A double-click on delta's Stage: the Unstaged heading takes delta's
+    /// place, and the second press, on the Stage all it brought under the
+    /// pointer, writes nothing. It staged every remaining file, which
+    /// nobody aimed at (DESIGN.md, "Motion").
+    #[gpui::test]
+    async fn a_double_clicks_second_press_on_stage_all_writes_nothing(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+        let pointer = heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
+        // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma, zeta]
+        counted_click(cx, pointer, 2);
+        press_lands(&app, cx).await;
+        for file in ["epsilon.txt", "gamma.txt", "zeta.txt"] {
+            assert_eq!(
+                staged_and_unstaged(&app, cx, file),
+                Some((false, true)),
+                "the second press staged {file}, which nobody aimed at"
+            );
+        }
+    }
+
+    /// The last Staged row's Unstage, which the Unstaged heading replaces in
+    /// the list, reaches the same Stage all.
+    #[gpui::test]
+    async fn a_double_clicks_second_press_from_the_last_staged_row_writes_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+        let pointer = heading_action_under_a_still_pointer(&app, cx, 2, "stage-all").await;
+        // [Staged 1, alpha, Unstaged 5, beta, delta, epsilon, gamma, zeta]
+        counted_click(cx, pointer, 2);
+        press_lands(&app, cx).await;
+        for file in [
+            "beta.txt",
+            "delta.txt",
+            "epsilon.txt",
+            "gamma.txt",
+            "zeta.txt",
+        ] {
+            assert_eq!(
+                staged_and_unstaged(&app, cx, file),
+                Some((false, true)),
+                "the second press staged {file}, which nobody aimed at"
+            );
+        }
+    }
+
+    /// The Staged heading is the list's first row, so its Unstage all
+    /// reaches a still pointer only as the list moves: the top row of a
+    /// scrolled list, the cursor's, lands above the view, the list centres
+    /// the cursor's row and comes to rest at its top. The second press
+    /// writes nothing.
+    #[gpui::test]
+    async fn a_double_clicks_second_press_on_unstage_all_writes_nothing(cx: &mut TestAppContext) {
+        // [Staged 2, f00, f01, Unstaged 60, f02…f61]
+        let (_fixture, app, cx) = long_list(cx, 2, 60).await;
+        scroll_list(&app, cx, 4);
+        let cursor_row = row(cx, 4).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        let pointer = heading_action_under_a_still_pointer(&app, cx, 4, "unstage-all").await;
+        // [Staged 3, f00, f01, f02, Unstaged 59, f03…f61]
+        counted_click(cx, pointer, 2);
+        press_lands(&app, cx).await;
+        for file in ["f00.txt", "f01.txt", "f02.txt"] {
+            assert_eq!(
+                staged_and_unstaged(&app, cx, file),
+                Some((true, false)),
+                "the second press unstaged {file}, which nobody aimed at"
+            );
+        }
+    }
+
+    /// A lone click at the same place, not a double-click's second press,
+    /// still acts on the Stage all the rows moved under the still pointer.
+    #[gpui::test]
+    async fn a_single_click_on_stage_all_under_a_still_pointer_still_acts(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        let pointer = heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
+        counted_click(cx, pointer, 1);
+        press_lands(&app, cx).await;
+        for file in ["epsilon.txt", "gamma.txt", "zeta.txt"] {
+            assert_eq!(
+                staged_and_unstaged(&app, cx, file),
+                Some((true, false)),
+                "the click staged {file}"
+            );
+        }
+    }
+
     /// A press that stays down on the copy of a row in flight, over its
     /// Stage or Unstage, lights nothing: the copy is a picture of the row.
     /// The same press on the row's own Stage, before the row left, paints
