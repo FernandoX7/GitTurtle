@@ -1452,14 +1452,28 @@ impl RepositorySession {
         // Git finding no repository there fails as it always has, with the
         // reasons `repository_access::explain` gives a folder that is not
         // one; only another repository found is `RepositoryGone`, as is a
-        // repository that changed while it was opened, its open refused.
+        // repository that changed while it was opened, its open refused,
+        // and a tab's root whose work tree now lies outside its folder. An
+        // explicit open of such a layout says so in its own words.
+        let passive = captured.is_some();
         let discovered = GitRepository::open(&canonical).map_err(|error| {
-            match error.downcast::<gitturtle_core::ChangedWhileOpening>() {
-                Ok(changed) => RepositoryGone {
+            let error = match error.downcast::<gitturtle_core::ChangedWhileOpening>() {
+                Ok(changed) => {
+                    return RepositoryGone {
+                        path: requested.to_owned(),
+                        found: changed.found,
+                    }
+                    .into();
+                }
+                Err(error) => error,
+            };
+            match error.downcast::<gitturtle_core::WorkTreeOutside>() {
+                Ok(outside) if passive => RepositoryGone {
                     path: requested.to_owned(),
-                    found: changed.found,
+                    found: Some(outside.work_tree),
                 }
                 .into(),
+                Ok(outside) => outside.into(),
                 Err(error) => error,
             }
         })?;
@@ -2164,7 +2178,7 @@ fn execute(
                 session,
             )
             .map_err(|error| {
-                if error.is::<RepositoryGone>() {
+                if error.is::<RepositoryGone>() || error.is::<gitturtle_core::WorkTreeOutside>() {
                     error
                 } else {
                     crate::repository_access::explain(&path, error)
@@ -6398,6 +6412,73 @@ mod image_tests {
                 .expect("gone");
             assert_eq!(gone.found.as_deref(), Some(other_root.as_path()));
         }
+    }
+
+    /// A repository whose work tree lies outside the folder Git found it
+    /// in: an explicit open says so in core's own words, with no reasons
+    /// around it and nothing to open again, and a tab's passive reopen,
+    /// its work tree re-pointed there, is the repository gone, naming the
+    /// work tree, so the tab is marked as it is for any re-point.
+    #[test]
+    fn a_work_tree_outside_its_folder_is_refused_in_core_s_words() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let root = base.join("repository");
+        let elsewhere = base.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::create_dir(&root).unwrap();
+        let init = Fixture::command(&root)
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let configured = Fixture::command(&root)
+            .args(["config", "core.worktree"])
+            .arg(&elsewhere)
+            .output()
+            .unwrap();
+        assert!(configured.status.success());
+        let said = format!(
+            "GitTurtle opens a repository only inside the folder Git found it in: the work tree of the repository at {} is {} (core.worktree).",
+            root.display(),
+            elsewhere.display()
+        );
+        let mut session = RepositorySession::default();
+        let explicit = session.open(&root, None, None).unwrap_err();
+        assert!(
+            explicit.is::<gitturtle_core::WorkTreeOutside>(),
+            "{explicit:#}"
+        );
+        let open = |path_root: Option<PathBuf>, session: &mut RepositorySession| {
+            execute(
+                Job::Open {
+                    path: root.clone(),
+                    scope: None,
+                    limit: 10,
+                    root: path_root,
+                    git_dir: None,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                session,
+            )
+            .err()
+            .expect("the open is refused")
+        };
+        let error = open(None, &mut session);
+        assert_eq!(format!("{error:#}"), said);
+        assert!(!error.is::<RepositoryGone>(), "{error:#}");
+
+        let reopened = session.open(&root, Some(&root), None).unwrap_err();
+        assert_eq!(
+            reopened.downcast::<RepositoryGone>().expect("gone"),
+            RepositoryGone {
+                path: root.clone(),
+                found: Some(elsewhere.clone()),
+            }
+        );
+        let error = open(Some(root.clone()), &mut session);
+        assert!(error.is::<RepositoryGone>(), "marks the tab: {error:#}");
     }
 
     /// A linked worktree's `commondir` re-pointed at another repository

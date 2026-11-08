@@ -180,6 +180,32 @@ impl std::fmt::Display for ChangedWhileOpening {
 
 impl std::error::Error for ChangedWhileOpening {}
 
+/// A repository [`GitRepository::open`] refused as it stands, nothing having
+/// changed: Git found it in one folder and reports a work tree outside that
+/// folder (`core.worktree`), which no `.git` entry leads back from, so no
+/// command could be confined to it.
+#[derive(Debug)]
+pub struct WorkTreeOutside {
+    /// Where Git found the repository: the folder holding its `.git` entry,
+    /// or its Git directory where no entry leads there.
+    pub path: PathBuf,
+    /// The work tree Git reports for it.
+    pub work_tree: PathBuf,
+}
+
+impl std::fmt::Display for WorkTreeOutside {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "GitTurtle opens a repository only inside the folder Git found it in: the work tree of the repository at {} is {} (core.worktree).",
+            self.path.display(),
+            self.work_tree.display()
+        )
+    }
+}
+
+impl std::error::Error for WorkTreeOutside {}
+
 #[cfg(test)]
 thread_local! {
     /// Runs in [`GitRepository::open`] between the capture and Git's
@@ -425,6 +451,58 @@ fn resolve_git_entry(holder: &Path) -> Option<PathBuf> {
     holder.join(path_from_bytes(target)).canonicalize().ok()
 }
 
+/// Where Git found the repository at `git_dir` from `requested`: the folder
+/// holding the `.git` entry that leads to it, or the Git directory itself
+/// where no entry does, as for a Git directory opened as it is.
+fn folder_found_in(requested: &Path, git_dir: &Path) -> PathBuf {
+    let requested = requested.canonicalize().ok();
+    requested
+        .as_deref()
+        .and_then(git_entry_holder)
+        .filter(|holder| resolve_git_entry(holder).as_deref() == Some(git_dir))
+        .unwrap_or(git_dir)
+        .to_path_buf()
+}
+
+/// What Git reports a folder's repository to be ([`GitRepository::open`]).
+#[derive(PartialEq, Eq)]
+struct Reported {
+    bare: bool,
+    git_dir: PathBuf,
+    /// The work-tree root (a bare repository's Git directory).
+    root: PathBuf,
+}
+
+impl Reported {
+    /// Git's answer from `requested`, unconfined; a folder inside a work
+    /// tree reports that work tree.
+    fn by_git(requested: &Path) -> Result<Self> {
+        let reported = run_git(
+            GitTarget::unconfined(requested),
+            &["rev-parse", "--is-bare-repository", "--absolute-git-dir"],
+        )?;
+        let split = reported
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .context("Git did not report the repository's Git directory")?;
+        let bare = &reported[..split] == b"true";
+        let git_dir = path_from_bytes(trim_line(&reported[split + 1..]));
+        let root = if bare {
+            git_dir.clone()
+        } else {
+            path_from_bytes(trim_line(&run_git(
+                GitTarget::unconfined(requested),
+                &["rev-parse", "--show-toplevel"],
+            )?))
+        };
+        Ok(Self {
+            bare,
+            git_dir,
+            root,
+        })
+    }
+}
+
 /// Whether a command failed because Git found no repository: how every
 /// command of an opened repository fails once its `.git` is gone. Decided by
 /// the type its failure carries ([`NotARepository`]), from Git's own words,
@@ -523,32 +601,19 @@ impl GitRepository {
         );
         // Discovery from the requested folder, unconfined: a folder inside a
         // work tree opens that work tree.
-        let reported = run_git(
-            GitTarget::unconfined(requested),
-            &["rev-parse", "--is-bare-repository", "--absolute-git-dir"],
-        )?;
-        let split = reported
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .context("Git did not report the repository's Git directory")?;
-        let bare = &reported[..split] == b"true";
-        let git_dir = path_from_bytes(trim_line(&reported[split + 1..]));
-        let path = if bare {
-            git_dir.clone()
-        } else {
-            path_from_bytes(trim_line(&run_git(
-                GitTarget::unconfined(requested),
-                &["rev-parse", "--show-toplevel"],
-            )?))
-        };
+        let reported = Reported::by_git(requested)?;
         ensure!(
-            path.is_absolute() && git_dir.is_absolute(),
+            reported.root.is_absolute() && reported.git_dir.is_absolute(),
             "Git returned a non-absolute repository path"
         );
-        let identity = Arc::new(Identity::capture(&path, &git_dir, bare)?);
+        let identity = Arc::new(Identity::capture(
+            &reported.root,
+            &reported.git_dir,
+            reported.bare,
+        )?);
         let repository = Self {
-            path,
-            bare,
+            path: reported.root.clone(),
+            bare: reported.bare,
             identity,
             batch: Arc::new(Mutex::new(None)),
         };
@@ -564,19 +629,29 @@ impl GitRepository {
                 hook();
             }
         });
-        match repository.found_at_path()? {
-            FoundAtPath::Same => Ok(repository),
-            FoundAtPath::Other(found) => Err(ChangedWhileOpening {
-                path: repository.path,
-                found: Some(found),
+        let found = match repository.found_at_path()? {
+            FoundAtPath::Same => return Ok(repository),
+            FoundAtPath::Other(found) => Some(found),
+            FoundAtPath::None => None,
+        };
+        // No `.git` entry leads from the work tree back to the Git directory
+        // and Git, asked again, reports both as it did: the layout as it
+        // stands, which the confinement refuses, with nothing to open again.
+        if !reported.bare
+            && repository.identity.holder.is_none()
+            && Reported::by_git(requested).is_ok_and(|now| now == reported)
+        {
+            return Err(WorkTreeOutside {
+                path: folder_found_in(requested, &repository.identity.git_dir),
+                work_tree: repository.path,
             }
-            .into()),
-            FoundAtPath::None => Err(ChangedWhileOpening {
-                path: repository.path,
-                found: None,
-            }
-            .into()),
+            .into());
         }
+        Err(ChangedWhileOpening {
+            path: repository.path,
+            found,
+        }
+        .into())
     }
 
     pub fn path(&self) -> &Path {
@@ -2020,6 +2095,123 @@ mod tests {
         .downcast::<ChangedWhileOpening>()
         .expect("refused as changed");
         assert_eq!(refused.found.as_deref(), Some(elsewhere.as_path()));
+    }
+
+    /// A repository in `folder` whose `core.worktree` is `work_tree`.
+    fn repository_working_elsewhere(folder: &Path, work_tree: &Path) {
+        std::fs::create_dir_all(folder).unwrap();
+        git(folder, &["init", "--quiet"]);
+        git(
+            folder,
+            &["config", "core.worktree", work_tree.to_str().unwrap()],
+        );
+    }
+
+    fn outside_message(path: &Path, work_tree: &Path) -> String {
+        format!(
+            "GitTurtle opens a repository only inside the folder Git found it in: the work tree of the repository at {} is {} (core.worktree).",
+            path.display(),
+            work_tree.display()
+        )
+    }
+
+    /// A layout Git reports the same both times, its work tree outside the
+    /// folder Git found the repository in, is refused as what it is, naming
+    /// both folders, with nothing to retry; it once said the repository
+    /// "changed while it was opened" and "Open it again". Opened from a
+    /// folder inside the repository, or with its work tree inside another
+    /// repository, it is still the same refusal.
+    #[test]
+    fn a_work_tree_outside_its_folder_is_refused_in_its_own_words() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let repository = base.join("repository");
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        repository_working_elsewhere(&repository, &elsewhere);
+        let inside = repository.join("inside");
+        std::fs::create_dir(&inside).unwrap();
+        for opened in [&repository, &inside] {
+            let refused = GitRepository::open(opened).unwrap_err();
+            assert!(!refused.is::<ChangedWhileOpening>(), "{refused:#}");
+            let message = refused.to_string();
+            assert_eq!(message, outside_message(&repository, &elsewhere));
+            assert!(!message.contains("Open it again"), "{message}");
+            let outside = refused.downcast::<WorkTreeOutside>().expect("its own");
+            assert_eq!(outside.path, repository);
+            assert_eq!(outside.work_tree, elsewhere);
+        }
+
+        // Inside another repository, whose own work tree Git finds there.
+        let enclosing = base.join("enclosing");
+        std::fs::create_dir(&enclosing).unwrap();
+        git(&enclosing, &["init", "--quiet"]);
+        let within = enclosing.join("within");
+        std::fs::create_dir(&within).unwrap();
+        let second = base.join("second");
+        repository_working_elsewhere(&second, &within);
+        let refused = GitRepository::open(&second).unwrap_err();
+        assert_eq!(refused.to_string(), outside_message(&second, &within));
+
+        // A Git directory opened as it is, with no `.git` entry: named itself.
+        let plain = base.join("plain.git");
+        std::fs::create_dir(&plain).unwrap();
+        git(&plain, &["init", "--quiet", "--bare"]);
+        git(&plain, &["config", "core.bare", "false"]);
+        git(
+            &plain,
+            &["config", "core.worktree", elsewhere.to_str().unwrap()],
+        );
+        let refused = GitRepository::open(&plain).unwrap_err();
+        assert_eq!(refused.to_string(), outside_message(&plain, &elsewhere));
+    }
+
+    /// A work tree outside its folder that Git reports differently the
+    /// second time was re-pointed while it was opened: changed, as is a
+    /// repository re-pointed there after an open. The handle already open
+    /// is refused as changed, and only a new open meets the layout as it
+    /// now stands.
+    #[test]
+    fn a_work_tree_re_pointed_outside_is_still_a_change() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let first = base.join("first");
+        let second = base.join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let repository = base.join("repository");
+        repository_working_elsewhere(&repository, &first);
+        let (folder, moved) = (repository.clone(), second.clone());
+        let refused = open_changed_part_way(&repository, move || {
+            git(
+                &folder,
+                &["config", "core.worktree", moved.to_str().unwrap()],
+            );
+        })
+        .unwrap_err();
+        assert!(!refused.is::<WorkTreeOutside>(), "{refused:#}");
+        let changed = refused
+            .downcast::<ChangedWhileOpening>()
+            .expect("refused as changed");
+        assert_eq!(changed.path, first);
+
+        let inside = base.join("inside");
+        std::fs::create_dir(&inside).unwrap();
+        git(&inside, &["init", "--quiet"]);
+        let opened = GitRepository::open(&inside).unwrap();
+        git(
+            &inside,
+            &["config", "core.worktree", second.to_str().unwrap()],
+        );
+        assert_eq!(
+            opened.verify_at_path().unwrap(),
+            FoundAtPath::Other(second.clone())
+        );
+        let refused = opened.ensure_found_at_path().unwrap_err().to_string();
+        assert!(refused.contains("The repository changed"), "{refused}");
+        assert!(refused.contains("Git was not started"), "{refused}");
+        let reopened = GitRepository::open(&inside).unwrap_err();
+        assert_eq!(reopened.to_string(), outside_message(&inside, &second));
     }
 
     /// The confinement appends to the person's own ceilings, never
