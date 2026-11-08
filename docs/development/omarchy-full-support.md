@@ -867,6 +867,11 @@ cover current upstream x86-64 Omarchy.
        (nit) Edit local commits' wheel rule: a resize and a wheel before the next prepaint are judged against
        the old reach, and a turn that changes direction within one frame is misrouted to the body: write the
        clamped offset back to the list's handle (FU30-B3 re-check).
+       (S, focus) At 18 pt in a 461 × 490 window: Blame's four Buttons draw no ring; rendered Markdown's side
+       headings overrun the comparison pane and cut two heading Buttons below its foot; the local document
+       dialog's content is a fixed 65 % of the window, taller than its capped body, so its Markdown's ring is
+       cut, and its Exact source / Rendered toggles' rings are cut on top, right and left at both sizes
+       (FU30-C2's audit; pinned there as known failures).
      - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
        (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
        Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
