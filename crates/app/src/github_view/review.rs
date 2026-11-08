@@ -48,7 +48,20 @@ pub(super) fn init(cx: &mut App) {
             KeyBinding::new("enter", ReviewAccept, Some(context)),
         ]);
     }
+    // The outbound confirmation's region scrolls its destination and text by line, by page
+    // and to either end while it holds focus ([`Panel::scroll_confirmation`]).
+    let context = Some(CONFIRMATION);
+    cx.bind_keys([
+        KeyBinding::new("up", ReviewUp, context),
+        KeyBinding::new("down", ReviewDown, context),
+        KeyBinding::new("home", ReviewHome, context),
+        KeyBinding::new("end", ReviewEnd, context),
+        KeyBinding::new("pageup", ReviewPageUp, context),
+        KeyBinding::new("pagedown", ReviewPageDown, context),
+    ]);
 }
+/// The key context of the outbound confirmation's scrolling region, the confirmation's stop.
+pub(super) const CONFIRMATION: &str = "GitTurtleGithubConfirmation";
 #[derive(Default, PartialEq)]
 pub(super) struct FocusObservation {
     pub focus: Option<FocusHandle>,
@@ -1658,6 +1671,12 @@ fn fits_together(
     part.1.max(content.1) - part.0.min(content.0) + inset * 2. <= height
 }
 
+/// The room [`Panel::reveal_on_focus`] keeps clear of the body's edges around a form's content:
+/// a line's room, which holds the form's padding, edge and focus ring.
+pub(super) fn reveal_room(window: &Window, _: &App) -> Pixels {
+    window.rem_size() + px(2.)
+}
+
 /// Adds to `bounds`, the children of a part focus has moved into, the content it owns below
 /// it (`owned`), where the part and that content fit `scroll`'s view together with `inset`,
 /// the ring's room, above and below: the reveal then shows them both, and the content is
@@ -1688,16 +1707,25 @@ fn own(bounds: &mut Vec<Bounds<Pixels>>, owned: &Owned, scroll: &ScrollHandle, i
 
 impl Panel {
     /// For the `on_children_prepainted` of the element holding a form that `focus` tracks,
-    /// such as the reply composer or the outbound confirmation, which report the content inside
-    /// their padding: when focus moves into it, by the keyboard or not, the body scrolls to
-    /// show its children with a line's room clear of its edges ([`reveal`]), which holds the
-    /// form's padding, edge and focus ring, and not at all where they are in view with that
-    /// room.
+    /// such as the reply composer, or holding its stop, as the outbound confirmation holds its
+    /// region ([`Panel::reveal_ringed_on_focus`]), which report the content inside their
+    /// padding: when focus moves into it, by the keyboard or not, the body scrolls to show its
+    /// children with a line's room clear of its edges ([`reveal`]), which holds the form's
+    /// padding, edge and focus ring, and not at all where they are in view with that room.
     pub(super) fn reveal_on_focus(
         &self,
         focus: FocusHandle,
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
-        self.reveal_focus(focus, |window, _| window.rem_size() + px(2.))
+        self.reveal_focus(focus, reveal_room, false)
+    }
+    /// [`Panel::reveal_on_focus`] for the element holding a stop that draws its ring on its own
+    /// edge at its top, as the outbound confirmation's region does: taller than the body, its
+    /// children show from their top, the ring's top edge in view.
+    pub(super) fn reveal_ringed_on_focus(
+        &self,
+        focus: FocusHandle,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        self.reveal_focus(focus, reveal_room, true)
     }
     /// [`Panel::reveal_on_focus`] for the element holding a field alone, whose edge is its own,
     /// as the destination field and the review summary are: the body scrolls only where the
@@ -1709,15 +1737,17 @@ impl Panel {
         &self,
         focus: FocusHandle,
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
-        self.reveal_focus(focus, |_, cx| appearance::button_ring_room(cx))
+        self.reveal_focus(focus, |_, cx| appearance::button_ring_room(cx), false)
     }
-    /// Reveals what `focus` moves into with `room(window, cx)` clear of the body's edges. While
-    /// the panel reopens onto it, it records where it lies and waits as the body's parts do
-    /// ([`Reopening`]).
+    /// Reveals what `focus` moves into with `room(window, cx)` clear of the body's edges, from
+    /// its top where it is taller than the body and `ringed`, `focus` drawing its ring on its
+    /// own edge. While the panel reopens onto it, it records where it lies and waits as the
+    /// body's parts do ([`Reopening`]).
     fn reveal_focus(
         &self,
         focus: FocusHandle,
         room: fn(&Window, &App) -> Pixels,
+        ringed: bool,
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
         let scroll = self.review.body_scroll.clone();
         let revealed = self.review.revealed_focus.clone();
@@ -1730,7 +1760,8 @@ impl Panel {
                     return;
                 }
                 let inset = room(window, cx);
-                reveal(&scroll, &revealed, &blocks, bounds, inset, None, window, cx);
+                let edge = ringed.then_some(&focus);
+                reveal(&scroll, &revealed, &blocks, bounds, inset, edge, window, cx);
             }
         }
     }

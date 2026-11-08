@@ -2686,12 +2686,9 @@ impl Render for Panel {
                 .child(self.part("submit",div(),cx).flex().flex_wrap_reverse().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).debug_selector(||"github-draft-status".into()).min_w_0().mx(text_inset()).role(Role::Status).polite().text_color(rgb(p.muted)))
                     .child(button("github-review-submit","Review submission…","",true).debug_selector(||"github-review-submit".into()).ml_auto().disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx))))))
             .child(self.render_reply_composer(cx))
-            .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().debug_selector(||"github-confirmation".into()).on_children_prepainted(self.reveal_on_focus(self.conversations.confirm_focus.clone())).track_focus(&self.conversations.confirm_focus).tab_stop(true).map(bordered_pane).border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()
-                .child(label("github-confirm-destination",format!("{}\nAccount · {}",confirmation.action.destination(),confirmation.account)).font_weight(FontWeight::SEMIBOLD))
-                .child(review::clipped(div().id("github-confirm-text-scroll").debug_selector(||"github-confirm-text-scroll".into()).flex_shrink_0().max_h(px(180.)).overflow_y_scroll().child(label("github-confirm-text",match &confirmation.action{Action::Create(pull)=>format!("{}\n\n{}",pull.title,pull.body),Action::Comment{body,..}|Action::Reply{body,..}=>body.clone(),Action::SetThreadResolved{resolved,..}=>if *resolved{"Resolve this conversation"}else{"Reopen this conversation"}.into(),Action::Review(review)=>format!("{} review · {}\n\n{}{}",review.event.label(),crate::counted(review.comments.len(),"inline comment","inline comments"),review.body,review.comments.iter().map(|comment|format!("\n\n{}\n{}",github::review::position_label(comment),comment.body)).collect::<String>())}))))
-                .child(label("github-confirm-guidance","Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.").text_color(rgb(p.muted)))
-                .child(div().flex().gap_2().child(button("github-confirm-send",if self.review.fixture{"Send to offline fixture"}else{"Send to GitHub"},"",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.submit(window,cx))))
-                    .child(button("github-edit-submission","Keep editing","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.confirm=None;this.focus_visible_section(window,cx);cx.notify();}))))))
+            // The outbound confirmation, its stop a region that scrolls its destination and
+            // text ([`Panel::render_confirmation`]).
+            .when_some(self.confirm.as_ref(),|element,confirmation|element.child(self.render_confirmation(confirmation,window,cx)))
             .child(self.part("recovery",div(),cx).flex().flex_wrap().items_center().gap_2().child(button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open).debug_selector(||"github-recovery-toggle".into()).mr(-text_inset()).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open= !this.review.recovery_open;cx.notify();})))
                 .child(phrases("github-passive-policy",if cfg!(target_os="macos"){"Drafts stay on this Mac · outbound actions are explicit"}else{"Drafts stay on this computer · outbound actions are explicit"}).min_w_0().ml(text_inset()).text_color(rgb(p.muted))))
             .when(self.review.recovery_open,|element|element
@@ -8893,7 +8890,7 @@ mod tests {
         "github-patch-rows",
         "github-source-text",
         "github-collected-comments",
-        "github-confirm-text-scroll",
+        "github-confirm-region",
         "github-saved-drafts",
         "github-attempt-list",
         "github-reply-outcome",
@@ -10830,6 +10827,359 @@ mod tests {
                 assert!(shown, "{at}: the list is whole: {place}");
             }
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A confirmation a test opens, by what it confirms, and how it is made.
+    type Confirming = (&'static str, fn() -> Confirmation);
+
+    /// A reply to a conversation confirmed for sending, its destination naming every node ID
+    /// its target has, after the fixture PR's full head and base commit IDs, and its text
+    /// `lines` lines long, ending "The reply's last line.".
+    fn confirmed_long_reply(lines: usize) -> Confirmation {
+        let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+        let target = CapturedThread {
+            pull: github::review::fixture_pull(false).capture(repository),
+            account: "offline-reviewer".into(),
+            account_id: "U_kgDOAccountNode0123456789".into(),
+            repository_id: "R_kgDORepositoryNode0123456789".into(),
+            pull_id: "PR_kwDOPullRequestNode0123456789".into(),
+            thread_id: "PRRT_kwDOReviewThreadNode0123456789".into(),
+            path: "src/deeply/nested/module/with/a/long/path/review.rs".into(),
+            root_comment_id: Some("PRRC_kwDORootCommentNode0123456789".into()),
+            original_commit_id: None,
+        };
+        let mut body: Vec<String> = (1..lines)
+            .map(|line| format!("Line {line} of a reply long enough to run past the region."))
+            .collect();
+        body.push("The reply's last line.".into());
+        Confirmation {
+            account: target.account.clone(),
+            action: Action::Reply {
+                target,
+                body: body.join("\n"),
+            },
+        }
+    }
+
+    /// The outbound confirmation's one Tab stop is the region that scrolls its destination and
+    /// text: at 13 pt in a 1,480 × 973 window and at 18 pt in a 461 × 490 one, for a comment and
+    /// for a long reply whose destination names every node ID, a walk with Tab and one with
+    /// Shift+Tab round the panel's Review each meet the region once, its ring whole on the edge
+    /// of the room around it, with Send and Keep editing whole in the body's view below it, and
+    /// every other stop's ring whole too (`focus_ring::sweep`). Shown whole, the confirmation
+    /// was the stop, 446 px tall at 18 pt in a 461 × 490 window, where the body is about 265 px,
+    /// so no reveal could draw its ring whole; made without a Tab stop, its handle let both walks
+    /// pass over it.
+    #[gpui::test]
+    async fn the_confirmation_is_one_stop_whole_beside_send(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let region = panel.read_with(cx, |panel, _| panel.conversations.confirm_focus.clone());
+        let confirmations: [Confirming; 2] = [
+            ("a comment", confirmed_comment),
+            ("a long reply", || confirmed_long_reply(40)),
+        ];
+        let mut failures = Vec::new();
+        for (interface, width, height) in [(13, 1480., 973.), (18, 461., 490.)] {
+            sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(width), px(height)));
+            for (kind, confirmation) in confirmations {
+                for key in ["tab", "shift-tab"] {
+                    let at =
+                        format!("{kind} by {key} at {interface} pt in a {width} × {height} window");
+                    // The confirmation as Review submission… opens it, its region focused.
+                    cx.update(|window, cx| {
+                        panel.update(cx, |panel, cx| {
+                            panel.pull = Some(pull.clone());
+                            panel.review.show_list = false;
+                            panel.review.section = Section::Review;
+                            panel.confirm = Some(confirmation());
+                            panel.focus_confirmation(window, cx);
+                        })
+                    });
+                    cx.executor().run_until_parked();
+                    let mut met = 0;
+                    sweep::walk_each(
+                        &app,
+                        cx,
+                        key,
+                        &format!(
+                            "the GitHub panel's confirmation of {kind} in a {width} × {height} window"
+                        ),
+                        interface,
+                        &mut failures,
+                        &mut |cx, stop, ring| {
+                            if !cx.update(|window, _| region.is_focused(window)) {
+                                return;
+                            }
+                            met += 1;
+                            let edge = cx
+                                .debug_bounds("github-confirm-ring")
+                                .expect("the ring's room");
+                            assert!(
+                                ring.iter().any(|outline| outline.whole
+                                    && sweep::rings_edge(&[outline.bounds], edge)),
+                                "{stop}: the region draws its ring whole on {edge:?}, not only {ring:?}"
+                            );
+                            let body = cx.debug_bounds("github-panel").expect("the body");
+                            for shown in [
+                                "github-confirm-ring",
+                                "github-confirm-send",
+                                "github-edit-submission",
+                            ] {
+                                let drawn = cx.debug_bounds(shown).expect(shown);
+                                assert!(
+                                    drawn.top() >= body.top() - px(0.5)
+                                        && drawn.bottom() <= body.bottom() + px(0.5),
+                                    "{stop}: {shown} {drawn:?} lies whole in the body {body:?}"
+                                );
+                            }
+                        },
+                    );
+                    assert_eq!(met, 1, "{at}: the walk meets the region once");
+                }
+            }
+        }
+        sweep::assert_whole(failures);
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The confirmation's region scrolls by keys while it holds focus, under its own key
+    /// context: at 13 pt in a 1,480 × 973 window and at 18 pt in a 461 × 490 one, a reply whose
+    /// destination names every node ID and whose text runs past the region opens at its top;
+    /// Down and Up move it a line, Page Down to its end, where its last line ends at the region's
+    /// foot, End stays there and Home goes back to its top, focus staying on the region and Send
+    /// whole in the body's view. The region is a group named by the confirmation's title that
+    /// holds the destination, with the full head and base commit IDs and every node ID, and the
+    /// text.
+    #[gpui::test]
+    async fn the_confirmation_region_scrolls_a_long_reply_by_keys(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let (region, scroll) = panel.read_with(cx, |panel, _| {
+            (
+                panel.conversations.confirm_focus.clone(),
+                panel.conversations.confirm_scroll.clone(),
+            )
+        });
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        let near = |a: Pixels, b: Pixels| (a - b).abs() <= px(0.01);
+        for (interface, width, height) in [(13, 1480., 973.), (18, 461., 490.)] {
+            let at = format!("{interface} pt in a {width} × {height} window");
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(width), px(height)));
+            let confirmation = confirmed_long_reply(60);
+            let Action::Reply { target, .. } = &confirmation.action else {
+                unreachable!("a reply")
+            };
+            let target = target.clone();
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.pull = Some(pull.clone());
+                    panel.review.show_list = false;
+                    panel.review.section = Section::Review;
+                    panel.confirm = Some(confirmation);
+                    panel.focus_confirmation(window, cx);
+                })
+            });
+            cx.executor().run_until_parked();
+            written::forget();
+            frames(cx);
+
+            let group = written::get("github-confirm-region").expect("the region's node");
+            assert_eq!(
+                group.node.role(),
+                Role::Group,
+                "{at}: the region is a group"
+            );
+            assert_eq!(
+                group.node.label(),
+                Some("Confirm the reply: its destination and what Send sends"),
+                "{at}: named by the confirmation's title"
+            );
+            for held in ["github-confirm-destination", "github-confirm-text"] {
+                assert!(
+                    written::lies_in(held, "github-confirm-region"),
+                    "{at}: the region holds {held}"
+                );
+            }
+            let destination = written::get("github-confirm-destination")
+                .and_then(|text| text.node.value().map(str::to_owned))
+                .expect("the destination's text");
+            assert_eq!(target.pull.head.sha.len(), 40, "a full commit ID");
+            for identity in [
+                &target.pull.head.sha,
+                &target.pull.base.sha,
+                &target.account_id,
+                &target.repository_id,
+                &target.pull_id,
+                &target.thread_id,
+            ] {
+                assert!(
+                    destination.contains(identity.as_str()),
+                    "{at}: the destination names {identity} whole: {destination}"
+                );
+            }
+
+            let send = |cx: &mut VisualTestContext, after: &str| {
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let drawn = cx.debug_bounds("github-confirm-send").expect("Send");
+                assert!(
+                    drawn.top() >= body.top() - px(0.5)
+                        && drawn.bottom() <= body.bottom() + px(0.5),
+                    "{at}, after {after}: Send {drawn:?} lies whole in the body {body:?}"
+                );
+                assert!(
+                    cx.update(|window, _| region.is_focused(window)),
+                    "{at}, after {after}: the region keeps focus"
+                );
+            };
+            let end = scroll.max_offset().y;
+            assert!(end > px(0.), "{at}: the reply runs past the region");
+            assert!(
+                near(scroll.offset().y, px(0.)),
+                "{at}: the region opens at its top"
+            );
+            send(cx, "opening");
+            let line = panel.read_with(cx, |panel, _| panel.conversations.confirm_fit.get().line);
+            assert!(line > px(0.), "{at}: the line measured");
+            cx.simulate_keystrokes("down");
+            frames(cx);
+            assert!(
+                near(scroll.offset().y, -line),
+                "{at}: Down moves a line: {:?}",
+                scroll.offset()
+            );
+            cx.simulate_keystrokes("up");
+            frames(cx);
+            assert!(near(scroll.offset().y, px(0.)), "{at}: Up moves it back");
+            let mut presses = 0;
+            while !near(scroll.offset().y, -end) && presses < 100 {
+                cx.simulate_keystrokes("pagedown");
+                frames(cx);
+                presses += 1;
+            }
+            assert!(
+                near(scroll.offset().y, -end),
+                "{at}: Page Down reaches the end"
+            );
+            let (shown, text) = (
+                cx.debug_bounds("github-confirm-region")
+                    .expect("the region"),
+                cx.debug_bounds("github-confirm-text").expect("the text"),
+            );
+            assert!(
+                (text.bottom() - shown.bottom()).abs() <= px(0.5),
+                "{at}: the reply's last line ends at the region's foot: {text:?} in {shown:?}"
+            );
+            send(cx, "Page Down");
+            cx.simulate_keystrokes("end");
+            frames(cx);
+            assert!(near(scroll.offset().y, -end), "{at}: End stays at the end");
+            cx.simulate_keystrokes("pageup");
+            frames(cx);
+            assert!(scroll.offset().y > -end, "{at}: Page Up moves back a page");
+            cx.simulate_keystrokes("home");
+            frames(cx);
+            assert!(
+                near(scroll.offset().y, px(0.)),
+                "{at}: Home returns to the top"
+            );
+            send(cx, "Home");
+        }
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Reopening hands focus to the shown section's first stop, drawn whole, where the control
+    /// that held it as the panel closed lies out of the reopened body's view: Files' Source
+    /// editor, focused by Tab and whole in view beside the changed-file list at 13 pt in a
+    /// 1,480 × 973 window as Escape closes the panel, lies below the body's fold under that list
+    /// once the window is 461 × 490 and the text 18 pt, so the header's Pull requests reopens
+    /// the panel onto the list, whole in view, and not onto the editor out of view.
+    #[gpui::test]
+    async fn reopening_past_a_source_editor_out_of_view_focuses_the_file_list(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        show_surface(
+            (&app, &panel, &pull, &files),
+            Surface::Source,
+            (13, 1480., 973.),
+            cx,
+        )
+        .await;
+        let (list, source) = cx.read(|cx| {
+            let panel = panel.read(cx);
+            let source = panel.review.source.as_ref().expect("Source's editor");
+            (
+                panel.review.file_focus.clone(),
+                source.read(cx).focus_handle(cx),
+            )
+        });
+        let focused = |cx: &mut VisualTestContext, focus: &FocusHandle| {
+            cx.update(|window, _| focus.is_focused(window))
+        };
+        for _ in 0..12 {
+            if focused(cx, &source) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            frames(cx);
+        }
+        assert!(focused(cx, &source), "Tab reaches Source's editor");
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let editor = cx.debug_bounds("github-source-patch").expect("Source");
+        assert!(
+            editor.top() >= body.top() && editor.bottom() <= body.bottom(),
+            "Source {editor:?} is whole in the body {body:?} as the panel closes"
+        );
+        escape(cx);
+        crate::focus_ring::sweep::interface_size(cx, 18);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        crate::copy_feedback::tests::click(cx, "pull-requests");
+        settle_panel(&app, cx).await;
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the header's Pull requests reopens the panel"
+        );
+        frames(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        assert!(
+            focused(cx, &list),
+            "the changed-file list, Files' first stop, takes focus"
+        );
+        let editor = cx.debug_bounds("github-source-patch").expect("Source");
+        assert!(
+            editor.top() >= body.bottom() || editor.bottom() <= body.top(),
+            "Source {editor:?} lies out of the reopened body {body:?}"
+        );
+        let shown = cx.debug_bounds("github-file-focus").expect("the list");
+        assert!(
+            shown.top() - room >= body.top() - px(0.5)
+                && shown.bottom() + room <= body.bottom() + px(0.5),
+            "the list {shown:?} is whole in the body {body:?}"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

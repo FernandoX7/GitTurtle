@@ -30,7 +30,13 @@ pub(super) struct State {
     pub input: Entity<TextareaState>,
     pub deferred: DeferredDraft,
     pub timer: Option<Task<()>>,
+    /// The outbound confirmation's stop, the region that scrolls its destination and text,
+    /// which takes focus as the confirmation opens ([`Panel::render_confirmation`]).
     pub confirm_focus: FocusHandle,
+    /// The scroll of the confirmation's region, at its top as each confirmation opens.
+    pub confirm_scroll: ScrollHandle,
+    /// What the confirmation drew besides its region in the last frame ([`ConfirmFit`]).
+    pub confirm_fit: std::rc::Rc<std::cell::Cell<ConfirmFit>>,
     /// The conversation list's scroll, which Tab moves to show a conversation's actions
     /// (`Panel::conversation_part`), and the focus it last showed.
     pub list_scroll: ScrollHandle,
@@ -49,6 +55,51 @@ pub(super) struct State {
     /// into view ([`Panel::reveal_outcome`]).
     pub outcome_shown: std::rc::Rc<std::cell::RefCell<Option<Shown>>>,
 }
+/// What the outbound confirmation drew besides its region in the last frame, which the region
+/// leaves room for in the panel's body ([`Panel::render_confirmation`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct ConfirmFit {
+    /// Everything the confirmation's content draws besides its region and the guidance: the
+    /// room around the region for its ring, the row of Send and Keep editing, and the gap
+    /// between them.
+    pub chrome: Pixels,
+    /// The guidance sentence's height, wherever it is drawn.
+    pub guidance: Pixels,
+    /// How far apart its 12 pt lines are drawn: the root style's line height at that size,
+    /// snapped to a device pixel, as a text element lays its lines out.
+    pub line: Pixels,
+    /// How tall what the region holds is: the region takes that height where it fits under
+    /// its cap, and the cap's otherwise, so each frame lays it out at a height of its own.
+    pub content: Pixels,
+}
+impl ConfirmFit {
+    /// Whether `other` measures the same, to a half pixel.
+    fn agrees(&self, other: &Self) -> bool {
+        [
+            (self.chrome, other.chrome),
+            (self.guidance, other.guidance),
+            (self.line, other.line),
+            (self.content, other.content),
+        ]
+        .into_iter()
+        .all(|(a, b)| (a - b).abs() <= px(0.5))
+    }
+}
+
+/// The outbound confirmation's title, which names its region for assistive technologies.
+fn confirmation_title(action: &Action) -> &'static str {
+    match action {
+        Action::Create(_) => "Confirm the new pull request",
+        Action::Comment { .. } => "Confirm the comment",
+        Action::Review(_) => "Confirm the review",
+        Action::Reply { .. } => "Confirm the reply",
+        Action::SetThreadResolved { resolved: true, .. } => "Confirm resolving the conversation",
+        Action::SetThreadResolved {
+            resolved: false, ..
+        } => "Confirm reopening the conversation",
+    }
+}
+
 /// An outcome the composer shows: its failure, or that Cancel stopped its request, and how many
 /// presses the failure line has answered, so the same refusal pressed again is shown again.
 pub(super) type Shown = (Option<String>, Option<&'static str>, usize);
@@ -71,7 +122,11 @@ impl State {
             }),
             deferred: DeferredDraft::default(),
             timer: None,
-            confirm_focus: cx.focus_handle(),
+            // A Tab stop: GPUI ignores the `tab_stop` of the div that tracks this handle, so
+            // the handle carries it.
+            confirm_focus: cx.focus_handle().tab_stop(true),
+            confirm_scroll: ScrollHandle::new(),
+            confirm_fit: Default::default(),
             list_scroll: ScrollHandle::new(),
             list_revealed: Default::default(),
             list_blocks: Default::default(),
@@ -458,8 +513,325 @@ impl Panel {
     }
     pub(super) fn focus_confirmation(&self, window: &mut Window, cx: &mut Context<Self>) {
         *self.review.revealed_focus.borrow_mut() = Default::default();
+        // A new confirmation shows its destination first.
+        self.conversations
+            .confirm_scroll
+            .set_offset(point(px(0.), px(0.)));
         self.conversations.confirm_focus.focus(window, cx);
         cx.notify();
+    }
+    /// Scrolls the outbound confirmation's region, which holds focus, by `key`: a line up or
+    /// down, a page, its view less a line, up or down, or to either end.
+    pub(super) fn scroll_confirmation(&mut self, key: &str, cx: &mut Context<Self>) {
+        let scroll = &self.conversations.confirm_scroll;
+        let (offset, end) = (-scroll.offset().y, scroll.max_offset().y.max(Pixels::ZERO));
+        let line = self.conversations.confirm_fit.get().line.max(px(1.));
+        let page = (scroll.bounds().size.height - line).max(line);
+        let to = match key {
+            "up" => offset - line,
+            "down" => offset + line,
+            "pageup" => offset - page,
+            "pagedown" => offset + page,
+            "home" => Pixels::ZERO,
+            _ => end,
+        }
+        .clamp(Pixels::ZERO, end);
+        if to != offset {
+            scroll.set_offset(point(scroll.offset().x, -to));
+            cx.notify();
+        }
+    }
+    /// The outbound confirmation. Its one Tab stop is a region that scrolls the destination,
+    /// with every full identity it names, and then the text Send sends: the region takes the
+    /// room the panel's body leaves beside the rest of the confirmation, which the last frame
+    /// measured ([`ConfirmFit`]), and never less than two lines, so the region's ring and Send
+    /// and Keep editing below it stay in view together where the body can hold them. The
+    /// guidance sentence stands above Send where the body holds it, the region's two lines and
+    /// the buttons, and otherwise in the region after the destination. Shown whole, the
+    /// confirmation was the stop, 446 px tall at 18 pt in a 461 × 490 window, where the body is
+    /// about 265 px tall, and no reveal could draw its ring whole. The region draws its ring on
+    /// the edge of the room it keeps around itself, inside the confirmation's padding, whose
+    /// resting border stays as it is, so nothing moves for the ring.
+    pub(super) fn render_confirmation(
+        &self,
+        confirmation: &Confirmation,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = palette(cx);
+        let pending = self.pending;
+        let drawn = self.conversations.confirm_fit.get();
+        // The room around the region its ring lies on the edge of.
+        let ring = appearance::button_ring_room(cx);
+        let gap = window.rem_size() * 0.5;
+        // The body's view, less the room the confirmation's reveal keeps at either edge: the
+        // view the last frame drew where the body overflowed it, which the dialog can hold
+        // shorter than the body's cap, and otherwise the cap, less the top line standing above
+        // the body while a conversation is open.
+        let scroll = &self.review.body_scroll;
+        let view = if scroll.max_offset().y > Pixels::ZERO {
+            scroll.bounds().size.height
+        } else {
+            let top_line = if self.review.top_line_pinned.get() {
+                self.review.top_line.get()
+            } else {
+                Pixels::ZERO
+            };
+            window.pixel_snap(super::body_max_height(window) - top_line)
+        };
+        let left = view - super::review::reveal_room(window, cx) * 2.;
+        let floor = drawn.line * 2.;
+        let inside = drawn.chrome + drawn.guidance + gap + floor > left;
+        let height = (left
+            - drawn.chrome
+            - if inside {
+                Pixels::ZERO
+            } else {
+                drawn.guidance + gap
+            })
+        .max(floor);
+        // The region's height: what it holds where that fits, as the last frame measured it.
+        let height = if drawn.content > Pixels::ZERO {
+            drawn.content.min(height)
+        } else {
+            height
+        };
+        let fit = self.conversations.confirm_fit.clone();
+        let guidance = div()
+            .on_children_prepainted(move |children, _, _| {
+                if let Some(drawn) = children.first() {
+                    let mut kept = fit.get();
+                    kept.guidance = drawn.size.height;
+                    fit.set(kept);
+                }
+            })
+            .child(label("github-confirm-guidance","Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.").text_color(rgb(p.muted)));
+        let (within, below) = if inside {
+            (Some(guidance), None)
+        } else {
+            (None, Some(guidance))
+        };
+        let text = match &confirmation.action {
+            Action::Create(pull) => format!("{}\n\n{}", pull.title, pull.body),
+            Action::Comment { body, .. } | Action::Reply { body, .. } => body.clone(),
+            Action::SetThreadResolved { resolved, .. } => if *resolved {
+                "Resolve this conversation"
+            } else {
+                "Reopen this conversation"
+            }
+            .into(),
+            Action::Review(review) => format!(
+                "{} review · {}\n\n{}{}",
+                review.event.label(),
+                crate::counted(review.comments.len(), "inline comment", "inline comments"),
+                review.body,
+                review
+                    .comments
+                    .iter()
+                    .map(|comment| format!(
+                        "\n\n{}\n{}",
+                        github::review::position_label(comment),
+                        comment.body
+                    ))
+                    .collect::<String>()
+            ),
+        };
+        let focus = &self.conversations.confirm_focus;
+        let edge = self
+            .owner
+            .upgrade()
+            .and_then(|owner| owner.read(cx).focus_ring.edge(focus, rgb(p.accent)));
+        let region = crate::native_accessibility::clips_children(
+            div()
+                .id("github-confirm-region")
+                .debug_selector(|| "github-confirm-region".into())
+                .key_context(super::review::CONFIRMATION)
+                .on_action(cx.listener(|this, _: &super::review::ReviewUp, _, cx| {
+                    this.scroll_confirmation("up", cx);
+                    cx.stop_propagation();
+                }))
+                .on_action(cx.listener(|this, _: &super::review::ReviewDown, _, cx| {
+                    this.scroll_confirmation("down", cx);
+                    cx.stop_propagation();
+                }))
+                .on_action(cx.listener(|this, _: &super::review::ReviewHome, _, cx| {
+                    this.scroll_confirmation("home", cx);
+                    cx.stop_propagation();
+                }))
+                .on_action(cx.listener(|this, _: &super::review::ReviewEnd, _, cx| {
+                    this.scroll_confirmation("end", cx);
+                    cx.stop_propagation();
+                }))
+                .on_action(cx.listener(|this, _: &super::review::ReviewPageUp, _, cx| {
+                    this.scroll_confirmation("pageup", cx);
+                    cx.stop_propagation();
+                }))
+                .on_action(
+                    cx.listener(|this, _: &super::review::ReviewPageDown, _, cx| {
+                        this.scroll_confirmation("pagedown", cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .track_focus(focus)
+                .track_scroll(&self.conversations.confirm_scroll)
+                .role(Role::Group)
+                .aria_label(format!(
+                    "{}: its destination and what Send sends",
+                    confirmation_title(&confirmation.action)
+                ))
+                .flex_shrink_0()
+                .min_w_0()
+                .h(height)
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .child(
+                    // What it holds, measured as it prepaints ([`ConfirmFit::content`]): a
+                    // div that tracks a scroll reports no children to its own listener.
+                    div()
+                        .on_children_prepainted({
+                            let fit = self.conversations.confirm_fit.clone();
+                            move |children, _, _| {
+                                if let Some(span) =
+                                    children.iter().copied().reduce(|a, b| a.union(&b))
+                                {
+                                    let mut kept = fit.get();
+                                    kept.content = span.size.height;
+                                    fit.set(kept);
+                                }
+                            }
+                        })
+                        .flex_shrink_0()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            label(
+                                "github-confirm-destination",
+                                format!(
+                                    "{}\nAccount · {}",
+                                    confirmation.action.destination(),
+                                    confirmation.account
+                                ),
+                            )
+                            .font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .children(within)
+                        .child(label("github-confirm-text", text)),
+                ),
+        );
+        // What the confirmation draws besides the region, measured as it prepaints: the room
+        // around the region, the guidance where it stands below it, and the row of buttons,
+        // with the gaps between them.
+        let (fit, revealed, held) = (
+            self.conversations.confirm_fit.clone(),
+            self.review.revealed_focus.clone(),
+            focus.clone(),
+        );
+        let measure = move |children: &[Bounds<Pixels>], window: &mut Window, cx: &mut App| {
+            let (Some(around), Some(span)) = (
+                children.first(),
+                children.iter().copied().reduce(|a, b| a.union(&b)),
+            ) else {
+                return;
+            };
+            let region = around.size.height - ring * 2.;
+            let guidance = match children {
+                [_, guidance, _] => guidance.size.height + window.rem_size() * 0.5,
+                _ => Pixels::ZERO,
+            };
+            let rem = window.rem_size();
+            let style = window.text_style();
+            let measured = ConfirmFit {
+                chrome: span.size.height - region - guidance,
+                guidance: fit.get().guidance,
+                content: fit.get().content,
+                line: window.pixel_snap(
+                    style
+                        .line_height
+                        .to_pixels(appearance::ui_text(12.).into(), rem),
+                ),
+            };
+            fit.set(measured);
+            if !measured.agrees(&drawn) {
+                // The region was sized from another measure: the next frame sizes it from
+                // this one and, where the region holds focus, reveals it again as it lies then.
+                let (revealed, held) = (revealed.clone(), held.clone());
+                window.defer(cx, move |window, _| {
+                    if held.is_focused(window) {
+                        *revealed.borrow_mut() = Default::default();
+                    }
+                    window.refresh();
+                });
+            }
+        };
+        let reveal = self.reveal_ringed_on_focus(focus.clone());
+        div()
+            .debug_selector(|| "github-confirmation".into())
+            .flex_shrink_0()
+            .on_children_prepainted(move |children, window, cx| {
+                measure(&children, window, cx);
+                reveal(children, window, cx);
+            })
+            .map(super::bordered_pane)
+            .border_1()
+            .border_color(rgb(p.border))
+            .rounded(px(7.))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .debug_selector(|| "github-confirm-ring".into())
+                    .relative()
+                    .flex_shrink_0()
+                    .min_w_0()
+                    // The room reaches into the confirmation's side padding, so the text keeps
+                    // the panel's text edge; above and below it is the room's own. Taken back by
+                    // a negative margin there too, the room left the confirmation laid out as
+                    // tall as its padding alone, 21 px at 13 pt, everything in it drawn below
+                    // its foot, and the body, laid out without it, could not scroll to it.
+                    .mx(-ring)
+                    .p(ring)
+                    .child(super::review::clipped(region))
+                    .children(edge),
+            )
+            .children(below)
+            .child(
+                // Two lines where one is too narrow for both, as at 18 pt in a 461 px window,
+                // where Keep editing ran past the body's edge.
+                self.part("confirmation-actions", div(), cx)
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        button(
+                            "github-confirm-send",
+                            if self.review.fixture {
+                                "Send to offline fixture"
+                            } else {
+                                "Send to GitHub"
+                            },
+                            "",
+                            true,
+                        )
+                        .debug_selector(|| "github-confirm-send".into())
+                        .disabled(pending)
+                        .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
+                    )
+                    .child(
+                        button("github-edit-submission", "Keep editing", "", false)
+                            .debug_selector(|| "github-edit-submission".into())
+                            .disabled(pending)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.confirm = None;
+                                this.focus_visible_section(window, cx);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .into_any_element()
     }
     pub(super) fn finish_conversation_action(
         &mut self,
