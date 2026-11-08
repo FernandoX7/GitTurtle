@@ -751,6 +751,12 @@ cover current upstream x86-64 Omarchy.
      then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
+     - **Found on 2026-11-08 (this session's reviews):** (M, performance, measure first) `PhraseLine` costs O(runs) per frame
+       against O(1) for the plain text it replaced; a release measurement of the GitHub panel's body scroll (about 30 runs) decides
+       whether shaped lines are kept in `PreparedPhrases`. (S) A non-quiet read with unchanged entries still centres an off-screen
+       Working cursor (`workspace.rs:~2804`, after Refresh or a Fetch that finds nothing). (S) `files_fit` (`review.rs:~3487`) still
+       reads the last frame's top line. (S, hardening, no known producer) `redact_diagnostic` leaves forms outside its marker list
+       whole (`password: x`) and its URL stage handles only the first `://` per token.
      - **Found on 2026-11-08 (the FU30-D5b and FU30-D8 reviews):** (M, focus, the first-frame rule, decided
        2026-11-07) the GitHub panel body's reveal is decided before layout, so whatever a reopen or an opening
        confirmation focuses is whole in its first painted frame. Today `review::show` reveals after paint: Send and
