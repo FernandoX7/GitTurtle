@@ -2722,6 +2722,14 @@ impl Render for Panel {
             self.review.pull_revealed.clone(),
             self.conversations.list_revealed.clone(),
         );
+        // In the frame that first draws the reopened panel, the part holding the control focus
+        // went back to is revealed from that frame's layout ([`review::Reopened`]).
+        let content = review::reopened(
+            content,
+            self.review.reopening.clone(),
+            self.review.body_scroll.clone(),
+            self.review.body_blocks.clone(),
+        );
         let body = cue.list(
             div()
                 .on_children_prepainted(cue.observe(move |_, window, cx| {
@@ -2733,6 +2741,8 @@ impl Render for Panel {
                         cx,
                     );
                     blocks.finish();
+                    #[cfg(test)]
+                    review::record_body_frame(&scroll);
                     let panel = panel.clone();
                     reopening.settle(
                         &scroll,
@@ -11079,6 +11089,140 @@ mod tests {
                     && shown.bottom() + room <= body.bottom() + px(0.5),
                 "{id} {shown:?} is whole in the body {body:?}"
             );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Reopened by a click on the header's Pull requests onto Files' patch, which held focus as
+    /// Escape closed the panel, the panel draws the patch whole with its ring's room in every
+    /// frame it paints, the first among them, where the patch keeps focus: at 13 and 18 pt in
+    /// a 461 × 490 window with the body scrolled until one of its edges runs through the
+    /// patch as the panel closes, and at 13 pt with the patch whole at the body's foot as it
+    /// closes in a 461 × 490 window, which a 461 × 420 one cuts while the panel is closed. The reopened body revealed the patch only
+    /// once a frame had found it drawn, so the patch came into view in the third or fourth
+    /// frame, cut at the body's foot in the frames before.
+    #[gpui::test]
+    async fn every_frame_of_a_reopen_draws_the_held_patch_whole(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let (patch, scroll) = panel.read_with(cx, |panel, _| {
+            (
+                panel.review.line_focus.clone(),
+                panel.review.body_scroll.clone(),
+            )
+        });
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| patch.is_focused(window));
+        let whole = |part: Bounds<Pixels>, view: Bounds<Pixels>| {
+            part.top() - room >= view.top() - px(0.5)
+                && part.bottom() + room <= view.bottom() + px(0.5)
+        };
+        // Each case: its text size, whether the body cuts the patch as the panel closes, and
+        // the window's height as it reopens.
+        for (interface, cut, height) in [(13u8, true, 490.), (18, true, 490.), (13, false, 420.)] {
+            let at = format!("{interface} pt, reopened in 461 × {height}");
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(461.), px(490.)));
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.pull = Some(pull.clone());
+                    panel.review.show_list = false;
+                    panel.review.section = Section::Files;
+                    panel.review.files = files.clone();
+                    panel.review.selected_file = None;
+                    panel.select_review_file(1, window, cx);
+                    panel.focus_visible_section(window, cx);
+                })
+            });
+            settle_panel(&app, cx).await;
+            frames(cx);
+            for _ in 0..12 {
+                if focused(cx) {
+                    break;
+                }
+                cx.simulate_keystrokes("tab");
+                frames(cx);
+            }
+            assert!(focused(cx), "{at}: Tab reaches the patch");
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let shown = cx.debug_bounds("github-part-patch").expect("the patch");
+            assert!(
+                whole(shown, body),
+                "{at}: Tab shows the patch {shown:?} whole in {body:?}"
+            );
+            // The body moved so that its foot, or else its top, runs through the patch's
+            // middle, or so that the patch lies whole at its foot, which a shorter window cuts.
+            let (y, max) = (scroll.offset().y, scroll.max_offset().y);
+            let target = if cut {
+                let (down, up) = (
+                    body.bottom() - shown.center().y,
+                    shown.center().y - body.top(),
+                );
+                if y + down <= px(0.) { y + down } else { y - up }
+            } else {
+                y + (body.bottom() - room - shown.bottom())
+            };
+            assert!(
+                target <= px(0.) && target >= -max,
+                "{at}: the body scrolls from {y:?} to {target:?} within {max:?}"
+            );
+            scroll.set_offset(point(px(0.), target));
+            frames(cx);
+            let shown = cx.debug_bounds("github-part-patch").expect("the patch");
+            assert!(
+                whole(shown, body) != cut
+                    && shown.top() < body.bottom()
+                    && shown.bottom() > body.top(),
+                "{at}: the body {body:?} shows the patch {shown:?} as the panel closes"
+            );
+            escape(cx);
+            assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+            cx.simulate_resize(size(px(461.), px(height)));
+            frames(cx);
+            review::BODY_FRAMES.set(Some(Vec::new()));
+            crate::copy_feedback::tests::click(cx, "pull-requests");
+            settle_panel(&app, cx).await;
+            frames(cx);
+            let drawn = review::BODY_FRAMES.take().expect("watched");
+            assert!(
+                focused(cx),
+                "{at}: the patch, in the body's view as the panel closed, keeps focus"
+            );
+            assert!(
+                drawn.len() >= 4,
+                "{at}: the reopened panel drew {} frames",
+                drawn.len()
+            );
+            for (index, frame) in drawn.iter().enumerate() {
+                let (_, part) = frame
+                    .parts
+                    .iter()
+                    .find(|(name, _)| name == "patch")
+                    .unwrap_or_else(|| panic!("{at}: frame {index} draws the patch: {frame:?}"));
+                assert!(
+                    whole(*part, frame.view),
+                    "{at}: frame {index} draws the patch {part:?} whole in {:?}",
+                    frame.view
+                );
+            }
+            if !cut {
+                // The shorter window's body is shorter than the one the panel closed in.
+                let first = drawn[0].view;
+                assert!(
+                    first.size.height < body.size.height,
+                    "{at}: the body {first:?} is shorter than it closed at {body:?}"
+                );
+            }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
