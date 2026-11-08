@@ -766,6 +766,13 @@ fn connection_help() -> String {
     };
     format!("{connect} Refresh and PR selection are explicit network reads.")
 }
+#[cfg(test)]
+thread_local! {
+    /// What every request's busy line says instead of its own, for a test of a line longer
+    /// than any of them.
+    static BUSY_LABEL_FOR_TEST: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
 impl RequestKind {
     pub(crate) const ALL: [Self; 6] = [
         Self::Load,
@@ -777,6 +784,10 @@ impl RequestKind {
     ];
     /// Its busy line.
     fn label(self) -> &'static str {
+        #[cfg(test)]
+        if let Some(label) = BUSY_LABEL_FOR_TEST.with(std::cell::Cell::get) {
+            return label;
+        }
         match self {
             Self::Load => "Loading your requested PR context…",
             Self::Send => "Sending the captured review…",
@@ -2453,12 +2464,15 @@ impl Render for Panel {
             } else {
                 self.part("busy", div(), cx)
             }
+            .debug_selector(|| "github-busy-row".into())
             .flex()
             .items_center()
             .gap_2()
             .pl(text_inset())
             .child(
+                // Too long for the row, it wraps beside Cancel, which stays whole inside it.
                 label("github-busy", self.request.label())
+                    .min_w_0()
                     .role(Role::Status)
                     .live_region(gpui::accesskit::Live::Polite, true),
             )
@@ -12697,39 +12711,132 @@ mod tests {
         cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
     }
 
+    /// The busy row keeps Cancel whole inside it, its label wrapping beside the Button: at 18 pt
+    /// in a 461 × 490 window, for every request the row can be about, above the body with a
+    /// conversation open and among the content with none. Left on one line, the label pushed
+    /// Cancel past the row's right edge, and past the window's for most of them.
+    #[gpui::test]
+    async fn the_busy_row_keeps_cancel_inside_it_whatever_it_says(cx: &mut TestAppContext) {
+        thread_local! {
+            static CANCEL: crate::views::TextWidth = const { RefCell::new(None) };
+        }
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        open_reply_confirmation((&panel, &pull), None, (18, 461., 490.), cx);
+        let width = cx.update(|window, _| {
+            crate::placed_button_width(
+                crate::label_text_width("Cancel", &CANCEL, window),
+                false,
+                window,
+            )
+        });
+        let mut outside = Vec::new();
+        for pinned in [true, false] {
+            let place = if pinned {
+                "above the body"
+            } else {
+                "among the content"
+            };
+            for kind in RequestKind::ALL {
+                cx.update(|_, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.pending = true;
+                        panel.request = kind;
+                        if !pinned {
+                            panel.confirm = None;
+                            panel.conversations.active = None;
+                        }
+                        cx.notify();
+                    })
+                });
+                cx.executor().run_until_parked();
+                for _ in 0..4 {
+                    crate::width_walk::frame(cx);
+                }
+                assert_eq!(
+                    cx.debug_bounds("github-top-line").is_some(),
+                    pinned,
+                    "{kind:?}: the row stands {place}"
+                );
+                let row = cx.debug_bounds("github-busy-row").expect("the busy row");
+                let text = cx.debug_bounds("github-busy").expect("its label");
+                let cancel = cx.debug_bounds("github-cancel").expect("its Cancel");
+                let whole = cancel.size.width >= width - px(0.5)
+                    && cancel.left() >= row.left()
+                    && cancel.right() <= row.right()
+                    && cancel.top() >= row.top()
+                    && cancel.bottom() <= row.bottom()
+                    && text.right() <= cancel.left();
+                if !whole {
+                    outside.push(format!(
+                        "{kind:?} {place}: row {row:?}, label {text:?}, Cancel {cancel:?}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            outside.is_empty(),
+            "Cancel ({width:?} wide) leaves its row at 18 pt in 461 × 490: {outside:#?}"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The height the confirmation decides before layout for the top line standing above the
     /// body is the height the line is drawn: with a real reply's conversation open, at 13 and
     /// 18 pt in 1,480 × 973, 700 × 680 and 461 × 490 windows, for a notice, for a notice with a
-    /// failure and refused input under it, for the busy row alone and under a notice, and for
-    /// a failure too long for half the body, which scrolls under its cap. A frame that changes
-    /// what the line says keeps the region where it settles too.
+    /// failure and refused input under it, for the busy row alone and under a notice, with a
+    /// request's own label and with one that wraps to more lines than any of them beside
+    /// Cancel, and for a failure too long for half the body, which scrolls under its cap. A
+    /// frame that changes what the line says keeps the region where it settles too. With no
+    /// conversation open the busy row stands among the content, and none of it is decided.
     #[gpui::test]
     async fn the_confirmation_decides_the_top_line_it_draws(cx: &mut TestAppContext) {
+        const LONG_LABEL: &str = "Waiting for GitHub to answer the request this panel made for \
+                                  the conversation you opened…";
         type Line = (
             &'static str,
             Option<&'static str>,
             Option<String>,
             Option<DraftIssue>,
             bool,
+            Option<&'static str>,
         );
         let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
         crate::views::tests::hold_quiet_reads_for_test(&app, cx);
-        let lines: [Line; 5] = [
-            ("a notice", Some(TOP_LINE_NOTICE), None, None, false),
+        let lines: [Line; 7] = [
+            ("a notice", Some(TOP_LINE_NOTICE), None, None, false, None),
             (
                 "a notice, a failure and refused input",
                 Some(TOP_LINE_NOTICE),
                 Some(TOP_LINE_NOTICE.into()),
                 Some(DraftIssue::Destination),
                 false,
+                None,
             ),
-            ("the busy row", None, None, None, true),
+            ("the busy row", None, None, None, true, None),
+            (
+                "a busy row with a long label",
+                None,
+                None,
+                None,
+                true,
+                Some(LONG_LABEL),
+            ),
             (
                 "a notice over the busy row",
                 Some(TOP_LINE_NOTICE),
                 None,
                 None,
                 true,
+                None,
+            ),
+            (
+                "a notice over a busy row with a long label",
+                Some(TOP_LINE_NOTICE),
+                None,
+                None,
+                true,
+                Some(LONG_LABEL),
             ),
             (
                 "a failure taller than its cap",
@@ -12737,6 +12844,7 @@ mod tests {
                 Some(TOP_LINE_NOTICE.repeat(40)),
                 None,
                 false,
+                None,
             ),
         ];
         for (interface, width, height) in [
@@ -12758,8 +12866,9 @@ mod tests {
                     review::reveal_room(window, cx),
                 )
             });
-            for (kind, notice, error, issue, busy) in lines.clone() {
+            for (kind, notice, error, issue, busy, long) in lines.clone() {
                 let at = format!("{kind} at {interface} pt in a {width} × {height} window");
+                BUSY_LABEL_FOR_TEST.with(|label| label.set(long));
                 cx.update(|_, cx| {
                     panel.update(cx, |panel, cx| {
                         panel.notice = notice.map(Into::into);
@@ -12794,12 +12903,26 @@ mod tests {
                         .borrow()
                         .clone()
                         .expect("the form decided");
-                    conversations::pinned_line_height(form.top_text, busy, window)
+                    conversations::pinned_line_height(form.top_text, form.busy_text, window)
                 });
                 assert!(
                     (drawn - decided).abs() <= px(0.5),
                     "{at}: the top line is drawn {drawn:?} tall, not the {decided:?} decided"
                 );
+                // In the narrowest window the long label takes more lines than Cancel is
+                // tall, so the row is as tall as the lines and not the Button.
+                if long.is_some() && width == 461. {
+                    let mut height = |selector: &'static str| {
+                        cx.debug_bounds(selector)
+                            .unwrap_or_else(|| panic!("{at}: {selector} is drawn"))
+                            .size
+                            .height
+                    };
+                    assert!(
+                        height("github-busy") > height("github-cancel"),
+                        "{at}: the label stands taller than Cancel"
+                    );
+                }
             }
             cx.update(|_, cx| {
                 panel.update(cx, |panel, _| {
@@ -12812,6 +12935,49 @@ mod tests {
                 })
             });
         }
+        BUSY_LABEL_FOR_TEST.with(|label| label.set(None));
+        open_confirmation(
+            (&panel, &pull),
+            confirmed_long_reply(60),
+            (18, 461., 490.),
+            cx,
+        );
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pending = true;
+                cx.notify();
+            })
+        });
+        cx.executor().run_until_parked();
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        assert!(
+            cx.debug_bounds("github-busy-row").is_some()
+                && cx.debug_bounds("github-top-line").is_none(),
+            "with no conversation open the busy row stands among the content"
+        );
+        let busy_text = cx.update(|_, cx| {
+            panel
+                .read(cx)
+                .conversations
+                .confirm_form
+                .borrow()
+                .as_ref()
+                .expect("the form decided")
+                .busy_text
+        });
+        assert_eq!(
+            busy_text,
+            Pixels::ZERO,
+            "among the content the row takes none of the room above the body"
+        );
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pending = false;
+                panel.confirm = None;
+            })
+        });
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
@@ -12971,10 +13137,14 @@ mod tests {
             let style = window.text_style();
             let panel = panel.read(cx);
             let before = crate::test_support::allocations();
-            let _ =
-                panel
-                    .conversations
-                    .confirm_form(&style, "Send to GitHub", [None; 3], window, cx);
+            let _ = panel.conversations.confirm_form(
+                &style,
+                "Send to GitHub",
+                [None; 3],
+                None,
+                window,
+                cx,
+            );
             crate::test_support::allocations() - before
         });
         assert_eq!(

@@ -104,6 +104,10 @@ pub(super) struct ConfirmForm {
     /// them, before the cap a tall line scrolls under ([`pinned_line_height`]); none where it
     /// says nothing.
     pub top_text: Pixels,
+    /// How tall the label of the top line's busy row stands while a conversation is open, its
+    /// 12 pt lines wrapped at the width the row leaves it beside Cancel; none where no busy row
+    /// stands there ([`pinned_line_height`]).
+    pub busy_text: Pixels,
 }
 #[cfg(test)]
 impl ConfirmForm {
@@ -128,6 +132,8 @@ struct FormKey {
     send: &'static str,
     /// What the panel's top line says while a conversation is open ([`TopLineTexts`]).
     top_line: Vec<String>,
+    /// What its busy row says, where one stands there.
+    busy: Option<&'static str>,
 }
 
 /// What the panel's top line says while a conversation is open, in the order
@@ -142,6 +148,8 @@ thread_local! {
     static SEND_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// Keep editing's, likewise.
     static KEEP_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The busy row's Cancel's, likewise.
+    static CANCEL_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
 thread_local! {
@@ -152,23 +160,25 @@ thread_local! {
 
 impl State {
     /// The confirmation's form in `window`, whose text style is `style`, with Send reading
-    /// `send` and the top line saying `top_line`: the guidance's height, the rest of the
-    /// confirmation's and the top line's text's ([`ConfirmForm`]), the ones last decided where
-    /// they were decided for the same width, font, sizes, scale, label and top line, so a frame
-    /// that changes none of them shapes nothing and allocates nothing, and otherwise decided
-    /// now: the guidance and the top line's text shaped with the text system's wrap at the
-    /// widths they are laid out in, Send and Keep editing beside each other where their
-    /// measured labels fit the width ([`crate::placed_button_width`]) and on two rows where
-    /// not, as the actions' row wraps them, and the room around the region, the Buttons' frames
-    /// and the gaps from their sizes, each on the device pixel layout places it.
+    /// `send`, the top line saying `top_line` and its busy row, where one stands there, saying
+    /// `busy`: the guidance's height, the rest of the confirmation's, the top line's text's and
+    /// its busy row's label's ([`ConfirmForm`]), the ones last decided where they were decided
+    /// for the same width, font, sizes, scale, label, top line and busy row, so a frame that
+    /// changes none of them shapes nothing and allocates nothing, and otherwise decided now:
+    /// the guidance, the top line's text and the busy row's label shaped with the text system's
+    /// wrap at the widths they are laid out in, Send and Keep editing beside each other where
+    /// their measured labels fit the width ([`crate::placed_button_width`]) and on two rows
+    /// where not, as the actions' row wraps them, and the room around the region, the Buttons'
+    /// frames and the gaps from their sizes, each on the device pixel layout places it.
     pub(super) fn confirm_form(
         &self,
         style: &TextStyle,
         send: &'static str,
         top_line: TopLineTexts<'_>,
+        busy: Option<&'static str>,
         window: &Window,
         cx: &App,
-    ) -> (Pixels, Pixels, Pixels) {
+    ) -> (Pixels, Pixels, Pixels, Pixels) {
         let width = confirm_width(window, cx);
         let size = appearance::ui_text(12.);
         let line = confirm_line(style, window);
@@ -182,6 +192,7 @@ impl State {
                 && key.rem == rem
                 && key.scale == scale
                 && key.send == send
+                && key.busy == busy
                 && key.font.family == style.font_family
                 && key.font.features == style.font_features
                 && key.font.fallbacks == style.font_fallbacks
@@ -193,7 +204,7 @@ impl State {
                     .map(String::as_str)
                     .eq(top_line.iter().flatten().copied())
         }) {
-            return (form.guidance, form.chrome, form.top_text);
+            return (form.guidance, form.chrome, form.top_text, form.busy_text);
         }
         #[cfg(test)]
         CONFIRM_FORMS_DECIDED.with(|decided| decided.set(decided.get() + 1));
@@ -219,6 +230,10 @@ impl State {
         let placed = |label: &str, cache| {
             crate::placed_button_width(crate::label_text_width(label, cache, window), false, window)
         };
+        // The row's label has what Cancel and the gap beside it leave of the line's width.
+        let busy_text = busy.map_or(Pixels::ZERO, |busy| {
+            shaped(busy, wrap - gap - placed("Cancel", &CANCEL_LABEL))
+        });
         let rows = if placed(send, &SEND_LABEL) + gap + placed("Keep editing", &KEEP_LABEL) <= width
         {
             1.
@@ -243,12 +258,14 @@ impl State {
                     .flatten()
                     .map(|text| (*text).to_owned())
                     .collect(),
+                busy,
             },
             guidance,
             chrome,
             top_text,
+            busy_text,
         });
-        (form.guidance, form.chrome, form.top_text)
+        (form.guidance, form.chrome, form.top_text, form.busy_text)
     }
 }
 
@@ -267,20 +284,24 @@ fn top_line_width(window: &Window, cx: &App) -> Pixels {
 /// How tall the panel's top line stands above the body in `window` while a conversation is
 /// open, decided before layout as the guidance is: `text`, the height of what it says
 /// ([`ConfirmForm::top_text`]), under the cap past which it scrolls, half the body's room, then
-/// the busy row with its Cancel, a compact Button's height, where `busy`, and the gap between
-/// them, the padding under them and the divider, each on the device pixel layout places it, as
-/// [`Panel::pin_top_line`] lays them out; none where the line holds nothing.
-pub(super) fn pinned_line_height(text: Pixels, busy: bool, window: &Window) -> Pixels {
+/// the busy row where `busy_text`, its label's wrapped lines ([`ConfirmForm::busy_text`]), says
+/// one stands there, as tall as the taller of those lines and Cancel, a compact Button's
+/// height, and the gap between them, the padding under them and the divider, each on the device
+/// pixel layout places it, as [`Panel::pin_top_line`] lays them out; none where the line holds
+/// nothing.
+pub(super) fn pinned_line_height(text: Pixels, busy_text: Pixels, window: &Window) -> Pixels {
     let said = text > Pixels::ZERO;
+    let busy = busy_text > Pixels::ZERO;
     if !said && !busy {
         return Pixels::ZERO;
     }
     let snap = |length: Pixels| window.pixel_snap(length);
     let gap = snap(window.rem_size() * 0.5);
     let text = text.min(snap(super::body_max_height(window) / 2.));
+    let tall = busy_text.max(snap(appearance::ui_size(28.)));
     let row = match (busy, said) {
-        (true, true) => gap + snap(appearance::ui_size(28.)),
-        (true, false) => snap(appearance::ui_size(28.)),
+        (true, true) => gap + tall,
+        (true, false) => tall,
         (false, _) => Pixels::ZERO,
     };
     text + row + gap + snap(px(1.))
@@ -830,6 +851,11 @@ impl Panel {
             self.draft_issue.map(DraftIssue::message),
         ]
     }
+    /// What the top line's busy row says in this frame, where one stands there: while a
+    /// conversation is open and a request runs.
+    fn pinned_busy_label(&self) -> Option<&'static str> {
+        (self.conversations.active.is_some() && self.pending).then(|| self.request.label())
+    }
     pub(super) fn focus_confirmation(&self, window: &mut Window, cx: &mut Context<Self>) {
         *self.review.revealed_focus.borrow_mut() = Default::default();
         // A new confirmation shows its destination first, and is sized for the body it opens
@@ -903,9 +929,14 @@ impl Panel {
         // One read of the text style for the frame, for the region's line and the form.
         let style = window.text_style();
         let line = confirm_line(&style, window);
-        let (guidance, chrome, top_text) =
-            self.conversations
-                .confirm_form(&style, send, self.pinned_line_texts(), window, cx);
+        let (guidance, chrome, top_text, busy_text) = self.conversations.confirm_form(
+            &style,
+            send,
+            self.pinned_line_texts(),
+            self.pinned_busy_label(),
+            window,
+            cx,
+        );
         // The body's view in this frame, less the room the confirmation's reveal keeps at either
         // edge: the room the dialog leaves the body in this window, less the top line standing
         // above the body while a conversation is open, as tall as what it says in this frame,
@@ -918,7 +949,7 @@ impl Panel {
         // 1,480 to 461 px at 13 pt, laid the region out 39 px too tall, then 39 px too short,
         // and only in the third frame at its height.
         let pinned = self.conversations.active.is_some();
-        let top_line = pinned_line_height(top_text, pinned && pending, window);
+        let top_line = pinned_line_height(top_text, busy_text, window);
         let body_room = super::body_max_height(window);
         let room = window.pixel_snap(body_room - top_line);
         let left = room - drawn.short - super::review::reveal_room(window, cx) * 2.;
