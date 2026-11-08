@@ -31,7 +31,7 @@ fn classify(error: &anyhow::Error) -> Failure {
     let diagnostic = format!("{error:#}").to_ascii_lowercase();
     if diagnostic.contains("permission denied") || diagnostic.contains("operation not permitted") {
         Failure::Permission
-    } else if diagnostic.contains("not a git repository") {
+    } else if gitturtle_core::says_no_repository(&diagnostic) {
         Failure::NotRepository
     } else if diagnostic.contains("deadline") || diagnostic.contains("timed out") {
         Failure::Timeout
@@ -177,6 +177,12 @@ mod tests {
         assert_eq!(classify(&error), Failure::Timeout);
         assert_eq!(
             classify(&anyhow::anyhow!("fatal: not a git repository")),
+            Failure::NotRepository
+        );
+        assert_eq!(
+            classify(&anyhow::anyhow!(
+                "fatal: gitfile does not point to a valid repository: /a/.git"
+            )),
             Failure::NotRepository
         );
         assert_eq!(

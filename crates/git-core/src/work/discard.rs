@@ -537,6 +537,24 @@ mod tests {
     /// the repository gone (`GitRepository::word_gone`), and keeps its
     /// message as it was, the rebase's and the pull's redacted and then read
     /// as a terminal leaves them, with no secret.
+    #[test]
+    fn git_s_words_for_no_repository_are_read_across_releases() {
+        for stderr in [
+            "fatal: not a git repository (or any of the parent directories): .git\n",
+            "fatal: not a git repository: (null)\n",
+            "fatal: gitfile does not point to a valid repository: /a/.git\n",
+            "warning: x\nfatal: gitfile does not point to a valid repository: /a\rb/.git\n",
+        ] {
+            assert!(crate::no_repository_found(stderr.as_bytes()), "{stderr:?}");
+        }
+        for stderr in [
+            "fatal: cannot change to '/x/not a git repository': Permission denied\n",
+            "fatal: cannot change to '/x/gitfile does not point to a valid repository': Permission denied\n",
+        ] {
+            assert!(!crate::no_repository_found(stderr.as_bytes()), "{stderr:?}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_write_s_steps_finding_no_repository_carry_its_type() {
@@ -696,9 +714,10 @@ mod tests {
             assert!(finds_no_repository(&error), "{error:#}");
             assert!(!format!("{error:#}").contains("SECRET1"), "{error:#}");
         }
-        // Git names the missing administration directory differently across
-        // releases ("(null)" in 2.55), so only its first words are ours to
-        // assert.
+        // Git words the missing administration directory differently across
+        // releases ("not a git repository: (null)" in 2.55, "gitfile does not
+        // point to a valid repository: <path>" in 2.56), so only ours and
+        // Git's "fatal:" are asserted; the type says it was recognised.
         for (error, ours) in [
             (
                 normal_config_at(linked.target(), "user.name").map(drop),
@@ -742,7 +761,7 @@ mod tests {
                 error
                     .root_cause()
                     .to_string()
-                    .starts_with(&format!("{ours}: fatal: not a git repository")),
+                    .starts_with(&format!("{ours}: fatal: ")),
                 "{error:#}"
             );
             assert!(

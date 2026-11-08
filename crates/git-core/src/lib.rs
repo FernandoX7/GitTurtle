@@ -432,7 +432,24 @@ fn resolve_git_entry(holder: &Path) -> Option<PathBuf> {
 /// message is read only for a failure that carries none.
 pub fn finds_no_repository(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<NotARepository>())
-        || format!("{error:#}").contains("not a git repository")
+        || says_no_repository(&format!("{error:#}"))
+}
+
+/// Git's words for a folder it finds no repository at: its usual "not a git
+/// repository", and since Git 2.56 what it says of a `.git` file whose target
+/// is no repository, as a linked worktree's is once its administration
+/// directory is gone (2.55 printed "not a git repository: (null)" there).
+const NO_REPOSITORY_WORDS: [&str; 2] = [
+    "not a git repository",
+    "gitfile does not point to a valid repository",
+];
+
+/// Whether `message` holds Git's words for finding no repository, for a
+/// failure that carries no [`NotARepository`] type.
+pub fn says_no_repository(message: &str) -> bool {
+    NO_REPOSITORY_WORDS
+        .iter()
+        .any(|words| message.contains(words))
 }
 
 /// Where one Git process runs, and the folder Git discovery must not enter
@@ -1739,7 +1756,7 @@ fn text(bytes: &[u8]) -> String {
 
 /// Whether a failed command's `stderr` says no repository holds the path it
 /// ran at: one of its lines in Git's own words ([`text`], split on line
-/// feeds alone) starts with Git's `fatal: not a git repository`. Git names
+/// feeds alone) starts with `fatal: ` and [`NO_REPOSITORY_WORDS`]. Git names
 /// paths in its other failures, so the words anywhere else, a folder's name
 /// in "fatal: cannot change to '/x/not a git repository': Permission
 /// denied", are that failure. A carriage return in a path Git names, a mount
@@ -1747,9 +1764,13 @@ fn text(bytes: &[u8]) -> String {
 /// where [`reported`] would leave only what follows it and turn a path with
 /// no repository into a failure refusing every write.
 fn no_repository_found(stderr: &[u8]) -> bool {
-    text(stderr)
-        .split('\n')
-        .any(|line| line.starts_with("fatal: not a git repository"))
+    text(stderr).split('\n').any(|line| {
+        line.strip_prefix("fatal: ").is_some_and(|rest| {
+            NO_REPOSITORY_WORDS
+                .iter()
+                .any(|words| rest.starts_with(words))
+        })
+    })
 }
 
 /// A Git command failed because, in its own words, no repository holds the
