@@ -686,12 +686,17 @@ pub(super) fn render_comparison<T: 'static>(
                     )),
             );
         }
-        for detail in &side.metadata.details {
+        // What a side says of itself is read as static text too: a literal
+        // side's reason is why it shows no diagrams.
+        for (line, detail) in side.metadata.details.iter().enumerate() {
             body = body.child(
                 div()
                     .text_size(appearance::ui_text(11.))
                     .text_color(rgb(colors.muted))
-                    .child(detail.clone()),
+                    .child(native_accessibility::text(
+                        SharedString::from(format!("rich-side-detail-{index}-{line}")),
+                        detail.clone(),
+                    )),
             );
         }
         if let Some(source) = &side.metadata.source {

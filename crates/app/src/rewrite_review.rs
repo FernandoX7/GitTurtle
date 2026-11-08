@@ -5393,6 +5393,20 @@ mod tests {
                 .node;
             assert!(!node.is_disabled(), "Diagrams opens, for {name}");
             rendered(cx, format!("rich-side-format-{literal}/{format}").leak());
+            let reason =
+                crate::native_accessibility::written::get(&format!("rich-side-detail-{literal}-0"))
+                    .unwrap_or_else(|| panic!("{name}: the literal side's reason is written"))
+                    .node;
+            assert_eq!(
+                reason.role(),
+                Role::Label,
+                "{name}: the reason is static text"
+            );
+            assert_eq!(
+                reason.value(),
+                Some(says),
+                "{name}: assistive technology reads the reason"
+            );
         }
     }
 
