@@ -802,6 +802,71 @@ cover current upstream x86-64 Omarchy.
        0.17 px short (pre-existing). (S) With the project pane open in a 461 x 490 window the repository
        page is laid out at its 520 px floor (`views.rs:8661` `repository_width`), so a merge banner's actions
        run to x 559-690, past the window's edge (FU30-A2, 2026-11-07): lay the page out in the width it has.
+     - **Found on 2026-11-07 late afternoon (this session's reviews, implementers and release measurement; briefed rounds are in `briefs-q9/`):**
+       (S) Rewritten-series review: Refresh series with a loaded series shrinks the list from up to six rows
+       to one while it reads, so the controls below jump (`rewrite_review.rs` list height from the row count,
+       `load` clears the review). (S, wording) The review's other bounds ("Review at most 100 commits per
+       series", "Commit-series review exceeded its deadline") still read as "unavailable… original objects
+       may have been removed" (`git-core/src/work/rewrite_review.rs` side context), and the shared timeout
+       text (`work.rs` `bounded_write_output`) tells a passive read its result "may have applied partially or
+       remotely". (S, shared) `ScrollCue`: the frame that reserves a gutter draws no bar, so the thumb comes
+       one frame later (`tags.rs` `ScrollCue::list` flags from the last frame; seen in the conflict review
+       and Edit local commits). (S, focus) The remote manager's search field and Add remote… draw rings cut
+       by the dialog body's clip (FU30-C's audit exception in `tab_order_tests.rs`).
+       (M, performance, screen reader) With a screen reader active, a keystroke, a line break or the first frame
+       in a multi-megabyte text field segments the whole text again for its text runs: 62-73 ms in release in a
+       5 MB editor (`docs/benchmarks/2026-11-07-accessible-text-runs.md`), and a caret move ~8 ms: segment only
+       the lines an edit touched and keep the rest (4 ms budget for work a screen reader adds to a frame).
+       (M, kit, keyboard; security re-check) The theme editor's colour picker (`vendor/gpui-component/src/color_picker.rs`):
+       its 12 featured swatches repeat palette colours and share their keyed focus handles (`color-{hex}`), so Tab
+       reaches 83 of its 112 stops and steps back loop, and a focused swatch paints no focus indicator (FU31-C2).
+       Decided: the swatch grid is one Tab stop moved by the arrow keys (roving focus, the focused swatch ringed
+       whole), the hex field the other; the featured row gets distinct ids.
+       (S) The operation error banner draws the failure report's first line, so Git output whose progress
+       ends in a newline before `error: …` (a hook printing `Checking (2/2)\n`) reads "Git operation failed:
+       Checking (2/2)"; draw the first line of Git's text that starts with `error:` or `fatal:`, else the
+       first line (DESIGN.md:273; FU31-C design re-check). (verify) Escape closing History's Columns panel
+       (`main.rs` Escape) may leave focus on a removed control.
+       (S, kit) Kit popovers and menus a key closes (Select, dropdown, context menu) keep hit-testing against
+       the last drawn frame until the next draw, so a click right after the closing key can land on the gone
+       popover (FU32-A code review; FU32-A fixed it for dialogs and sheets). (QA) Rerun QA-106e D6 exactly as
+       recorded (`wtype -k Return`, a click ~40 ms later on a fixture with a stash, opener the stash row) on a
+       build with FU32-A: if the click is still lost, the stash row's selection restore is the cause.
+       (S) Edit local commits: when the form gets shorter (an error line goes, "Base edited" disappears) it draws
+       one frame at the shorter sequence height before 220 px (`interactive_rebase.rs` `Fit`): reset the sequence
+       to 220 px when those lines change. (S, shared) Lists whose bar sits in the dialog's side padding
+       (Worktrees, Reflog, Edit local commits) draw no fade cue on a track shorter than 56 px (DESIGN.md:397):
+       move the shared cue's fades there with the late-thumb fix. (S, verify) `settings.rs`'s nested wheel
+       rule recomputes its step from the window's line height while the list uses the one captured at draw:
+       a mouse-wheel line delta at the list's end may never reach the body (as FU30-B3's design re-check found).
+       (M, focus) Rings covered by a fill painted after them (FU30-C2's `focus_ring::painted_over` run at every
+       stop): a tab-strip Button's ring by its neighbour's fill on every page; Working Changes' header Buttons;
+       Compare's toolbar Button; Compare's and File history's text ring by an 82 × 18 fill inside it; at 18 pt
+       Buttons by neighbour fills and a 1 px fill. Extend the check to every stop once these are fixed.
+       (S, security hardening) Repository identity: a folder above a tab's root re-pointed to another of the
+       person's own repositories with the root's folder name is accepted at the next passive reopen (FU33-A
+       security re-check S1, accepted residual): compare the Git directory's device and inode saved at capture
+       (a same-filesystem move keeps them, so "moved and linked back" still reopens).
+       (S) Rewritten-series review's inspector: a failed changed-file or preview read is drawn after the
+       preview (below the view at 18 pt 461 × 490) while the boxes say "This commit has no changed files." or
+       "Select a file…": say the failure in the box that was being read, through the titled `EmptyState`
+       (FU31-B design re-check F3).
+       (S) Conflict review: at 18 pt 461 × 490 Restore saved draft moves the draft 27 px as the block review
+       lands ("Updating conflict blocks…" takes one line, the landed status two): keep the status's height
+       through the review (FU30-A3).
+       (S) Conflict review: in a 461 px window each side's no-reader message (no unresolved blocks left, a
+       binary file, a side missing) wraps past the versions' 100 px minimum and the footer covers it (FU30-A3
+       design re-check N1): the versions' minimum is the larger of 100 px and the sides' header and message,
+       and the half-tile cut check stops excluding the versions.
+       (S, verify) Theme editor: after Escape closes the colour picker at 18 pt 461 × 490 the trigger's ring is
+       not drawn whole (whole at 13 pt 1480 × 973): reproduce whether it is clipped or drawn late (patch
+       `briefs-q9/probes-FU31C2/agent-local/item6-with-trigger-ring.patch`).
+       (S) Changes: at 18 pt in a 430-437 × 490 window the composer's "Description" label (101 px) runs up to
+       8 px past its 93-100 px column (pre-existing; FU29-A2d3); a tall file list that overflows while the
+       short body does not scroll shows no cue.
+       (nit) Edit local commits' wheel rule: a resize and a wheel before the next prepaint are judged against
+       the old reach, and a turn that changes direction within one frame is misrouted to the body: write the
+       clamped offset back to the list's handle (FU30-B3 re-check).
      - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
        (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
        Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
@@ -814,9 +879,7 @@ cover current upstream x86-64 Omarchy.
        nothing (no scrolling fallback; FU29-A). A status line draws a two-line text whole, its first line rising
        above the 26 px bar (`views.rs:~9073`; FU29-B: draw the first line only). An unrelated watcher warning set
        before a tab is marked stays beside the mark (FU26-E2 report; low).
-       Found by QA-106b (2026-11-07; also on the previous build): (FU29-C) Orca reads a text field's placeholder,
-       never its value (Settings' Name and Email: "Your name", "you@example.com"): the entries expose `placeholder-text`
-       and no Text interface. With eight tabs, Ctrl+T opens the Open Folder dialog and refuses only after a folder is
+       Found by QA-106b (2026-11-07; also on the previous build): With eight tabs, Ctrl+T opens the Open Folder dialog and refuses only after a folder is
        chosen (`repository_tabs.rs:1453`). As History's read lands, Orca announces its list over an open profiles menu.
        A failed profile store read leaves the menu header "Profiles are unavailable or still loading" above the failure
        line. The palette's first row is still heard twice on open (QA-106b O2; a slow "go to hi" repeats the whole
