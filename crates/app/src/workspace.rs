@@ -4124,10 +4124,17 @@ impl GitTurtle {
         .size_full()
         .track_scroll(&self.working_scroll);
         let travelling = flight.map(|flight| {
-            // Its copy tracks no handle and is no Tab stop: the row's own,
-            // where it lands, does and is.
+            // Its copy is a picture of the row: it tracks no handle, is no
+            // Tab stop and takes no click, and assistive technology meets the
+            // row only where it lands. While it flew, its Unstage took a
+            // double-click's second press and unstaged the file again, and
+            // assistive technology found it as a button beside the rows.
             let row = self.render_working_row(flight.position, forms, None, window, cx);
-            crate::motion::TravellingRow::new(flight, row)
+            let picture = native_accessibility::hidden_from_assistive_technology(
+                div().id("working-travelling-row").size_full().child(row),
+                true,
+            );
+            crate::motion::TravellingRow::new(flight, picture.into_any_element())
         });
         let refresh = button("refresh-working", "", "refresh", false)
             .debug_selector(|| "refresh-working".into())
@@ -5326,10 +5333,18 @@ impl GitTurtle {
         // leave these controls inert at once (`write_from`,
         // `depart_working_row`) and dimmed once the spell looks busy.
         let looks_busy = self.busy_shown();
+        // Without the list's `controls` the row is drawn as a picture of
+        // itself, the travelling copy of a row in flight
+        // (`motion::TravellingRow`): no Tab stop, no click, hover, tooltip or
+        // menu, and no `working-stage-…` selector, so a click on it reaches
+        // the row the list draws beneath, as one under a still pointer does.
+        // Its control's click once unstaged the file a double-click's first
+        // press had just staged.
+        let picture = controls.is_none();
         // What the rows moved under a pointer that has not moved since it
         // pressed a row's Stage or Unstage shows no hover and no tooltip
-        // until it moves (`motion::StillPointer`).
-        let still = self.still_over_moved_rows();
+        // until it moves (`motion::StillPointer`), nor does a picture.
+        let still = picture || self.still_over_moved_rows();
         // A control takes the shared look without its hover fill, and no
         // tooltip at all, not even its confirmation's word: gamma's Stage,
         // confirmed in Staged as its flight began under the pointer, said
@@ -5599,7 +5614,7 @@ impl GitTurtle {
                         cx,
                     )
                 });
-                div()
+                let row = div()
                     .id(row_id)
                     .role(Role::ListBoxOption)
                     .aria_label(format!(
@@ -5641,8 +5656,9 @@ impl GitTurtle {
                     .when(!still, |row| {
                         row.hover(move |s| s.bg(rgb(p.row_hover(active))))
                     })
-                    .active(move |s| s.bg(rgb(p.selected)))
-                    .cursor_pointer()
+                    .when(!picture, |row| {
+                        row.active(move |s| s.bg(rgb(p.selected))).cursor_pointer()
+                    })
                     // Where the name needs its room, the tile gives way to
                     // its bare glyph, and then the glyph leaves.
                     .when(forms.file_tile, |row| {
@@ -5757,103 +5773,108 @@ impl GitTurtle {
                             .when_some(stage_focus.as_ref(), |control, focus| {
                                 control.track_focus(focus)
                             })
-                            // The travelling copy of a row in flight, drawn
-                            // with no controls' handles, is no Tab stop: its
-                            // control's own handle took focus and lost it as
-                            // the row landed.
-                            .when(controls.is_none(), |control| control.tab_stop(false))
-                            .debug_selector(move || format!("working-stage-{position}"))
                             .accessibility_label(stage_label)
                             .map(|control| {
+                                // The picture's control is no Tab stop: its
+                                // own handle took focus and lost it as the
+                                // row landed.
+                                if picture {
+                                    return control.tab_stop(false);
+                                }
                                 refusing(
-                                    control,
+                                    control.debug_selector(move || {
+                                        format!("working-stage-{position}")
+                                    }),
                                     move || format!("working-stage-{position}"),
                                     busy,
                                     busy && looks_busy,
                                 )
-                            })
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    if this.operation_busy.is_none() {
-                                        this.hold_still_pointer(position, window);
-                                    }
-                                    this.depart_working_row(position, window, cx);
-                                    this.stage_working_paths(
-                                        paths.clone(),
-                                        &row_path,
-                                        staged,
-                                        window,
-                                        cx,
-                                    );
-                                },
-                            )),
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        if this.operation_busy.is_none() {
+                                            this.hold_still_pointer(position, window);
+                                        }
+                                        this.depart_working_row(position, window, cx);
+                                        this.stage_working_paths(
+                                            paths.clone(),
+                                            &row_path,
+                                            staged,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                            }),
                             stage_focus.as_ref(),
                             window,
                         ))
-                    })
-                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                        // Command-click (Ctrl-click on Linux, as Select All
-                        // is Ctrl-A there; it read Super) toggles the row in
-                        // the multiselection and Shift-click extends it to
-                        // the row. Both only select, as the arrows do: they
-                        // once chose the file too, so a conflicted one's
-                        // draft took focus from the list being selected in.
-                        let modifiers = event.modifiers();
-                        let (toggle, range) = (modifiers.secondary(), modifiers.shift);
-                        // One the list refuses chooses and selects nothing,
-                        // its busy look saying why at once
-                        // (`refuse_working_press`).
-                        this.refuse_working_press(cx);
-                        this.choose_working_selection(index, area, toggle, range, window, cx);
-                        // A plain click on the row chooses its file; one the
-                        // list refuses chooses nothing
-                        // (`activate_working_preview`).
-                        if !toggle && !range && this.working_selected == Some((index, area)) {
-                            this.activate_working_preview(window, cx);
-                        }
-                    }))
-                    .app_context_menu(move |menu, _, cx| {
-                        // Read as it is built: a write's start or end builds
-                        // the open menu again. Opened on rows the filter is
-                        // replacing, it refuses its items until the new rows
-                        // land and build it again (`waits_while`), as a
-                        // click on those rows refuses, each item saying why.
-                        let (wait, waiting) =
-                            ignore_owner
-                                .upgrade()
-                                .map_or((None, Some(REFRESHING_ROWS)), |owner| {
-                                    let owner = owner.read(cx);
-                                    (owner.menu_wait(), owner.working_rows_wait())
-                                });
-                        working_row_menu(
-                            menu,
-                            ignore_owner.clone(),
-                            ignore_repository.clone(),
-                            MenuRow {
-                                entry: (*ignore_entry).clone(),
-                                staged,
-                            },
-                            forms.file_action,
-                            wait,
-                            waiting,
-                        )
-                    })
-                    // A file whose status changes under its open menu, as
-                    // one added outside the app, builds the menu again; a
-                    // write's start or end, and the reload or status read it
-                    // asks for landing (`write_unsettled`), build it again
-                    // through `follows_writes` alone, once for each. While
-                    // the rows of a newer status or of the filter's query
-                    // are prepared, the rows drawn are the previous ones,
-                    // and the menu waits for the new ones before it is
-                    // built again, but for a write that starts or ends
-                    // meanwhile, which builds it refused, and for the
-                    // reason its refused items state changing.
-                    .built_from(menu_entry)
-                    .follows_writes(cx.entity().downgrade())
-                    .waits_while(GitTurtle::working_rows_wait)
-                    .into_any_element()
+                    });
+                if picture {
+                    return row.into_any_element();
+                }
+                row.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    // Command-click (Ctrl-click on Linux, as Select All
+                    // is Ctrl-A there; it read Super) toggles the row in
+                    // the multiselection and Shift-click extends it to
+                    // the row. Both only select, as the arrows do: they
+                    // once chose the file too, so a conflicted one's
+                    // draft took focus from the list being selected in.
+                    let modifiers = event.modifiers();
+                    let (toggle, range) = (modifiers.secondary(), modifiers.shift);
+                    // One the list refuses chooses and selects nothing,
+                    // its busy look saying why at once
+                    // (`refuse_working_press`).
+                    this.refuse_working_press(cx);
+                    this.choose_working_selection(index, area, toggle, range, window, cx);
+                    // A plain click on the row chooses its file; one the
+                    // list refuses chooses nothing
+                    // (`activate_working_preview`).
+                    if !toggle && !range && this.working_selected == Some((index, area)) {
+                        this.activate_working_preview(window, cx);
+                    }
+                }))
+                .app_context_menu(move |menu, _, cx| {
+                    // Read as it is built: a write's start or end builds
+                    // the open menu again. Opened on rows the filter is
+                    // replacing, it refuses its items until the new rows
+                    // land and build it again (`waits_while`), as a
+                    // click on those rows refuses, each item saying why.
+                    let (wait, waiting) =
+                        ignore_owner
+                            .upgrade()
+                            .map_or((None, Some(REFRESHING_ROWS)), |owner| {
+                                let owner = owner.read(cx);
+                                (owner.menu_wait(), owner.working_rows_wait())
+                            });
+                    working_row_menu(
+                        menu,
+                        ignore_owner.clone(),
+                        ignore_repository.clone(),
+                        MenuRow {
+                            entry: (*ignore_entry).clone(),
+                            staged,
+                        },
+                        forms.file_action,
+                        wait,
+                        waiting,
+                    )
+                })
+                // A file whose status changes under its open menu, as
+                // one added outside the app, builds the menu again; a
+                // write's start or end, and the reload or status read it
+                // asks for landing (`write_unsettled`), build it again
+                // through `follows_writes` alone, once for each. While
+                // the rows of a newer status or of the filter's query
+                // are prepared, the rows drawn are the previous ones,
+                // and the menu waits for the new ones before it is
+                // built again, but for a write that starts or ends
+                // meanwhile, which builds it refused, and for the
+                // reason its refused items state changing.
+                .built_from(menu_entry)
+                .follows_writes(cx.entity().downgrade())
+                .waits_while(GitTurtle::working_rows_wait)
+                .into_any_element()
             }
         }
     }

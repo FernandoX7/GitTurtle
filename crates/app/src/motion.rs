@@ -817,6 +817,80 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// The travelling copy of a row in flight is a picture of the row: it
+    /// takes no click and offers assistive technology nothing. A click on
+    /// epsilon's Stage stages it, and its copy starts to travel from where
+    /// epsilon's row stood, over delta's, which took its place: a second
+    /// click there, as a double-click's, acts on delta's Stage beneath it,
+    /// as a click under a still pointer acts on the row the rows moved there
+    /// (DESIGN.md, "Motion"), and epsilon stays staged. The copy's Unstage
+    /// took that click and unstaged epsilon again, and while it flew
+    /// assistive technology found it beside the list's rows as an "Unstage
+    /// epsilon.txt" button.
+    #[gpui::test]
+    async fn a_click_during_a_flight_never_reaches_the_travelling_row(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+        let pointer = cx
+            .debug_bounds("working-stage-5")
+            .expect("epsilon's Stage")
+            .center();
+        toggle(&app, cx, 5).await;
+        // [Staged 3, alpha, beta, epsilon, Unstaged 3, delta, gamma, zeta]:
+        // epsilon travels to row 3 on the test clock, which stands still.
+        assert_eq!(flying(&app, cx), Some(3));
+        crate::native_accessibility::written::forget();
+        draw(cx);
+        let mut failures = Vec::new();
+        let copy = row(cx, 3);
+        assert!(
+            copy.contains(&pointer),
+            "the copy {copy:?} starts under the pointer {pointer:?}"
+        );
+        if cx.debug_bounds("working-stage-3").is_some() {
+            failures.push("the copy draws a Stage control of its own".to_owned());
+        }
+        match crate::native_accessibility::written::get("working-travelling-row") {
+            Some(copy) if copy.node.is_hidden() => {}
+            copy => failures.push(format!("assistive technology finds the copy: {copy:?}")),
+        }
+        cx.simulate_click(pointer, Modifiers::default());
+        if let Some(write) = app.update(cx, |app, _| app.operation_task.take()) {
+            write.await;
+        }
+        rows_arrived(&app, cx).await;
+        advance(cx, ROW_TRAVEL.as_millis() as u64);
+        let staged = |cx: &mut VisualTestContext, name: &str| {
+            app.read_with(cx, |app, _| {
+                app.work_status.as_ref().and_then(|status| {
+                    status
+                        .entries
+                        .iter()
+                        .find(|entry| entry.path == Path::new(name))
+                        .map(|entry| {
+                            (
+                                entry.staged.is_some(),
+                                entry.unstaged.is_some() || entry.untracked,
+                            )
+                        })
+                })
+            })
+        };
+        if staged(cx, "epsilon.txt") != Some((true, false)) {
+            failures.push(format!(
+                "the second click unstaged epsilon: {:?}",
+                staged(cx, "epsilon.txt")
+            ));
+        }
+        if staged(cx, "delta.txt") != Some((true, false)) {
+            failures.push(format!(
+                "the second click did not reach delta's Stage beneath the copy: {:?}",
+                staged(cx, "delta.txt")
+            ));
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
     /// What the last frame painted over the heading at row `heading`: each
     /// quad's part inside it, clipped as it is drawn, with its fill and
     /// border, in a stable order. A part thinner than half a device pixel,
