@@ -321,16 +321,20 @@ impl DiffView {
     }
 
     /// Moves the caret to the start of `row`, focusing the text, as a click
-    /// on that row's checkbox does: Space goes on from there. The text keeps
-    /// its offset, the clicked row being in view, so a click on a text
-    /// scrolled sideways leaves it there rather than jumping to the lines'
-    /// starts; a selection bar the click brings scrolls the text on from
-    /// that offset ([`BarRoom::reveal`]), in place of the move's own scroll.
+    /// on that row's checkbox does: Space goes on from there. A click on a
+    /// text scrolled sideways leaves it there rather than jumping to the
+    /// lines' starts, and the text scrolls by the least that shows the row
+    /// whole, as it reveals a moved caret ([`BarRoom::keep_whole`]): the
+    /// move's own scroll takes both axes and is applied only at layout, so
+    /// it is put back and the vertical part redone. A selection bar the
+    /// click brings scrolls the text on from there ([`BarRoom::reveal`]).
     fn move_caret_to(&self, row: usize, window: &mut Window, cx: &mut App) {
         self.editor.update(cx, |state, cx| {
             let offset = state.scroll_offset();
             state.set_cursor_position(Position::new(row as u32, 0), window, cx);
             state.set_scroll_offset(offset, cx);
+            let text = state.input_bounds().size.height;
+            self.bar_room.keep_whole(text, state, cx);
         });
     }
 
@@ -2800,6 +2804,62 @@ mod tests {
             requested_frames(cx);
             assert!(wrapped(cx), "{}: the bar wraps", shown.at);
             whole(&shown, cx, "the bar grew to two rows");
+        }
+
+        /// A click on the checkbox of a row the text half cuts, the bar
+        /// already drawn, so that its arrival reveals nothing, leaves that
+        /// row whole, scrolled by the least, at the text's top as at its
+        /// foot, as the text reveals a moved caret. The text's whole offset
+        /// was put back after the caret moved, to keep it from scrolling
+        /// sideways, and the row stayed cut.
+        #[gpui::test]
+        async fn a_click_on_a_half_cut_rows_checkbox_leaves_that_row_whole(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = with_added(cx, 120).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                shown.press(cx, "space");
+                let (height, text) = shown.text(cx);
+                for (row, foot) in [(first + 40, false), (first + 60, true)] {
+                    let y = if foot {
+                        text.size.height + height / 3. - height * (row + 1) as f32
+                    } else {
+                        -height * row as f32 - height / 3.
+                    };
+                    shown.editor.update(cx, |state, cx| {
+                        state.set_scroll_offset(point(px(0.), y), cx);
+                    });
+                    crate::tags::tests::draw(cx);
+                    let cell = cx
+                        .debug_bounds(format!("partial-line-{row}").leak())
+                        .unwrap_or_else(|| panic!("{at}: row {row}'s checkbox"));
+                    assert!(
+                        if foot {
+                            cell.bottom() > text.bottom()
+                        } else {
+                            cell.top() < text.top()
+                        },
+                        "{at}: the text cuts row {row}: {cell:?} in {text:?}"
+                    );
+                    cx.simulate_click(cell.center(), Modifiers::default());
+                    crate::tags::tests::draw(cx);
+                    assert_eq!(shown.caret(cx), row, "{at}: the caret moved to the click");
+                    let line = shown.caret_line(cx);
+                    shown.assert_whole(cx, line, "after the click");
+                    let edge = if foot {
+                        line + height - text.bottom()
+                    } else {
+                        line - text.top()
+                    };
+                    assert!(
+                        f32::from(edge).abs() < 0.01,
+                        "{at}: row {row} moved by the least, {edge:?} from the text's edge"
+                    );
+                }
+            }
         }
 
         /// The selection bar keeps its action and Clear whole inside it,
