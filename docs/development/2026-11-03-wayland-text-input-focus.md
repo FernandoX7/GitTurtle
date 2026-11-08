@@ -5,6 +5,7 @@
 - **Question.** On Linux under Wayland with an input method running (fcitx5 on Omarchy), a key held on a toolbar dropdown reopened its menu about 72 times in 2 s. QA-90 and QA-91 saw this natively, and it is recorded as a limitation in the `gpui-base` and `gpui-component` patch notes. The question is how to fix it at its cause.
 - **Cause.** `gpui-pre-linux` 0.3.4 turns the Wayland text-input protocol (`zwp_text_input_v3`) on whenever the focused element has no input handler (`update_ime_enabled`, `src/linux/wayland/window.rs:1033-1057`, the `true` at `:1044-1046`). With text input on, the input method delivers each repeat as a fresh press (`is_held: false`, `wayland/client.rs:2008-2021`). GPUI's own repeat timer marks repeats held (`client.rs:1931`), but it never runs in that path.
 - **Decision.** Vendor `gpui-pre-linux` 0.3.4 under `vendor/` through `[patch.crates-io]`, as `gpui-pre-macos` is vendored. Backport upstream Zed's one-line fix: with no focused handler, `update_ime_enabled` returns `false`. Text input then follows the focused text field. Fields keep the input method, because the kit's input registers a handler and accepts text input. Buttons, menus, lists and shortcuts get GPUI's own key events and repeats.
+- **Read-only text (decided 2026-11-07).** A text the user cannot change counts as no text field. The kit's input accepts text input only while it is editable (`vendor/gpui-base`, `InputBaseState::accepts_text_input`; its patch note lists the app's read-only texts), so the Diff view, Compare's text and every other read-only editor keep text input off while focused, and a held key there repeats as GPUI's own, marked held. A field made read-only for a while, such as the commit title during a write, turns text input back on at the end of the frame that draws it editable.
 - **Outside this decision.** X11, where XIM creates its input context on every focus-in (`x11/client.rs:975-984`) and every press is `is_held: false` (`:1120`), stays a recorded limitation. So do repeats inside a text field, which is ordinary text entry, and an upgrade of the `gpui-pre` stack.
 
 ## Evidence
@@ -33,6 +34,7 @@
   - Focus on a dropdown logs `zwp_text_input_v3.disable`, and a 2 s hold gives one press and one menu.
   - Focus in a field logs `enable`, and fcitx5 Pinyin composes in the commit message and the palette.
   - After Alt-Tab back with a button focused, text input stays disabled.
+  - Focus in a Working diff's read-only text, with its per-line controls showing, logs `disable`, and a 2 s Space hold there toggles its line once. Find's field opened on it logs `enable` again.
 
 ## Outcome
 

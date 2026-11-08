@@ -71,6 +71,8 @@ mod profiles;
 mod project_library;
 mod project_pane;
 mod projects;
+#[cfg(test)]
+mod read_only_text_tests;
 mod recovery;
 mod recovery_drafts;
 mod reflog;

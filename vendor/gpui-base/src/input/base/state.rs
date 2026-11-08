@@ -3372,6 +3372,19 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
 
         None
     }
+
+    /// A text the user cannot change (read-only or disabled) takes no text
+    /// input, so the platform leaves its keys to the application: Wayland
+    /// keeps its text input off while it is focused, so keys and held repeats
+    /// come from GPUI's own repeat timer rather than an input method, and
+    /// macOS sends printable keys to bindings before the input method of a
+    /// non-ASCII source (GPUI derives `prefers_ime_for_printable_keys` from
+    /// this). Selection, copy, Find and caret keys are bindings, not text
+    /// input, and are unaffected. It is read at each query, so a text made
+    /// editable again takes text input in the frame the change is drawn in.
+    fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+        self.is_editable()
+    }
 }
 
 impl<M: InputModeKind> Focusable for InputBaseState<M> {
@@ -4377,6 +4390,77 @@ mod tests {
                 assert_eq!(state.value(), "!changed");
             });
         });
+    }
+
+    /// What the platform's input handler, built as the text element builds it
+    /// in paint, answers for a state: whether it takes text input, and whether
+    /// it wants printable keys sent to an input method first.
+    fn text_input<M: InputModeKind>(
+        input: &Entity<InputBaseState<M>>,
+        cx: &mut VisualTestContext,
+    ) -> (bool, bool) {
+        use gpui::InputHandler as _;
+        cx.update(|window, cx| {
+            let mut handler = gpui::ElementInputHandler::new(Bounds::default(), input.clone());
+            (
+                handler.accepts_text_input(window, cx),
+                handler.prefers_ime_for_printable_keys(window, cx),
+            )
+        })
+    }
+
+    fn only_editable_text_accepts_text_input<M: InputModeKind>(
+        input: Entity<InputBaseState<M>>,
+        cx: &mut VisualTestContext,
+    ) {
+        assert_eq!(
+            text_input(&input, cx),
+            (true, true),
+            "an editable text takes text input"
+        );
+
+        for (readonly, disabled) in [(true, false), (false, true), (true, true)] {
+            cx.update(|_, cx| {
+                input.update(cx, |state, cx| {
+                    state.set_readonly(readonly, cx);
+                    state.set_disabled(disabled, cx);
+                })
+            });
+            assert_eq!(
+                text_input(&input, cx),
+                (false, false),
+                "a text that is read-only ({readonly}) or disabled ({disabled}) refuses text input"
+            );
+
+            // Made editable again, it takes text input at once: the platform
+            // asks again each frame, and no frame has to pass first.
+            cx.update(|_, cx| {
+                input.update(cx, |state, cx| {
+                    state.set_readonly(false, cx);
+                    state.set_disabled(false, cx);
+                })
+            });
+            assert_eq!(
+                text_input(&input, cx),
+                (true, true),
+                "a text made editable again takes text input before it is drawn"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn only_an_editable_text_accepts_text_input(cx: &mut TestAppContext) {
+        let editor = InputView::new(cx);
+        let mut editor_cx = VisualTestContext::from_window(editor.window_handle.into(), cx);
+        only_editable_text_accepts_text_input(editor.input, &mut editor_cx);
+
+        let field = InputView::build(cx, |state| state);
+        let mut field_cx = VisualTestContext::from_window(field.window_handle.into(), cx);
+        only_editable_text_accepts_text_input(field.input, &mut field_cx);
+
+        let textarea = InputView::build_textarea(cx, |state| state);
+        let mut textarea_cx = VisualTestContext::from_window(textarea.window_handle.into(), cx);
+        only_editable_text_accepts_text_input(textarea.input, &mut textarea_cx);
     }
 
     /// Regression test: `scroll_to` at end-of-buffer must produce a deferred
