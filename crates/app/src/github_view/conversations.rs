@@ -65,12 +65,14 @@ pub(super) struct ConfirmFit {
     pub chrome: Pixels,
     /// The guidance sentence's height, wherever it is drawn.
     pub guidance: Pixels,
-    /// How far apart its 12 pt lines are drawn: the root style's line height at that size,
-    /// snapped to a device pixel, as a text element lays its lines out.
+    /// How far apart its 12 pt lines are drawn ([`confirm_line`]), which the frame that drew
+    /// it read from the text style, for the keys that scroll the region a line.
     pub line: Pixels,
-    /// How tall what the region holds is: the region takes that height where it fits under
-    /// its cap, and the cap's otherwise, so each frame lays it out at a height of its own.
-    pub content: Pixels,
+    /// How much shorter than the room the dialog left it the body's view was, where the last
+    /// frame drew the body overflowing; none where it fit. The room comes from each frame's
+    /// window, so a resize changes it in the frame that draws the new size, and this keeps
+    /// only what the body gives up beyond it.
+    pub short: Pixels,
 }
 impl ConfirmFit {
     /// Whether `other` measures the same, to a half pixel.
@@ -78,15 +80,98 @@ impl ConfirmFit {
         [
             (self.chrome, other.chrome),
             (self.guidance, other.guidance),
-            (self.line, other.line),
-            (self.content, other.content),
+            (self.short, other.short),
         ]
         .into_iter()
         .all(|(a, b)| (a - b).abs() <= px(0.5))
     }
 }
 
-/// The outbound confirmation's title, which names its region for assistive technologies.
+/// How far apart the confirmation's 12 pt lines are drawn: the root style's line height at
+/// that size, snapped to a device pixel, as a text element lays its lines out. Read from the
+/// style as each frame renders, so a confirmation's first frame keeps the region's two-line
+/// floor: read from the last frame's measure, a new panel's first confirmation had none.
+fn confirm_line(window: &Window) -> Pixels {
+    window.pixel_snap(
+        window
+            .text_style()
+            .line_height
+            .to_pixels(appearance::ui_text(12.).into(), window.rem_size()),
+    )
+}
+
+/// The confirmation region's cue that its destination and text continue past an edge: the
+/// shared scroll cue's edge fades ([`crate::tags::ScrollCue`]), a band
+/// [`crate::tags::EDGE_FADE`] tall at the interface size and at most a quarter of the region, at
+/// each edge more lies past, opaque at the edge in the dialog's surface, the palette's canvas,
+/// and clear inward; none at an end the region is scrolled to, none where what it holds fits,
+/// and none in a region shorter than one fade. Unlike a list's cue it draws no scrollbar at any
+/// length and keeps no gutter, so what the region holds keeps its width whether or not it
+/// overflows, and a confirmation's first frame lays out as it settles. It reads the region's
+/// bounds, offset and reach as it paints, after the region has laid them out in that frame, so
+/// a key, a wheel or a resize moves the fades in the frame that scrolls it, and it inserts no
+/// hitbox, so a wheel over a fade scrolls the region. It lies inside the region, and the
+/// region's ring on the room around it, so no fade covers the ring. Cut at its foot with no
+/// cue, at 18 pt in a 461 × 490 window nothing said the guidance and the text Send sends lay
+/// below.
+fn region_fades(scroll: ScrollHandle) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, window, cx| {
+            let region = scroll.bounds();
+            let full = appearance::ui_size(crate::tags::EDGE_FADE);
+            if region.size.height < full {
+                return;
+            }
+            let fade = full.min(region.size.height / 4.);
+            // Half a pixel either way is an end, as a scrolling list's.
+            let slack = px(0.5);
+            let scrolled = -scroll.offset().y;
+            let surface: Hsla = rgb(palette(cx).canvas).into();
+            let band = |angle: f32| {
+                linear_gradient(
+                    angle,
+                    linear_color_stop(surface.opacity(0.), 0.),
+                    linear_color_stop(surface, 1.),
+                )
+            };
+            if scrolled > slack {
+                // Toward the top, opaque at the region's top edge.
+                let top = Bounds::new(region.origin, size(region.size.width, fade));
+                window.paint_quad(fill(top, band(0.)));
+            }
+            if scrolled < scroll.max_offset().y - slack {
+                // Toward the bottom, opaque at the region's bottom edge.
+                let bottom = Bounds::new(
+                    point(region.left(), region.bottom() - fade),
+                    size(region.size.width, fade),
+                );
+                window.paint_quad(fill(bottom, band(180.)));
+            }
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
+/// One frame of the outbound confirmation as it prepainted, for tests: the room around the
+/// region its ring lies on, where Send and Keep editing lie, and the body's view.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ConfirmFrame {
+    pub ring: Bounds<Pixels>,
+    pub actions: Bounds<Pixels>,
+    pub body: Bounds<Pixels>,
+}
+#[cfg(test)]
+thread_local! {
+    /// Every frame of the confirmation drawn since a test last took them.
+    pub(super) static CONFIRM_FRAMES: std::cell::RefCell<Vec<ConfirmFrame>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What the outbound confirmation confirms, which names its region for assistive technologies:
+/// the confirmation draws no title, so the name says what it is for rather than repeat one.
 fn confirmation_title(action: &Action) -> &'static str {
     match action {
         Action::Create(_) => "Confirm the new pull request",
@@ -542,10 +627,13 @@ impl Panel {
         }
     }
     /// The outbound confirmation. Its one Tab stop is a region that scrolls the destination,
-    /// with every full identity it names, and then the text Send sends: the region takes the
-    /// room the panel's body leaves beside the rest of the confirmation, which the last frame
-    /// measured ([`ConfirmFit`]), and never less than two lines, so the region's ring and Send
-    /// and Keep editing below it stay in view together where the body can hold them. The
+    /// with every full identity it names, and then the text Send sends: the region is as tall
+    /// as what it holds, up to the room the panel's body leaves beside the rest of the
+    /// confirmation, which the last frame measured ([`ConfirmFit`]), and never less than two
+    /// lines, so the region's ring and Send and Keep editing below it stay in view together
+    /// where the body can hold them. Laid out by what it holds in each frame, a confirmation
+    /// opens at its own height: sized from what the last one held, a short comment's opened as
+    /// tall as the long reply's before it, and a new panel's took the whole room. The
     /// guidance sentence stands above Send where the body holds it, the region's two lines and
     /// the buttons, and otherwise in the region after the destination. Shown whole, the
     /// confirmation was the stop, 446 px tall at 18 pt in a 461 × 490 window, where the body is
@@ -564,25 +652,26 @@ impl Panel {
         // The room around the region its ring lies on the edge of.
         let ring = appearance::button_ring_room(cx);
         let gap = window.rem_size() * 0.5;
-        // The body's view, less the room the confirmation's reveal keeps at either edge: the
-        // view the last frame drew where the body overflowed it, which the dialog can hold
-        // shorter than the body's cap, and otherwise the cap, less the top line standing above
-        // the body while a conversation is open.
-        let scroll = &self.review.body_scroll;
-        let view = if scroll.max_offset().y > Pixels::ZERO {
-            scroll.bounds().size.height
+        // The body's view in this frame, less the room the confirmation's reveal keeps at either
+        // edge: the room the dialog leaves the body in this window, less the top line standing
+        // above the body while a conversation is open, and less what the last frame found the
+        // body's view short of that room where it overflowed, as the dialog can hold it
+        // ([`ConfirmFit::short`]). Read from the view the last frame drew, a window made only
+        // shorter, 1,480 × 973 to 1,480 × 486 at 13 pt, which rewraps nothing and so measures
+        // nothing new, kept a long reply's region 612 px tall in a 290 px body, Send below its
+        // foot, until some other frame drew.
+        let top_line = if self.review.top_line_pinned.get() {
+            self.review.top_line.get()
         } else {
-            let top_line = if self.review.top_line_pinned.get() {
-                self.review.top_line.get()
-            } else {
-                Pixels::ZERO
-            };
-            window.pixel_snap(super::body_max_height(window) - top_line)
+            Pixels::ZERO
         };
-        let left = view - super::review::reveal_room(window, cx) * 2.;
-        let floor = drawn.line * 2.;
+        let room = window.pixel_snap(super::body_max_height(window) - top_line);
+        let left = room - drawn.short - super::review::reveal_room(window, cx) * 2.;
+        let line = confirm_line(window);
+        let floor = line * 2.;
         let inside = drawn.chrome + drawn.guidance + gap + floor > left;
-        let height = (left
+        // The tallest the region is: what it holds is laid out up to this in the same frame.
+        let cap = (left
             - drawn.chrome
             - if inside {
                 Pixels::ZERO
@@ -590,12 +679,6 @@ impl Panel {
                 drawn.guidance + gap
             })
         .max(floor);
-        // The region's height: what it holds where that fits, as the last frame measured it.
-        let height = if drawn.content > Pixels::ZERO {
-            drawn.content.min(height)
-        } else {
-            height
-        };
         let fit = self.conversations.confirm_fit.clone();
         let guidance = div()
             .on_children_prepainted(move |children, _, _| {
@@ -679,28 +762,19 @@ impl Panel {
                     "{}: its destination and what Send sends",
                     confirmation_title(&confirmation.action)
                 ))
+                // As tall as what it holds, up to the cap: it and the confirmation do not
+                // shrink, so the body's column lays both out at what they hold, and the body
+                // scrolls to the region's foot and to Send. A scrolling element adds nothing
+                // of what it holds to a column that shrinks it, so laid out in a confirmation
+                // that could shrink, the region drew past the confirmation's laid-out foot.
                 .flex_shrink_0()
                 .min_w_0()
-                .h(height)
+                .max_h(cap)
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .child(
-                    // What it holds, measured as it prepaints ([`ConfirmFit::content`]): a
-                    // div that tracks a scroll reports no children to its own listener.
                     div()
-                        .on_children_prepainted({
-                            let fit = self.conversations.confirm_fit.clone();
-                            move |children, _, _| {
-                                if let Some(span) =
-                                    children.iter().copied().reduce(|a, b| a.union(&b))
-                                {
-                                    let mut kept = fit.get();
-                                    kept.content = span.size.height;
-                                    fit.set(kept);
-                                }
-                            }
-                        })
                         .flex_shrink_0()
                         .min_w_0()
                         .flex()
@@ -729,6 +803,7 @@ impl Panel {
             self.review.revealed_focus.clone(),
             focus.clone(),
         );
+        let body_scroll = self.review.body_scroll.clone();
         let measure = move |children: &[Bounds<Pixels>], window: &mut Window, cx: &mut App| {
             let (Some(around), Some(span)) = (
                 children.first(),
@@ -737,21 +812,30 @@ impl Panel {
                 return;
             };
             let region = around.size.height - ring * 2.;
+            #[cfg(test)]
+            CONFIRM_FRAMES.with(|frames| {
+                frames.borrow_mut().push(ConfirmFrame {
+                    ring: *around,
+                    actions: children[children.len() - 1],
+                    body: body_scroll.bounds(),
+                })
+            });
             let guidance = match children {
                 [_, guidance, _] => guidance.size.height + window.rem_size() * 0.5,
                 _ => Pixels::ZERO,
             };
-            let rem = window.rem_size();
-            let style = window.text_style();
+            // The body has laid out and prepainted its own bounds in this frame before what it
+            // holds prepaints.
+            let short = if body_scroll.max_offset().y > Pixels::ZERO {
+                (room - body_scroll.bounds().size.height).max(Pixels::ZERO)
+            } else {
+                Pixels::ZERO
+            };
             let measured = ConfirmFit {
                 chrome: span.size.height - region - guidance,
                 guidance: fit.get().guidance,
-                content: fit.get().content,
-                line: window.pixel_snap(
-                    style
-                        .line_height
-                        .to_pixels(appearance::ui_text(12.).into(), rem),
-                ),
+                line,
+                short,
             };
             fit.set(measured);
             if !measured.agrees(&drawn) {
@@ -795,6 +879,8 @@ impl Panel {
                     .mx(-ring)
                     .p(ring)
                     .child(super::review::clipped(region))
+                    // Over the region's text and under its ring ([`region_fades`]).
+                    .child(region_fades(self.conversations.confirm_scroll.clone()))
                     .children(edge),
             )
             .children(below)

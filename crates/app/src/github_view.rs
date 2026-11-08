@@ -11006,6 +11006,10 @@ mod tests {
     /// A confirmation a test opens, by what it confirms, and how it is made.
     type Confirming = (&'static str, fn() -> Confirmation);
 
+    /// A confirmation a test opens, by what it confirms, how it is made, and at what text size
+    /// and window size.
+    type Opening = (&'static str, fn() -> Confirmation, (u8, f32, f32));
+
     /// A reply to a conversation confirmed for sending, its destination naming every node ID
     /// its target has, after the fixture PR's full head and base commit IDs, and its text
     /// `lines` lines long, ending "The reply's last line.".
@@ -11036,7 +11040,7 @@ mod tests {
     }
 
     /// The outbound confirmation's one Tab stop is the region that scrolls its destination and
-    /// text: at 13 pt in a 1,480 × 973 window and at 18 pt in a 461 × 490 one, for a comment and
+    /// text: at 13 and 18 pt in 1,480 × 973 and 461 × 490 windows, for a comment and
     /// for a long reply whose destination names every node ID, a walk with Tab and one with
     /// Shift+Tab round the panel's Review each meet the region once, its ring whole on the edge
     /// of the room around it, with Send and Keep editing whole in the body's view below it, and
@@ -11055,7 +11059,12 @@ mod tests {
             ("a long reply", || confirmed_long_reply(40)),
         ];
         let mut failures = Vec::new();
-        for (interface, width, height) in [(13, 1480., 973.), (18, 461., 490.)] {
+        for (interface, width, height) in [
+            (13, 1480., 973.),
+            (18, 461., 490.),
+            (13, 461., 490.),
+            (18, 1480., 973.),
+        ] {
             sweep::interface_size(cx, interface);
             cx.simulate_resize(size(px(width), px(height)));
             for (kind, confirmation) in confirmations {
@@ -11121,11 +11130,11 @@ mod tests {
     }
 
     /// The confirmation's region scrolls by keys while it holds focus, under its own key
-    /// context: at 13 pt in a 1,480 × 973 window and at 18 pt in a 461 × 490 one, a reply whose
+    /// context: at 13 and 18 pt in 1,480 × 973 and 461 × 490 windows, a reply whose
     /// destination names every node ID and whose text runs past the region opens at its top;
     /// Down and Up move it a line, Page Down to its end, where its last line ends at the region's
     /// foot, End stays there and Home goes back to its top, focus staying on the region and Send
-    /// whole in the body's view. The region is a group named by the confirmation's title that
+    /// whole in the body's view. The region is a group named for what it confirms that
     /// holds the destination, with the full head and base commit IDs and every node ID, and the
     /// text.
     #[gpui::test]
@@ -11145,7 +11154,12 @@ mod tests {
             }
         };
         let near = |a: Pixels, b: Pixels| (a - b).abs() <= px(0.01);
-        for (interface, width, height) in [(13, 1480., 973.), (18, 461., 490.)] {
+        for (interface, width, height) in [
+            (13, 1480., 973.),
+            (18, 461., 490.),
+            (13, 461., 490.),
+            (18, 1480., 973.),
+        ] {
             let at = format!("{interface} pt in a {width} × {height} window");
             crate::focus_ring::sweep::interface_size(cx, interface);
             cx.simulate_resize(size(px(width), px(height)));
@@ -11176,12 +11190,38 @@ mod tests {
             assert_eq!(
                 group.node.label(),
                 Some("Confirm the reply: its destination and what Send sends"),
-                "{at}: named by the confirmation's title"
+                "{at}: named for what it confirms"
             );
             for held in ["github-confirm-destination", "github-confirm-text"] {
                 assert!(
                     written::lies_in(held, "github-confirm-region"),
                     "{at}: the region holds {held}"
+                );
+            }
+            // The guidance: in the region after the destination at 18 pt in the narrow window,
+            // where the body cannot hold it beside the buttons and the region's two lines, and
+            // below the region, above Send, at 13 pt in the wide one.
+            let mut place = |selector: &'static str| cx.debug_bounds(selector).expect(selector);
+            let (destination, guidance, ring, sent) = (
+                place("github-confirm-destination"),
+                place("github-confirm-guidance"),
+                place("github-confirm-ring"),
+                place("github-confirm-send"),
+            );
+            let within = written::lies_in("github-confirm-guidance", "github-confirm-region");
+            let narrow = width < 1000.;
+            if interface == 18 && narrow {
+                assert!(within, "{at}: the region holds the guidance");
+                assert!(
+                    guidance.top() >= destination.bottom(),
+                    "{at}: the guidance {guidance:?} follows the destination {destination:?}"
+                );
+            } else if interface == 13 && !narrow {
+                assert!(!within, "{at}: the guidance stands outside the region");
+                assert!(
+                    guidance.top() >= ring.bottom() && guidance.bottom() <= sent.top(),
+                    "{at}: the guidance {guidance:?} stands below the region's ring {ring:?}, \
+                     above Send {sent:?}"
                 );
             }
             let destination = written::get("github-confirm-destination")
@@ -11268,6 +11308,274 @@ mod tests {
             );
             send(cx, "Home");
         }
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The confirmation's region never takes less than two of its lines: at 18 pt in a
+    /// 461 × 300 window, where the body's 120 px floor leaves less room than the confirmation's
+    /// buttons alone take, a long reply's region is two of its 12 pt lines tall.
+    #[gpui::test]
+    async fn the_confirmation_region_keeps_two_lines_in_a_short_body(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        open_confirmation(
+            (&panel, &pull),
+            confirmed_long_reply(40),
+            (18, 461., 300.),
+            cx,
+        );
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let line = panel.read_with(cx, |panel, _| panel.conversations.confirm_fit.get().line);
+        assert!(line > px(20.), "a 12 pt line at 18 pt: {line:?}");
+        let region = cx
+            .debug_bounds("github-confirm-region")
+            .expect("the region");
+        assert!(
+            (region.size.height - line * 2.).abs() <= px(0.5),
+            "the region is two {line:?} lines tall: {:?}",
+            region.size.height
+        );
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The confirmation's frames drawn since the last take ([`conversations::ConfirmFrame`]).
+    fn confirm_frames() -> Vec<conversations::ConfirmFrame> {
+        conversations::CONFIRM_FRAMES.with(|frames| frames.take())
+    }
+
+    /// Opens `confirmation` on the open PR's Review as Review submission… opens it, its region
+    /// focused, at `interface` pt in a `width` × `height` window.
+    fn open_confirmation(
+        (panel, pull): (&Entity<Panel>, &PullRequest),
+        confirmation: Confirmation,
+        (interface, width, height): (u8, f32, f32),
+        cx: &mut VisualTestContext,
+    ) {
+        crate::focus_ring::sweep::interface_size(cx, interface);
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.executor().run_until_parked();
+        // The frames the confirmation open before drew at the new size.
+        confirm_frames();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull.clone());
+                panel.review.show_list = false;
+                panel.review.section = Section::Review;
+                panel.confirm = Some(confirmation);
+                panel.focus_confirmation(window, cx);
+            })
+        });
+        cx.executor().run_until_parked();
+    }
+
+    /// Every frame the confirmation draws as it opens lays its region out at the height it
+    /// settles at, its ring and Send and Keep editing fitting the body's view together, and the
+    /// settled frame draws Send and Keep editing whole in that view: a comment's in a new panel
+    /// at 13 pt in a 1,480 × 973 window, which, laid out before any confirmation had been
+    /// measured, took the whole room the body leaves, and a short comment's right after a long
+    /// reply's at that size and at 18 pt in a 461 × 490 window, which opened as tall as the
+    /// reply's, sized from what the reply held.
+    #[gpui::test]
+    async fn a_confirmation_lays_its_region_out_at_its_own_height_from_its_first_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let opens: [Opening; 5] = [
+            (
+                "a comment in a new panel",
+                confirmed_comment,
+                (13, 1480., 973.),
+            ),
+            (
+                "a long reply",
+                || confirmed_long_reply(60),
+                (13, 1480., 973.),
+            ),
+            ("a comment after it", confirmed_comment, (13, 1480., 973.)),
+            (
+                "a long reply",
+                || confirmed_long_reply(60),
+                (18, 461., 490.),
+            ),
+            ("a comment after it", confirmed_comment, (18, 461., 490.)),
+        ];
+        for (kind, confirmation, (interface, width, height)) in opens {
+            let at = format!("{kind} at {interface} pt in a {width} × {height} window");
+            open_confirmation(
+                (&panel, &pull),
+                confirmation(),
+                (interface, width, height),
+                cx,
+            );
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            let frames = confirm_frames();
+            let settled = *frames.last().expect("the confirmation draws");
+            let (room, reveal) = cx.update(|window, cx| {
+                (
+                    appearance::button_ring_room(cx),
+                    review::reveal_room(window, cx),
+                )
+            });
+            let region = |frame: &conversations::ConfirmFrame| frame.ring.size.height - room * 2.;
+            for (index, frame) in frames.iter().enumerate() {
+                assert!(
+                    (region(frame) - region(&settled)).abs() <= px(0.5),
+                    "{at}: frame {index} lays the region out {:?} tall, not the {:?} it settles at",
+                    region(frame),
+                    region(&settled)
+                );
+                let together = frame.actions.bottom() - frame.ring.top();
+                assert!(
+                    together <= frame.body.size.height - reveal * 2. + px(0.5),
+                    "{at}: frame {index}: the region's ring and Send and Keep editing, {together:?} \
+                     together, fit the body's {:?} view",
+                    frame.body.size.height
+                );
+            }
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            for shown in ["github-confirm-send", "github-edit-submission"] {
+                let drawn = cx.debug_bounds(shown).expect(shown);
+                assert!(
+                    drawn.top() >= body.top() - px(0.5)
+                        && drawn.bottom() <= body.bottom() + px(0.5),
+                    "{at}: {shown} {drawn:?} lies whole in the body {body:?}"
+                );
+            }
+        }
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A window made only shorter lays the confirmation's region out for the body it draws
+    /// in: with a long reply's region focused at 13 pt in a 1,480 × 973 window, every frame
+    /// drawn as the window becomes 1,480 × 486, the first included, draws Send and Keep
+    /// editing inside the body, where nothing in the confirmation rewraps. Sized from the view
+    /// the last frame drew, the region kept its 612 px for the 290 px body, Send below its
+    /// foot, until some other frame drew.
+    #[gpui::test]
+    async fn a_shorter_window_lays_the_confirmation_out_for_its_body_at_once(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        open_confirmation(
+            (&panel, &pull),
+            confirmed_long_reply(80),
+            (13, 1480., 973.),
+            cx,
+        );
+        for _ in 0..6 {
+            crate::width_walk::frame(cx);
+        }
+        let inside = |frame: &conversations::ConfirmFrame| {
+            frame.actions.top() >= frame.body.top() - px(0.5)
+                && frame.actions.bottom() <= frame.body.bottom() + px(0.5)
+        };
+        let before = confirm_frames();
+        assert!(
+            before.last().is_some_and(inside),
+            "Send and Keep editing lie in the body before the resize: {:?}",
+            before.last()
+        );
+        // Height only: the width stays, so nothing in the confirmation rewraps.
+        cx.simulate_resize(size(px(1480.), px(486.)));
+        cx.executor().run_until_parked();
+        crate::width_walk::frame(cx);
+        let frames = confirm_frames();
+        assert!(
+            !frames.is_empty(),
+            "the shorter window draws the confirmation"
+        );
+        for (index, frame) in frames.iter().enumerate() {
+            assert!(
+                inside(frame),
+                "frame {index} after the resize: Send and Keep editing {:?} lie in the body {:?}",
+                frame.actions,
+                frame.body
+            );
+        }
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+    }
+
+    /// The confirmation's region cues what lies past its edges with the shared scroll cue's
+    /// edge fades in the dialog's surface (`tags::ScrollCue`): at 18 pt in a 461 × 490 window a
+    /// long reply's region, opened at its top, fades its foot and not its top, and after End
+    /// its top and not its foot; at 13 pt in a 1,480 × 973 window a comment's region, which
+    /// holds all of it, fades neither. No fade reaches the ring the region draws on the room
+    /// around it. Cut at its foot with no cue, the region gave no sign that the guidance and
+    /// the text Send sends lay below.
+    #[gpui::test]
+    async fn the_confirmation_region_fades_the_edges_more_lies_past(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let stroke = appearance::BUTTON_FOCUS_RING.width;
+        let fades = |cx: &mut VisualTestContext, at: &str, expected: (bool, bool)| {
+            let region = cx
+                .debug_bounds("github-confirm-region")
+                .expect("the region");
+            let (top, bottom) = crate::tags::tests::painted_fades(cx, region);
+            assert_eq!(
+                (top.is_some(), bottom.is_some()),
+                expected,
+                "{at}: the fades at the region's top and foot: {top:?}, {bottom:?}"
+            );
+            // The ring's stroke lies along the edge of the room around the region.
+            let ring = cx
+                .debug_bounds("github-confirm-ring")
+                .expect("the ring's room")
+                .dilate(-stroke);
+            for band in [
+                top.map(|height| Bounds::new(region.origin, size(region.size.width, height))),
+                bottom.map(|height| {
+                    Bounds::new(
+                        point(region.left(), region.bottom() - height),
+                        size(region.size.width, height),
+                    )
+                }),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                assert!(
+                    band.top() >= ring.top()
+                        && band.bottom() <= ring.bottom()
+                        && band.left() >= ring.left()
+                        && band.right() <= ring.right(),
+                    "{at}: the fade {band:?} lies clear of the ring inside {ring:?}"
+                );
+            }
+        };
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        let at = "a long reply at 18 pt in a 461 × 490 window";
+        open_confirmation(
+            (&panel, &pull),
+            confirmed_long_reply(60),
+            (18, 461., 490.),
+            cx,
+        );
+        frames(cx);
+        fades(cx, &format!("{at}, at rest"), (false, true));
+        cx.simulate_keystrokes("end");
+        frames(cx);
+        fades(cx, &format!("{at}, after End"), (true, false));
+        open_confirmation((&panel, &pull), confirmed_comment(), (13, 1480., 973.), cx);
+        frames(cx);
+        fades(
+            cx,
+            "a comment at 13 pt in a 1,480 × 973 window",
+            (false, false),
+        );
         cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
