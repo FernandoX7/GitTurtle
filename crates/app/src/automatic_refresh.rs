@@ -546,6 +546,12 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> bool {
         let entries = self.apply_worktree_state(refresh.working, true, requested, window, cx);
+        if let Some(Ok(history)) = &refresh.snapshot {
+            self.repository_tabs.follow_read_repository(match history {
+                worker::QuietHistory::Refreshed(snapshot) => &snapshot.repository,
+                worker::QuietHistory::Retained { metadata, .. } => &metadata.repository,
+            });
+        }
         if let Some(snapshot) = refresh.snapshot {
             match snapshot {
                 Ok(worker::QuietHistory::Refreshed(snapshot)) => {

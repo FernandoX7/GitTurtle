@@ -262,6 +262,11 @@ struct Identity {
     /// Its common directory (a linked worktree's main Git directory, whose
     /// refs and objects it uses), canonical; `git_dir` itself otherwise.
     common: PathBuf,
+    /// The inode of `git_dir` at capture, where the platform has one
+    /// ([`GitRepository::git_dir_inode`]).
+    git_dir_inode: Option<u64>,
+    /// The inode of `common` at capture ([`GitRepository::common_dir_inode`]).
+    common_inode: Option<u64>,
     /// The folder holding the `.git` entry (a directory or a gitfile) that
     /// leads Git from the root to `git_dir`: the root itself, or a folder
     /// above it whose repository sets `core.worktree` to a folder inside.
@@ -411,6 +416,12 @@ impl Identity {
         if common != git_dir {
             configs.push(common.join("config"));
         }
+        let git_dir_inode = directory_inode(&git_dir);
+        let common_inode = if common == git_dir {
+            git_dir_inode
+        } else {
+            directory_inode(&common)
+        };
         // The stored paths after the stamps, as every check takes them: a
         // file edited after the stamps is a changed stamp at the next check.
         let stamps = configs.iter().map(|path| FileStamp::read(path)).collect();
@@ -419,6 +430,8 @@ impl Identity {
             root,
             git_dir,
             common,
+            git_dir_inode,
+            common_inode,
             holder,
             ceiling,
             confined,
@@ -486,6 +499,22 @@ impl Identity {
             git_entry_holder(path) == Some(holder)
                 && resolve_git_entry(holder).as_ref() == Some(&self.git_dir)
         })
+    }
+}
+
+/// `directory`'s inode, where the platform has one and it can be read.
+fn directory_inode(directory: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(directory)
+            .ok()
+            .map(|metadata| metadata.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        None
     }
 }
 
@@ -1044,6 +1073,19 @@ impl GitRepository {
     /// and objects it uses, and the Git directory itself otherwise.
     pub fn common_dir(&self) -> &Path {
         &self.identity.common
+    }
+
+    /// The inode of [`Self::git_dir`] when the repository was opened, where
+    /// the platform has one: read once by the open, so asking starts no
+    /// filesystem access, and a session can save it beside the path.
+    pub fn git_dir_inode(&self) -> Option<u64> {
+        self.identity.git_dir_inode
+    }
+
+    /// The inode of [`Self::common_dir`] when the repository was opened
+    /// ([`Self::git_dir_inode`]).
+    pub fn common_dir_inode(&self) -> Option<u64> {
+        self.identity.common_inode
     }
 
     /// Where this repository's commands run: at its root, confined to it.

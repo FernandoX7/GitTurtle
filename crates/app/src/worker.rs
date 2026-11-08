@@ -1193,6 +1193,22 @@ impl std::error::Error for RepositoryGone {}
 pub struct GitDirectories {
     pub git_dir: PathBuf,
     pub common: PathBuf,
+    /// Their inodes as captured at the repository's open, which a session
+    /// saves beside these paths.
+    pub inodes: DirectoryInodes,
+    /// Whether these came from a saved session. Only such a tab compares
+    /// [`Self::inodes`] with the directories it finds: a tab opened in this
+    /// run, or one whose reopen was accepted, holds [`Self::of`]'s.
+    pub restored: bool,
+}
+
+/// The inodes of a tab's [`GitDirectories`]. `None` where a session saved
+/// none, as every older session, and where the platform has none: there is
+/// then nothing to compare.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DirectoryInodes {
+    pub git_dir: Option<u64>,
+    pub common: Option<u64>,
 }
 
 impl GitDirectories {
@@ -1200,15 +1216,29 @@ impl GitDirectories {
         Self {
             git_dir: repository.git_dir().to_owned(),
             common: repository.common_dir().to_owned(),
+            inodes: DirectoryInodes {
+                git_dir: repository.git_dir_inode(),
+                common: repository.common_dir_inode(),
+            },
+            restored: false,
         }
     }
 
-    /// The directory of `repository` that differs from these, the Git
-    /// directory before the common one; `None` where both match.
+    /// The directory of `repository` that differs from these, by its path
+    /// or, for a restored tab, by the inode it saved, the Git directory
+    /// before the common one; `None` where both match. Reads what the
+    /// repository's open captured, so it touches no filesystem.
     fn mismatch(&self, repository: &GitRepository) -> Option<PathBuf> {
-        if repository.git_dir() != self.git_dir {
+        let differs = |saved: Option<u64>, found: Option<u64>| {
+            self.restored && saved.is_some_and(|saved| found != Some(saved))
+        };
+        if repository.git_dir() != self.git_dir
+            || differs(self.inodes.git_dir, repository.git_dir_inode())
+        {
             Some(repository.git_dir().to_owned())
-        } else if repository.common_dir() != self.common {
+        } else if repository.common_dir() != self.common
+            || differs(self.inodes.common, repository.common_dir_inode())
+        {
             Some(repository.common_dir().to_owned())
         } else {
             None
@@ -1413,7 +1443,10 @@ impl RepositorySession {
     /// `commondir` leads to. The retained repository answers only where its
     /// own directories are the captured ones; otherwise Git is asked again,
     /// and a mismatch found fails as `RepositoryGone`, naming the directory
-    /// that differs.
+    /// that differs. A tab restored from a session also compares the inodes
+    /// it saved ([`GitDirectories::restored`]), which the same paths through
+    /// a folder above re-pointed at another repository cannot match; it is
+    /// the open here that reads them, never the launch.
     fn open(
         &mut self,
         requested: &Path,
@@ -1430,6 +1463,7 @@ impl RepositorySession {
         let git_dir = git_dir.map(|directories| GitDirectories {
             git_dir: through(&directories.git_dir),
             common: through(&directories.common),
+            ..*directories
         });
         let git_dir = git_dir.as_ref();
         if self
@@ -6414,6 +6448,183 @@ mod image_tests {
         }
     }
 
+    /// A folder made to hold one repository, `git init`ed.
+    #[cfg(unix)]
+    fn init_at(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        let init = Fixture::command(path)
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+    }
+
+    /// A restored tab compares the inodes it saved, warm and cold: a folder
+    /// above its root re-pointed to another repository with the root's
+    /// folder name resolves to the same paths through that folder, and is
+    /// refused naming that repository's Git directory, the mark a swapped
+    /// `.git` gets. Moved on the one filesystem and linked back, the
+    /// repository keeps its inodes and reopens. A tab opened in this run
+    /// compares none, and neither does an older session that saved none.
+    #[cfg(unix)]
+    #[test]
+    fn a_restored_tab_tells_its_repository_by_the_inodes_it_saved() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let projects = base.join("projects");
+        let root = projects.join("repository");
+        init_at(&root);
+        let other = Fixture::new();
+        let mut session = RepositorySession::default();
+        let opened = session.open(&root, None, None).unwrap();
+        let captured = GitDirectories::of(&opened);
+        assert!(!captured.restored, "of compares nothing");
+        assert!(captured.inodes.git_dir.is_some());
+        let restored = GitDirectories {
+            restored: true,
+            ..captured.clone()
+        };
+        let reopen = |session: &mut RepositorySession, named: &GitDirectories, cold: bool| {
+            if cold {
+                session.open(&other.0, None, None).unwrap();
+            }
+            session.open(&root, Some(&root), Some(named))
+        };
+
+        let moved = base.join("moved");
+        fs::rename(&projects, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &projects).unwrap();
+        for cold in [false, true] {
+            let reopened = reopen(&mut session, &restored, cold)
+                .unwrap_or_else(|error| panic!("moved, cold {cold}: {error:#}"));
+            assert_eq!(reopened.path(), moved.join("repository"), "cold {cold}");
+        }
+        fs::remove_file(&projects).unwrap();
+        fs::rename(&moved, &projects).unwrap();
+
+        // The repository kept aside, so its inodes stay taken.
+        let away = base.join("away");
+        fs::rename(&projects, &away).unwrap();
+        let elsewhere = base.join("elsewhere");
+        let found = elsewhere.join("repository");
+        init_at(&found);
+        std::os::unix::fs::symlink(&elsewhere, &projects).unwrap();
+        for cold in [false, true] {
+            let gone = reopen(&mut session, &restored, cold)
+                .expect_err("another repository by the root's folder name")
+                .downcast::<RepositoryGone>()
+                .expect("gone");
+            assert_eq!(gone.path, root, "cold {cold}");
+            assert_eq!(
+                gone.found.as_deref(),
+                Some(found.join(".git").as_path()),
+                "cold {cold}"
+            );
+        }
+        let older = GitDirectories {
+            inodes: DirectoryInodes::default(),
+            ..restored.clone()
+        };
+        for named in [&captured, &older] {
+            assert_eq!(
+                reopen(&mut session, named, true)
+                    .unwrap_or_else(|error| panic!("{named:?}: {error:#}"))
+                    .path(),
+                found,
+                "{named:?}"
+            );
+        }
+    }
+
+    /// Each saved inode is compared on its own, the Git directory's before
+    /// the common directory's, and the retained repository answers only
+    /// where they match: named with a different one, the reopen asks Git
+    /// and fails as gone, naming that directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_restored_tab_compares_each_directory_s_inode() {
+        let fixture = Fixture::new();
+        let mut session = RepositorySession::default();
+        let opened = session.open(&fixture.0, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let captured = GitDirectories::of(&opened);
+        let inode = |inode: Option<u64>| Some(inode.expect("an inode") + 1);
+        let git_dir = GitDirectories {
+            inodes: DirectoryInodes {
+                git_dir: inode(captured.inodes.git_dir),
+                common: captured.inodes.common,
+            },
+            restored: true,
+            ..captured.clone()
+        };
+        let common = GitDirectories {
+            inodes: DirectoryInodes {
+                git_dir: captured.inodes.git_dir,
+                common: inode(captured.inodes.common),
+            },
+            restored: true,
+            ..captured.clone()
+        };
+        for (named, found) in [(&git_dir, &captured.git_dir), (&common, &captured.common)] {
+            let gone = session
+                .open(&root, Some(&root), Some(named))
+                .unwrap_err()
+                .downcast::<RepositoryGone>()
+                .expect("gone");
+            assert_eq!(gone.found.as_deref(), Some(found.as_path()));
+        }
+        let matching = GitDirectories {
+            restored: true,
+            ..captured
+        };
+        assert_eq!(
+            session
+                .open(&root, Some(&root), Some(&matching))
+                .unwrap()
+                .path(),
+            root
+        );
+    }
+
+    /// A repository cloned again at the tab's path has new inodes, which
+    /// cannot be told from another repository re-pointed there, so a
+    /// restored tab refuses it the same way; an explicit open has no saved
+    /// fields and adopts it, and a tab that then holds its own passes.
+    #[cfg(unix)]
+    #[test]
+    fn a_re_clone_is_refused_to_a_restored_tab_and_adopted_by_an_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let root = base.join("repository");
+        init_at(&root);
+        let mut session = RepositorySession::default();
+        let captured = GitDirectories::of(&session.open(&root, None, None).unwrap());
+        let restored = GitDirectories {
+            restored: true,
+            ..captured.clone()
+        };
+        // Moved aside rather than deleted, which could free the inode for
+        // the new `.git` to take.
+        fs::rename(&root, base.join("before")).unwrap();
+        init_at(&root);
+        let gone = session
+            .open(&root, Some(&root), Some(&restored))
+            .expect_err("a new repository at the path")
+            .downcast::<RepositoryGone>()
+            .expect("gone");
+        assert_eq!(gone.found.as_deref(), Some(root.join(".git").as_path()));
+
+        let adopted = GitDirectories::of(&session.open(&root, None, None).unwrap());
+        assert_ne!(adopted.inodes.git_dir, captured.inodes.git_dir);
+        assert_eq!(
+            session
+                .open(&root, Some(&root), Some(&adopted))
+                .unwrap()
+                .path(),
+            root
+        );
+    }
+
     /// A repository whose work tree lies outside the folder Git found it
     /// in: an explicit open says so in core's own words, with no reasons
     /// around it and nothing to open again, and a tab's passive reopen,
@@ -6554,8 +6765,8 @@ mod image_tests {
         let root = opened.path().to_owned();
         let captured = GitDirectories::of(&opened);
         let named = GitDirectories {
-            git_dir: captured.git_dir.clone(),
             common: fixture.0.join("elsewhere"),
+            ..captured.clone()
         };
         let gone = session
             .open(&root, Some(&root), Some(&named))

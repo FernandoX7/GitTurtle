@@ -436,6 +436,8 @@ impl GitTurtle {
                             .update(cx, |input, cx| input.set_value("", window, cx));
                         match output {
                             Output::Snapshot(snapshot) => {
+                                this.repository_tabs
+                                    .follow_read_repository(&snapshot.repository);
                                 this.accept_snapshot_scope(&snapshot);
                                 this.history_updates.captured(&snapshot);
                                 this.install_current_history(snapshot, true, window, cx);

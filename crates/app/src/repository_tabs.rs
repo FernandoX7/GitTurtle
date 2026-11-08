@@ -252,11 +252,17 @@ where
     Ok(serde_json::from_value(serde_json::Value::deserialize(deserializer)?).ok())
 }
 /// [`worker::GitDirectories`] as a session saves them, byte-safe as a tab's
-/// path is.
+/// path is, each with its inode at capture, which the tab restored from the
+/// session compares ([`worker::GitDirectories::restored`]). A session saved
+/// before they were kept has none and compares none.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedGitDirectories {
     pub git_dir: SavedPath,
     pub common: SavedPath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_dir_inode: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub common_inode: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryEntry {
@@ -400,10 +406,13 @@ pub struct Tab {
     /// the work tree enclosing that folder.
     resolved: bool,
     /// The Git directories Git reported at the tab's root when its snapshot
-    /// was last accepted, which a passive reopen of that root must find
-    /// there again ([`State::reopen_root`]); `None` until then. Saved with
-    /// the session, so a restored tab names them at its first reopen; an
-    /// older session's tab, saved without them, captures them then.
+    /// was last accepted or a read last installed its repository in place
+    /// ([`State::follow_read_repository`]), which a passive reopen of that
+    /// root must find there again ([`State::reopen_root`]); `None` until
+    /// then. Saved with
+    /// the session, so a restored tab names them, and compares their
+    /// inodes, at its first reopen; an older session's tab, saved without
+    /// them, captures them then.
     git_dir: Option<worker::GitDirectories>,
     saved: Bookmark,
     warm: Option<WarmTab>,
@@ -525,6 +534,23 @@ impl State {
     pub(super) fn recapture_reading(&mut self, generation: u64) {
         self.recapture = Some(Recapture::Reading(generation));
     }
+    /// The repository a read of the shown tab just installed in place, the
+    /// read's reopen having found it at the tab's root (a quiet read's, or
+    /// Show latest's): the tab's directories and inodes follow it. Left as
+    /// captured, a repository cloned again at that path during the run saved
+    /// its old inodes and marked the tab at the next launch. Only the tab
+    /// the repository is at takes them; an Open's accepted snapshot writes
+    /// its own ([`GitTurtle::tab_snapshot_accepted`]), and a warm tab shown
+    /// again holds what it held when it was left.
+    pub(super) fn follow_read_repository(&mut self, repository: &gitturtle_core::GitRepository) {
+        if let Some(tab) = self
+            .active
+            .and_then(|index| self.tabs.get_mut(index))
+            .filter(|tab| tab.path == repository.path())
+        {
+            tab.git_dir = Some(worker::GitDirectories::of(repository));
+        }
+    }
     /// Drops History's search held while a snapshot was read, as another
     /// read of a repository starts or another tab shows
     /// ([`GitTurtle::run_pending_search`]).
@@ -615,6 +641,11 @@ impl State {
                         .map(|directories| worker::GitDirectories {
                             git_dir: directories.git_dir.path(),
                             common: directories.common.path(),
+                            inodes: worker::DirectoryInodes {
+                                git_dir: directories.git_dir_inode,
+                                common: directories.common_inode,
+                            },
+                            restored: true,
                         }),
                     saved: tab.bookmark,
                     warm: None,
@@ -675,6 +706,8 @@ impl State {
                     git_directories: tab.git_dir.as_ref().map(|directories| SavedGitDirectories {
                         git_dir: SavedPath::new(&directories.git_dir),
                         common: SavedPath::new(&directories.common),
+                        git_dir_inode: directories.inodes.git_dir,
+                        common_inode: directories.inodes.common,
                     }),
                 })
                 .collect(),
@@ -3625,16 +3658,26 @@ mod tests {
     /// Asks for a quiet read as the local watcher does for a change made
     /// outside the app, and waits for it to land.
     fn quiet_read_landed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        quiet_read_of(
+            app,
+            cx,
+            crate::local_refresh::LocalChange {
+                worktree: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    /// As [`quiet_read_landed`], for the watcher's `change`.
+    fn quiet_read_of(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        change: crate::local_refresh::LocalChange,
+    ) {
         // The subscription is made on the operation thread.
         app.read_with(cx, |app, _| app.operations.drain());
         cx.executor().run_until_parked();
-        app.update(cx, |app, _| {
-            app.automatic
-                .report_local_change(crate::local_refresh::LocalChange {
-                    worktree: true,
-                    ..Default::default()
-                })
-        });
+        app.update(cx, |app, _| app.automatic.report_local_change(change));
         for _ in 0..16 {
             cx.executor().run_until_parked();
             if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
@@ -4680,11 +4723,14 @@ mod tests {
                     Some(SavedGitDirectories {
                         git_dir: SavedPath::new(&captured.git_dir),
                         common: SavedPath::new(&captured.common),
+                        git_dir_inode: captured.inodes.git_dir,
+                        common_inode: captured.inodes.common,
                     }),
                 ),
             ],
             ..Default::default()
         };
+        // Moved on the one filesystem and linked back: its inodes are kept.
         std::fs::rename(base.join("kept"), base.join("moved")).unwrap();
         std::os::unix::fs::symlink(base.join("moved"), base.join("kept")).unwrap();
         let (app, mut window_cx) = open_tab_window(
@@ -4812,26 +4858,36 @@ mod tests {
                 { "path": "/a", "git_directories": 5 },
                 { "path": "/b", "git_directories": { "git_dir": "/b/.git" } },
                 { "path": "/c", "git_directories": { "git_dir": "/c/.git", "common": "/c/.git" } },
+                { "path": "/d", "git_directories": { "git_dir": "/d/.git", "common": "/d/.git", "git_dir_inode": "x" } },
+                { "path": "/e", "git_directories": { "git_dir": "/e/.git", "common": "/e/.git", "git_dir_inode": 7, "common_inode": 8 } },
             ],
             "active": 1,
             "library": [{ "path": "/b" }],
         });
         std::fs::write(&file, serde_json::to_vec(&session).unwrap()).unwrap();
         let loaded = Session::load_at(&file).expect("the session loads");
-        assert_eq!(loaded.tabs.len(), 3);
+        assert_eq!(loaded.tabs.len(), 5);
         assert_eq!(loaded.active, 1);
         assert_eq!(loaded.library.len(), 1);
-        assert!(
-            loaded.tabs[..2]
-                .iter()
-                .all(|tab| tab.git_directories.is_none())
-        );
+        for index in [0, 1, 3] {
+            assert!(loaded.tabs[index].git_directories.is_none(), "{index}");
+        }
         let state = State::from_session(loaded);
         assert_eq!(
             state.tabs[2].git_dir,
             Some(worker::GitDirectories {
                 git_dir: "/c/.git".into(),
                 common: "/c/.git".into(),
+                inodes: worker::DirectoryInodes::default(),
+                restored: true,
+            }),
+            "saved before inodes were kept: nothing to compare"
+        );
+        assert_eq!(
+            state.tabs[4].git_dir.as_ref().map(|tab| tab.inodes),
+            Some(worker::DirectoryInodes {
+                git_dir: Some(7),
+                common: Some(8),
             })
         );
     }
@@ -4958,6 +5014,267 @@ mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
         settle_tab_test(&app, cx).await;
         marked(cx, 1, swapped.path(), third.git_dir());
+    }
+
+    /// A session saved with `repository`'s tab as it holds it once its
+    /// snapshot is accepted, read back from a file as a launch reads it.
+    #[cfg(unix)]
+    fn saved_with_inodes(repository: &gitturtle_core::GitRepository, name: &str) -> Session {
+        let path = repository.path().to_str().expect("UTF-8");
+        let older: Session = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "tabs": [{ "path": path }],
+            "active": 0,
+        }))
+        .unwrap();
+        let mut state = State::from_session(older);
+        let captured = worker::GitDirectories::of(repository);
+        state.tabs[0].git_dir = Some(captured.clone());
+        let file = isolated_session(name);
+        state.saved().save_at(&file).unwrap();
+        let saved = Session::load_at(&file).unwrap();
+        let directories = saved.tabs[0]
+            .git_directories
+            .as_ref()
+            .expect("saved with the tab");
+        assert_eq!(directories.git_dir_inode, captured.inodes.git_dir);
+        assert_eq!(directories.common_inode, captured.inodes.common);
+        saved
+    }
+
+    /// `app`'s only tab, marked for `found`, shows nothing of it.
+    #[cfg(unix)]
+    fn assert_marked_for(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        root: &Path,
+        found: &Path,
+    ) {
+        app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            assert_eq!(tab.path, root);
+            assert!(app.tab_label(tab).0.ends_with(" · unavailable"), "marked");
+            let error = app.error.clone().expect("the window says why");
+            assert!(
+                error.starts_with(&format!("The repository at {} is gone.", root.display()))
+                    && error.contains(&found.display().to_string()),
+                "{error}"
+            );
+            assert!(app.commits.is_empty(), "nothing of the other repository");
+        });
+    }
+
+    /// A folder above a restored tab's root, re-pointed while the app was
+    /// closed to another of the person's repositories with the root's folder
+    /// name, reaches the same paths and is told by the inodes the session
+    /// saved: the tab is marked as for a swapped `.git`, with the same
+    /// words, and shows none of that repository. Compared by path alone,
+    /// it took the other repository, writes following it.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_restored_tab_whose_folder_above_was_re_pointed_is_marked(cx: &mut TestAppContext) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        for folder in ["projects", "elsewhere"] {
+            std::fs::create_dir(base.join(folder)).unwrap();
+        }
+        let repository = fixture_repository(base.join("projects/shared-name"));
+        let other = fixture_repository(base.join("elsewhere/shared-name"));
+        for (repository, subject) in [(&repository, "Own fixture"), (&other, "Other fixture")] {
+            fixture_git(
+                repository.path(),
+                &["commit", "--allow-empty", "-m", subject],
+            );
+        }
+        let root = repository.path().to_owned();
+        let saved = saved_with_inodes(&repository, "folder-above-saved.json");
+        std::fs::rename(base.join("projects"), base.join("projects-away")).unwrap();
+        std::os::unix::fs::symlink(base.join("elsewhere"), base.join("projects")).unwrap();
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            root.clone(),
+            saved,
+            isolated_session("folder-above-after.json"),
+            size(px(1000.), px(680.)),
+        );
+        let cx = &mut window_cx;
+        settle_tab_test(&app, cx).await;
+        assert_marked_for(&app, cx, &root, other.git_dir());
+    }
+
+    /// A repository cloned again at a restored tab's path has new inodes and
+    /// is refused as a re-pointed folder is, which it cannot be told from.
+    /// Closing the tab and opening the folder adopts it: a fresh open has
+    /// no saved fields, and the tab it makes holds the new repository's.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_restored_tab_refuses_a_re_clone_until_its_folder_is_opened_again(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let repository = fixture_repository(base.join("repository"));
+        fixture_git(
+            repository.path(),
+            &["commit", "--allow-empty", "-m", "Before"],
+        );
+        let root = repository.path().to_owned();
+        let saved = saved_with_inodes(&repository, "re-clone-saved.json");
+        // Moved aside rather than deleted, which could free the inode for
+        // the new `.git` to take.
+        std::fs::rename(&root, base.join("before")).unwrap();
+        let cloned = fixture_repository(&root);
+        fixture_git(cloned.path(), &["commit", "--allow-empty", "-m", "After"]);
+        assert_ne!(cloned.git_dir_inode(), repository.git_dir_inode());
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            root.clone(),
+            saved,
+            isolated_session("re-clone-after.json"),
+            size(px(1000.), px(680.)),
+        );
+        let cx = &mut window_cx;
+        settle_tab_test(&app, cx).await;
+        assert_marked_for(&app, cx, &root, cloned.git_dir());
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.close_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.repository_tabs.tabs.is_empty()));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            assert_eq!(tab.path, root);
+            assert!(tab.error.is_none(), "unmarked");
+            assert!(!app.tab_label(tab).0.ends_with(" · unavailable"));
+            assert_eq!(app.error, None);
+            assert_eq!(
+                app.commits
+                    .iter()
+                    .map(|commit| commit.subject.as_str())
+                    .collect::<Vec<_>>(),
+                ["After"]
+            );
+            assert_eq!(
+                tab.git_dir.as_ref(),
+                Some(&worker::GitDirectories::of(&cloned)),
+                "it holds the new repository's, as a tab of this run does"
+            );
+        });
+    }
+
+    /// A repository cloned again at the shown tab's path during the run,
+    /// brought in by `read`: the tab's directories and inodes follow, so the
+    /// next session save holds the ones that are now true and a window
+    /// restored from that save finds the tab whole. They once stayed as
+    /// captured and the launch after marked the tab. The tab of another
+    /// repository takes nothing.
+    #[cfg(unix)]
+    async fn a_tab_follows_a_repository_cloned_again(
+        cx: &mut TestAppContext,
+        name: &str,
+        read: impl FnOnce(&Entity<GitTurtle>, &mut VisualTestContext),
+    ) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let repository = fixture_repository(base.join("repository"));
+        fixture_git(
+            repository.path(),
+            &["commit", "--allow-empty", "-m", "Before"],
+        );
+        let root = repository.path().to_owned();
+        let window_size = size(px(1000.), px(680.));
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            root.clone(),
+            Session::default(),
+            isolated_session(&format!("{name}-first.json")),
+            window_size,
+        );
+        // Keeps the watcher, as `settle_tab_test` does not: a quiet read
+        // comes through it.
+        crate::views::tests::settle(&app, &mut window_cx).await;
+        // The rescan that follows the watcher's setup lands first: running
+        // as the repository moves, it finds no repository and marks the tab.
+        quiet_read_landed(&app, &mut window_cx);
+        // Moved aside rather than deleted, which could free the inode for
+        // the new `.git` to take.
+        std::fs::rename(&root, base.join("before")).unwrap();
+        let cloned = fixture_repository(&root);
+        fixture_git(cloned.path(), &["commit", "--allow-empty", "-m", "After"]);
+        assert_ne!(cloned.git_dir_inode(), repository.git_dir_inode());
+
+        read(&app, &mut window_cx);
+        crate::views::tests::settle(&app, &mut window_cx).await;
+        let other = fixture_repository(base.join("other"));
+        let saved = app.update(&mut window_cx, |app, _| {
+            app.repository_tabs.follow_read_repository(&other);
+            app.repository_tabs.saved()
+        });
+        let directories = saved.tabs[0]
+            .git_directories
+            .as_ref()
+            .expect("saved with the tab");
+        assert_eq!(directories.git_dir.path(), cloned.git_dir());
+        assert_eq!(directories.git_dir_inode, cloned.git_dir_inode());
+        assert_eq!(directories.common_inode, cloned.common_dir_inode());
+
+        let (restored, mut window_cx) = open_tab_window(
+            cx,
+            root.clone(),
+            saved,
+            isolated_session(&format!("{name}-second.json")),
+            window_size,
+        );
+        settle_tab_test(&restored, &mut window_cx).await;
+        restored.read_with(&window_cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            assert!(tab.error.is_none(), "{:?}", tab.error);
+            assert!(!app.tab_label(tab).0.ends_with(" · unavailable"));
+            assert_eq!(app.commits[0].subject, "After");
+        });
+    }
+
+    /// A quiet read of a change in the Git directory reads History, which
+    /// brings the repository cloned again in.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_quiet_read_takes_a_repository_cloned_again_into_the_tab(cx: &mut TestAppContext) {
+        a_tab_follows_a_repository_cloned_again(cx, "quiet-read", |app, cx| {
+            quiet_read_of(
+                app,
+                cx,
+                crate::local_refresh::LocalChange {
+                    git: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .await;
+    }
+
+    /// Show latest installs the snapshot it reads in place, past the
+    /// acceptance an Open's snapshot takes.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn show_latest_takes_a_repository_cloned_again_into_the_tab(cx: &mut TestAppContext) {
+        a_tab_follows_a_repository_cloned_again(cx, "show-latest", |app, cx| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)))
+        })
+        .await;
     }
 
     /// An explicit Open of the folder a marked tab shows is a fresh

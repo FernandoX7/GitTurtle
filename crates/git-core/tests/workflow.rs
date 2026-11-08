@@ -1467,6 +1467,36 @@ fn a_linked_worktree_whose_commondir_is_re_pointed_is_refused() {
     assert_eq!(other.git(&["diff", "--cached", "--name-only"]), "");
 }
 
+/// An open reads each Git directory's inode once, for a session to save:
+/// a linked worktree's private directory and common directory have their
+/// own, and a plain repository's are the one directory's.
+#[cfg(unix)]
+#[test]
+fn an_open_reads_each_git_directory_s_inode() {
+    use std::os::unix::fs::MetadataExt;
+    let inode = |path: &Path| Some(fs::metadata(path).unwrap().ino());
+    let f = Fixture::new();
+    f.write("file.txt", "base\n");
+    f.commit("base");
+    let plain = f.repo();
+    assert_eq!(plain.git_dir_inode(), inode(plain.git_dir()));
+    assert_eq!(plain.common_dir_inode(), plain.git_dir_inode());
+
+    let linked = f.temp.path().join("linked");
+    f.git(&[
+        "worktree",
+        "add",
+        "--quiet",
+        "-b",
+        "linked",
+        linked.to_str().unwrap(),
+    ]);
+    let linked = GitRepository::open(&linked).unwrap();
+    assert_eq!(linked.git_dir_inode(), inode(linked.git_dir()));
+    assert_eq!(linked.common_dir_inode(), inode(plain.git_dir()));
+    assert_ne!(linked.git_dir_inode(), linked.common_dir_inode());
+}
+
 /// Points the existing link `link` at `target`.
 #[cfg(unix)]
 fn re_point(link: &Path, target: &Path) {
