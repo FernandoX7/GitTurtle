@@ -519,7 +519,11 @@ impl ScrollCue {
     /// them. The kit fills a track with the theme's `scrollbar` colour, the
     /// canvas, which painted over that ring's right side, the selected row's
     /// end and the composer's divider for the track's whole height, as
-    /// `shortcuts.rs` sets its own track's fill.
+    /// `shortcuts.rs` sets its own track's fill. Resting on the rows, the
+    /// thumb takes the thumb fitted to them, 2:1 on the panel and on a
+    /// hovered, selected and hovered selected row
+    /// (`Palette::over_rows_thumb`): the palette's thumb, fitted to the
+    /// track's surfaces, stood 1.46:1 on Midnight's selected row.
     pub(crate) fn over_rows(mut self) -> Self {
         self.clear_track = true;
         self
@@ -596,7 +600,7 @@ impl ScrollCue {
             let rows = self.rows.clone();
             cue.child(
                 div().absolute().size_full().flex().flex_col().child(
-                    crate::in_frame::in_frame(move |_, _, _| {
+                    crate::in_frame::in_frame(move |_, _, cx| {
                         if rows.viewport_bounds().size.height < SHORTEST_SCROLL_TRACK {
                             return div().into_any_element();
                         }
@@ -614,9 +618,20 @@ impl ScrollCue {
                                     .id(id)
                                     .mode(ScrollbarMode::Always);
                                 if clear_track {
+                                    // Its thumb rests on the rows, so it
+                                    // takes the thumb fitted to them; hovered
+                                    // and dragged, the palette's hovered
+                                    // thumb, which the resting one set here
+                                    // would otherwise replace.
                                     let clear = gpui_kit::transparent_black();
+                                    let thumb = rgb(appearance::labels(cx).over_rows_thumb);
+                                    let hovered = rgb(appearance::palette(cx).muted);
                                     bar.styles(|styles| {
-                                        styles.track(|track| track.bg(clear).border_color(clear))
+                                        styles
+                                            .track(|track| track.bg(clear).border_color(clear))
+                                            .thumb(|style| style.bg(thumb))
+                                            .thumb_hover(|style| style.bg(hovered))
+                                            .thumb_active(|style| style.bg(hovered))
                                     })
                                 } else {
                                     bar
@@ -2007,7 +2022,7 @@ pub(crate) mod tests {
 
     /// The fill of the scrollbar thumb the last frame painted in `track`
     /// ([`painted_thumb`]).
-    fn painted_thumb_fill(
+    pub(crate) fn painted_thumb_fill(
         cx: &mut VisualTestContext,
         track: Bounds<Pixels>,
     ) -> Option<gpui_kit::Background> {

@@ -450,6 +450,36 @@ Every scrollbar's thumb, the only cue that more content lies past a list's or a 
 | Omarchy alacritty-dark | dark | `#494D5A` 1.95 / 2.12 | `#535763` 2.28 / 2.48 |
 | Omarchy alacritty-light | light | `#AAA79D` 2.17 / 1.64 | `#98958C` 2.70 / 2.04 |
 
+The one thumb drawn over rows rather than on a track, the Working inspector's short body's, whose track lies over the list's rows and paints no fill (`tags::ScrollCue::over_rows`), takes a token of its own, `Palette::over_rows_thumb`: it rests on the panel and on a hovered, selected and hovered selected row, where the app-wide thumb, fitted to the track's surfaces, missed 2:1 in every shipped palette (Midnight's `#45505F` stood 1.46:1 on its selected row, `#223B3B`). It is the least step from the app-wide thumb toward the text that holds at least 2:1 against all four, judged by WCAG's luminance ratio as fitted and as drawn a channel step nearer, never by an OKLab distance alone, which a saturated hue can meet at the row's own lightness, or, where no step toward the text holds, as where the text itself reads under 2:1 on a row, the least step toward white in a dark palette or black in a light one, as the app-wide thumb's is, never the text; it stays under secondary text's contrast there, which its hovered and dragged states take as every thumb's do (decision, 2026-11-07). The hovered selected row is a fourth surface beyond the panel, a hovered row and a selected row, and the strictest of the four, the one that decides the step in every shipped palette; the token is fitted to it on purpose, since the pointer that hovers a selected row rests beside the thumb. The section headings' `subtle` surface, which the track lies over too, needs no fit of its own: the app-wide thumb is already fitted to it, and the token, a step from that thumb away from the surfaces, holds 2:1 there in every shipped palette. Every other thumb keeps the app-wide token. Before and after, against the panel and a hovered, selected and hovered selected row (every Omarchy palette is held to the same rule; below, Omarchy's default, Tokyo Night, and four others across the range: Ethereal, whose thumb already stood 3:1 on its panel, Retro 82, Everforest and the light Catppuccin Latte):
+
+| Palette | Mode | Before (`scrollbar_thumb`): panel / hovered / selected / hovered selected | After |
+| --- | --- | --- | --- |
+| Midnight | dark | `#45505F` 2.04 / 1.72 / 1.46 / 1.26 | `#66707D` 3.32 / 2.80 / 2.38 / 2.05 |
+| Braden | light | `#A4ACB6` 2.29 / 1.86 / 1.79 / 1.64 | `#929AA6` 2.84 / 2.31 / 2.22 / 2.03 |
+| Graphite | dark | `#4F515A` 2.03 / 1.76 / 1.53 / 1.35 | `#6A6C74` 3.07 / 2.65 / 2.31 / 2.03 |
+| Tokyo Night | dark | `#4C526A` 2.04 / 1.74 / 1.57 / 1.41 | `#636A86` 2.95 / 2.52 / 2.26 / 2.03 |
+| Catppuccin Mocha | dark | `#525466` 2.04 / 1.69 / 1.64 / 1.44 | `#686B7F` 2.90 / 2.39 / 2.33 / 2.04 |
+| Nord | dark | `#616A7C` 2.04 / 1.77 / 1.70 / 1.51 | `#777F8F` 2.75 / 2.39 / 2.30 / 2.05 |
+| Porcelain | light | `#A4ABB9` 2.31 / 1.88 / 1.83 / 1.66 | `#939AAA` 2.82 / 2.30 / 2.24 / 2.03 |
+| Sandstone | light | `#B0A496` 2.39 / 1.89 / 1.85 / 1.69 | `#A19589` 2.86 / 2.26 / 2.22 / 2.03 |
+| Deep Sea | dark | `#3C586A` 2.04 / 1.56 / 1.42 / 1.23 | `#617A89` 3.40 / 2.60 / 2.36 / 2.05 |
+| Ember | dark | `#5F4F60` 2.03 / 1.65 / 1.51 / 1.33 | `#7B6C78` 3.12 / 2.54 / 2.32 / 2.03 |
+| Solarized Dark | dark | `#586E75` 2.42 / 2.21 / 2.06 / 1.88 | `#5F747A` 2.64 / 2.42 / 2.25 / 2.05 |
+| Solarized Light | light | `#93A1A1` 2.18 / 2.00 / 1.87 / 1.72 | `#859394` 2.60 / 2.38 / 2.22 / 2.04 |
+| One Dark | dark | `#5B6171` 2.05 / 1.88 / 1.76 / 1.59 | `#6B7281` 2.62 / 2.41 / 2.26 / 2.04 |
+| One Light | light | `#AAAAAD` 2.32 / 1.88 / 1.83 / 1.68 | `#9A9A9E` 2.80 / 2.27 / 2.22 / 2.03 |
+| Rosé Pine | dark | `#514E61` 2.05 / 1.89 / 1.71 / 1.47 | `#666376` 2.84 / 2.61 / 2.36 / 2.03 |
+| Rosé Pine Dawn | light | `#ACA8A7` 2.27 / 1.86 / 1.79 / 1.63 | `#99959A` 2.84 / 2.33 / 2.25 / 2.04 |
+| Dracula | dark | `#5B5E71` 2.04 / 1.75 / 1.43 / 1.30 | `#7A7D8B` 3.19 / 2.74 / 2.24 / 2.03 |
+| Alucard | light | `#AFAB9A` 2.26 / 1.87 / 1.50 / 1.37 | `#8D8A7D` 3.40 / 2.81 / 2.25 / 2.05 |
+| Kanagawa Wave | dark | `#585870` 2.05 / 1.82 / 1.78 / 1.60 | `#6A697A` 2.64 / 2.34 / 2.29 / 2.06 |
+| Kanagawa Lotus | light | `#A19C7B` 2.47 / 1.87 / 1.83 / 1.69 | `#918D75` 2.98 / 2.26 / 2.20 / 2.03 |
+| Omarchy tokyo-night | dark | `#4F546A` 2.45 / 1.84 / 1.67 / 1.50 | `#626881` 3.33 / 2.50 / 2.27 / 2.04 |
+| Omarchy ethereal | dark | `#4E5B88` 3.02 / 2.37 / 2.04 / 1.87 | `#57618A` 3.31 / 2.60 / 2.24 / 2.05 |
+| Omarchy retro-82 | dark | `#245665` 2.33 / 1.87 / 1.52 / 1.37 | `#4D7072` 3.48 / 2.79 / 2.27 / 2.04 |
+| Omarchy everforest | dark | `#626A6F` 2.74 / 1.85 / 1.58 / 1.43 | `#80827E` 3.89 / 2.62 / 2.25 / 2.03 |
+| Omarchy catppuccin-latte | light | `#979AA3` 2.21 / 1.84 / 1.73 / 1.59 | `#838694` 2.85 / 2.37 / 2.23 / 2.04 |
+
 ## Review checklist
 
 Choose checks for the affected surface. History/comparison checks use merges, long paths, non-ASCII text, large commits, and relevant image/missing-content cases. Exercise commit → file → another file → Back, including a repository-wide search, a scrolled graph, file-history pages, and a rename boundary. Verify focus, Escape precedence, stale-preview rejection, pane resizing, chosen-column alignment, and clipping at regular/narrow widths in each affected theme. Check Split scrolling and Find from both sides and literal selection/copy across alignment blanks. Project, partial staging, commit, branch, recovery, and network tests use disposable repositories and local remotes; check exact destinations, stale plans, failures/conflicts, and unrelated staged/unstaged content. Settings checks include reopening, failed persistence, identity scope, and retained editor focus. External file/Git changes must refresh without disturbing the current interaction. Record the build and observed results separately; a screenshot is not performance evidence.

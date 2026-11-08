@@ -944,6 +944,51 @@ impl Palette {
         toward_extreme_in(256, self.border, extreme, clears)
     }
 
+    /// The rows a thumb drawn over them rests on ([`Self::over_rows_thumb`]):
+    /// the panel, a hovered row, a selected row and a hovered selected one.
+    fn thumb_rows(self) -> [(&'static str, u32); 4] {
+        [
+            ("panel", self.panel),
+            ("hovered row", self.row_hover(false)),
+            ("selected row", self.selected),
+            ("hovered selected row", self.row_hover(true)),
+        ]
+    }
+
+    /// The thumb of a scrollbar whose track lies over rows and takes no fill,
+    /// the Working inspector's short body's (`tags::ScrollCue::over_rows`),
+    /// so the thumb rests on the rows beneath it ([`Self::thumb_rows`]) rather
+    /// than on a track's canvas: the first of 256 even steps from
+    /// [`Self::scrollbar_thumb`] toward `text`, that thumb included, that
+    /// holds [`SCROLL_THUMB`] against each of them by WCAG's luminance ratio,
+    /// as fitted and as drawn a channel step nearer the row
+    /// ([`drawn_nearer`]), the closest deciding. The palette-wide thumb
+    /// misses on a hovered selected row in every shipped palette, and stood
+    /// 1.46:1 on Midnight's selected row (#45505f on #223b3b), where this
+    /// one is #66707d, 2.38:1. Where no step toward the text holds it, as
+    /// where the text itself reads under 2:1 on a row, it takes the first of
+    /// 256 even steps toward black in a light palette or white in a dark one
+    /// that does, as [`Self::scrollbar_thumb`] does, and never the text. The
+    /// rule is the luminance ratio, never an OKLab distance alone, which a
+    /// hue's saturation can meet while the thumb's lightness sits on the
+    /// row's.
+    pub fn over_rows_thumb(self) -> u32 {
+        let rows = self.thumb_rows();
+        let clears = |thumb| {
+            rows.iter().all(|&(_, row)| {
+                custom::contrast(thumb, row) >= SCROLL_THUMB
+                    && custom::contrast(drawn_nearer(thumb, row), row) >= SCROLL_THUMB
+            })
+        };
+        let thumb = self.scrollbar_thumb();
+        let toward_text = toward_extreme_in(256, thumb, self.text, clears);
+        if clears(toward_text) {
+            return toward_text;
+        }
+        let extreme = if self.is_light() { 0x000000 } else { 0xffffff };
+        toward_extreme_in(256, thumb, extreme, clears)
+    }
+
     /// The edge of an outline drawn on a picker's selected row, such as a
     /// Keyboard Shortcuts key chip: [`Self::raised_edge`], the edge it takes
     /// on a resting row, unless that misses [`POPUP_EDGE`] against `selected`,
@@ -1598,6 +1643,9 @@ pub struct Labels {
     /// Open in default app: `warning` on the canvas, panel and raised
     /// surfaces a comparison and its dialogs rest on.
     pub warning: u32,
+    /// The thumb a scrollbar draws over rows ([`Palette::over_rows_thumb`]),
+    /// fitted here so the frames that draw it read it.
+    pub over_rows_thumb: u32,
 }
 
 impl Global for Labels {}
@@ -1628,6 +1676,7 @@ impl Labels {
                 palette.warning,
                 &[palette.canvas, palette.panel, palette.raised()],
             ),
+            over_rows_thumb: palette.over_rows_thumb(),
         }
     }
 }
@@ -5279,6 +5328,132 @@ mod tests {
             "Midnight's #{thumb:06x} holds 2:1 drawn on Keyboard Shortcuts' raised track"
         );
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// The thumb a scrollbar draws over rows (`Palette::over_rows_thumb`, the
+    /// Working body's) holds 2:1 by luminance, as fitted and as drawn a
+    /// channel step nearer, against the panel and a hovered, selected and
+    /// hovered selected row in every palette, and on the section headings'
+    /// `subtle`, and stays quieter than secondary text on the rows, which
+    /// its hovered state takes: the least step
+    /// from the palette's thumb toward the text, that thumb included. The
+    /// palette's thumb stood 1.46:1 on Midnight's selected row (#45505f on
+    /// #223b3b).
+    #[test]
+    fn the_thumb_over_rows_reads_two_to_one_on_every_row() {
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            let thumb = palette.over_rows_thumb();
+            let rows = palette.thumb_rows();
+            if Labels::fit(palette).over_rows_thumb != thumb {
+                failures.push(format!("{name}: the labels keep another thumb"));
+            }
+            // The least of a colour's contrasts, as fitted and as drawn a
+            // channel step nearer each row.
+            let least = |color: u32| {
+                rows.iter()
+                    .map(|&(_, row)| {
+                        contrast(color, row).min(contrast(drawn_nearer(color, row), row))
+                    })
+                    .fold(f64::INFINITY, f64::min)
+            };
+            for (row, color) in rows {
+                let ratio = contrast(thumb, color);
+                let drawn = contrast(drawn_nearer(thumb, color), color);
+                let text = contrast(palette.muted, color);
+                if ratio < SCROLL_THUMB || drawn < SCROLL_THUMB || ratio >= text {
+                    failures.push(format!(
+                        "{name}: #{thumb:06x} {ratio:.3}:1 ({drawn:.3}:1 drawn) on the {row}, \
+                         secondary text {text:.3}:1"
+                    ));
+                }
+            }
+            // The section headings' surface, which the palette's thumb is
+            // fitted to, holds it too, as fitted and as drawn a channel step
+            // nearer.
+            let subtle = contrast(thumb, palette.subtle);
+            let drawn = contrast(drawn_nearer(thumb, palette.subtle), palette.subtle);
+            if subtle < SCROLL_THUMB || drawn < SCROLL_THUMB {
+                failures.push(format!(
+                    "{name}: #{thumb:06x} {subtle:.3}:1 ({drawn:.3}:1 drawn) on the headings' \
+                     subtle"
+                ));
+            }
+            // A step from the palette's thumb toward the text, the thumb
+            // itself or one whose step before it, one 256th nearer the
+            // palette's thumb, misses.
+            let base = palette.scrollbar_thumb();
+            let nth = |n: u32| {
+                [16, 8, 0].into_iter().fold(0, |color, shift| {
+                    let from = (base >> shift) & 0xff;
+                    let to = (palette.text >> shift) & 0xff;
+                    color | (((from * (256 - n) + to * n) / 256) << shift)
+                })
+            };
+            match (0..=256).find(|&n| nth(n) == thumb) {
+                Some(0) => {}
+                Some(n) if least(nth(n - 1)) < SCROLL_THUMB => {}
+                _ => failures.push(format!("{name}: #{thumb:06x} is not the least step")),
+            }
+        }
+        let midnight = ThemeChoice::Midnight.palette();
+        assert_ne!(
+            midnight.over_rows_thumb(),
+            midnight.scrollbar_thumb(),
+            "Midnight's thumb moves off its selected row"
+        );
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Where no step toward the text holds 2:1 on every row, as where the
+    /// text itself reads under 2:1 on a selected row, the thumb over rows
+    /// takes the least step from the palette's thumb toward white in a dark
+    /// palette and black in a light one that holds it, and never the text:
+    /// Midnight and Braden given their selected row's colour as text.
+    #[test]
+    fn the_thumb_over_rows_leaves_a_text_that_misses_for_the_extreme() {
+        for choice in [ThemeChoice::Midnight, ThemeChoice::Daylight] {
+            let mut palette = choice.palette();
+            palette.text = palette.selected;
+            let name = choice.label();
+            let thumb = palette.over_rows_thumb();
+            let rows = palette.thumb_rows();
+            let least = |color: u32| {
+                rows.iter()
+                    .map(|&(_, row)| {
+                        contrast(color, row).min(contrast(drawn_nearer(color, row), row))
+                    })
+                    .fold(f64::INFINITY, f64::min)
+            };
+            assert!(
+                least(palette.text) < SCROLL_THUMB,
+                "{name}: the text misses on a row"
+            );
+            assert_ne!(thumb, palette.text, "{name}: the thumb is not the text");
+            assert!(
+                least(thumb) >= SCROLL_THUMB,
+                "{name}: #{thumb:06x} holds 2:1 on every row"
+            );
+            let (base, extreme) = (
+                palette.scrollbar_thumb(),
+                if palette.is_light() {
+                    0x000000
+                } else {
+                    0xffffff
+                },
+            );
+            let nth = |n: u32| {
+                [16, 8, 0].into_iter().fold(0, |color, shift| {
+                    let from = (base >> shift) & 0xff;
+                    let to = (extreme >> shift) & 0xff;
+                    color | (((from * (256 - n) + to * n) / 256) << shift)
+                })
+            };
+            match (1..=256).find(|&n| nth(n) == thumb) {
+                Some(n) if least(nth(n - 1)) < SCROLL_THUMB => {}
+                _ => panic!("{name}: #{thumb:06x} is not the least step toward #{extreme:06x}"),
+            }
+        }
     }
 
     /// An application that has applied no palette fits its editor highlights as applying the

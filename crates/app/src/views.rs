@@ -33574,6 +33574,79 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The short Working body's thumb rests on its rows, its track unfilled,
+    /// so it paints the thumb fitted to them (`Palette::over_rows_thumb`),
+    /// 2:1 on the panel and on a hovered, selected and hovered selected row,
+    /// at 18 pt in a 461 × 490 window in Midnight, where the palette's thumb
+    /// stood 1.46:1 on the selected row, and in Braden; hovered and dragged,
+    /// it takes secondary text, the palette's hovered thumb, as every thumb
+    /// does.
+    #[gpui::test]
+    async fn the_working_bodys_thumb_takes_the_thumb_fitted_to_its_rows(cx: &mut TestAppContext) {
+        use crate::tags::tests::{painted_thumb, painted_thumb_fill};
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let fill = |color: u32| Some(gpui_kit::Background::from(Hsla::from(rgb(color))));
+        for choice in [
+            appearance::ThemeChoice::Midnight,
+            appearance::ThemeChoice::Daylight,
+        ] {
+            cx.update(|_, cx| choice.apply(None, cx));
+            draw(cx);
+            let at = format!("{} at 18 pt in 461 × 490", choice.label());
+            assert!(
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+                "{at}: the body scrolls"
+            );
+            let (fitted, thumb, hovered) = cx.read(|cx| {
+                let palette = palette(cx);
+                (
+                    appearance::labels(cx).over_rows_thumb,
+                    palette.scrollbar_thumb(),
+                    palette.muted,
+                )
+            });
+            if choice == appearance::ThemeChoice::Midnight {
+                assert_ne!(fitted, thumb, "{at}: the thumb moves off its selected row");
+            }
+            let body = cx.debug_bounds("working-body").expect("the body");
+            let track = Bounds::from_corners(
+                point(body.right() - Scrollbar::width(), body.top()),
+                body.bottom_right(),
+            );
+            assert_eq!(
+                painted_thumb_fill(cx, track),
+                fill(fitted),
+                "{at}: the thumb in #{fitted:06x}, not the palette's #{thumb:06x}"
+            );
+            let center = painted_thumb(cx, track).expect("a thumb").center();
+            cx.simulate_mouse_move(center, None, Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                painted_thumb_fill(cx, track),
+                fill(hovered),
+                "{at}: the hovered thumb in secondary text #{hovered:06x}"
+            );
+            // Dragged, with the pointer moved off it beside the track, it
+            // keeps secondary text.
+            let beside = point(body.left() + px(4.), center.y);
+            cx.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_move(beside, MouseButton::Left, Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                painted_thumb_fill(cx, track),
+                fill(hovered),
+                "{at}: the dragged thumb in secondary text #{hovered:06x}"
+            );
+            cx.simulate_mouse_up(beside, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Beside the short body's scroll cue the rows keep their content and
     /// their controls' rings out of the track at every interface size and at
     /// fractional scales: the composer's trailing room with its `px_3` as
