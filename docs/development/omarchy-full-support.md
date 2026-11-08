@@ -871,10 +871,28 @@ cover current upstream x86-64 Omarchy.
        headings overrun the comparison pane and cut two heading Buttons below its foot; the local document
        dialog's content is a fixed 65 % of the window, taller than its capped body, so its Markdown's ring is
        cut, and its Exact source / Rendered toggles' rings are cut on top, right and left at both sizes
-       (FU30-C2's audit; pinned there as known failures).
+       (FU30-C2's audit; pinned there as known failures). Decided fixes (FU30-C design re-check, 2026-11-07
+       evening): Blame's footer (`blame.rs:578-581`, `flex_shrink_0` up to 260 px, an unwrapped row) becomes a
+       shrinkable clipping region that reveals the focused control (`focus_reveal`, as `branch_actions.rs:1597`'s
+       `content.control`), its row wraps and the lines keep a few rows at least; the Markdown view shows one
+       Link toggle above both sides (it sets one view-wide `linked`) and each side's header is one unwrapped row
+       (the label truncates, the controls scroll sideways and reveal the focused one, as the PDF and 3D side
+       headers do), then `blocks_room`'s whole-side ring fallback is removed and the blocks keep one line's
+       height; the local document's toggle row gets ring room (`py(ring).my(-ring)`) and its Markdown is sized
+       to the capped body (`flex_1().min_h_0()`) instead of 65 % of the window (`markdown_view.rs:1405`).
        (S) Rewritten-series review: a listed series moves the action row twice as the review opens (as the
        series lands, then a frame later as the body reveals the list the landing focuses): reveal in the
        landing's frame (FU31-B2).
+     - **Found on 2026-11-07 evening (this session's reviews):**
+       (S, focus) The branch and remote managers open with focus on the dialog shell, which draws nothing
+       (DESIGN.md: a dialog opens on its first field): focus the search field when the prepared dialog shows
+       (`branch_actions.rs:762`), with the remote manager's query row given ring room (`:1841`). (S, focus)
+       Quick source opens focused on its information region, which is not a stop and draws no ring: open on the
+       source text (a stop with a ring), and walk from the opening focus in its test. (S, focus) Rings covered
+       by later fills (FU30-C2's fill check at list stops): Compare's and File history's text rings under an
+       82 × 18 fill, and several Buttons': keep each fill 1 px inside the pane's edge or draw the ring last.
+       (S, a11y) A clean Working Changes list is a stop: check with Orca that focusing it says "Working tree
+       clean"; if only the list's name is read, give the list its empty line as its description.
      - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
        (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
        Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
