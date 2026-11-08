@@ -14386,11 +14386,15 @@ mod tests {
         let room = cx.update(|_, cx| appearance::button_ring_room(cx));
         let mut fell_back = 0;
         for sizes in REVEAL_SIZES {
-            for fallback in [false, true] {
+            // Held on the pane, and held on nothing, reopened with a key as the last input and
+            // by a click on the header's Pull requests, where only the reopen's own reveal
+            // shows the pane: its parts reveal focus after a key alone.
+            for (fallback, clicked) in [(false, false), (true, false), (true, true)] {
                 let (interface, width, height) = sizes;
                 let at = format!(
-                    "{interface} pt in {width} × {height}{}",
-                    if fallback { ", Reply out of view" } else { "" }
+                    "{interface} pt in {width} × {height}{}{}",
+                    if fallback { ", Reply out of view" } else { "" },
+                    if clicked { ", reopened by a click" } else { "" }
                 );
                 show_overview(&panel, &pull, sizes, cx);
                 // Into the conversation list, scrolling the body down to it.
@@ -14474,7 +14478,16 @@ mod tests {
                     !cx.update(|window, cx| window.has_active_dialog(cx)),
                     "{at}: Escape closes the panel"
                 );
-                cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+                if clicked {
+                    crate::copy_feedback::tests::click(cx, "pull-requests");
+                    settle_panel(&app, cx).await;
+                    assert!(
+                        cx.update(|window, _| !window.last_input_was_keyboard()),
+                        "{at}: a pointer press is the last input"
+                    );
+                } else {
+                    cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+                }
                 for _ in 0..4 {
                     crate::width_walk::frame(cx);
                 }
