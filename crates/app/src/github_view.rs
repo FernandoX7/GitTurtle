@@ -12789,8 +12789,11 @@ mod tests {
     /// failure and refused input under it, for the busy row alone and under a notice, with a
     /// request's own label and with one that wraps to more lines than any of them beside
     /// Cancel, and for a failure too long for half the body, which scrolls under its cap. A
-    /// frame that changes what the line says keeps the region where it settles too. With no
-    /// conversation open the busy row stands among the content, and none of it is decided.
+    /// frame that changes what the line says keeps the region where it settles too, and draws
+    /// Send and Keep editing whole in the body wherever the line leaves the body room for them
+    /// beside the region's two lines; a line that leaves too little, only at 18 pt in the
+    /// 461 × 490 window, keeps the form alone. With no conversation open the busy row stands
+    /// among the content, and none of it is decided.
     #[gpui::test]
     async fn the_confirmation_decides_the_top_line_it_draws(cx: &mut TestAppContext) {
         const LONG_LABEL: &str = "Waiting for GitHub to answer the request this panel made for \
@@ -12868,6 +12871,7 @@ mod tests {
                     review::reveal_room(window, cx),
                 )
             });
+            let mut out_of_room_kinds = Vec::new();
             for (kind, notice, error, issue, busy, long) in lines.clone() {
                 let at = format!("{kind} at {interface} pt in a {width} × {height} window");
                 BUSY_LABEL_FOR_TEST.with(|label| label.set(long));
@@ -12885,9 +12889,31 @@ mod tests {
                     crate::width_walk::frame(cx);
                 }
                 let frames = confirm_frames();
-                // At 18 pt in a 461 × 490 window the line leaves the body too little for the
-                // region's two lines and the buttons' two rows, so they cannot fit it together.
-                if (interface, height) == (18, 490.) {
+                // Whether the line, as decided before layout, leaves the body too little for the
+                // region's two lines, its ring and the buttons, with the reveal's room at either
+                // edge: at 18 pt in a 461 × 490 window they take 156 px and that room 40 px.
+                // Read from the decided line and not from these frames, so a confirmation drawn
+                // too tall for a line that leaves it room still fails below.
+                let out_of_room = cx.update(|window, cx| {
+                    let conversations = &panel.read(cx).conversations;
+                    let form = conversations
+                        .confirm_form
+                        .borrow()
+                        .clone()
+                        .expect("the form decided");
+                    let line =
+                        conversations::pinned_line_height(form.top_text, form.busy_text, window);
+                    let floor = conversations.confirm_fit.get().line * 2.;
+                    form.chrome + floor
+                        > window.pixel_snap(body_max_height(window) - line) - rooms.1 * 2.
+                });
+                if out_of_room {
+                    assert_eq!(
+                        (interface, height),
+                        (18, 490.),
+                        "{at}: only the smallest window leaves the line too little room"
+                    );
+                    out_of_room_kinds.push(kind);
                     assert_confirmation_form_settled(&at, &frames, rooms.0);
                 } else {
                     assert_confirmation_settled(&at, &frames, rooms);
@@ -12925,6 +12951,15 @@ mod tests {
                         "{at}: the label stands taller than Cancel"
                     );
                 }
+            }
+            // The check above is decided for each line: the failure under its cap cannot leave
+            // the room, and the busy row alone, two lines at this size, leaves it by 5 px.
+            if (interface, height) == (18, 490.) {
+                assert!(
+                    out_of_room_kinds.contains(&"a failure taller than its cap")
+                        && !out_of_room_kinds.contains(&"the busy row"),
+                    "at 18 pt in a 461 × 490 window: {out_of_room_kinds:?} leave too little room"
+                );
             }
             cx.update(|_, cx| {
                 panel.update(cx, |panel, _| {
