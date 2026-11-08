@@ -444,11 +444,17 @@ pub fn redact_diagnostic(input: &str) -> String {
                 "authorization:",
                 "proxy-authorization:",
                 "password=",
+                "password:",
                 "passwd=",
+                "passwd:",
                 "access_token=",
+                "access_token:",
                 "refresh_token=",
+                "refresh_token:",
                 "token=",
+                "token:",
                 "oauth_token=",
+                "oauth_token:",
             ]
             .into_iter()
             .filter_map(|marker| lower.find(marker).map(|index| index + marker.len()))
@@ -529,6 +535,236 @@ mod tests {
         assert_eq!(
             redact_diagnostic("access_token=SECRET13"),
             "access_token=[redacted]"
+        );
+    }
+
+    /// A credential written with a colon is cut as its `=` form is, from the
+    /// first marker on the line and in any ASCII case: `password: hunter2`
+    /// once stayed whole, since only `password=` was listed.
+    #[test]
+    fn a_credential_written_with_a_colon_is_cut_as_its_equals_form_is() {
+        assert_eq!(
+            redact_diagnostic("password: hunter2"),
+            "password:[redacted]"
+        );
+        for name in [
+            "password",
+            "passwd",
+            "access_token",
+            "refresh_token",
+            "token",
+            "oauth_token",
+        ] {
+            for name in [name.to_owned(), name.to_ascii_uppercase()] {
+                assert_eq!(
+                    redact_diagnostic(&format!("fatal: {name}: SECRET after")),
+                    format!("fatal: {name}:[redacted]"),
+                );
+                assert_eq!(
+                    redact_diagnostic(&format!("{name}:SECRET")),
+                    format!("{name}:[redacted]"),
+                );
+            }
+        }
+        // The first marker on the line wins, whichever form it has.
+        assert_eq!(
+            redact_diagnostic("token: SECRET1 password=SECRET2"),
+            "token:[redacted]"
+        );
+        assert_eq!(
+            redact_diagnostic("password=SECRET1 token: SECRET2"),
+            "password=[redacted]"
+        );
+        // Where the secret follows a carriage return, as a failure's report
+        // reads it (`reported_redacted`).
+        assert_eq!(
+            reported_redacted(b"passwd:\rSECRET\n", redact_diagnostic),
+            "passwd:[redacted]"
+        );
+        // A URL's userinfo is the URL stage's to hide, whatever it spells: a
+        // token used as the username keeps the host and what follows it.
+        assert_eq!(
+            redact_diagnostic("https://x-access-token:SECRET@host/repo.git: failed"),
+            "https://[redacted]@host/repo.git: failed"
+        );
+    }
+
+    /// The redaction as it stood at 1e2ad7da, frozen as the oracle of the
+    /// generated diagnostics below: what it hid stays hidden.
+    fn earlier_redaction(input: &str) -> String {
+        let mut result = String::with_capacity(input.len());
+        for part in input.split_inclusive(char::is_whitespace) {
+            let Some(start) = part.find("://") else {
+                result.push_str(part);
+                continue;
+            };
+            let authority_start = start + 3;
+            let authority_end = part[authority_start..]
+                .find(['/', '?', '#', '\'', '"', '\n', '\r', ' '])
+                .map_or(part.len(), |i| authority_start + i);
+            let authority = &part[authority_start..authority_end];
+            result.push_str(&part[..authority_start]);
+            if let Some((_, host)) = authority.rsplit_once('@') {
+                result.push_str("[redacted]@");
+                result.push_str(host);
+            } else {
+                result.push_str(authority);
+            }
+            let remainder = &part[authority_end..];
+            if let Some(query) = remainder.find(['?', '#']) {
+                result.push_str(&remainder[..query]);
+                result.push_str("?[redacted]");
+                let suffix = remainder.trim_end_matches(char::is_whitespace);
+                result.push_str(&remainder[suffix.len()..]);
+            } else {
+                result.push_str(remainder);
+            }
+        }
+        result
+            .lines()
+            .map(|line| {
+                let lower = line.to_ascii_lowercase();
+                [
+                    "authorization:",
+                    "proxy-authorization:",
+                    "password=",
+                    "passwd=",
+                    "access_token=",
+                    "refresh_token=",
+                    "token=",
+                    "oauth_token=",
+                ]
+                .into_iter()
+                .filter_map(|marker| lower.find(marker).map(|index| index + marker.len()))
+                .min()
+                .map_or_else(
+                    || line.to_owned(),
+                    |end| format!("{}[redacted]", &line[..end]),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Seeded generator of diagnostics: every word it writes is unique, so
+    /// finding one in an output means that output shows it.
+    struct Generated {
+        state: u64,
+        words: usize,
+    }
+
+    impl Generated {
+        fn below(&mut self, limit: usize) -> usize {
+            self.state ^= self.state << 13;
+            self.state ^= self.state >> 7;
+            self.state ^= self.state << 17;
+            (self.state % limit as u64) as usize
+        }
+        fn pick<'a>(&mut self, from: &[&'a str]) -> &'a str {
+            from[self.below(from.len())]
+        }
+        fn word(&mut self, kind: &str) -> String {
+            self.words += 1;
+            format!("{kind}{:07}", self.words)
+        }
+        fn piece(&mut self) -> String {
+            let (secret, secret2, other) = (
+                self.word("SECRET"),
+                self.word("SECRET"),
+                self.word("WORD"),
+            );
+            match self.below(5) {
+                0 | 1 => {
+                    let marker = self.pick(&[
+                        "authorization:",
+                        "proxy-authorization:",
+                        "password=",
+                        "password:",
+                        "passwd=",
+                        "passwd:",
+                        "access_token=",
+                        "access_token:",
+                        "refresh_token=",
+                        "refresh_token:",
+                        "token=",
+                        "token:",
+                        "oauth_token=",
+                        "oauth_token:",
+                    ]);
+                    let marker = if self.below(2) == 0 {
+                        marker.to_ascii_uppercase()
+                    } else {
+                        marker.to_owned()
+                    };
+                    let gap = self.pick(&["", " ", "\r", " \r"]);
+                    format!("{marker}{gap}{secret}")
+                }
+                2 => format!("https://{secret}:{secret2}@{other}/path"),
+                3 => format!("https://{other}/path?{secret}={secret2}"),
+                _ => other,
+            }
+        }
+        fn line(&mut self) -> String {
+            let mut line = self.pick(&["", "fatal: ", "remote: "]).to_owned();
+            for piece in 0..=self.below(5) {
+                if piece > 0 {
+                    line.push_str(self.pick(&[" ", "\t", "\r", " \r", "\r "]));
+                }
+                let piece = self.piece();
+                line.push_str(&piece);
+            }
+            line
+        }
+    }
+
+    /// What `redact_diagnostic` hid at 1e2ad7da stays hidden: no generated
+    /// word it did not show comes back, its cut on a line without a URL is a
+    /// prefix of the earlier cut, and no generated secret is shown at all.
+    #[test]
+    fn no_generated_diagnostic_shows_what_the_earlier_redaction_hid() {
+        const CASES: usize = 20_000;
+        let mut generated = Generated {
+            state: 0x9E37_79B9_7F4A_7C15,
+            words: 0,
+        };
+        let (mut leaked, mut shown_again, mut longer_cut) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..CASES {
+            let first_word = generated.words + 1;
+            let mut input = generated.line();
+            for _ in 0..generated.below(3) {
+                input.push_str(generated.pick(&["\n", "\r\n"]));
+                let line = generated.line();
+                input.push_str(&line);
+            }
+            let (earlier, now) = (earlier_redaction(&input), redact_diagnostic(&input));
+            if now.contains("SECRET") {
+                leaked.push(input.clone());
+            }
+            let came_back = (first_word..=generated.words).any(|word| {
+                ["SECRET", "WORD"].into_iter().any(|kind| {
+                    let word = format!("{kind}{word:07}");
+                    now.contains(&word) && !earlier.contains(&word)
+                })
+            });
+            if came_back {
+                shown_again.push(input.clone());
+            }
+            let kept = |line: &'_ str| line.strip_suffix("[redacted]").unwrap_or(line).to_owned();
+            if earlier.split('\n').zip(now.split('\n')).any(|(old, new)| {
+                !old.contains("://") && !new.contains("://") && !kept(old).starts_with(&kept(new))
+            }) {
+                longer_cut.push(input.clone());
+            }
+        }
+        assert!(
+            leaked.is_empty() && shown_again.is_empty() && longer_cut.is_empty(),
+            "{CASES} cases: {} show a secret, {} show what the earlier redaction hid, {} cut later; first {:?} {:?} {:?}",
+            leaked.len(),
+            shown_again.len(),
+            longer_cut.len(),
+            leaked.first(),
+            shown_again.first(),
+            longer_cut.first(),
         );
     }
 
