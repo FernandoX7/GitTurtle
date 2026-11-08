@@ -4601,6 +4601,27 @@ mod tests {
                 "mode {mode} gives the read's error as its reason"
             );
         }
+        // A failure that fits draws no scrollbar and keeps no gutter at
+        // either scale: laid out as tall as its scroller, and an overflow
+        // being strictly past zero, a float's remainder would draw one, and
+        // make it a Tab stop with nothing to scroll.
+        for (scale, width, height) in [(1., 1480., 800.), (1.5, 1480., 800.), (1.5, 1481., 803.)] {
+            let at = format!("at 13 pt in {width} × {height} at {scale}×");
+            size_to(&app, cx, 13, width, height);
+            // A resize takes the test display's 2×, so the scale follows it.
+            cx.update(|window, _| window.set_scale_factor(scale));
+            draw(cx);
+            assert!(
+                cx.debug_bounds("series-preview-failure-scrollbar")
+                    .is_none(),
+                "{at}: a failure that fits draws no scrollbar"
+            );
+            assert_eq!(
+                browser.read_with(cx, |browser, _| browser.failure_scroll.max_offset().y),
+                px(0.),
+                "{at}: a failure that fits has nothing to scroll, so keeps no gutter"
+            );
+        }
     }
 
     /// A review in `app`'s window, its read landed, inspecting `files` as
