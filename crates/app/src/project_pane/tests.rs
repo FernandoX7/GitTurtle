@@ -1584,3 +1584,81 @@ fn a_keyboard_row_menu_keeps_the_menu_gap_below_its_row(cx: &mut TestAppContext)
         settle(cx);
     }
 }
+
+/// A row's menu closes as the pane leaves, held back in a window too narrow
+/// to draw it beside the page, and neither comes back as the window widens:
+/// the keyboard's menu, opened by Shift+F10, and the actions button's. The
+/// keyboard's menu was drawn again beside its row as the window widened,
+/// open with focus elsewhere, and the actions button's stayed recorded open,
+/// its row keeping no tooltip.
+#[gpui::test]
+fn a_rows_menu_closes_as_the_window_holds_the_pane_back(cx: &mut TestAppContext) {
+    let (library, _, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    cx.update(|_, cx| native_accessibility::bind_keys(cx));
+    let item = "menu-item: Open project · MenuItem";
+    let open = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            (
+                app.project_pane.keyboard_menu.is_some(),
+                app.project_pane.menu_open.is_some(),
+            )
+        })
+    };
+    // The last row, beta, a project.
+    let beta = app.read_with(cx, |app, _| app.project_pane.rows.len() - 1);
+    for menu in ["Shift+F10", "the actions button"] {
+        cx.simulate_resize(size(px(1200.), px(720.)));
+        settle(cx);
+        if menu == "Shift+F10" {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.move_project_cursor(true, true, window, cx);
+                    window.focus(&app.project_pane.focus, cx);
+                })
+            });
+            settle(cx);
+            cx.simulate_keystrokes("shift-f10");
+        } else {
+            let button = cx
+                .debug_bounds(format!("project-row-menu-{beta}").leak())
+                .expect("beta's actions button");
+            cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+            settle(cx);
+            cx.simulate_click(button.center(), Modifiers::default());
+        }
+        settle(cx);
+        assert!(cx.debug_bounds(item).is_some(), "{menu} opened beta's menu");
+        assert_ne!(open(cx), (false, false), "{menu}: recorded open");
+        cx.simulate_resize(size(px(461.), px(490.)));
+        settle(cx);
+        assert!(
+            cx.debug_bounds("project-pane").is_none(),
+            "{menu}: held back"
+        );
+        assert!(cx.debug_bounds(item).is_none(), "{menu}: the menu went");
+        assert_eq!(open(cx), (false, false), "{menu}: closed with the pane");
+        let (focused, tree, root) = cx.update(|window, cx| {
+            let app = app.read(cx);
+            (
+                window.focused(cx),
+                app.project_pane.focus.clone(),
+                app.app_focus.clone(),
+            )
+        });
+        let focused = focused.unwrap_or_else(|| panic!("{menu}: focus stays on a control"));
+        assert!(
+            focused != tree && focused != root,
+            "{menu}: focus is on one of the page's controls"
+        );
+        assert!(
+            cx.update(|window, _| root.contains(&focused, window)),
+            "{menu}: on a control the frame draws"
+        );
+        cx.simulate_resize(size(px(1200.), px(720.)));
+        settle(cx);
+        assert!(cx.debug_bounds("project-pane").is_some(), "{menu}: drawn");
+        assert!(cx.debug_bounds(item).is_none(), "{menu}: not open again");
+        assert_eq!(open(cx), (false, false), "{menu}: still closed");
+    }
+}

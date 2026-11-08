@@ -2617,7 +2617,14 @@ impl GitTurtle {
                             })),
                     ),
             )
-            .child(
+            .child({
+                // On where the window holds the pane back, the switch says why
+                // no list is drawn; the row keeps the taller description's
+                // height, so neither the switch nor the rows below move as one
+                // replaces the other.
+                let shown: SharedString = PROJECT_PANE_DESCRIPTION.into();
+                let held: SharedString = crate::project_pane::HELD_BACK_DESCRIPTION.into();
+                let held_back = self.settings.project_pane && !self.project_pane_fits(window);
                 div()
                     .on_children_prepainted(self.keep_in_view(vec![Some(project_pane.clone())], cx))
                     .debug_selector(|| "settings-project-pane-row".into())
@@ -2626,20 +2633,17 @@ impl GitTurtle {
                             "settings-project-pane",
                             PROJECT_PANE,
                             PROJECT_PANE,
-                            "Keep a pane on the far left to jump between known projects and sort them into groups.",
-                            &[],
+                            if held_back { held.clone() } else { shown.clone() },
+                            &[shown, held],
                             cx,
                         )
                             .track_focus(&project_pane)
                             .checked(self.settings.project_pane)
                             .on_click(cx.listener(|this, checked: &bool, window, cx| {
-                                if this.settings.project_pane != *checked {
-                                    this.settings.project_pane = *checked;
-                                    this.save_preferences(window, cx);
-                                }
+                                this.switch_project_pane(*checked, window, cx)
                             })),
-                    ),
-            )
+                    )
+            })
             .child(
                 div()
                     .flex()
@@ -4772,6 +4776,11 @@ fn setting_text_read_as(
 pub(crate) const FOLLOW_SYSTEM: &str = "Follow system appearance";
 const REOPEN_LAST: &str = "Restore repository tabs on startup";
 const PROJECT_PANE: &str = "Show the project list";
+/// The project list switch's description where the window draws the pane,
+/// or it is off; where the window holds it back, the switch says why instead
+/// (`project_pane::HELD_BACK_DESCRIPTION`).
+const PROJECT_PANE_DESCRIPTION: &str =
+    "Keep a pane on the far left to jump between known projects and sort them into groups.";
 
 /// A Settings switch whose row is the control: its `title` and
 /// `description` are drawn before its track (the kit's `Switch::leading`),

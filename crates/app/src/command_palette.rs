@@ -338,6 +338,9 @@ struct Availability {
     profile_saving: bool,
     /// History in a window too narrow for its navigation.
     narrow_history: bool,
+    /// The project pane on where the window holds it back
+    /// (`GitTurtle::project_pane_drawn`).
+    project_pane_held_back: bool,
 }
 impl CommandId {
     fn workspace(self) -> bool {
@@ -432,6 +435,40 @@ impl CommandId {
         }
         None
     }
+    /// What an available command's row says in its description's place, as
+    /// an unavailable one's says why ([`Self::reason`]): the project list's
+    /// command where the window holds the pane back, which it still turns
+    /// on and off there.
+    fn note(self, context: &Availability) -> Option<&'static str> {
+        (self == Self::ProjectPane && context.project_pane_held_back)
+            .then_some("Hidden: widen the window")
+    }
+    /// What a row's name and the status's reading say after the command: why
+    /// the context cannot run it, after `separator`, or, where it runs, its
+    /// note ([`Self::note`]), which never says "Unavailable", since the row
+    /// still runs.
+    fn spoken_state(self, separator: &str, context: &Availability) -> String {
+        match (self.reason(context), self.note(context)) {
+            (Some(reason), _) => format!("{separator}Unavailable: {reason}"),
+            (None, Some(note)) => format!(". {note}"),
+            (None, None) => String::new(),
+        }
+    }
+}
+
+/// The description line of `spec`'s row: why it is unavailable, a note
+/// ([`CommandId::note`]), or what kind of command it is.
+fn row_description(spec: &CommandSpec, context: &Availability) -> &'static str {
+    spec.id
+        .reason(context)
+        .or_else(|| spec.id.note(context))
+        .unwrap_or(if spec.id.selected_file() {
+            "Selected file · opens its existing inspection workflow"
+        } else if spec.id.workspace() {
+            "Current repository · opens the existing workflow"
+        } else {
+            "Application action"
+        })
 }
 fn matches(query: &str) -> Vec<usize> {
     if query.len() > 4096 {
@@ -617,6 +654,9 @@ impl GitTurtle {
             profile_saving: self.profile_save_pending(),
             narrow_history: self.mode == WorkspaceMode::History
                 && !self.navigation_fits(window, cx),
+            project_pane_held_back: self.settings.project_pane
+                && self.page != AppPage::Projects
+                && !self.project_pane_fits(window),
         }
     }
     pub(super) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -821,17 +861,12 @@ thread_local! {
 /// checked natively).
 const ROW_CARRIES_CONTEXT: bool = shortcuts::LIST_SPEAKS_SELECTION;
 
-/// A row's accessible name: its command and, where the context cannot run
-/// it, why ("Browse stashes…. Unavailable: Wait for the file list to
-/// refresh").
-fn row_name(spec: &CommandSpec, reason: Option<&str>) -> String {
-    format!(
-        "{}{}",
-        spec.label,
-        reason
-            .map(|reason| format!(". Unavailable: {reason}"))
-            .unwrap_or_default()
-    )
+/// A row's accessible name in `context`: its command and, where the context
+/// cannot run it, why ("Browse stashes…. Unavailable: Wait for the file list
+/// to refresh"), or, where it runs, its note ("Show or hide the project
+/// list. Hidden: widen the window").
+fn row_name(spec: &CommandSpec, context: &Availability) -> String {
+    format!("{}{}", spec.label, spec.id.spoken_state(". ", context))
 }
 
 struct Palette {
@@ -840,6 +875,7 @@ struct Palette {
     file_scope: FileScope,
     context: PaletteContext,
     _owner_subscription: Option<Subscription>,
+    _bounds_subscription: Subscription,
     return_focus: Option<FocusHandle>,
     query: Entity<InputState>,
     results: Vec<usize>,
@@ -942,37 +978,15 @@ impl Palette {
         // while GitTurtle is mutably borrowed.
         let owner_subscription = owner.upgrade().map(|owner| {
             cx.observe_in(&owner, window, |this, owner, window, cx| {
-                if !this.selection.closed {
-                    let was = this.reading();
-                    let previous = std::mem::replace(
-                        &mut this.context,
-                        owner.read(cx).palette_context(window, cx),
-                    );
-                    // A reading the context changes, as a write starts or
-                    // ends, is heard once it rests, as the query's is.
-                    // Announced at once, a Fetch's end and its reload's end
-                    // 33 ms later were two announcements, and Orca 51.1's
-                    // spam filter dropped the second, the command becoming
-                    // available (QA-95). Where the selected row's name
-                    // carries it (Linux), that name keeps the reading it had
-                    // until the rest, and the status takes it quietly then,
-                    // unless the query changed too (`queried`).
-                    // The hold moves to the selected row; a row a move left
-                    // that still held its name takes its live reading now,
-                    // a frame after the move reported the list's change of
-                    // selection.
-                    if this.reading() != was {
-                        if let Some(command) = this.selected_command()
-                            && ROW_CARRIES_CONTEXT
-                            && this.held.as_ref().is_none_or(|(held, _)| *held != command)
-                        {
-                            this.held = Some((command, previous.availability));
-                        }
-                        this.settle(true, cx);
-                    }
-                    cx.notify();
-                }
+                this.follow_context(&owner, window, cx);
             })
+        });
+        // A resize notifies no entity, and what a row says can follow the
+        // window's size: Toggle Sidebar's reason, the project list's note.
+        let bounds_subscription = cx.observe_window_bounds(window, |this, window, cx| {
+            if let Some(owner) = this.owner.upgrade() {
+                this.follow_context(&owner, window, cx);
+            }
         });
         let mut palette = Self {
             owner,
@@ -980,6 +994,7 @@ impl Palette {
             file_scope,
             context,
             _owner_subscription: owner_subscription,
+            _bounds_subscription: bounds_subscription,
             return_focus,
             query,
             results: matches(""),
@@ -1004,6 +1019,42 @@ impl Palette {
         palette.status_name = palette.status.clone();
         palette
     }
+    /// Takes the context as the application has it now, while the palette
+    /// is open. A reading the context changes, as a write starts or ends, is
+    /// heard once it rests, as the query's is. Announced at once, a Fetch's
+    /// end and its reload's end 33 ms later were two announcements, and Orca
+    /// 51.1's spam filter dropped the second, the command becoming available
+    /// (QA-95). Where the selected row's name carries it (Linux), that name
+    /// keeps the reading it had until the rest, and the status takes it
+    /// quietly then, unless the query changed too (`queried`). The hold
+    /// moves to the selected row; a row a move left that still held its name
+    /// takes its live reading now, a frame after the move reported the
+    /// list's change of selection.
+    fn follow_context(
+        &mut self,
+        owner: &Entity<GitTurtle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection.closed {
+            return;
+        }
+        let was = self.reading();
+        let previous = std::mem::replace(
+            &mut self.context,
+            owner.read(cx).palette_context(window, cx),
+        );
+        if self.reading() != was {
+            if let Some(command) = self.selected_command()
+                && ROW_CARRIES_CONTEXT
+                && self.held.as_ref().is_none_or(|(held, _)| *held != command)
+            {
+                self.held = Some((command, previous.availability));
+            }
+            self.settle(true, cx);
+        }
+        cx.notify();
+    }
     /// Highlights the first result the current context can run, or the first
     /// result when it can run none, and shows the list from its top with
     /// that row in view. A disabled row draws in the faintest text on screen,
@@ -1019,7 +1070,8 @@ impl Palette {
     }
     /// What the status reads for the selected result: its command, its
     /// place among the results and, where the context cannot run it, why
-    /// ("Go to History · 2 of 3"), or that nothing matches.
+    /// ("Go to History · 2 of 3"), or, where it runs, its note, or that
+    /// nothing matches.
     fn reading(&self) -> SharedString {
         self.selected_command()
             .zip(self.place())
@@ -1029,9 +1081,7 @@ impl Palette {
                     COMMANDS[index].label,
                     COMMANDS[index]
                         .id
-                        .reason(&self.context.availability)
-                        .map(|reason| format!(" · Unavailable: {reason}"))
-                        .unwrap_or_default()
+                        .spoken_state(" · ", &self.context.availability)
                 )
                 .into()
             })
@@ -1200,9 +1250,9 @@ impl Palette {
                 let queried = std::mem::take(&mut this.queried);
                 let held = this.held.take();
                 let renames_row = held.as_ref().is_some_and(|(command, held)| {
-                    let id = COMMANDS[*command].id;
+                    let spec = COMMANDS[*command];
                     this.selected_command() == Some(*command)
-                        && id.reason(held) != id.reason(&this.context.availability)
+                        && row_name(&spec, held) != row_name(&spec, &this.context.availability)
                 });
                 let reading = this.reading();
                 let listed = this.listed.take_unread();
@@ -1344,10 +1394,8 @@ impl Render for Palette {
                         // still resting left it in (`held`, Linux); what the
                         // row draws, and whether it acts, follow the live one.
                         let named = match &this.held {
-                            Some((command, held)) if *command == this.results[index] => {
-                                spec.id.reason(held)
-                            }
-                            _ => disabled,
+                            Some((command, held)) if *command == this.results[index] => held,
+                            _ => &context,
                         };
                         let row = div()
                             .id(("palette-command", this.results[index]))
@@ -1428,13 +1476,7 @@ impl Render for Palette {
                                     .text_size(crate::appearance::ui_text(11.))
                                     .text_color(rgb(palette(cx).muted))
                                     .truncate()
-                                    .child(disabled.unwrap_or(if spec.id.selected_file() {
-                                        "Selected file · opens its existing inspection workflow"
-                                    } else if spec.id.workspace() {
-                                        "Current repository · opens the existing workflow"
-                                    } else {
-                                        "Application action"
-                                    })),
+                                    .child(row_description(&spec, &context)),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 let moved = this.selection.index != index;
@@ -1763,6 +1805,136 @@ mod render_tests {
     use core::prelude::v1::test;
     use gpui_kit::{Background, Bounds, ScaledPixels, component::Root, point};
     use std::{cell::RefCell, rc::Rc};
+
+    /// The project list's command says "Hidden: widen the window" in its
+    /// description's place where the window holds the pane back, as Toggle
+    /// Sidebar's says why it waits in narrow History, and its row's name
+    /// says so too, without "Unavailable": the command stays available, and
+    /// still turns the setting on and off there. Off, or where the window
+    /// draws the pane, its row describes an application action and its name
+    /// is the command's.
+    #[gpui::test]
+    async fn the_project_list_command_says_where_the_pane_is_held_back(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let spec = COMMANDS
+            .iter()
+            .find(|spec| spec.id == CommandId::ProjectPane)
+            .expect("the command");
+        let row = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let availability = app.read(cx).palette_availability(window, cx);
+                (
+                    spec.id.reason(&availability),
+                    row_description(spec, &availability),
+                    row_name(spec, &availability),
+                )
+            })
+        };
+        let plain = spec.label.to_owned();
+        let noted = format!("{}. Hidden: widen the window", spec.label);
+        for (width, on, described, named) in [
+            (461., true, "Hidden: widen the window", &noted),
+            (461., false, "Application action", &plain),
+            (1480., true, "Application action", &plain),
+        ] {
+            app.update(cx, |app, cx| {
+                app.settings.project_pane = on;
+                cx.notify();
+            });
+            cx.simulate_resize(size(px(width), px(973.)));
+            crate::views::tests::draw(cx);
+            assert_eq!(
+                row(cx),
+                (None, described, named.clone()),
+                "{width} px with the pane {}",
+                if on { "on" } else { "off" }
+            );
+        }
+    }
+
+    /// A selected project list row takes the held-back note in its name once
+    /// the context has rested, as a reason's coming is heard: where the
+    /// row's name carries a change of context ([`ROW_CARRIES_CONTEXT`],
+    /// Linux) it keeps the name it had until the rest, is renamed once then,
+    /// and the status announces none of it; elsewhere the row takes the note
+    /// as the context changes and the status announces it at the rest. Going
+    /// again as the window gives the pane room is heard the same way.
+    #[gpui::test]
+    fn the_selected_project_list_row_is_renamed_as_the_pane_is_held_back(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        app.update(cx, |app, cx| {
+            app.page = AppPage::Settings;
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        let results = matches("");
+        let at = results
+            .iter()
+            .position(|&command| COMMANDS[command].id == CommandId::ProjectPane)
+            .expect("the command");
+        let start = first_available(&results, &availability);
+        assert!(start <= at, "Down reaches the command");
+        for _ in start..at {
+            heard.step(cx, "down");
+        }
+        let spec = COMMANDS[results[at]];
+        let plain = spec.label.to_owned();
+        let noted = format!("{}. Hidden: widen the window", spec.label);
+        let place = place_of("", at);
+        assert_eq!(heard.row_name(), Some(plain.as_str()), "beside the pane");
+        heard.take();
+        heard.take_renamed();
+        // One height, so the selected row stays in the list's view.
+        let (narrow, wide) = (size(px(461.), px(800.)), size(px(1200.), px(800.)));
+        for (window, had, ends, reading) in [
+            (
+                narrow,
+                &plain,
+                &noted,
+                format!("{} · {place}. Hidden: widen the window", spec.label),
+            ),
+            (wide, &noted, &plain, format!("{} · {place}", spec.label)),
+        ] {
+            cx.simulate_resize(window);
+            heard.frame(cx);
+            heard.wait(cx, 499);
+            assert_eq!(
+                heard.take(),
+                Vec::<String>::new(),
+                "{reading:?}: nothing is announced before the rest"
+            );
+            let before_rest = if ROW_CARRIES_CONTEXT { had } else { ends };
+            assert_eq!(
+                heard.row_name(),
+                Some(before_rest.as_str()),
+                "{reading:?}: before the rest"
+            );
+            heard.wait(cx, 1);
+            assert_eq!(
+                heard.row_name(),
+                Some(ends.as_str()),
+                "{reading:?}: its name"
+            );
+            assert_eq!(
+                heard.named.as_deref(),
+                Some(reading.as_str()),
+                "the status reads it"
+            );
+            assert_eq!(
+                heard.take_renamed(),
+                std::slice::from_ref(ends),
+                "{reading:?}: renamed once"
+            );
+            let announced = if ROW_CARRIES_CONTEXT {
+                Vec::new()
+            } else {
+                vec![reading.clone()]
+            };
+            assert_eq!(heard.take(), announced, "{reading:?}: the status");
+        }
+    }
 
     /// The application on its Projects hub, with no repository open, so the
     /// repository's commands are unavailable, and dialogs opening at rest.

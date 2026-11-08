@@ -2962,6 +2962,13 @@ fn list_rows(list: &str) -> Vec<String> {
 /// edge, until the page beside the pane took one width.
 const KNOWN_PAST: &[(u8, &str)] = &[];
 
+/// The width of a window that draws the project pane beside the page: a
+/// body under 700 px cannot hold the pane's least 180 px beside the page's
+/// 520 px floor and holds the pane back, as a 461 px half tile does
+/// (DESIGN.md, Project list pane). The walks read the pane's rows and stops
+/// here.
+pub(crate) const PANE_WIDTH: f32 = 720.;
+
 /// Draws the window again from no recorded nodes and reads `lists` in that
 /// frame into `report`, counting each one's rows laid out in `rows`.
 fn rows_within(
@@ -3018,11 +3025,32 @@ async fn rows_keep_within_their_lists(text: u8, cx: &mut TestAppContext) {
         if page == Page::History {
             lists.push("files-pane");
         }
-        for (width, height) in [(461., 490.), (1480., 490.)] {
+        // The half tile holds the pane back (DESIGN.md, Project list pane),
+        // so its rows are read in a window that draws it.
+        for (width, height) in [(461., 490.), (PANE_WIDTH, 490.), (1480., 490.)] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
             frame(cx);
-            let at = format!("{page:?} in {width} × {height}");
+            let held_back = width < PANE_WIDTH;
+            assert_eq!(
+                cx.debug_bounds("project-pane").is_none(),
+                held_back,
+                "{page:?} in {width} × {height}: the pane is {}",
+                if held_back { "held back" } else { "drawn" }
+            );
+            let at = format!(
+                "{page:?} in {width} × {height}{}",
+                if held_back {
+                    ", the pane held back"
+                } else {
+                    ""
+                }
+            );
+            let lists: Vec<_> = lists
+                .iter()
+                .copied()
+                .filter(|list| !held_back || *list != "project-pane-tree")
+                .collect();
             rows_within(cx, &at, &lists, &mut rows, &mut report);
         }
         if page == Page::History {

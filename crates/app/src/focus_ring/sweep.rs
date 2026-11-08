@@ -680,7 +680,9 @@ async fn the_theme_editor_draws_a_whole_ring_at_every_stop(cx: &mut TestAppConte
     assert_whole(failures);
 }
 
-/// The project hub, and History beside the project pane.
+/// The project hub, and History beside the project pane in a window that
+/// draws it, 720 × 490 (`width_walk::PANE_WIDTH`): a 461 px half tile holds
+/// the pane back (DESIGN.md, Project list pane).
 #[gpui::test]
 async fn the_project_hub_and_pane_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
     let (_fixture, app, cx) = views::tests::history_window(cx).await;
@@ -699,7 +701,12 @@ async fn the_project_hub_and_pane_draw_a_whole_ring_at_every_stop(cx: &mut TestA
                 }
             })
         });
+        cx.simulate_resize(size(px(crate::width_walk::PANE_WIDTH), px(490.)));
         views::tests::settle(&app, cx).await;
+        assert!(
+            cx.debug_bounds("project-pane").is_some(),
+            "{interface} pt: the pane is drawn"
+        );
         walk(
             &app,
             cx,
@@ -707,6 +714,7 @@ async fn the_project_hub_and_pane_draw_a_whole_ring_at_every_stop(cx: &mut TestA
             interface,
             &mut failures,
         );
+        cx.simulate_resize(size(px(1280.), px(800.)));
     }
     assert_whole(failures);
 }

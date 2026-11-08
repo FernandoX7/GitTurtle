@@ -8171,6 +8171,9 @@ thread_local! {
     /// What the status line was last given to draw
     /// (`GitTurtle::render_status_line`), for a test.
     static STATUS_DRAWN: RefCell<Option<SharedString>> = const { RefCell::new(None) };
+    /// The text the status line was last laid out with and whether it was
+    /// cut there ([`StatusLaidOut`]), for a test.
+    static STATUS_CUT: RefCell<Option<(SharedString, bool)>> = const { RefCell::new(None) };
     /// How many times the status line built its texts ([`KeptStatusText`]),
     /// for a test.
     static STATUS_TEXT_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -8580,7 +8583,119 @@ pub(crate) fn shaped_width(
         .width
 }
 
+/// The project pane's least and greatest widths, which a drag of its edge
+/// keeps it within.
+const PROJECT_PANE_MIN: f32 = 180.;
+const PROJECT_PANE_MAX: f32 = 360.;
+/// The least width the page beside the project pane is laid out at: a
+/// window whose body cannot hold it beside the pane's least width holds the
+/// pane back ([`GitTurtle::project_pane_drawn`]).
+const PROJECT_PAGE_MIN: f32 = 520.;
+
+/// The element ID of the panel group that holds the project pane and the
+/// page beside it, and the page's panel's place in that group, which names
+/// the panel's element (`("resizable-panel", PAGE_PANEL)`, the kit's).
+const WORKSPACE_COLUMNS: &str = "workspace-columns";
+const PAGE_PANEL: usize = 1;
+
+/// `page` as the body holds it alone, the project pane held back, closed or
+/// not shown: inside elements with the IDs the pane's group gives it beside
+/// the pane, so each control of the page keeps one element ID in both
+/// forms. GPUI builds a stateless component's subtree under its type's
+/// name (`ViewElement`), so the chain is the group's type and its own ID
+/// ([`WORKSPACE_COLUMNS`]), then the panel's type and its ID
+/// ([`PAGE_PANEL`]); `views::tests::the_page_keeps_focus_as_the_project_pane_comes_and_goes`
+/// reads the path in both forms. What GPUI keeps for an element by its ID,
+/// a kit Button's focus handle among it, then outlives the pane coming or
+/// going: drawn alone, the page's controls took other IDs, so a Button
+/// focused at 1,480 px lost its focus as the window narrowed past 700 px,
+/// the window moving focus to the page's first stop, and one focused at
+/// 461 px lost it as the window widened or the pane was turned on, focus
+/// left on a handle no frame drew.
+fn page_alone(page: AnyElement) -> AnyElement {
+    use gpui_kit::component::resizable::{ResizablePanel, ResizablePanelGroup};
+    let panel = record_page_path(
+        div()
+            .id(("resizable-panel", PAGE_PANEL))
+            .size_full()
+            .child(page),
+    );
+    div()
+        .id(std::any::type_name::<ResizablePanelGroup>())
+        .size_full()
+        .child(
+            div().id(WORKSPACE_COLUMNS).size_full().child(
+                div()
+                    .id(std::any::type_name::<ResizablePanel>())
+                    .size_full()
+                    .child(panel),
+            ),
+        )
+        .into_any_element()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The element ID path the page was last drawn under
+    /// ([`record_page_path`]), for a test.
+    static PAGE_PATH: std::cell::RefCell<Option<GlobalElementId>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// `element`, the page's parent, recording in tests the element ID path the
+/// page is drawn under as it is prepainted ([`PAGE_PATH`]); outside tests,
+/// `element` as it is.
+fn record_page_path<E: ParentElement>(element: E) -> E {
+    #[cfg(test)]
+    {
+        use gpui_kit::base::ElementExt as _;
+        element.on_prepaint(|_, window, _| {
+            window.with_global_id(ElementId::from("page"), |path, _| {
+                PAGE_PATH.with_borrow_mut(|recorded| *recorded = Some(path.clone()))
+            })
+        })
+    }
+    #[cfg(not(test))]
+    {
+        element
+    }
+}
+
+/// The widest the project pane is drawn in a body `body` wide: its greatest
+/// width, or less where the page beside it needs the room for its floor, on
+/// the device pixel at or before that, so the page is never laid out past
+/// the body's edge. A pane dragged wide in a wide window and narrowed with
+/// it kept its share of the body, 270 px of a 750 px body for one dragged to
+/// 360 px of 1,000, and pushed the 520 px page 40 px past the window's edge.
+fn project_pane_most(body: Pixels, window: &Window) -> Pixels {
+    let scale = window.scale_factor();
+    let room = f32::from(body - px(PROJECT_PAGE_MIN)) * scale;
+    // The small allowance keeps a whole device pixel that the division
+    // leaves a hair under, as 811 at 1.5 from a 1,060.67 px body.
+    px(((room + 1e-3).floor() / scale).min(PROJECT_PANE_MAX))
+}
+
 impl GitTurtle {
+    /// Whether the project pane is drawn in this window: where it is shown,
+    /// on Repository and Settings, and where the body holds the pane's least
+    /// width beside the page's floor. Below that the pane is held back, its
+    /// setting still on, and the page takes the body's whole width, as with
+    /// the pane closed; it returns as soon as the window gives both room.
+    /// Decided from the window's size before layout, as the page's width is
+    /// ([`Self::repository_width`]), so the first frame at a new width lays
+    /// out the form it settles in.
+    pub(super) fn project_pane_drawn(&self, window: &Window) -> bool {
+        self.settings.project_pane
+            && self.page != AppPage::Projects
+            && self.project_pane_fits(window)
+    }
+
+    /// Whether this window's body holds the project pane's least width
+    /// beside the page's floor.
+    pub(super) fn project_pane_fits(&self, window: &Window) -> bool {
+        body_width(window.viewport_size().width, window) >= px(PROJECT_PANE_MIN + PROJECT_PAGE_MIN)
+    }
+
     /// A narrow window shrinks the project pane toward its minimum before the
     /// repository's own panes lose room; the saved width is untouched.
     fn project_pane_width(&self, window: &Window) -> Pixels {
@@ -8666,24 +8781,28 @@ impl GitTurtle {
     }
 
     /// The width the repository page is drawn at: the body's width as the
-    /// layout draws it ([`body_width`]), less, beside the project pane, the
-    /// pane as its group draws it there ([`Self::drawn_project_pane_width`]),
-    /// and at least the page's 520 px minimum. Every choice the page's width
+    /// layout draws it ([`body_width`]), less, where the project pane is
+    /// drawn beside it ([`Self::project_pane_drawn`]), the pane as its group
+    /// draws it there ([`Self::drawn_project_pane_width`]), which leaves the
+    /// page at least its 520 px floor. Every choice the page's width
     /// makes reads this one width: the narrow rail, Toggle Sidebar and the
     /// palette's entry, the chrome's action bar and Compare's minimum, the
     /// columns' minimums and the inspector's range, and the width a drag of
-    /// the inspector saves.
+    /// the inspector saves. Where the window holds the pane back, the page
+    /// is the body: in a 461 px half tile the page was laid out at its floor
+    /// beside the pane, 520 px from the pane's 180 px edge, and a paused
+    /// merge's banner drew its actions at 559–690 px, past the window.
     fn repository_width(&self, window: &Window, cx: &App) -> Pixels {
         let viewport = window.viewport_size().width;
         let body = body_width(viewport, window);
-        if self.settings.project_pane && self.page != AppPage::Projects {
+        if self.project_pane_drawn(window) {
             // The page is laid out between the pane's edge and the body's,
             // both on device pixels: at scale factor 1.5, 840 px between a
             // 220.67 px pane and a 1,060.67 px body. The snap only drops the
             // rounding of the two divided lengths.
             let pane = self.drawn_project_pane_width(viewport, window, cx);
             // The floor is the drawn width: the group lays the page out at its 520 px minimum.
-            window.pixel_snap(body - pane).max(px(520.))
+            window.pixel_snap(body - pane).max(px(PROJECT_PAGE_MIN))
         } else {
             body
         }
@@ -8692,23 +8811,24 @@ impl GitTurtle {
     /// The project pane's width as its group draws it in a window `viewport`
     /// wide: the group's size for it, rescaled to the body's width
     /// ([`body_width`]) as the group is fitted to it before layout
-    /// (`ResizableState::fit_container`), within the pane's 180–360 px range
+    /// (`ResizableState::fit_container`), within the pane's 180–360 px range,
+    /// no wider than the page's floor leaves it ([`project_pane_most`]),
     /// and at the device pixel its edge is laid out on; before the group
     /// first measures the pane, the width it starts at
     /// ([`Self::project_pane_width`]).
     fn drawn_project_pane_width(&self, viewport: Pixels, window: &Window, cx: &App) -> Pixels {
         let panels = self.project_panels.read(cx);
         let sizes = panels.sizes();
+        // The group is fitted to the body's width as the layout draws it,
+        // whole device pixels, which is not the window's content: at scale
+        // factor 1.5, 1,060.67 px in a 1,061 px window.
+        let body = body_width(viewport, window);
         let size = match sizes
             .first()
             .filter(|pane| **pane != gpui_kit::base::PANEL_MIN_SIZE)
         {
             None => self.project_pane_width(window),
             Some(&pane) => {
-                // The group is fitted to the body's width as the layout draws
-                // it, whole device pixels, which is not the window's content:
-                // at scale factor 1.5, 1,060.67 px in a 1,061 px window.
-                let body = body_width(viewport, window);
                 // It rescales its panels for any other width, as exactly as
                 // `fit_container` compares it: at scale factor 1.25 a group
                 // fitted to a 1,002 px window's body (1,001.6 px) rescales
@@ -8727,7 +8847,10 @@ impl GitTurtle {
         };
         // The panel's basis, held to its range, is laid out at a device
         // pixel: a pane fitted to 212.2 px is drawn 212 px wide.
-        window.pixel_snap(size.min(px(360.)).max(px(180.)))
+        window.pixel_snap(
+            size.min(project_pane_most(body, window))
+                .max(px(PROJECT_PANE_MIN)),
+        )
     }
 
     /// `width` within the bounds a drag gives the inspector in this window
@@ -8963,8 +9086,13 @@ impl GitTurtle {
 
     /// What the status line says on this page before it gives way: the
     /// status bar draws it and its fitting measures it
-    /// ([`Self::fit_status_bar`]).
+    /// ([`Self::fit_status_bar`]). The project pane's held-back note, while
+    /// it is fresh, takes the page's status's place, after a read's error
+    /// and a write's fresh outcome (`GitTurtle::project_pane_note_line`).
     fn status_text(&self) -> &str {
+        if let Some(note) = self.project_pane_note_line() {
+            return note;
+        }
         match self.page {
             AppPage::Projects => "Open a project or start a new repository",
             AppPage::Settings => "Appearance and layout preferences",
@@ -9112,21 +9240,25 @@ impl GitTurtle {
                 self.status_widths(&hints, window)
             });
             // What the line draws of the status text, a fresh outcome's
-            // included, before its parts give way.
+            // included, before its parts give way. The project pane's
+            // held-back note is fresh feedback too, kept whole as it is. A
+            // running write's status in the line's place draws neither, so
+            // keeps no room for them.
             let first = self.status_first_line();
-            let line = match self.fresh_outcome() {
-                Some(_) => {
-                    status_line_width(&STATUS_OUTCOME, first.text, window, || {
-                        #[cfg(test)]
-                        STATUS_OUTCOME_MEASURED.with(|measured| measured.set(measured.get() + 1));
-                        let weight = window.text_style().font_weight;
-                        laid_out_text_width(
-                            shaped_width(first.text, appearance::ui_text(10.), weight, window),
-                            window,
-                        )
-                    }) + first.ellipsis_room(widths.ellipsis)
-                }
-                None => widths.ellipsis,
+            let fresh = !carried
+                && (self.project_pane_note_line().is_some() || self.fresh_outcome().is_some());
+            let line = if fresh {
+                status_line_width(&STATUS_OUTCOME, first.text, window, || {
+                    #[cfg(test)]
+                    STATUS_OUTCOME_MEASURED.with(|measured| measured.set(measured.get() + 1));
+                    let weight = window.text_style().font_weight;
+                    laid_out_text_width(
+                        shaped_width(first.text, appearance::ui_text(10.), weight, window),
+                        window,
+                    )
+                }) + first.ellipsis_room(widths.ellipsis)
+            } else {
+                widths.ellipsis
             };
             let mut details_icon = false;
             if warning {
@@ -9162,7 +9294,7 @@ impl GitTurtle {
             // a write's status takes its place, keeps the whole parts of the
             // line it draws that fit the box the warning and the hints leave
             // it, Cancel's room with it while no write comes there.
-            let parts = (!carried && self.fresh_outcome().is_none())
+            let parts = (!carried && !fresh)
                 .then(|| {
                     let hints = hints.map_or(px(0.), |(_, width)| {
                         // Laid out already (`status_widths`).
@@ -9309,6 +9441,10 @@ impl GitTurtle {
                         size,
                         dropped,
                     });
+                }
+                #[cfg(test)]
+                if let Some(laid) = laid.as_ref() {
+                    STATUS_CUT.with_borrow_mut(|last| *last = Some((laid.text.clone(), laid.cut)));
                 }
             })
             .id("status-line")
@@ -9485,7 +9621,14 @@ impl Render for GitTurtle {
         };
         // The pane spans the whole body so a project stays one click away on
         // Repository and Settings. The hub already lists projects full width.
-        let body = if self.settings.project_pane && self.page != AppPage::Projects {
+        // A window that cannot hold the pane beside the page's floor holds
+        // it back, decided from its size before layout, as the page's width
+        // is, so the first frame at a new width lays out the form it settles
+        // in; focus in the pane as it goes moves to the page. The page keeps
+        // its controls' element IDs in both forms (`page_alone`).
+        let pane_drawn = self.project_pane_drawn(window);
+        let page_start = self.follow_project_pane(pane_drawn, window, cx);
+        let body = if pane_drawn {
             let pane_width = self.project_pane_width(window);
             let pane = self.render_project_pane(cx).into_any_element();
             let owner = cx.entity().downgrade();
@@ -9504,9 +9647,15 @@ impl Render for GitTurtle {
             let frame = frame.pl(px(BODY_INSET.with(std::cell::Cell::get)));
             frame
                 .child(
-                    crate::in_frame::in_frame(move |bounds, _, cx| {
+                    crate::in_frame::in_frame(move |bounds, window, cx| {
                         panels.update(cx, |panels, _| panels.fit_container(bounds.size.width));
-                        h_resizable("workspace-columns")
+                        // No wider than the page's floor leaves it, as
+                        // `drawn_project_pane_width` reads it.
+                        let most =
+                            project_pane_most(bounds.size.width, window).max(px(PROJECT_PANE_MIN));
+                        // The page's panel comes second, at `PAGE_PANEL`,
+                        // the place `page_alone` names it by.
+                        h_resizable(WORKSPACE_COLUMNS)
                             .with_state(&panels)
                             // The kit paints its divider over the page's
                             // first pixel, where the navigator draws its left
@@ -9524,24 +9673,24 @@ impl Render for GitTurtle {
                             .child(crate::in_frame::probed(
                                 resizable_panel()
                                     .size(pane_width)
-                                    .size_range(px(180.)..px(360.))
+                                    .size_range(px(PROJECT_PANE_MIN)..most)
                                     .flex_none()
                                     .child(pane),
                                 "project-pane-panel",
                             ))
-                            .child(crate::in_frame::probed(
+                            .child(record_page_path(crate::in_frame::probed(
                                 resizable_panel()
-                                    .size_range(px(520.)..px(10000.))
+                                    .size_range(px(PROJECT_PAGE_MIN)..px(10000.))
                                     .child(page),
                                 "page-panel",
-                            ))
+                            )))
                             .into_any_element()
                     })
-                    .named("workspace-columns"),
+                    .named(WORKSPACE_COLUMNS),
                 )
                 .into_any_element()
         } else {
-            page
+            page_alone(page)
         };
         let watch_warning =
             self.page == AppPage::Repository && self.automatic.watch_warning().is_some();
@@ -9715,7 +9864,16 @@ impl Render for GitTurtle {
                     }))
                 },
             )
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    // Where the page begins in the Tab order, in the frame
+                    // that gives it focus left in the pane
+                    // (`follow_project_pane`): out of flow, it draws nothing.
+                    .children(page_start.map(|start| div().absolute().size_0().track_focus(&start)))
+                    .child(body),
+            )
             .child(
                 div()
                     .debug_selector(|| "status-bar".into())
@@ -9763,6 +9921,26 @@ impl Render for GitTurtle {
                             None => self.render_status_line(line, &status, window, cx).into_any_element(),
                         }
                     })
+                    // The held-back note changes nothing else on screen, so
+                    // it is announced politely, a fresh node for each note,
+                    // as the narrow rail's refusal is, and also where a
+                    // read's error, a write's fresh outcome or a running
+                    // write's status holds the line: it answers the person's
+                    // own action (`project_pane_note`).
+                    .children(self.project_pane_note().map(|(turn, note)| {
+                        native_accessibility::recorded(
+                            div()
+                                .id(("project-pane-held-back", turn))
+                                .debug_selector(|| "project-pane-held-back".into())
+                                .role(Role::Status)
+                                .polite()
+                                .aria_label(note)
+                                .aria_value(note)
+                                .absolute()
+                                .size(px(1.))
+                                .overflow_hidden(),
+                        )
+                    }))
                     .when(watch_warning, |footer| {
                         footer.child(div().flex().flex_shrink_0().items_center().gap_2()
                             .debug_selector(|| "local-refresh-warning".into())
@@ -17389,6 +17567,915 @@ pub(crate) mod tests {
             "{at}: the pane's share"
         );
         probe::stop();
+    }
+
+    /// The page's regions and controls, and a paused merge's banner's
+    /// actions, that a frame lays out, by debug selector, with their bounds.
+    /// History's table runs sideways inside its viewport by design, so the
+    /// list is read by the edge drawn over what the viewport shows.
+    fn page_parts(cx: &mut VisualTestContext) -> Vec<(&'static str, Bounds<Pixels>)> {
+        [
+            "git-actions",
+            "branch-sync-state",
+            "git-operation-state",
+            "continue-operation",
+            "abort-operation",
+            "stop-operation",
+            "repository-rail",
+            "history-sidebar",
+            "history-scope-toolbar",
+            "history-search-controls",
+            "history-list-edge",
+            "files-pane",
+            "changed-files-header",
+            "commit-message-viewport",
+            "commit-inspector-files",
+        ]
+        .into_iter()
+        .filter_map(|part| cx.debug_bounds(part).map(|bounds| (part, bounds)))
+        .collect()
+    }
+
+    /// A merge paused before its commit, with nothing left to resolve, in
+    /// `app`'s repository, read into its banner.
+    async fn pause_a_merge(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let identity = [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ];
+        fixture_git(&repository, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repository.join("side.txt"), "side\n").unwrap();
+        fixture_git(&repository, &["add", "side.txt"]);
+        fixture_git(
+            &repository,
+            &[&identity[..], &["commit", "-q", "-m", "side"]].concat(),
+        );
+        fixture_git(&repository, &["checkout", "-q", "main"]);
+        fixture_git(
+            &repository,
+            &[
+                &identity[..],
+                &["merge", "-q", "--no-commit", "--no-ff", "side"],
+            ]
+            .concat(),
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(app, cx).await;
+    }
+
+    /// Nothing is laid out past the window's edge. In a 461 × 490 half tile
+    /// the window cannot give the project pane its least 180 px and the page
+    /// its 520 px floor side by side, so the pane is held back: the setting
+    /// stays on, the page takes the body's whole width, as with the pane
+    /// closed, and every control of the page and of a paused merge's banner
+    /// lies inside the window. Laid out at its floor beside the pane, the
+    /// page ran 239 px past the window's right edge, the banner's actions
+    /// with it. Widened to 1480 × 973, the window draws the pane again with
+    /// the page beside it.
+    #[gpui::test]
+    async fn the_project_pane_is_held_back_where_the_page_cannot_fit_beside_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        pause_a_merge(&app, cx).await;
+        app.update(cx, |app, cx| {
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let parts = page_parts(cx);
+        for part in ["git-actions", "continue-operation", "stop-operation"] {
+            assert!(
+                parts.iter().any(|(drawn, _)| *drawn == part),
+                "461 × 490: {part} is drawn"
+            );
+        }
+        for (part, bounds) in &parts {
+            assert!(
+                bounds.right() <= px(461.),
+                "461 × 490: {part} lies inside the window, at {bounds:?}"
+            );
+        }
+        assert!(
+            cx.debug_bounds("project-pane").is_none(),
+            "461 × 490: the pane is held back"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.settings.project_pane),
+            "461 × 490: the setting stays on"
+        );
+        let actions = cx.debug_bounds("git-actions").expect("the page's actions");
+        assert_eq!(
+            (actions.left(), actions.size.width),
+            (px(0.), px(461.)),
+            "461 × 490: the page takes the body's whole width"
+        );
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        let pane = cx
+            .debug_bounds("project-pane")
+            .expect("1480 × 973: the pane is drawn");
+        let actions = cx.debug_bounds("git-actions").expect("the page's actions");
+        assert_eq!(
+            (actions.left(), actions.right()),
+            (pane.right(), px(1480.)),
+            "1480 × 973: the page beside the pane"
+        );
+        for (part, bounds) in page_parts(cx) {
+            assert!(
+                bounds.right() <= px(1480.),
+                "1480 × 973: {part} lies inside the window, at {bounds:?}"
+            );
+        }
+    }
+
+    /// Beside the pane the page keeps its 520 px floor: the pane is drawn no
+    /// wider than the floor leaves it. Dragged to 360 px in a 1,000 px window
+    /// and narrowed to 750 px, the pane kept its share of the body, 270 px,
+    /// and pushed the 520 px page 40 px past the window's edge; every frame
+    /// draws it 230 px wide beside the page, read so before layout, and
+    /// widened again it takes its share back.
+    #[gpui::test]
+    async fn the_project_pane_yields_to_the_page_s_floor(cx: &mut TestAppContext) {
+        use crate::in_frame::probe;
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.simulate_resize(size(px(1000.), px(980.)));
+        app.update(cx, |app, cx| {
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        draw(cx);
+        let panels = app.read_with(cx, |app, _| app.project_panels.clone());
+        cx.update(|window, cx| {
+            panels.update(cx, |panels, cx| {
+                panels.resize_panel(0, px(360.), window, cx)
+            })
+        });
+        draw(cx);
+        probe::watch();
+        let at = "dragged to 360 px and narrowed to 750 px";
+        let settled = frames_match_their_settled_frame(cx, at, "workspace-columns", None, |cx| {
+            cx.simulate_resize(size(px(750.), px(980.)));
+            draw(cx);
+        });
+        let pane = settled.part("project-pane-panel").expect("the pane");
+        let page = settled.part("page-panel").expect("the page");
+        assert_eq!(
+            (pane.size.width, page.size.width, page.right()),
+            (px(230.), px(520.), px(750.)),
+            "{at}: the pane leaves the page its floor inside the window"
+        );
+        let read = cx.update(|window, cx| {
+            let app = app.read(cx);
+            (
+                app.drawn_project_pane_width(px(750.), window, cx),
+                app.repository_width(window, cx),
+            )
+        });
+        assert_eq!(read, (px(230.), px(520.)), "{at}: read as drawn");
+        let at = "widened to 1,000 px";
+        let settled = frames_match_their_settled_frame(cx, at, "workspace-columns", None, |cx| {
+            cx.simulate_resize(size(px(1000.), px(980.)));
+            draw(cx);
+        });
+        assert_eq!(
+            settled
+                .part("project-pane-panel")
+                .expect("the pane")
+                .size
+                .width,
+            px(360.),
+            "{at}: the pane takes its share back"
+        );
+        probe::stop();
+    }
+
+    /// Whether the pane is held back is decided from the window's size
+    /// before layout, so the first frame at a width on either side of the
+    /// threshold, the pane's least 180 px beside the page's 520 px floor,
+    /// lays out the form it settles in: at 699 px the page alone across the
+    /// body, at 700 px the pane at 180 px beside the page at 520 px, and no
+    /// frame drawn after the resize draws the other form. At scale factor
+    /// 1.25 a 699 px window's body is laid out 874 device pixels, 699.2 px,
+    /// wide, and a 699.7 px window's 875, 700 px, which has room for the
+    /// pane: the choice reads the body as the layout draws it, not the
+    /// window. Decided from the width the pane's group was last laid out at,
+    /// the first frame after each step drew the form of the width before.
+    #[gpui::test]
+    async fn the_held_back_project_pane_takes_its_form_in_the_first_frame(cx: &mut TestAppContext) {
+        use crate::in_frame::probe;
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        app.update(cx, |app, cx| {
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        draw(cx);
+        probe::watch();
+        // The scale factor the steps below draw at.
+        let scale = std::cell::Cell::new(2.);
+        // Every frame drawn after a resize to `width`, as the pane's width
+        // where the frame draws it and the width of the page's columns. The
+        // test window's resize restores its own scale factor, 2, and draws
+        // there, so at another factor the frames read start once it is set.
+        let frames = |width: f32, cx: &mut VisualTestContext| {
+            probe::take();
+            cx.simulate_resize(size(px(width), px(973.)));
+            if scale.get() != 2. {
+                cx.update(|window, _| window.set_scale_factor(scale.get()));
+                probe::take();
+            }
+            draw(cx);
+            probe::take()
+                .into_iter()
+                .filter_map(|frame| match frame.region {
+                    "workspace-columns" => {
+                        let pane = frame.part("project-pane-panel").expect("the pane");
+                        Some(("pane", pane.size.width))
+                    }
+                    "repository-columns" => Some(("page", frame.bounds.size.width)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        for (factor, steps) in [
+            (
+                2.,
+                [(700., true), (699., false), (700., true), (699., false)],
+            ),
+            (
+                1.25,
+                [(700., true), (699., false), (699.7, true), (699., false)],
+            ),
+        ] {
+            scale.set(factor);
+            for (width, pane) in steps {
+                let drawn = frames(width, cx);
+                let at = format!("{width} px at scale factor {factor}");
+                let body = cx.update(|window, _| body_size(window).width);
+                let expected: &[(&str, Pixels)] = if pane {
+                    &[("pane", px(180.)), ("page", px(520.))]
+                } else {
+                    &[("page", body)]
+                };
+                assert_eq!(body >= px(700.), pane, "{at}: the body is {body:?}");
+                assert!(!drawn.is_empty(), "{at}: the page is drawn");
+                for (index, form) in drawn.iter().enumerate() {
+                    assert!(
+                        expected.contains(form),
+                        "{at}: frame {index} of {drawn:?} lays out {expected:?}"
+                    );
+                }
+                assert_eq!(
+                    drawn.iter().any(|(part, _)| *part == "pane"),
+                    pane,
+                    "{at}: {drawn:?}"
+                );
+            }
+        }
+        probe::stop();
+    }
+
+    /// Accent outlines the last frame painted with `focus` focused that a
+    /// blurred frame does not paint: its ring, which the next frame draws
+    /// with `focus` focused again.
+    fn ring_of(
+        cx: &mut VisualTestContext,
+        focus: &FocusHandle,
+    ) -> Vec<crate::focus_ring::PaintedOutline> {
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let outlines = |cx: &mut VisualTestContext| {
+            crate::focus_ring::painted_outlines_where(cx, move |color| {
+                color.a > 0.
+                    && Hsla {
+                        a: accent.a,
+                        ..color
+                    } == accent
+            })
+        };
+        let focused = outlines(cx);
+        cx.update(|window, cx| window.blur(cx));
+        draw(cx);
+        let blurred = outlines(cx);
+        cx.update(|window, cx| window.focus(focus, cx));
+        draw(cx);
+        focused
+            .into_iter()
+            .filter(|outline| {
+                outline.drawn
+                    && !blurred
+                        .iter()
+                        .any(|other| other.bounds == outline.bounds && other.color == outline.color)
+            })
+            .collect()
+    }
+
+    /// Focus in the project pane as the window narrows past it moves to the
+    /// page's first stop, its ring whole, rather than staying on the list a
+    /// held-back pane no longer draws, where no key reached the page. The
+    /// stop lies in the page's actions, and the stop before it lies in the
+    /// header above the page. Closing the pane with focus in it moves focus
+    /// the same way.
+    #[gpui::test]
+    async fn focus_in_the_project_pane_moves_to_the_page_as_the_pane_leaves(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (tree, root) = app.read_with(cx, |app, _| {
+            (app.project_pane.focus.clone(), app.app_focus.clone())
+        });
+        for (step, close) in [("narrowed to 461 × 490", false), ("closed", true)] {
+            cx.simulate_resize(size(px(1480.), px(973.)));
+            app.update(cx, |app, cx| {
+                app.settings.project_pane = true;
+                cx.notify();
+            });
+            draw(cx);
+            cx.update(|window, cx| window.focus(&tree, cx));
+            draw(cx);
+            assert!(cx.update(|window, _| tree.is_focused(window)), "{step}");
+            if close {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.toggle_project_pane(window, cx))
+                });
+            } else {
+                cx.simulate_resize(size(px(461.), px(490.)));
+            }
+            draw(cx);
+            assert!(
+                cx.debug_bounds("project-pane").is_none(),
+                "{step}: the pane is gone"
+            );
+            let focused = cx
+                .update(|window, cx| window.focused(cx))
+                .unwrap_or_else(|| panic!("{step}: focus stays in the window"));
+            assert!(
+                cx.update(|window, _| focused != root && root.contains(&focused, window)),
+                "{step}: focus is on a control the frame draws"
+            );
+            let ring = ring_of(cx, &focused);
+            let actions = cx.debug_bounds("git-actions").expect("the page's actions");
+            assert!(
+                !ring.is_empty(),
+                "{step}: the page's first stop draws its ring"
+            );
+            for outline in &ring {
+                assert!(outline.whole, "{step}: its ring is whole, {outline:?}");
+                assert!(
+                    actions.contains(&outline.bounds.center()),
+                    "{step}: the stop lies in the page's actions, {outline:?} in {actions:?}"
+                );
+            }
+            cx.update(|window, cx| window.focus_prev(cx));
+            draw(cx);
+            let before = cx
+                .update(|window, cx| window.focused(cx))
+                .expect("the stop before");
+            let header = cx.debug_bounds("repository-header").expect("the header");
+            let ring = ring_of(cx, &before);
+            assert!(
+                ring.iter()
+                    .any(|outline| header.contains(&outline.bounds.center())),
+                "{step}: the stop before the page's first lies in the header, {ring:?}"
+            );
+        }
+    }
+
+    /// Focuses the window's first control, then moves focus along the Tab
+    /// order until the Button at `selector` draws its ring.
+    fn tab_onto(cx: &mut VisualTestContext, selector: &'static str) -> FocusHandle {
+        cx.update(|window, cx| {
+            window.blur(cx);
+            window.focus_next(cx);
+        });
+        draw(cx);
+        for _ in 0..96 {
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"));
+            if !appearance::painted_button(cx, bounds).1.is_empty() {
+                return cx
+                    .update(|window, cx| window.focused(cx))
+                    .expect("the focused Button");
+            }
+            cx.update(|window, cx| window.focus_next(cx));
+            draw(cx);
+        }
+        panic!("Tab never reaches {selector}");
+    }
+
+    /// The page keeps its controls whether the project pane is drawn beside
+    /// it or held back, each control's element ID the same in both forms
+    /// (`page_alone`): a focused page Button, Targets in the page's actions,
+    /// Continue in a paused merge's banner or Import… in Settings' Your
+    /// themes, keeps focus, drawn with its ring, as the window narrows from
+    /// 1480 × 973 to 461 × 490 and widens again, and as the pane is turned
+    /// off and on. Drawn alone, the page gave its controls other IDs and so
+    /// other focus handles: narrowed with
+    /// Continue focused, focus jumped to the page's first stop, and widened
+    /// or turned on with a control focused, focus stayed on a handle no
+    /// frame drew, where no key reached the page. Focus in the pane's tree
+    /// at 1480 px moves to the page's first stop as the window narrows and
+    /// stays there, drawn, as it widens, on Repository and on Settings.
+    #[gpui::test]
+    async fn the_page_keeps_focus_as_the_project_pane_comes_and_goes(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        pause_a_merge(&app, cx).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (tree, root) = app.read_with(cx, |app, _| {
+            (app.project_pane.focus.clone(), app.app_focus.clone())
+        });
+        let (wide, narrow) = (size(px(1480.), px(973.)), size(px(461.), px(490.)));
+        cx.simulate_resize(wide);
+        app.update(cx, |app, cx| {
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        draw(cx);
+        // The element ID path the page is drawn under: beside the pane, held
+        // back and with the pane turned off, the same.
+        let path = |cx: &mut VisualTestContext| {
+            PAGE_PATH.take();
+            draw(cx);
+            PAGE_PATH.take().expect("the page's element path")
+        };
+        let beside = path(cx);
+        assert!(cx.debug_bounds("project-pane").is_some());
+        cx.simulate_resize(narrow);
+        assert_eq!(
+            path(cx),
+            beside,
+            "held back, the page keeps its element path"
+        );
+        cx.simulate_resize(wide);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_pane(window, cx)));
+        assert_eq!(
+            path(cx),
+            beside,
+            "turned off, the page keeps its element path"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_pane(window, cx)));
+        assert_eq!(path(cx), beside);
+        // Focus stays on `focus`, a control the frame draws with its ring.
+        let keeps = |cx: &mut VisualTestContext, focus: &FocusHandle, at: &str| {
+            let focused = cx.update(|window, cx| window.focused(cx));
+            assert!(focused.as_ref() == Some(focus), "{at}: focus stays put");
+            assert!(
+                cx.update(|window, _| root.contains(focus, window)),
+                "{at}: on a control the frame draws"
+            );
+            assert!(!ring_of(cx, focus).is_empty(), "{at}: with its ring");
+        };
+        // The Button at `control`, focused, keeps its focus and its ring as
+        // the window crosses the threshold and the pane is turned off and on.
+        let crosses = |cx: &mut VisualTestContext, control: &'static str, focus: FocusHandle| {
+            for (step, resize) in [
+                ("narrowed to 461 × 490", Some(narrow)),
+                ("widened to 1480 × 973", Some(wide)),
+                ("with the pane turned off", None),
+                ("with the pane turned on", None),
+            ] {
+                match resize {
+                    Some(window) => cx.simulate_resize(window),
+                    None => cx.update(|window, cx| {
+                        app.update(cx, |app, cx| app.toggle_project_pane(window, cx))
+                    }),
+                }
+                draw(cx);
+                let at = format!("{control} {step}");
+                keeps(cx, &focus, &at);
+                let bounds = crate::settings::shown(cx, control).expect("the control");
+                assert!(
+                    !appearance::painted_button(cx, bounds).1.is_empty(),
+                    "{at}: its ring is drawn around it"
+                );
+            }
+            assert!(cx.debug_bounds("project-pane").is_some(), "{control}");
+        };
+        for control in ["git-actions-toggle", "continue-operation"] {
+            let focus = tab_onto(cx, control);
+            crosses(cx, control, focus);
+        }
+        for page in ["Repository", "Settings"] {
+            if page == "Settings" {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+                settle(&app, cx).await;
+            }
+            cx.simulate_resize(wide);
+            draw(cx);
+            cx.update(|window, cx| window.focus(&tree, cx));
+            draw(cx);
+            cx.simulate_resize(narrow);
+            draw(cx);
+            let first = cx
+                .update(|window, cx| window.focused(cx))
+                .unwrap_or_else(|| panic!("{page}: the page's first stop"));
+            assert!(first != tree, "{page}: focus left the pane");
+            keeps(cx, &first, &format!("{page} narrowed"));
+            cx.simulate_resize(wide);
+            draw(cx);
+            assert!(cx.debug_bounds("project-pane").is_some(), "{page}");
+            keeps(cx, &first, &format!("{page} widened"));
+        }
+        // On Settings, still shown: its Buttons have handles of their own,
+        // and the page reveals one focused from the keyboard.
+        let import = "custom-themes-import";
+        let focus = cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus(import, cx)));
+        cx.simulate_keystrokes("f13");
+        cx.update(|window, cx| window.focus(&focus, cx));
+        draw(cx);
+        crosses(cx, import, focus);
+    }
+
+    /// Toggle Project List in a window that holds the pane back turns the
+    /// setting on and says so in the status bar, announced politely, since
+    /// nothing else on screen changes, on Repository and on Settings, and
+    /// turning it off there says "Project list off" in the same polite node,
+    /// a fresh one. The note is fresh for as long as a write's outcome, and
+    /// goes once the window draws the pane or the toggle turns it off;
+    /// turning it on or off where the pane fits says nothing.
+    #[gpui::test]
+    async fn turning_on_a_held_back_project_pane_says_why_in_the_status_bar(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        use crate::project_pane::{HELD_BACK_NOTE, HELD_BACK_OFF_NOTE};
+        let (_fixture, app, cx) = history_window(cx).await;
+        let toggle = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_pane(window, cx)));
+            draw(cx);
+        };
+        let line = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_line_drawn(window, cx)))
+        };
+        let announced = || {
+            written::announced_from("project-pane-held-back")
+                .into_iter()
+                .map(|(id, live)| (id, live.live))
+                .collect::<Vec<_>>()
+        };
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        for page in ["Repository", "Settings"] {
+            toggle(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.settings.project_pane),
+                "{page}"
+            );
+            assert!(
+                cx.debug_bounds("project-pane").is_none(),
+                "{page}: held back"
+            );
+            assert_eq!(line(cx), HELD_BACK_NOTE, "{page}: the status bar says why");
+            let heard = announced();
+            assert_eq!(heard.len(), 1, "{page}: {heard:?}");
+            assert_eq!(heard[0].1, gpui::accesskit::Live::Polite, "{page}");
+            toggle(cx);
+            assert!(
+                !app.read_with(cx, |app, _| app.settings.project_pane),
+                "{page}"
+            );
+            assert_eq!(
+                line(cx),
+                HELD_BACK_OFF_NOTE,
+                "{page}: turned off, it says so"
+            );
+            let off = announced();
+            assert_eq!(off.len(), 1, "{page}: {off:?}");
+            assert_eq!(off[0].1, gpui::accesskit::Live::Polite, "{page}");
+            assert_ne!(off[0].0, heard[0].0, "{page}: a fresh node");
+            // Each turning on is announced again.
+            toggle(cx);
+            let again = announced();
+            assert_eq!(again.len(), 1, "{page}: {again:?}");
+            assert_ne!(again[0].0, heard[0].0, "{page}: a fresh node");
+            // Fresh for as long as a write's outcome.
+            cx.executor()
+                .advance_clock(crate::copy_feedback::RESTORE_AFTER);
+            draw(cx);
+            assert_ne!(line(cx), HELD_BACK_NOTE, "{page}: it ends");
+            toggle(cx);
+            if page == "Repository" {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+                settle(&app, cx).await;
+            }
+        }
+        // The window gives the pane room: it comes, and the note goes.
+        toggle(cx);
+        assert_eq!(line(cx), HELD_BACK_NOTE);
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("project-pane").is_some(),
+            "widened, the pane comes"
+        );
+        assert_ne!(line(cx), HELD_BACK_NOTE, "widened, the note goes");
+        // Where the pane fits, turning it on says nothing.
+        toggle(cx);
+        toggle(cx);
+        assert!(cx.debug_bounds("project-pane").is_some());
+        assert_ne!(line(cx), HELD_BACK_NOTE, "turned on where it fits");
+        assert!(announced().is_empty());
+    }
+
+    /// The held-back notes are whole in a 461 × 490 half tile at 13 and
+    /// 18 pt: the status line lays "Project list hidden: widen the window"
+    /// and "Project list off" out uncut ([`StatusLaidOut`]), where "Project
+    /// list hidden: the window is too narrow to show it beside the page" was
+    /// cut at 18 pt. Each is announced politely whatever holds the line: a
+    /// read's error and a write's fresh outcome keep the line, the note
+    /// heard beside them, and a running write's status holds the bar while
+    /// the note is heard. With a read's error the note went with the line
+    /// and the toggle said nothing; a note displaced a write's outcome.
+    #[gpui::test]
+    async fn the_held_back_notes_are_whole_and_heard_over_any_status(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::project_pane::{HELD_BACK_NOTE, HELD_BACK_OFF_NOTE};
+        let (_fixture, app, cx) = working_window(cx).await;
+        let toggle = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_pane(window, cx)));
+            draw(cx);
+        };
+        let line = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_line_drawn(window, cx)))
+        };
+        // What the polite node says, where one is drawn.
+        let heard = || {
+            let found = written::announced_from("project-pane-held-back");
+            assert!(found.len() <= 1, "one polite node at most: {found:?}");
+            found.first().map(|(id, announced)| {
+                assert_eq!(announced.live, gpui::accesskit::Live::Polite);
+                written::get(id)
+                    .and_then(|node| node.node.label().map(str::to_owned))
+                    .expect("its name")
+            })
+        };
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let mut in_bar = Vec::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            app.update(cx, |app, cx| {
+                app.status_outcome = None;
+                app.operation_notice = None;
+                cx.notify();
+            });
+            draw(cx);
+            assert!(!app.read_with(cx, |app, _| app.settings.project_pane));
+            for note in [HELD_BACK_NOTE, HELD_BACK_OFF_NOTE] {
+                STATUS_CUT.take();
+                toggle(cx);
+                let at = format!("{text} pt, {note:?}");
+                assert_eq!(line(cx), note, "{at}: the status line says it");
+                assert_eq!(
+                    STATUS_CUT.take(),
+                    Some((note.into(), false)),
+                    "{at}: laid out whole"
+                );
+                assert_eq!(heard().as_deref(), Some(note), "{at}: heard");
+            }
+            // A read's error keeps the line, and the note is heard.
+            let error = "fatal: the repository could not be read";
+            app.update(cx, |app, cx| {
+                app.error = Some(error.into());
+                cx.notify();
+            });
+            draw(cx);
+            toggle(cx);
+            assert_eq!(
+                line(cx),
+                error,
+                "{text} pt: the read's error keeps the line"
+            );
+            assert_eq!(
+                heard().as_deref(),
+                Some(HELD_BACK_NOTE),
+                "{text} pt: beside it"
+            );
+            app.update(cx, |app, cx| {
+                app.error = None;
+                cx.notify();
+            });
+            toggle(cx);
+            // A write's fresh outcome keeps the line, and the note is heard.
+            let outcome = "Staged notes.txt";
+            app.update(cx, |app, cx| {
+                app.record_outcome(&repository, outcome.into(), cx)
+            });
+            draw(cx);
+            toggle(cx);
+            assert_eq!(line(cx), outcome, "{text} pt: the outcome keeps the line");
+            assert_eq!(
+                heard().as_deref(),
+                Some(HELD_BACK_NOTE),
+                "{text} pt: beside it"
+            );
+            toggle(cx);
+            app.update(cx, |app, cx| {
+                app.status_outcome = None;
+                cx.notify();
+            });
+            draw(cx);
+            // A running write's status holds the bar, and the note is heard.
+            let held = hold_stage_all(&app, cx);
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            draw(cx);
+            toggle(cx);
+            let carried = cx.update(|window, cx| {
+                let app = app.read(cx);
+                app.bar_operation(app.frame_plan(window, cx)).is_some()
+            });
+            if carried {
+                in_bar.push(text);
+                let bar = cx.debug_bounds("status-line").expect("the status line");
+                let progress = cx
+                    .debug_bounds("operation-progress")
+                    .expect("the write's label");
+                assert!(
+                    bar.contains(&progress.center()),
+                    "{text} pt: the write holds the bar"
+                );
+            }
+            assert_eq!(
+                heard().as_deref(),
+                Some(HELD_BACK_NOTE),
+                "{text} pt: heard while a write runs"
+            );
+            drop(held);
+            let write = app
+                .update(cx, |app, _| app.operation_task.take())
+                .expect("the write");
+            write.await;
+            settle(&app, cx).await;
+            toggle(cx);
+        }
+        assert!(
+            !in_bar.is_empty(),
+            "a write's status holds the bar at some size"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A running write's status in the status line's place draws no
+    /// held-back note, so the note keeps no room in the bar: the hints and
+    /// Details… fit as they do without it, at 13 and 18 pt at widths where
+    /// the window holds the pane back. The line kept the note's width while
+    /// drawing the write, so the hints could vanish for up to 1.5 s.
+    #[gpui::test]
+    async fn a_held_back_note_keeps_no_room_in_a_bar_a_write_holds(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        let toggle = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_pane(window, cx)));
+            draw(cx);
+        };
+        let fit = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    let plan = app.frame_plan(window, cx);
+                    (
+                        app.bar_operation(plan).is_some(),
+                        app.fit_status_bar(plan, window, cx),
+                    )
+                })
+            })
+        };
+        let held = hold_stage_all(&app, cx);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        let mut with_hints = 0;
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for width in [461., 520., 600., 699.] {
+                cx.simulate_resize(size(px(width), px(490.)));
+                draw(cx);
+                let (carried, without) = fit(cx);
+                toggle(cx);
+                let (_, noted) = fit(cx);
+                if carried {
+                    assert_eq!(noted, without, "{text} pt at {width} px");
+                    with_hints += usize::from(without.hints.is_some());
+                }
+                toggle(cx);
+                cx.executor()
+                    .advance_clock(crate::copy_feedback::RESTORE_AFTER);
+                draw(cx);
+            }
+        }
+        assert!(with_hints > 0, "the write's bar keeps hints at some size");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        settle(&app, cx).await;
+    }
+
+    /// Settings' Show the project list switch says why no list is drawn
+    /// where the window holds the pane back: on in a 461 × 490 half tile,
+    /// its description reads "Hidden: widen the window to show the list
+    /// beside the page", announced politely as it is turned on there, while
+    /// the status line keeps the page's status; off, or on where the window
+    /// draws the pane, it reads its usual description, and at one width its
+    /// row keeps one height through every change, at 13 and 18 pt. It read
+    /// On with no list and said nothing.
+    #[gpui::test]
+    async fn the_project_list_switch_says_why_the_pane_is_held_back(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::project_pane::{HELD_BACK_DESCRIPTION, HELD_BACK_NOTE};
+        const USUAL: &str =
+            "Keep a pane on the far left to jump between known projects and sort them into groups.";
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(&app, cx).await;
+        // The switch's click.
+        let switch = |on: bool, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_project_pane(on, window, cx))
+            });
+            draw(cx);
+        };
+        // The switch's description as last built and its row's height.
+        let read = |cx: &mut VisualTestContext| {
+            let row = crate::settings::shown(cx, "settings-project-pane-row").expect("its row");
+            let (_, description) =
+                crate::settings::switch_built("settings-project-pane").expect("the switch");
+            (description, row.size.height)
+        };
+        // What the polite node says, where one is drawn.
+        let heard = || {
+            written::announced_from("project-pane-held-back")
+                .into_iter()
+                .map(|(id, announced)| {
+                    assert_eq!(announced.live, gpui::accesskit::Live::Polite);
+                    written::get(&id)
+                        .and_then(|node| node.node.label().map(str::to_owned))
+                        .expect("its name")
+                })
+                .collect::<Vec<_>>()
+        };
+        let line = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_line_drawn(window, cx)))
+        };
+        let (narrow, wide) = (size(px(461.), px(490.)), size(px(1480.), px(973.)));
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(narrow);
+            draw(cx);
+            let (off, height) = read(cx);
+            assert_eq!(off, USUAL, "{text} pt: off");
+            switch(true, cx);
+            let at = format!("{text} pt, turned on in 461 × 490");
+            assert!(cx.debug_bounds("project-pane").is_none(), "{at}: held back");
+            assert_eq!(
+                read(cx),
+                (HELD_BACK_DESCRIPTION.into(), height),
+                "{at}: it says why"
+            );
+            assert_eq!(heard(), [HELD_BACK_DESCRIPTION], "{at}: heard");
+            assert_ne!(
+                line(cx),
+                HELD_BACK_NOTE,
+                "{at}: the status line keeps the page's"
+            );
+            assert_ne!(line(cx), HELD_BACK_DESCRIPTION, "{at}");
+            cx.simulate_resize(wide);
+            draw(cx);
+            assert!(
+                cx.debug_bounds("project-pane").is_some(),
+                "{text} pt: drawn"
+            );
+            assert_eq!(read(cx).0, USUAL, "{text} pt: on beside the pane");
+            assert!(heard().is_empty(), "{text} pt: the pane came");
+            cx.simulate_resize(narrow);
+            draw(cx);
+            assert_eq!(
+                read(cx),
+                (HELD_BACK_DESCRIPTION.into(), height),
+                "{text} pt"
+            );
+            assert!(heard().is_empty(), "{text} pt: a resize says nothing");
+            switch(false, cx);
+            assert_eq!(read(cx), (USUAL.into(), height), "{text} pt: off again");
+            assert!(
+                heard().is_empty(),
+                "{text} pt: turned off, the switch says so itself"
+            );
+            cx.simulate_resize(wide);
+            draw(cx);
+            switch(true, cx);
+            assert!(heard().is_empty(), "{text} pt: turned on beside the page");
+            switch(false, cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A test's value for one of the layout's test seams, [`BODY_INSET`] or

@@ -241,6 +241,55 @@ pub struct State {
     /// The row whose actions button's menu is open, by its group or project.
     menu_open: Option<RowKey>,
     keyboard_menu: Option<native_accessibility::KeyboardMenu>,
+    /// Whether the window's last frame drew the pane: the frame that no
+    /// longer draws it gives focus left in it to the page
+    /// ([`GitTurtle::follow_project_pane`]).
+    drawn: bool,
+    /// Where the page begins in the Tab order, focused only to step from to
+    /// the page's first stop: no Tab stop, drawn only in the frame that
+    /// gives focus to the page, before the page.
+    page_start: FocusHandle,
+    /// Toggle Project List turned the pane on or off where the window holds
+    /// it back, which the status bar says while it is fresh
+    /// ([`HELD_BACK_NOTE`], [`HELD_BACK_OFF_NOTE`]).
+    held_note: Option<HeldNote>,
+    /// How many notes the toggle has started, so each is announced again
+    /// with a fresh node.
+    held_turns: usize,
+}
+
+/// What the status bar says where Toggle Project List turns the pane on in a
+/// window that cannot draw it beside the page's floor: nothing else on
+/// screen changes, so the bar says why, feedback in place, in words short
+/// enough to stay whole in a 461 px half tile at 18 pt, as the narrow
+/// rail's "… unavailable: widen the window" does. "Project list hidden: the
+/// window is too narrow to show it beside the page" ended in an ellipsis
+/// there.
+pub(super) const HELD_BACK_NOTE: &str = "Project list hidden: widen the window";
+
+/// What the status bar says where Toggle Project List turns the pane off
+/// while the window holds it back: nothing on screen changes there either.
+pub(super) const HELD_BACK_OFF_NOTE: &str = "Project list off";
+
+/// What Settings' Show the project list switch says in its description's
+/// place while it is on and the window holds the pane back, announced
+/// politely as it is turned on there: the switch's row is where the person
+/// looks, so the status line keeps the page's status.
+pub(super) const HELD_BACK_DESCRIPTION: &str =
+    "Hidden: widen the window to show the list beside the page";
+
+/// A held-back note while it is fresh: for [`crate::copy_feedback::RESTORE_AFTER`],
+/// as a write's outcome is, or until the window draws the pane, the setting
+/// changes from the one it answers or the project hub is shown.
+struct HeldNote {
+    turn: usize,
+    text: &'static str,
+    /// The setting it answers: off only for [`HELD_BACK_OFF_NOTE`].
+    on: bool,
+    /// Whether the status line reads it, as it reads the toggle's notes,
+    /// or only the polite node announces it, as the switch's.
+    shown: bool,
+    _expiry: Task<()>,
 }
 
 impl State {
@@ -260,6 +309,10 @@ impl State {
             pane_save_failed: false,
             menu_open: None,
             keyboard_menu: None,
+            drawn: false,
+            page_start: cx.focus_handle(),
+            held_note: None,
+            held_turns: 0,
         }
     }
 
@@ -456,14 +509,174 @@ impl GitTurtle {
     }
 
     /// Show or hide the pane from the View menu or the command palette. The
-    /// switch in Settings changes the same saved preference.
+    /// switch in Settings changes the same saved preference. Turned on where
+    /// the window cannot draw the pane beside the page
+    /// (`GitTurtle::project_pane_fits`), the setting is saved on and the
+    /// status bar says why nothing appears ([`HELD_BACK_NOTE`]); the pane
+    /// comes as soon as the window gives it room. Turned off there, the
+    /// status bar says so ([`HELD_BACK_OFF_NOTE`]), since nothing on screen
+    /// changes either.
     pub(super) fn toggle_project_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
         }
-        self.settings.project_pane = !self.settings.project_pane;
+        let on = !self.settings.project_pane;
+        self.settings.project_pane = on;
+        self.project_pane.held_note = None;
+        let text = if on {
+            HELD_BACK_NOTE
+        } else {
+            HELD_BACK_OFF_NOTE
+        };
+        self.note_held_back_pane(text, true, window, cx);
         self.save_preferences(window, cx);
         cx.notify();
+    }
+
+    /// Settings' Show the project list switch turned the pane on or off.
+    /// Turned on where the window holds the pane back, the switch's own
+    /// description says why no list is drawn
+    /// ([`HELD_BACK_DESCRIPTION`], `GitTurtle::render_settings`), which the
+    /// status bar's polite node announces, the status line left to the page:
+    /// the description is the feedback in place.
+    pub(super) fn switch_project_pane(
+        &mut self,
+        on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.project_pane == on {
+            return;
+        }
+        self.settings.project_pane = on;
+        self.project_pane.held_note = None;
+        if on {
+            self.note_held_back_pane(HELD_BACK_DESCRIPTION, false, window, cx);
+        }
+        self.save_preferences(window, cx);
+    }
+
+    /// Starts the held-back note `text`, answering the setting as it now is,
+    /// where the window holds the pane back on this page: in the status
+    /// line too where `shown`, and announced politely, a fresh node for each
+    /// note, for [`crate::copy_feedback::RESTORE_AFTER`].
+    fn note_held_back_pane(
+        &mut self,
+        text: &'static str,
+        shown: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page == AppPage::Projects || self.project_pane_fits(window) {
+            return;
+        }
+        self.project_pane.held_turns = self.project_pane.held_turns.wrapping_add(1);
+        let expiry = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::copy_feedback::RESTORE_AFTER)
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.project_pane.held_note = None;
+                cx.notify();
+            });
+        });
+        self.project_pane.held_note = Some(HeldNote {
+            turn: self.project_pane.held_turns,
+            text,
+            on: self.settings.project_pane,
+            shown,
+            _expiry: expiry,
+        });
+    }
+
+    /// The held-back note while it is fresh, with the number of the toggle
+    /// it answers, which the status bar's polite node announces whatever
+    /// holds the status line: a read's error, a write's fresh outcome and a
+    /// running write's status keep the line, and the note, feedback for the
+    /// person's own action, is still heard.
+    pub(super) fn project_pane_note(&self) -> Option<(usize, &'static str)> {
+        let note = self.project_pane.held_note.as_ref()?;
+        Some((note.turn, note.text))
+    }
+
+    /// The held-back note where the status line reads it in place of the
+    /// page's status: on Repository a read's error comes first, as it does
+    /// before a write's outcome, and a write's fresh outcome keeps the line,
+    /// heard as it came; the note is announced beside both
+    /// ([`Self::project_pane_note`]).
+    pub(super) fn project_pane_note_line(&self) -> Option<&'static str> {
+        let note = self
+            .project_pane
+            .held_note
+            .as_ref()
+            .filter(|note| note.shown)?;
+        let error = self.page == AppPage::Repository && self.error.is_some();
+        (!error && self.fresh_outcome().is_none()).then_some(note.text)
+    }
+
+    /// Follows the pane as the window builds a frame, before the body,
+    /// `drawn` saying whether this frame draws it
+    /// (`GitTurtle::project_pane_drawn`). The held-back note ends once the
+    /// pane is drawn, its setting changes from the one the note answers or
+    /// the hub is shown. In the frame that no longer draws the pane on
+    /// Repository or Settings, as the window narrows past it or the pane is
+    /// closed, focus left on a control the frame does not draw, one in the
+    /// pane, goes to the page's first stop as the frame ends, its ring whole
+    /// in the next, rather than staying on a control no longer drawn, where
+    /// no key reaches the page.
+    /// So does focus given back to the pane's list while it is not drawn, as
+    /// a group dialog opened from it gives focus back as it closes. Focus
+    /// that the frame draws stays where it is. A row's menu open as the pane
+    /// leaves closes with it: a Shift+F10 menu came back beside its row as
+    /// the window widened again, with focus elsewhere. Returns the page's
+    /// start to draw before the page in this frame where it does.
+    pub(super) fn follow_project_pane(
+        &mut self,
+        drawn: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<FocusHandle> {
+        let setting = self.settings.project_pane;
+        if drawn
+            || self.page == AppPage::Projects
+            || (self.project_pane.held_note.as_ref()).is_some_and(|note| note.on != setting)
+        {
+            self.project_pane.held_note = None;
+        }
+        let was = std::mem::replace(&mut self.project_pane.drawn, drawn);
+        // A row's menu goes with the pane: its keyboard's menu, which would
+        // otherwise be drawn again beside its row as the pane comes back,
+        // open with focus elsewhere, and the record of the actions button's
+        // menu, whose popover goes with its element.
+        if was && !drawn {
+            self.project_pane.keyboard_menu = None;
+            self.project_pane.menu_open = None;
+        }
+        if !(was || self.project_pane.focus.is_focused(window))
+            || drawn
+            || self.page == AppPage::Projects
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+            || window.focused(cx).is_none()
+        {
+            return None;
+        }
+        let start = self.project_pane.page_start.clone();
+        let step_from = start.clone();
+        cx.defer_in(window, move |this, window, cx| {
+            if this.project_pane_drawn(window)
+                || window.has_active_dialog(cx)
+                || window.has_active_sheet(cx)
+                || window
+                    .focused(cx)
+                    .is_some_and(|focused| this.app_focus.contains(&focused, window))
+            {
+                return;
+            }
+            step_from.focus(window, cx);
+            window.focus_next(cx);
+        });
+        Some(start)
     }
 
     fn open_project_from_pane(
@@ -488,8 +701,7 @@ impl GitTurtle {
     }
 
     fn pane_available(&self, window: &mut Window, cx: &mut App) -> bool {
-        self.settings.project_pane
-            && self.page != AppPage::Projects
+        self.project_pane_drawn(window)
             && !window.has_active_dialog(cx)
             && !window.has_active_sheet(cx)
     }
