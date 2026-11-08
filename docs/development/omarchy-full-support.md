@@ -893,6 +893,19 @@ cover current upstream x86-64 Omarchy.
        82 × 18 fill, and several Buttons': keep each fill 1 px inside the pane's edge or draw the ring last.
        (S, a11y) A clean Working Changes list is a stop: check with Orca that focusing it says "Working tree
        clean"; if only the list's name is read, give the list its empty line as its description.
+       (M, focus, round FU29-A2e, decided) The Working list is one Tab stop, but each drawn row's Stage/Unstage
+       and each heading's Stage all are stops too (`workspace.rs:4081`, `:5221`, `:5538`), so what Tab reaches
+       depends on the scroll, and a partly drawn row's control takes focus with its ring cut: the list stays
+       one stop; Tab from it reaches the selected row's Stage or Unstage, then the headings' controls, then the
+       composer; every other row's control is `tab_stop(false)` (clickable, exposed, first in its row menu);
+       the control that takes focus is revealed whole with its ring room in that frame (DESIGN.md:395's Reflog
+       precedent; reconcile :395 and :296). (S, wording) A repository whose parent folder loses search
+       permission is refused as "gone" by writes and as "Not a directory" (Other) by a direct open: `open` and
+       `found_at_path` use `fs::metadata` and pass up any error but NotFound. (S) `rewrite_review::content_room`
+       restates `github_view::dialog_chrome`'s constants: one shared `appearance` helper; the review's file box
+       is a fixed 130 px that cuts its third row at 18 pt: whole rows, scaled with text. (S, a11y) The GitHub
+       panel says two announcements after a resize while it was closed (FU30-D2's nit); the panel registers no
+       `DialogKeys`, so its regions' keys are never announced (DESIGN.md:283).
      - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
        (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
        Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
