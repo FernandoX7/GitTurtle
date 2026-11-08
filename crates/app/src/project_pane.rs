@@ -408,6 +408,14 @@ impl GitTurtle {
     ) {
         let answered = Arc::clone(&self.project_pane.recent_saves.answered);
         let job = recent.save;
+        // Saves a full queue refused may still wait: the list as it stands
+        // now says which of their projects the person has removed since.
+        let shown = self
+            .project_pane
+            .recent_saves
+            .saver
+            .is_pending()
+            .then(|| self.project_library.clone());
         let response = self.project_pane.recent_saves.saver.queue_with(
             &self.preferences_writer,
             path.clone(),
@@ -416,6 +424,15 @@ impl GitTurtle {
                 let mut projects: Vec<_> = projects.iter().collect();
                 projects.sort_by_key(|(_, recent)| recent.save);
                 for (path, recent) in projects {
+                    // Remembering would add a project the person removed
+                    // since its save was refused back to the store.
+                    if recent.listed
+                        && shown
+                            .as_ref()
+                            .is_some_and(|shown| !shown.contains_project(path))
+                    {
+                        continue;
+                    }
                     // Remembering rebuilds the whole store from disk; nothing is read here first.
                     let mut preferences = Preferences::default();
                     let result = preferences.remember_repository(path).map(|()| preferences);
@@ -1890,3 +1907,121 @@ impl Render for GroupForm {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod recent_save_tests {
+    use super::RecentProjectSave;
+    use crate::{
+        GitTurtle, operations::Held, preferences::Preferences, workspace::REFUSED_SAVE_RETRY,
+    };
+    use gpui_kit::{Entity, TestAppContext, VisualTestContext, gpui};
+    use std::path::Path;
+
+    fn writer_answers(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        cx.executor().run_until_parked();
+    }
+
+    /// Stalls the preference writer behind a queue of other saves, which
+    /// refuses the next.
+    fn a_full_queue(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Held {
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        let fillers: Vec<_> = (0..8)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut filler in fillers {
+            assert!(matches!(filler.try_recv(), Ok(None)), "the queue fills");
+        }
+        held
+    }
+
+    fn ask_to_remember(
+        app: &Entity<GitTurtle>,
+        project: &Path,
+        cx: &mut VisualTestContext,
+    ) -> RecentProjectSave {
+        let recent = cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let recent = app.begin_recent_project_save(project);
+                app.queue_recent_project_save(project.to_owned(), recent, window, cx);
+                recent
+            })
+        });
+        cx.executor().run_until_parked();
+        recent
+    }
+
+    fn stored_project(project: &Path) -> bool {
+        Preferences::load()
+            .project_library
+            .contains_project(project)
+    }
+
+    /// A project whose save a full queue refused, removed before the save
+    /// asks again, whichever way that save is next scheduled: the removal
+    /// stands, in the store as on screen. It once came back in the store on
+    /// the retry and returned to the list at the next launch.
+    async fn a_removal_since_the_refusal_stands(by_another_project: bool, cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        let project = app
+            .read_with(cx, |app, _| app.path.clone())
+            .expect("a repository")
+            .canonicalize()
+            .unwrap();
+
+        let held = a_full_queue(&app, cx);
+        let recent = ask_to_remember(&app, &project, cx);
+        assert!(recent.listed, "the pane listed it when the save was asked");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
+        );
+        drop(held);
+        writer_answers(&app, cx);
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.edit_project_library(
+                    |library| {
+                        library.forget_project(&project);
+                        Ok(())
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.executor().run_until_parked();
+        writer_answers(&app, cx);
+        assert!(!stored_project(&project), "the pane's save removed it");
+
+        if by_another_project {
+            let another = fixture.path().canonicalize().unwrap();
+            ask_to_remember(&app, &another, cx);
+            writer_answers(&app, cx);
+            assert!(stored_project(&another), "the other project is saved");
+        } else {
+            cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+            cx.executor().run_until_parked();
+            writer_answers(&app, cx);
+        }
+        assert!(!stored_project(&project), "the removal stands in the store");
+        app.read_with(cx, |app, _| {
+            assert!(!app.project_library.contains_project(&project));
+            assert_eq!(app.operation_error, None);
+        });
+    }
+
+    #[gpui::test]
+    async fn a_retry_leaves_a_project_removed_since_its_refusal(cx: &mut TestAppContext) {
+        a_removal_since_the_refusal_stands(false, cx).await;
+    }
+
+    #[gpui::test]
+    async fn another_projects_save_leaves_a_project_removed_since_its_refusal(
+        cx: &mut TestAppContext,
+    ) {
+        a_removal_since_the_refusal_stands(true, cx).await;
+    }
+}
