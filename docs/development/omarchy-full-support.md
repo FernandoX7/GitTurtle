@@ -906,6 +906,12 @@ cover current upstream x86-64 Omarchy.
        is a fixed 130 px that cuts its third row at 18 pt: whole rows, scaled with text. (S, a11y) The GitHub
        panel says two announcements after a resize while it was closed (FU30-D2's nit); the panel registers no
        `DialogKeys`, so its regions' keys are never announced (DESIGN.md:283).
+       (S, round FU30-D8, decided) The GitHub confirmation lays its first frame out from the last frame's
+       measures: a new panel's first long confirmation, and a width-only resize that rewraps its guidance or
+       its buttons, draw one frame with the guidance in the wrong place and Send or Keep editing cut (DESIGN.md
+       :321, :325): decide `inside` and the cap before layout from `panel_width(window)`, the guidance shaped
+       at that width and the chrome from known sizes; tests: a long reply as a new panel's first confirmation
+       at 18 pt 461 × 490, and 1480 → 461 at 13 pt with a long reply focused.
      - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
        (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
        Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
