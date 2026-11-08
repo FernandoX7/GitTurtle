@@ -5407,6 +5407,22 @@ mod tests {
                 Some(says),
                 "{name}: assistive technology reads the reason"
             );
+            let copy = if format == "Git LFS pointer" {
+                "Copy pointer"
+            } else {
+                "Copy source"
+            };
+            let side = if literal == 0 { "Before" } else { "After" };
+            let control = crate::native_accessibility::written::get(&format!(
+                "copy-decoded-source-{literal}"
+            ))
+            .unwrap_or_else(|| panic!("{name}: the literal side's copy control is drawn"))
+            .node;
+            assert_eq!(
+                control.label(),
+                Some(format!("{side}: {copy}").as_str()),
+                "{name}: the copy control names what it copies"
+            );
         }
     }
 

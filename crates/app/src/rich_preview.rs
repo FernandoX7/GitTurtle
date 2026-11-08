@@ -2,6 +2,7 @@
 //! prepared through `pdf_view::prepare_page`.
 use crate::{appearance::CodeFont, *};
 use gitturtle_preview::{MAX_INPUT_BYTES, metadata};
+use native_accessibility::DrawnButton as _;
 use std::{
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
@@ -59,6 +60,9 @@ pub struct Side {
     pub page_kind: &'static str,
     pub error: Option<String>,
     pub present: bool,
+    /// What the side stays as rather than a source of diagrams, if it does:
+    /// a literal side captures no bytes, so its text alone cannot say.
+    pub(super) literal: Option<Literal>,
     selected_page: AtomicUsize,
 }
 
@@ -85,6 +89,7 @@ impl Side {
             page_kind: "Page",
             error,
             present,
+            literal: None,
             selected_page: AtomicUsize::new(0),
         }
     }
@@ -121,6 +126,7 @@ impl Side {
             page_kind: "Page",
             error: None,
             present: true,
+            literal: None,
             selected_page: AtomicUsize::new(0),
         };
         if side.metadata.source.is_none()
@@ -327,6 +333,7 @@ pub(super) fn prepare_mermaid(
         let mut side = Side::unavailable(name, present, None);
         side.page_kind = "Diagram";
         side.metadata.format = literal.map_or("Mermaid diagrams", Literal::format).into();
+        side.literal = literal;
         if present {
             // A literal side's text is not captured either: capturing reads
             // it to decide what another application could open it as.
@@ -701,16 +708,23 @@ pub(super) fn render_comparison<T: 'static>(
         }
         if let Some(source) = &side.metadata.source {
             let copied = source.clone();
-            let what = if quick {
-                "source".to_owned()
+            // An LFS pointer's text is the pointer, and the control and its
+            // feedback say so, as a model's do; a link's is its source.
+            let (copy_label, content) = if side.literal == Some(Literal::LfsPointer) {
+                ("Copy pointer", "LFS pointer")
             } else {
-                format!("{label} source")
+                ("Copy source", "source")
+            };
+            let what = if quick {
+                content.to_owned()
+            } else {
+                format!("{label} {content}")
             };
             // The control's id names the side; the mark adds its path.
             let mark = copy_feedback::Mark::new(("copy-decoded-source", index), &side.name);
             let copy_mark = mark.clone();
             body = body.child(
-                crate::system_preview::copy_source_button(mark, label, "Copy source", true, cx)
+                crate::system_preview::copy_source_button(mark, label, copy_label, true, cx)
                     .on_click(move |_, window, cx| {
                         copy_feedback::copy(
                             window,
@@ -719,7 +733,8 @@ pub(super) fn render_comparison<T: 'static>(
                             &what,
                             copied.to_string(),
                         )
-                    }),
+                    })
+                    .node_recorded(),
             );
             let mut end = source.len().min(16 * 1024);
             while !source.is_char_boundary(end) {
