@@ -2265,19 +2265,26 @@ impl GitTurtle {
         } else {
             self.commit_drafts.insert(worktree.clone(), draft.clone());
         }
-        let Some(response) = self
-            .draft_saver
-            .queue(&self.preferences_writer, worktree, draft)
+        let Some(response) =
+            self.draft_saver
+                .queue(&self.preferences_writer, worktree.clone(), draft)
         else {
             return;
         };
         cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 // A save that ends as the last did draws nothing new: each
                 // tab switch saves the draft it leaves, and its end drew the
                 // tab shown again once more.
-                let error = result.err();
+                let error = match result {
+                    Ok(()) => None,
+                    Err(commit_drafts::DraftSaveFailure::Busy) => {
+                        this.ask_again_to_save_commit_draft(worktree, window, cx);
+                        return;
+                    }
+                    Err(commit_drafts::DraftSaveFailure::Failed(error)) => Some(error),
+                };
                 if this.draft_save_error != error {
                     this.draft_save_error = error;
                     cx.notify();
@@ -2285,6 +2292,34 @@ impl GitTurtle {
             });
         })
         .detach();
+    }
+
+    /// Asks again, after the wait, for the drafts a full queue refused: the
+    /// person typed them but asked for no save, so a writer that is merely
+    /// behind is not a failure. Asking for `worktree`'s newest draft schedules
+    /// every other draft still waiting.
+    fn ask_again_to_save_commit_draft(
+        &mut self,
+        worktree: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.draft_saver.retry.is_some() {
+            return;
+        }
+        let retry = self.retry_refused_save(window, cx, move |this, window, cx| {
+            this.draft_saver.retry = None;
+            if !this.draft_saver.is_pending() {
+                return;
+            }
+            let draft = this
+                .commit_drafts
+                .get(&worktree)
+                .cloned()
+                .unwrap_or_default();
+            this.save_commit_draft(worktree, draft, window, cx);
+        });
+        self.draft_saver.retry = Some(retry);
     }
 
     pub(super) fn restore_commit_draft(
@@ -8186,6 +8221,103 @@ mod git_actions_text_tests {
             Some("No upstream · Push sets one"),
             "a commit to push: no longer No commits to push yet"
         );
+    }
+}
+
+#[cfg(test)]
+mod draft_autosave_tests {
+    use crate::{
+        GitTurtle,
+        operations::SerialExecutor,
+        preferences::{CommitDraft, Preferences},
+        workspace::REFUSED_SAVE_RETRY,
+    };
+    use gpui_kit::{Entity, TestAppContext, VisualTestContext, gpui};
+    use std::path::Path;
+
+    fn writer_answers(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        cx.executor().run_until_parked();
+    }
+
+    fn typed(app: &Entity<GitTurtle>, worktree: &Path, title: &str, cx: &mut VisualTestContext) {
+        let draft = CommitDraft {
+            title: title.into(),
+            description: String::new(),
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.save_commit_draft(worktree.to_owned(), draft, window, cx)
+            })
+        });
+        cx.executor().run_until_parked();
+    }
+
+    fn error(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<String> {
+        app.read_with(cx, |app, _| app.draft_save_error.clone())
+    }
+
+    fn stored_title(worktree: &Path) -> Option<String> {
+        Preferences::load()
+            .commit_drafts
+            .get(worktree)
+            .map(|draft| draft.title.clone())
+    }
+
+    /// Typing saves the draft by itself, so a preference writer that is
+    /// merely behind is not a failure: a queue other saves have filled
+    /// refuses the save in silence and it asks again until the newest draft
+    /// is stored, where a refusal once read as a failed save beneath the
+    /// commit message and lost the last keystroke's save.
+    #[gpui::test]
+    async fn a_writer_that_is_behind_never_fails_a_draft_save(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        let worktree = fixture.path().join("worktree");
+
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        let fillers: Vec<_> = (0..8)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut filler in fillers {
+            assert!(matches!(filler.try_recv(), Ok(None)), "the queue fills");
+        }
+        typed(&app, &worktree, "Earlier title", cx);
+        typed(&app, &worktree, "Newest title", cx);
+        assert_eq!(error(&app, cx), None);
+        // Still full: refused again, and still nothing to report.
+        cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+        cx.executor().run_until_parked();
+        assert_eq!(error(&app, cx), None);
+
+        drop(held);
+        writer_answers(&app, cx);
+        assert_eq!(stored_title(&worktree), None, "only asking again brings it");
+        cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+        cx.executor().run_until_parked();
+        writer_answers(&app, cx);
+        assert_eq!(
+            stored_title(&worktree).as_deref(),
+            Some("Newest title"),
+            "the newest draft reaches the store"
+        );
+        assert_eq!(error(&app, cx), None);
+    }
+
+    /// A writer whose thread has stopped can never take the save, so asking
+    /// again could not help: the composer says so.
+    #[gpui::test]
+    async fn a_stopped_writer_still_reports_a_draft_save(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.preferences_writer = SerialExecutor::stopped("stopped");
+            })
+        });
+        typed(&app, &fixture.path().join("worktree"), "Title", cx);
+        let error = error(&app, cx).expect("the failure is reported");
+        assert!(error.contains("Background executor"), "{error}");
     }
 }
 
