@@ -12300,15 +12300,11 @@ mod tests {
 
     /// Asserts that each of `frames`, the confirmation's frames since something changed, draws
     /// the confirmation in the form the last one settles in: the guidance in the same place, in
-    /// the region or below it, the region, inside `room` for its ring, at the same height, the
-    /// region's ring and Send and Keep editing fitting the body's view together with `reveal`,
-    /// the reveal's room, at either edge, and Send and Keep editing whole in the body's view
-    /// from the frame after the first: the first, which the body's reveal of the focused region
-    /// follows, can leave them cut or outside it (DESIGN.md, "Keyboard focus").
-    fn assert_confirmation_settled(
+    /// the region or below it, and the region, inside `room` for its ring, at the same height.
+    fn assert_confirmation_form_settled(
         at: &str,
         frames: &[conversations::ConfirmFrame],
-        (room, reveal): (Pixels, Pixels),
+        room: Pixels,
     ) {
         let settled = *frames
             .last()
@@ -12336,6 +12332,21 @@ mod tests {
                 region(frame),
                 region(&settled)
             );
+        }
+    }
+
+    /// [`assert_confirmation_form_settled`], the region's ring and Send and Keep editing
+    /// fitting the body's view together in each of `frames`, with `reveal`, the reveal's room,
+    /// at either edge, and Send and Keep editing whole in that view from the frame after the
+    /// first: the first, which the body's reveal of the focused region follows, can leave them
+    /// cut or outside it (DESIGN.md, "Keyboard focus").
+    fn assert_confirmation_settled(
+        at: &str,
+        frames: &[conversations::ConfirmFrame],
+        (room, reveal): (Pixels, Pixels),
+    ) {
+        assert_confirmation_form_settled(at, frames, room);
+        for (index, frame) in frames.iter().enumerate() {
             let (actions, body) = (frame.actions, frame.body);
             let together = actions.bottom() - frame.ring.top();
             assert!(
@@ -12763,19 +12774,11 @@ mod tests {
                     crate::width_walk::frame(cx);
                 }
                 let frames = confirm_frames();
-                let settled = frames.last().expect("the confirmation draws").ring;
-                for (index, frame) in frames.iter().enumerate() {
-                    assert!(
-                        (frame.ring.size.height - settled.size.height).abs() <= px(0.5),
-                        "{at}: frame {index} lays the region's ring out {:?} tall, not the {:?} \
-                         it settles at",
-                        frame.ring.size.height,
-                        settled.size.height
-                    );
-                }
                 // At 18 pt in a 461 × 490 window the line leaves the body too little for the
                 // region's two lines and the buttons' two rows, so they cannot fit it together.
-                if (interface, height) != (18, 490.) {
+                if (interface, height) == (18, 490.) {
+                    assert_confirmation_form_settled(&at, &frames, rooms.0);
+                } else {
                     assert_confirmation_settled(&at, &frames, rooms);
                 }
                 let drawn = cx
