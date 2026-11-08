@@ -872,6 +872,9 @@ cover current upstream x86-64 Omarchy.
        dialog's content is a fixed 65 % of the window, taller than its capped body, so its Markdown's ring is
        cut, and its Exact source / Rendered toggles' rings are cut on top, right and left at both sizes
        (FU30-C2's audit; pinned there as known failures).
+       (S) Rewritten-series review: a listed series moves the action row twice as the review opens (as the
+       series lands, then a frame later as the body reveals the list the landing focuses): reveal in the
+       landing's frame (FU31-B2).
      - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
        (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
        Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
