@@ -851,39 +851,35 @@ impl DialogKeys {
 }
 
 /// A dialog's inline help line, `text`, drawn with ID `id` as static text
-/// read by the whole line, and named for tests by the clause in it that says
-/// what Escape does (`dialog-help-escape: <clause>`, empty where the line
-/// has none), because GPUI's test scene does not expose glyphs. The line
-/// had no node, so the command palette's, Quick Open's and Keyboard
-/// Shortcuts' keys were never read.
+/// read by the whole line, laid out by phrase ([`dialog_help_by_phrase`])
+/// with its phrases named `{id}-{index}`. The line had no node, so the
+/// command palette's, Quick Open's and Keyboard Shortcuts' keys were never
+/// read; drawn as one wrapping text, it broke "Page Up" and started a line
+/// with "/" or "·" where it wrapped.
 pub(super) fn dialog_help(
     id: &'static str,
     text: String,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
-    let escape = text
-        .split(" · ")
-        .find(|clause| clause.starts_with("Escape"))
-        .unwrap_or_default()
-        .to_owned();
-    native_accessibility::static_text(
-        div()
-            .id(id)
-            .debug_selector(move || format!("dialog-help-escape: {escape}"))
-            .child(text.clone()),
-        text,
-    )
+    native_accessibility::static_text(help_by_phrase(id, &text).id(id), text)
 }
 
-/// [`dialog_help`] laid out by phrase, each " · "-separated phrase a
-/// wrapping item drawn as one run of text (`crate::phrase_runs`, `Phrase::text`),
-/// `dialog-help-phrase-{index}`: where the line wraps, it breaks between
-/// phrases, so Quick Open's hint at 18 pt in a 461 px window no longer leaves
-/// "cancels" alone on its last line. On one line it reads as the text does.
-/// A phrase cannot shrink, so none wraps inside itself: no key name breaks
-/// and no separator starts a line, which the GitHub panel's phrases, which
-/// can shrink, keep by laying out their runs (`crate::PhraseLine`).
+/// [`dialog_help`]'s line for a dialog that names it itself, as Quick Open
+/// does, its phrases named `dialog-help-phrase-{index}`.
 pub(super) fn dialog_help_by_phrase(text: String) -> Div {
-    let phrases = crate::phrase_runs(&text);
+    help_by_phrase("dialog-help-phrase", &text)
+}
+
+/// A help line laid out by phrase, as every line of "·"-separated phrases is
+/// (`crate::PhraseLine`, its phrases named `{prefix}-{index}`): it breaks
+/// between phrases, inside one only where that phrase alone is wider than
+/// the line and there only between its runs, so Quick Open's hint at 18 pt
+/// in a 461 px window leaves no "cancels" alone on its last line, no key
+/// name such as Page Up breaks, and no line starts with a "/" or a "·". On
+/// one line it reads as the text does. It is named for tests by the clause
+/// in it that says what Escape does (`dialog-help-escape: <clause>`, empty
+/// where the line has none), because GPUI's test scene does not expose
+/// glyphs.
+fn help_by_phrase(prefix: &'static str, text: &str) -> Div {
     let escape = text
         .split(" · ")
         .find(|clause| clause.starts_with("Escape"))
@@ -891,13 +887,7 @@ pub(super) fn dialog_help_by_phrase(text: String) -> Div {
         .to_owned();
     div()
         .debug_selector(move || format!("dialog-help-escape: {escape}"))
-        .flex()
-        .flex_wrap()
-        .children(phrases.into_iter().enumerate().map(|(index, phrase)| {
-            div()
-                .debug_selector(move || format!("dialog-help-phrase-{index}"))
-                .child(phrase.text)
-        }))
+        .child(crate::PhraseLine::new(prefix, text))
 }
 
 /// The dialog controls whose keys the status bar names, registered as their
@@ -2432,10 +2422,9 @@ mod tests {
     }
 
     /// Quick Open's hint, laid out by phrase in a box swept from 461 px down to its widest
-    /// phrase at 13 and 18 pt, never starts a line with its separator or breaks a key name,
-    /// and reads as its text does inside the box, its accessible text the whole hint: each
-    /// phrase is one run of text that cannot shrink, so none wraps inside itself, and it draws
-    /// the run it always drew (`crate::phrase_runs`, `Phrase::text`).
+    /// run at 13 and 18 pt, never starts a line with its separator or breaks a key name, and
+    /// reads as its text does inside the box, its accessible text the whole hint: it lays its
+    /// phrases out as every line of phrases does (`crate::PhraseLine`).
     #[gpui::test]
     fn quick_opens_hint_keeps_its_key_names_and_separators_whole(cx: &mut TestAppContext) {
         let help = format!(
@@ -2444,9 +2433,9 @@ mod tests {
             DialogKeys::QuickOpen.escape_help()
         );
         let keys = ["↑/↓".to_owned(), ENTER.to_owned(), "Escape".to_owned()];
-        let texts: Vec<SharedString> = crate::phrase_runs(&help)
+        let runs: Vec<SharedString> = crate::phrase_runs(&help)
             .into_iter()
-            .map(|phrase| phrase.text)
+            .flat_map(|phrase| phrase.runs)
             .collect();
         let line = help.clone();
         crate::phrase_tests::sweep(
@@ -2454,7 +2443,7 @@ mod tests {
             ("quick-open-help", "dialog-help-phrase"),
             &help,
             &keys,
-            move |window| crate::phrase_tests::widest(&texts, appearance::ui_text(12.), window),
+            move |window| crate::phrase_tests::widest(&runs, appearance::ui_text(12.), window),
             move || {
                 native_accessibility::static_text(
                     dialog_help_by_phrase(line.clone()).id("quick-open-help"),
@@ -2462,6 +2451,38 @@ mod tests {
                 )
                 .text_size(appearance::ui_text(12.))
                 .into_any_element()
+            },
+        );
+    }
+
+    /// Keyboard Shortcuts' inline help, swept as Quick Open's hint is, never breaks Page Up,
+    /// Page Down, Home, End or Escape across two lines nor starts a line with its separator,
+    /// and its accessible text is the whole help. Drawn as one wrapping text, it broke
+    /// "Page Up" at its space and started lines with "/" and "·" (FU30-D6 design review).
+    #[gpui::test]
+    fn the_shortcut_helps_key_names_and_separators_stay_whole(cx: &mut TestAppContext) {
+        let help = help_keys();
+        let keys = [
+            key_label("pageup"),
+            key_label("pagedown"),
+            key_label("home"),
+            key_label("end"),
+            "Escape".to_owned(),
+        ];
+        let runs: Vec<SharedString> = crate::phrase_runs(&help)
+            .into_iter()
+            .flat_map(|phrase| phrase.runs)
+            .collect();
+        crate::phrase_tests::sweep(
+            cx,
+            ("shortcut-help-keys", "shortcut-help-keys"),
+            &help,
+            &keys,
+            move |window| crate::phrase_tests::widest(&runs, appearance::ui_text(11.), window),
+            || {
+                dialog_help("shortcut-help-keys", help_keys())
+                    .text_size(appearance::ui_text(11.))
+                    .into_any_element()
             },
         );
     }

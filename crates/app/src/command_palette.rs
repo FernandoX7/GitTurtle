@@ -1659,13 +1659,7 @@ impl Render for Palette {
             .child(
                 shortcuts::dialog_help(
                     "command-palette-help",
-                    reason.map(str::to_owned).unwrap_or_else(|| {
-                        format!(
-                            "↑ / ↓ select · {} opens · {}",
-                            shortcuts::ENTER,
-                            shortcuts::DialogKeys::Palette.escape_help()
-                        )
-                    }),
+                    reason.map_or_else(help_keys, str::to_owned),
                 )
                 .text_size(crate::appearance::ui_text(11.))
                 .text_color(rgb(p.muted)),
@@ -1675,6 +1669,16 @@ impl Render for Palette {
                     .text_color(rgb(p.warning))
             }))
     }
+}
+
+/// The palette's inline help where nothing keeps it from opening a command:
+/// the keys its list takes, in the platform's key labels.
+fn help_keys() -> String {
+    format!(
+        "↑ / ↓ select · {} opens · {}",
+        shortcuts::ENTER,
+        shortcuts::DialogKeys::Palette.escape_help()
+    )
 }
 
 #[cfg(test)]
@@ -1934,6 +1938,35 @@ mod render_tests {
             };
             assert_eq!(heard.take(), announced, "{reading:?}: the status");
         }
+    }
+
+    /// The palette's inline help, laid out by phrase in a box swept from 461 px down to its
+    /// widest run at 13 and 18 pt, never breaks Enter or Escape across two lines nor starts
+    /// a line with its separator, and its accessible text is the whole help. Drawn as one
+    /// wrapping text, it started a line with "/" or "·" where it wrapped (FU30-D6 design
+    /// review).
+    #[gpui::test]
+    fn the_palettes_help_keeps_its_key_names_and_separators_whole(cx: &mut TestAppContext) {
+        let help = help_keys();
+        let keys = [shortcuts::ENTER.to_owned(), "Escape".to_owned()];
+        let runs: Vec<SharedString> = crate::phrase_runs(&help)
+            .into_iter()
+            .flat_map(|phrase| phrase.runs)
+            .collect();
+        crate::phrase_tests::sweep(
+            cx,
+            ("command-palette-help", "command-palette-help"),
+            &help,
+            &keys,
+            move |window| {
+                crate::phrase_tests::widest(&runs, crate::appearance::ui_text(11.), window)
+            },
+            || {
+                shortcuts::dialog_help("command-palette-help", help_keys())
+                    .text_size(crate::appearance::ui_text(11.))
+                    .into_any_element()
+            },
+        );
     }
 
     /// The application on its Projects hub, with no repository open, so the

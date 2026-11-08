@@ -2992,11 +2992,6 @@ fn changed_files(count: usize) -> String {
 /// One " · "-separated phrase of a line of phrases ([`phrase_runs`]).
 #[derive(Clone, Debug, PartialEq)]
 struct Phrase {
-    /// The phrase as one text run, ending in its separator and the space after it where
-    /// another phrase follows ("Click a changed line · "), as a line whose phrases cannot
-    /// shrink draws it (`shortcuts::dialog_help_by_phrase`): such a phrase never wraps inside
-    /// itself, and moves to the next line whole.
-    text: SharedString,
     /// The phrase's words in the runs a line never breaks inside ([`PhraseLine`]): each key
     /// name is one run, "Page Up" with its space included; a "/" between two keys ends the
     /// run before it; and the separator ("·") ends the phrase's last run, so no line starts
@@ -3014,17 +3009,8 @@ fn phrase_runs(text: &str) -> Vec<Phrase> {
     parts
         .into_iter()
         .enumerate()
-        .map(|(index, part)| {
-            let separated = index < last;
-            Phrase {
-                text: if separated {
-                    format!("{part} · ")
-                } else {
-                    part.to_owned()
-                }
-                .into(),
-                runs: unbreakable_runs(part, separated),
-            }
+        .map(|(index, part)| Phrase {
+            runs: unbreakable_runs(part, index < last),
         })
         .collect()
 }
@@ -3064,30 +3050,47 @@ fn unbreakable_runs(phrase: &str, separated: bool) -> Vec<SharedString> {
     }
     runs.into_iter().map(Into::into).collect()
 }
-/// A line of " · "-separated phrases laid out by phrase ([`phrase_runs`]): one wrapping item
-/// per phrase, each a wrapping row of its runs ([`Phrase::runs`]), drawn as `{id}-{index}`
-/// and its runs as `{id}-{index}-{run}`. Phrases and the runs of a phrase are spaced by the
-/// column gap, a space's width in the text's style, so on one line they read as the text
-/// does; a gap never ends a line, where a separator's trailing space, laid out as text, ran
-/// past the line's end and wrapped the "·" before it onto a line of its own. A phrase may
-/// shrink below its width on one line, to the line's width, where its runs wrap.
-#[derive(IntoElement)]
+/// A line of " · "-separated phrases laid out by phrase ([`phrase_runs`]), each run
+/// ([`Phrase::runs`]) drawn as `{id}-{index}-{run}` and the runs spaced by a space's width in
+/// the text's style, so on one line they read as the text does. The line flows as text does,
+/// a line breaking only between two runs and its gap never ending one (a separator's
+/// trailing space, laid out as text, ran past the line's end and wrapped the "·" before it
+/// onto a line of its own): a phrase that does not fit the rest of its line starts the next
+/// line whole, and a phrase wider than the whole line starts where the line has room and
+/// breaks between its runs, the next phrase following on its last line ([`Flow`]). Laid out
+/// as one wrapping block per phrase, the phrase after a wrapped one started a line of its
+/// own, which took Keyboard Shortcuts' help at 18 pt in a 461 × 490 window to five lines, one
+/// past its dialog's clip.
 struct PhraseLine {
     id: &'static str,
-    phrases: Vec<Phrase>,
+    text: SharedString,
 }
 impl PhraseLine {
-    fn new(id: &'static str, text: &str) -> Self {
+    fn new(id: &'static str, text: impl Into<SharedString>) -> Self {
         Self {
             id,
-            phrases: phrase_runs(text),
+            text: text.into(),
         }
     }
 }
-impl RenderOnce for PhraseLine {
-    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
-        // In the style of the text this line is drawn in, which its parent sets.
-        let style = window.text_style();
+/// A [`PhraseLine`]'s phrases with the width of its gap and of each of its runs, measured in
+/// the text style it is drawn in.
+struct PreparedPhrases {
+    phrases: Vec<Phrase>,
+    gap: Pixels,
+    /// Each phrase's runs' widths, in the order of [`Phrase::runs`].
+    widths: Vec<Vec<Pixels>>,
+}
+/// Where a [`PhraseLine`]'s runs lie in a line of a given width.
+struct Flow {
+    /// Each run's line and its left edge on that line, phrase by phrase, run by run.
+    places: Vec<(usize, Pixels)>,
+    lines: usize,
+    /// The widest line's width.
+    width: Pixels,
+}
+impl PreparedPhrases {
+    fn new(text: &str, style: &TextStyle, window: &Window) -> Self {
         let size = style.font_size.to_pixels(window.rem_size());
         let text_system = window.text_system();
         // Each run as wide as its text, which a text element would round up to a whole
@@ -3099,28 +3102,201 @@ impl RenderOnce for PhraseLine {
                 .width;
             px((f32::from(width) * 64.).ceil() / 64.)
         };
-        let gap = width(" ");
+        let phrases = phrase_runs(text);
+        Self {
+            gap: width(" "),
+            widths: phrases
+                .iter()
+                .map(|phrase| phrase.runs.iter().map(|run| width(run)).collect())
+                .collect(),
+            phrases,
+        }
+    }
+
+    /// The runs laid out in lines `width` wide, or on one line where `width` is `None`: each
+    /// phrase on the line it starts on where the rest of that line holds it, else on the next
+    /// line where a whole line does, and otherwise from where the line has room, its runs
+    /// breaking where they must. Half a pixel of slack absorbs a layout rounding the line's
+    /// width below the sum of its runs.
+    fn flow(&self, width: Option<Pixels>) -> Flow {
+        let fits = |extent: Pixels| width.is_none_or(|width| extent <= width + px(0.5));
+        let mut flow = Flow {
+            places: Vec::new(),
+            lines: 0,
+            width: px(0.),
+        };
+        // The right edge of the line's last run, where the line holds any.
+        let mut end: Option<Pixels> = None;
+        for widths in &self.widths {
+            let whole = widths.iter().copied().sum::<Pixels>()
+                + self.gap * widths.len().saturating_sub(1) as f32;
+            if let Some(at) = end
+                && !fits(at + self.gap + whole)
+                && fits(whole)
+            {
+                end = None;
+            }
+            for &run in widths {
+                let mut left = end.map_or(px(0.), |at| at + self.gap);
+                if end.is_some() && !fits(left + run) {
+                    end = None;
+                    left = px(0.);
+                }
+                if end.is_none() {
+                    flow.lines += 1;
+                }
+                flow.places.push((flow.lines - 1, left));
+                end = Some(left + run);
+                flow.width = flow.width.max(left + run);
+            }
+        }
+        flow
+    }
+}
+impl IntoElement for PhraseLine {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+/// What a [`PhraseLine`] lays out with: its prepared phrases, its line height, and its runs'
+/// elements, laid out in its prepaint at the places its [`Flow`] gives them.
+struct PhraseLineLayout {
+    prepared: std::rc::Rc<PreparedPhrases>,
+    line_height: Pixels,
+    runs: Vec<AnyElement>,
+}
+impl Element for PhraseLine {
+    type RequestLayoutState = PhraseLineLayout;
+    /// In tests, a box over each phrase's runs, named `{id}-{index}`.
+    type PrepaintState = Vec<AnyElement>;
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.into())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        _: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        // In the style of the text this line is drawn in, which its parent sets.
+        let style = window.text_style();
+        // A line as tall as a text element draws one, snapped to the device's pixels, where
+        // `line_height_in_pixels` rounds it to a whole pixel: 19 px, not 19.5, at 13 pt.
+        let line_height = window.pixel_snap(
+            style
+                .line_height
+                .to_pixels(style.font_size, window.rem_size()),
+        );
+        let prepared = std::rc::Rc::new(PreparedPhrases::new(&self.text, &style, window));
         let id = self.id;
-        div()
-            .flex()
-            .flex_wrap()
-            .gap_x(gap)
-            .children(self.phrases.into_iter().enumerate().map(|(index, phrase)| {
-                div()
+        let mut runs = Vec::new();
+        for (index, (phrase, widths)) in prepared.phrases.iter().zip(&prepared.widths).enumerate() {
+            for (place, (run, &width)) in phrase.runs.iter().zip(widths).enumerate() {
+                runs.push(
+                    div()
+                        .debug_selector(move || format!("{id}-{index}-{place}"))
+                        .w(width)
+                        .whitespace_nowrap()
+                        .child(run.clone())
+                        .into_any_element(),
+                );
+            }
+        }
+        let flowed = prepared.clone();
+        let layout =
+            window.request_measured_layout(Style::default(), move |known, available, _, _| {
+                let width = known.width.or(match available.width {
+                    AvailableSpace::Definite(width) => Some(width),
+                    AvailableSpace::MinContent => Some(px(0.)),
+                    AvailableSpace::MaxContent => None,
+                });
+                let flow = flowed.flow(width);
+                size(
+                    known.width.unwrap_or(flow.width),
+                    line_height * flow.lines as f32,
+                )
+            });
+        (
+            layout,
+            PhraseLineLayout {
+                prepared,
+                line_height,
+                runs,
+            },
+        )
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let flow = layout.prepared.flow(Some(bounds.size.width));
+        let unbounded = size(AvailableSpace::MaxContent, AvailableSpace::MaxContent);
+        let at = |(line, left): (usize, Pixels)| {
+            bounds.origin + point(left, layout.line_height * line as f32)
+        };
+        for (run, &place) in layout.runs.iter_mut().zip(&flow.places) {
+            run.prepaint_as_root(at(place), unbounded, window, cx);
+        }
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut phrases = Vec::new();
+        #[cfg(test)]
+        {
+            let id = self.id;
+            let mut places = flow.places.iter().copied();
+            for (index, widths) in layout.prepared.widths.iter().enumerate() {
+                let runs: Vec<_> = places.by_ref().take(widths.len()).zip(widths).collect();
+                let (Some(&((first, _), _)), Some(&((last, _), _))) = (runs.first(), runs.last())
+                else {
+                    continue;
+                };
+                let left = runs
+                    .iter()
+                    .map(|&((_, left), _)| left)
+                    .fold(bounds.size.width, Pixels::min);
+                let right = runs
+                    .iter()
+                    .map(|&((_, left), width)| left + *width)
+                    .fold(px(0.), Pixels::max);
+                let mut phrase = div()
                     .debug_selector(move || format!("{id}-{index}"))
-                    .min_w_0()
-                    .flex()
-                    .flex_wrap()
-                    .gap_x(gap)
-                    .children(phrase.runs.into_iter().enumerate().map(|(place, run)| {
-                        div()
-                            .debug_selector(move || format!("{id}-{index}-{place}"))
-                            .flex_none()
-                            .w(width(&run))
-                            .whitespace_nowrap()
-                            .child(run)
-                    }))
-            }))
+                    .w(right - left)
+                    .h(layout.line_height * (last - first + 1) as f32)
+                    .into_any_element();
+                phrase.prepaint_as_root(at((first, left)), unbounded, window, cx);
+                phrases.push(phrase);
+            }
+        }
+        phrases
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        phrases: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        for element in layout.runs.iter_mut().chain(phrases) {
+            element.paint(window, cx);
+        }
     }
 }
 /// `count` with the noun that agrees with it: `one` for exactly one, `many`
@@ -4433,10 +4609,9 @@ pub(crate) mod phrase_tests {
     use super::*;
     use core::prelude::v1::test;
 
-    /// The phrases keep the text: each as one run of text ends in its separator and the space
-    /// after it, as the lines that draw a phrase whole always drew it, and its runs read as
-    /// the phrase does, the separator ending its last and a "/" between keys the run before
-    /// it, with a key name spelled with a space one run.
+    /// The phrases keep the text: each phrase's runs read as the phrase does, the separator
+    /// ending its last and a "/" between keys the run before it, with a key name spelled with
+    /// a space one run.
     #[test]
     fn phrases_keep_their_text_and_their_key_names_whole() {
         let page = format!(
@@ -4470,12 +4645,6 @@ pub(crate) mod phrase_tests {
             assert_eq!(phrases.len(), whole.len(), "{text:?}");
             for (index, phrase) in phrases.iter().enumerate() {
                 let separated = index + 1 < whole.len();
-                let old = if separated {
-                    format!("{} · ", whole[index])
-                } else {
-                    whole[index].to_owned()
-                };
-                assert_eq!(phrase.text.as_ref(), old, "{text:?}");
                 let read = phrase.runs.join(" ");
                 let expected = if separated {
                     format!("{} ·", whole[index])
@@ -4529,81 +4698,23 @@ pub(crate) mod phrase_tests {
         pub(crate) text: String,
     }
 
-    /// The lines the phrases of `text` drew in the last frame, `prefix` naming each
-    /// (`{prefix}-{index}`), top to bottom, each as its words read: a phrase drawn by its
-    /// runs ([`PhraseLine`]) by where each run lies, and one drawn as one text, as Quick
-    /// Open's are, in the lines GPUI's text element wraps it into at its width, shaped as
-    /// that element shapes it, at `size` in the window's text style.
-    pub(crate) fn drawn_lines(
-        cx: &mut VisualTestContext,
-        prefix: &str,
-        text: &str,
-        size: Pixels,
-    ) -> Vec<Line> {
+    /// The lines the phrases of `text` drew in the last frame ([`PhraseLine`]), `prefix`
+    /// naming each phrase (`{prefix}-{index}`) and its runs (`{prefix}-{index}-{run}`), top
+    /// to bottom, each as its words read, by where each run lies.
+    pub(crate) fn drawn_lines(cx: &mut VisualTestContext, prefix: &str, text: &str) -> Vec<Line> {
         let mut pieces: Vec<Line> = Vec::new();
         for (index, phrase) in phrase_runs(text).into_iter().enumerate() {
-            let item = cx
-                .debug_bounds(format!("{prefix}-{index}").leak())
+            cx.debug_bounds(format!("{prefix}-{index}").leak())
                 .unwrap_or_else(|| panic!("{prefix}-{index} is drawn"));
-            if cx
-                .debug_bounds(format!("{prefix}-{index}-0").leak())
-                .is_some()
-            {
-                for (place, run) in phrase.runs.iter().enumerate() {
-                    let bounds = cx
-                        .debug_bounds(format!("{prefix}-{index}-{place}").leak())
-                        .unwrap_or_else(|| panic!("{prefix}-{index}-{place} is drawn"));
-                    pieces.push(Line {
-                        top: bounds.top(),
-                        left: bounds.left(),
-                        right: bounds.right(),
-                        text: run.to_string(),
-                    });
-                }
-                continue;
-            }
-            let shaped: Vec<(String, Pixels)> = cx.update(|window, _| {
-                let text = phrase.text.clone();
-                let wrapped = window
-                    .text_system()
-                    .shape_text(
-                        text.clone(),
-                        size,
-                        &[window.text_style().to_run(text.len())],
-                        Some(item.size.width),
-                        None,
-                    )
-                    .unwrap();
-                let mut lines = Vec::new();
-                for line in &wrapped {
-                    let mut start = 0;
-                    let ends = line.wrap_boundaries().iter().map(|boundary| {
-                        line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index
-                    });
-                    for end in ends.chain([text.len()]) {
-                        let part = &text[start..end];
-                        let width = window
-                            .text_system()
-                            .layout_line(
-                                part,
-                                size,
-                                &[window.text_style().to_run(part.len())],
-                                None,
-                            )
-                            .width;
-                        lines.push((part.to_owned(), width));
-                        start = end;
-                    }
-                }
-                lines
-            });
-            let height = item.size.height / shaped.len() as f32;
-            for (line, (part, width)) in shaped.into_iter().enumerate() {
+            for (place, run) in phrase.runs.iter().enumerate() {
+                let bounds = cx
+                    .debug_bounds(format!("{prefix}-{index}-{place}").leak())
+                    .unwrap_or_else(|| panic!("{prefix}-{index}-{place} is drawn"));
                 pieces.push(Line {
-                    top: item.top() + height * line as f32,
-                    left: item.left(),
-                    right: item.left() + width,
-                    text: part,
+                    top: bounds.top(),
+                    left: bounds.left(),
+                    right: bounds.right(),
+                    text: run.to_string(),
                 });
             }
         }
@@ -4650,7 +4761,6 @@ pub(crate) mod phrase_tests {
             cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
             crate::width_walk::frame(cx);
             let least = cx.update(|window, _| least(window)).ceil();
-            let size = appearance::ui_text(12.);
             let mut width = px(461.);
             while width >= least {
                 probe.update(cx, |probe, cx| {
@@ -4665,7 +4775,7 @@ pub(crate) mod phrase_tests {
                 if label_text.as_deref() != Some(text) {
                     failures.push(format!("{at}: the label reads {label_text:?}"));
                 }
-                let lines = drawn_lines(cx, prefix, text, size);
+                let lines = drawn_lines(cx, prefix, text);
                 let shown = cx.debug_bounds("phrase-probe").expect("the probe's box");
                 let read: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
                 if read.join(" ") != text {
