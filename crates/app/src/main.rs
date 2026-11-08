@@ -4834,7 +4834,12 @@ pub(crate) mod phrase_tests {
             div()
                 .debug_selector(|| "phrase-probe".into())
                 .w(self.width)
-                .child((self.build)())
+                .child(
+                    // As tall as what it draws, where the window's root fills the window.
+                    div()
+                        .debug_selector(|| "phrase-probe-lines".into())
+                        .child((self.build)()),
+                )
         }
     }
 
@@ -4844,6 +4849,7 @@ pub(crate) mod phrase_tests {
         pub(crate) top: Pixels,
         pub(crate) left: Pixels,
         pub(crate) right: Pixels,
+        pub(crate) height: Pixels,
         pub(crate) text: String,
     }
 
@@ -4863,6 +4869,7 @@ pub(crate) mod phrase_tests {
                     top: bounds.top(),
                     left: bounds.left(),
                     right: bounds.right(),
+                    height: bounds.size.height,
                     text: run.to_string(),
                 });
             }
@@ -4888,8 +4895,9 @@ pub(crate) mod phrase_tests {
     /// Lays `text`'s phrases out, as `build` draws them with the label `label` and names them
     /// `prefix`, in a box swept from 461 px down to `least` at 13 and 18 pt, and asserts at
     /// each width that no line starts with the separator or a "/", none of `keys` is split
-    /// across two lines, the lines read as the text does, each lies inside the box, and the
-    /// label's accessible text is the whole text. `least` takes the interface's text size.
+    /// across two lines, the lines read as the text does, each lies inside the box, the box
+    /// is as tall as its lines, so measuring and drawing them agree, and the label's
+    /// accessible text is the whole text. `least` takes the interface's text size.
     pub(crate) fn sweep(
         cx: &mut TestAppContext,
         (label, prefix): (&'static str, &'static str),
@@ -4929,6 +4937,19 @@ pub(crate) mod phrase_tests {
                 let read: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
                 if read.join(" ") != text {
                     failures.push(format!("{at}: the lines {read:?} do not read as {text:?}"));
+                }
+                if let (Some(first), Some(last)) = (lines.first(), lines.last()) {
+                    let measured = cx
+                        .debug_bounds("phrase-probe-lines")
+                        .expect("the probe's lines")
+                        .size
+                        .height;
+                    let drawn = last.top + last.height - first.top;
+                    if (measured - drawn).abs() > px(0.25) {
+                        failures.push(format!(
+                            "{at}: the box is {measured:?} tall, its lines {drawn:?}: {read:?}"
+                        ));
+                    }
                 }
                 for line in &lines {
                     if line.text.starts_with(['·', '/']) {
