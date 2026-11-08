@@ -761,6 +761,8 @@ cover current upstream x86-64 Omarchy.
        replies, `github_view.rs:~655`, `:~663`, `:~524`); the `views.rs` comments saying it refuses while a write runs are inaccurate for reads.
        (nit) The second press of a double-click on a labelled Stage all's middle lands on the row body, moving the cursor and opening that
        file's preview (it writes nothing): the guard could cover the row body too.
+       (S) An `.mmd` changed from a link to a regular file with real Mermaid text reads "no Mermaid diagrams": `prepare_mermaid`
+       (`rich_preview.rs:~245`) refuses the whole comparison if either side is a link; treat only the link side as literal so the regular side draws.
      - **Found on 2026-11-08 (the FU30-D5b and FU30-D8 reviews):** (M, focus, the first-frame rule, decided
        2026-11-07) the GitHub panel body's reveal is decided before layout, so whatever a reopen or an opening
        confirmation focuses is whole in its first painted frame. Today `review::show` reveals after paint: Send and
