@@ -362,6 +362,22 @@ pub(super) struct State {
 
 use crate::native_accessibility::text as label;
 
+/// What the sequence's keys do, in the " · "-separated phrases [`keyboard_help`] draws.
+fn keyboard_help_text() -> String {
+    format!(
+        "↑/↓ select · {} / {} reorder · P/R/S/F/D choose an action. Squash combines messages; \
+         Fixup keeps the preceding message. Drop removes the commit's changes.",
+        shortcuts::key_label("alt-up"),
+        shortcuts::key_label("alt-down")
+    )
+}
+
+/// The sequence's keyboard help, laid out by phrase as every line of phrases is: drawn as
+/// one wrapping text, GPUI broke it before a "+", a "↑", a "/" or a "·" wherever it wrapped.
+fn keyboard_help() -> native_accessibility::StaticText<Stateful<Div>> {
+    shortcuts::dialog_help("rebase-keyboard-help", keyboard_help_text())
+}
+
 fn close_rebase_dialog(
     owner: &WeakEntity<GitTurtle>,
     path: Option<&std::path::Path>,
@@ -1244,7 +1260,7 @@ impl RebaseForm {
                             this.scroll.scroll_to_item(this.selected, ScrollStrategy::Center); cx.stop_propagation(); cx.notify();
                         } else if let Some(action) = match key { "p" => Some(RebaseAction::Pick), "r" => Some(RebaseAction::Reword), "s" => Some(RebaseAction::Squash), "f" => Some(RebaseAction::Fixup), "d" => Some(RebaseAction::Drop), _ => None } { this.choose(action, cx); cx.stop_propagation(); }
                     })).child(list)))))
-                .child(label("rebase-keyboard-help", format!("↑/↓ select · {} / {} reorder · P/R/S/F/D choose an action. Squash combines messages; Fixup keeps the preceding message. Drop removes the commit's changes.", shortcuts::key_label("alt-up"), shortcuts::key_label("alt-down"))).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
+                .child(keyboard_help().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
                 .when_some(acknowledge, |element, acknowledge| element
                     .child(label("rebase-published-warning", format!("History rewrite warning: these commits are known to {}. Other people may depend on their IDs.", plan.known_published_refs.join(", "))).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))
                     .child(div().flex().flex_col().on_children_prepainted(self.body.control(acknowledge.clone(), room)).child(button("acknowledge-rebase-published", if self.acknowledged { "Acknowledged: rewrite known shared commits" } else { "I understand these commits may be shared" }, "", self.acknowledged).track_focus(&acknowledge).debug_selector(|| "acknowledge-rebase-published".into()).toggled(self.acknowledged).on_click(cx.listener(|this, _, _, cx| { this.acknowledged = !this.acknowledged; cx.notify(); })))))
@@ -1497,6 +1513,36 @@ mod tests {
         tagged_repository, window,
     };
     use core::prelude::v1::test;
+
+    /// The keyboard help is a line of phrases like every other: swept from 461 px down at 13
+    /// and 18 pt, no key name breaks and no line starts with a "/" or a "·".
+    #[gpui::test]
+    fn the_keyboard_help_keeps_its_key_names_and_separators_whole(cx: &mut TestAppContext) {
+        let keys = [
+            "↑/↓".to_owned(),
+            shortcuts::key_label("alt-up"),
+            shortcuts::key_label("alt-down"),
+            "P/R/S/F/D".to_owned(),
+        ];
+        let runs: Vec<SharedString> = crate::phrase_runs(&keyboard_help_text())
+            .into_iter()
+            .flat_map(|phrase| phrase.runs)
+            .collect();
+        crate::phrase_tests::sweep(
+            cx,
+            ("rebase-keyboard-help", "rebase-keyboard-help"),
+            &keyboard_help_text(),
+            &keys,
+            move |window| {
+                crate::phrase_tests::widest(&runs, crate::appearance::ui_text(11.), window)
+            },
+            || {
+                keyboard_help()
+                    .text_size(crate::appearance::ui_text(11.))
+                    .into_any_element()
+            },
+        );
+    }
 
     /// One frame the form's body was prepainted in: where it drew Load
     /// commits, the sequence and its first commit, where it drew them, its
@@ -2178,7 +2224,11 @@ mod tests {
             }
         }
         let viewport = rendered(cx, "rebase-plan-scroll");
-        for drawn in ["rebase-list-focus", "rebase-commit-0"] {
+        for drawn in [
+            "rebase-list-focus",
+            "rebase-commit-0",
+            "rebase-keyboard-help-0",
+        ] {
             let bounds = rendered(cx, drawn);
             assert!(
                 bounds.size.height > px(0.) && lies_inside(bounds, room, viewport),
