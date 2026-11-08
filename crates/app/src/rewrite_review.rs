@@ -5057,6 +5057,21 @@ mod tests {
         let (at, end) = scrolled(cx);
         assert_eq!(at, px(0.), "the failure shows from its top");
         assert!(end > px(0.), "the failure overflows the box");
+        // While it overflows it is a group named for what it holds: the Tab
+        // stop's name and role, which assistive technology reads on reaching
+        // it. The title below draws the same words, so a search for the name
+        // alone finds that.
+        crate::native_accessibility::written::forget();
+        draw(cx);
+        let group = crate::native_accessibility::written::get("series-preview-failure")
+            .expect("the failure writes a node while it overflows")
+            .node;
+        assert_eq!(group.role(), Role::Group, "the failure is a group");
+        assert_eq!(
+            group.label(),
+            Some(PREVIEW_UNAVAILABLE),
+            "the group is named for the failure"
+        );
         let line = cx.update(|window, _| crate::empty_state::block_height(1, false, window));
         let body = body_at(cx);
         press("down", cx);
