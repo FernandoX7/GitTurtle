@@ -3094,6 +3094,16 @@ struct PreparedPhrases {
     /// between would draw another number of lines than it was given room for.
     measured: std::cell::Cell<Option<Option<Pixels>>>,
 }
+/// How many lines a [`PhraseLine`] of `text` takes `room` wide, at `size` in the window's
+/// text style.
+fn phrase_line_count(text: &str, size: Pixels, room: Pixels, window: &Window) -> usize {
+    let mut style = window.text_style();
+    style.font_size = size.into();
+    let text = SharedString::from(text.to_owned());
+    PreparedPhrases::prepare(None, &text, &style, window)
+        .flow(Some(room), |_, _| {})
+        .lines
+}
 /// How many lines of a given width a [`PhraseLine`]'s runs take ([`PreparedPhrases::flow`]).
 struct Flow {
     lines: usize,

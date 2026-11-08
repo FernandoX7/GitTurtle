@@ -2905,8 +2905,16 @@ fn comparison_note(
     }
     let size = crate::appearance::ui_text(10.);
     let room = width - window.rem_size() * 1.5;
-    let whole = one_line_width(&text, cache, size, window) <= room
-        || (lines > 1 && wrapped_lines(&text, size, room, window) <= lines);
+    let one_line = one_line_width(&text, cache, size, window) <= room;
+    // A note of " · "-separated phrases that wraps breaks between them, as every line of
+    // phrases does, where its lines hold it that way; a line of phrases cannot end in an
+    // ellipsis, so one that needs more lines stays the clamped text.
+    let by_phrase = !one_line
+        && lines > 1
+        && text.contains(" · ")
+        && crate::phrase_line_count(&text, size, room, window) <= lines;
+    let whole =
+        one_line || by_phrase || (lines > 1 && wrapped_lines(&text, size, room, window) <= lines);
     let tooltip = text.clone();
     Some(
         native_accessibility::static_text(
@@ -2923,18 +2931,15 @@ fn comparison_note(
                 gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
             })
         })
-        .child(
-            div()
-                .min_w_0()
-                .map(|line| {
-                    if lines == 1 {
-                        line.truncate()
-                    } else {
-                        line.line_clamp(lines).text_ellipsis()
-                    }
-                })
-                .child(text),
-        ),
+        .child(div().min_w_0().map(|line| {
+            if by_phrase {
+                line.child(crate::PhraseLine::new(id, text))
+            } else if lines == 1 {
+                line.truncate().child(text)
+            } else {
+                line.line_clamp(lines).text_ellipsis().child(text)
+            }
+        })),
     )
 }
 
@@ -3743,6 +3748,71 @@ mod tests {
         assert_eq!(origin, [-940., 0.]);
         let (scale, _, _) = layout([300., 200.], [1600., 800.], 0., [0., 0.]);
         assert!((scale - 268. / 1600.).abs() < 0.001);
+    }
+}
+
+#[cfg(test)]
+mod note_tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// A note of phrases that wraps breaks between them where its lines hold it that way,
+    /// and stays the clamped text where they do not; on one line it is one text.
+    #[gpui::test]
+    fn a_wrapped_note_of_phrases_breaks_between_them(cx: &mut gpui_kit::TestAppContext) {
+        const NOTE: &str = "Drag the divider · Before on the left, After on the right · Tab to controls for keyboard adjustment";
+        struct Note(Pixels);
+        impl Render for Note {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let p = palette(cx);
+                div().w(self.0).children(comparison_note(
+                    "probe-note",
+                    NOTE.to_owned(),
+                    2,
+                    &GUIDANCE_LINE,
+                    self.0,
+                    window,
+                    &p,
+                ))
+            }
+        }
+        crate::views::tests::init_app(cx);
+        let (note, cx) = cx.add_window_view(|_, _| Note(px(2000.)));
+        let (extent, inset) = cx.update(|window, _| {
+            let size = crate::appearance::ui_text(10.);
+            (
+                one_line_width(NOTE, &GUIDANCE_LINE, size, window),
+                window.rem_size() * 1.5,
+            )
+        });
+        let draw_at = |width: Pixels, cx: &mut VisualTestContext| {
+            note.update(cx, |note, cx| {
+                note.0 = width;
+                cx.notify();
+            });
+            crate::width_walk::frame(cx);
+        };
+        draw_at(extent + inset + px(8.), cx);
+        assert!(cx.debug_bounds("probe-note").is_some());
+        assert!(
+            cx.debug_bounds("probe-note-0").is_none(),
+            "one line is one text"
+        );
+        draw_at(extent * 0.66 + inset, cx);
+        let lines = crate::phrase_tests::drawn_lines(cx, "probe-note", NOTE);
+        let read: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(read.len(), 2, "{read:?}");
+        assert_eq!(read.join(" "), NOTE);
+        assert!(
+            read.iter().all(|line| !line.starts_with(['·', '/'])),
+            "{read:?}"
+        );
+        draw_at(extent * 0.25 + inset, cx);
+        assert!(cx.debug_bounds("probe-note").is_some());
+        assert!(
+            cx.debug_bounds("probe-note-0").is_none(),
+            "a note its lines cannot hold by phrase stays the clamped text"
+        );
     }
 }
 

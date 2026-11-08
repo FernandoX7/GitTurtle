@@ -16,6 +16,8 @@ use playback::{Playback, Pose};
 
 const FRAME_BYTES: usize = 720 * 720 * 4;
 const CANCELLED: &str = "3D render request superseded";
+/// The gestures the viewport takes, in the " · "-separated phrases a line draws by phrase.
+const GESTURE_HINT: &str = "Drag to orbit · Shift-drag to pan · Scroll to zoom";
 
 type RenderWork = Box<dyn FnOnce() + Send>;
 
@@ -560,7 +562,7 @@ pub(super) fn render_comparison<T: 'static>(
                     .py_1()
                     .text_size(appearance::ui_text(10.))
                     .text_color(rgb(colors.muted))
-                    .child("Drag to orbit · Shift-drag to pan · Scroll to zoom"),
+                    .child(crate::PhraseLine::new("model-gesture-hint", GESTURE_HINT)),
             )
         })
         .children(playback::controls(&documents, opener.ring(), cx))
@@ -1612,6 +1614,23 @@ pub(crate) mod tests {
         crate::views::tests::settle(&app, cx).await;
         crate::width_walk::frame(cx);
         assert_the_canvas_keeps_its_ring(cx, "model-canvas-1", "Compare");
+    }
+
+    /// A model's gestures are a line of phrases, as every "·"-separated hint is: the real
+    /// Compare draws them by phrase ([`crate::PhraseLine`]) and reads as the hint does.
+    #[gpui::test]
+    async fn the_gesture_hint_is_drawn_by_phrase(cx: &mut gpui_kit::TestAppContext) {
+        let input = b"commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 6\nmodel\nM 100644 inline shape.obj\ndata 32\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n\ndone\n";
+        let (_fixture, app, cx) = crate::views::tests::history_window_from(cx, input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        crate::width_walk::frame(cx);
+        let read: Vec<String> =
+            crate::phrase_tests::drawn_lines(cx, "model-gesture-hint", GESTURE_HINT)
+                .into_iter()
+                .map(|line| line.text)
+                .collect();
+        assert_eq!(read.join(" "), GESTURE_HINT);
     }
 
     /// The animation timeline of a model in Compare, an animated GLB with a
