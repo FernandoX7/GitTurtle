@@ -742,368 +742,61 @@ cover current upstream x86-64 Omarchy.
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
         VoiceOver's reading of check menu items and of copy announcements from dialogs.
-   - **Open polish queue (consolidated 2026-11-05).** "The queues" from here on: this list
-     replaces the per-session "Queue additions" sub-bullets in `HANDOFF.md` (every session
-     bullet from 2026-10-27 to 2026-11-05 morning, checked against `a975f1e9` by read-only
-     audits; the closed items and why are in HANDOFF's "Session 2026-11-05 midday" bullet).
-     Each landed item is removed from it; new findings are added here, not to HANDOFF.
-     Order: user-visible defects and accessibility, then layout consistency, then macOS-only,
-     then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
-     confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
-     disjoint files; a round's slices may change as files free up.
-     - **Found on 2026-11-08 (this session's reviews):** (M, performance, measure first) `PhraseLine` costs O(runs) per frame
-       against O(1) for the plain text it replaced; a release measurement of the GitHub panel's body scroll (about 30 runs) decides
-       whether shaped lines are kept in `PreparedPhrases`. (S) A non-quiet read with unchanged entries still centres an off-screen
-       Working cursor (`workspace.rs:~2804`, after Refresh or a Fetch that finds nothing). (S) `files_fit` (`review.rs:~3487`) still
-       reads the last frame's top line. (S, hardening, no known producer) `redact_diagnostic` leaves forms outside its marker list
-       whole (`password: x`) and its URL stage handles only the first `://` per token.
-       (S) Reopening the GitHub panel while a cancelled read drains is refused silently (`operation_busy` is cleared only when the worker
-       replies, `github_view.rs:~655`, `:~663`, `:~524`); the `views.rs` comments saying it refuses while a write runs are inaccurate for reads.
-       (nit) The second press of a double-click on a labelled Stage all's middle lands on the row body, moving the cursor and opening that
-       file's preview (it writes nothing): the guard could cover the row body too.
-       (S) An `.mmd` changed from a link to a regular file with real Mermaid text reads "no Mermaid diagrams": `prepare_mermaid`
-       (`rich_preview.rs:~245`) refuses the whole comparison if either side is a link; treat only the link side as literal so the regular side draws.
-     - **Found on 2026-11-08 (the FU30-D5b and FU30-D8 reviews):** (M, focus, the first-frame rule, decided
-       2026-11-07) the GitHub panel body's reveal is decided before layout, so whatever a reopen or an opening
-       confirmation focuses is whole in its first painted frame. Today `review::show` reveals after paint: Send and
-       Keep editing can be cut or outside the body's view for a frame (a short comment whose body bottom falls inside
-       the Buttons' 28 px band is the cut case; each step of a live drag is a frame 0), and a PR row's held part is
-       `None`, so a row cut at close paints cut until the Reveal phase. The rule takes a frame-0 test where the row
-       straddles the body's foot. (S, pre-existing) A change above the confirmation while its region stays focused
-       (a failed draft status wrapping in `submit`) moves Send without a reveal.
-     - **Found on 2026-11-07 (native QA-106c on `ec64f91c`, and the morning's reviews; briefed rounds FU30-A
-       conflict review draft, FU30-B Edit local commits, FU30-C lists out of the Tab order are in `briefs-q9/`):**
-       (keyboard, M) the Diff view's per-line staging checkboxes are mouse-only (no Tab stop; a click does not
-       focus them). (S) The Stashes dialog ignores Ctrl+R and window refocus after a stash is dropped from outside;
-       the dropped stash stays listed until its own Refresh. (S) A cold restore briefly shows "GitTurtle · Detached
-       HEAD · Profiles" in the header. (verify) Ctrl+[ then Ctrl+Shift+P in one input batch lost the palette in 2
-       of 3 (may be the input tool's batching; reproduce with separate key events first). (S) Changes: a
-       same-count change (one file moving from Unstaged to Staged) does not re-scroll the list to the selected row
-       (AGENTS.md: keep selected files visible). (S, after FU29-A2 and FU29-C) the commit description's hint
-       becomes its accessible description through the kit's `aria_description`. (S) File History: the header's and
-       footer's own scrolls show no scroll cue; at 18 pt in a 461 px window the "From … · first-parent lineage"
-       line is 61-80 px wide beside its copy button and wraps to ~135 px: give the text a minimum width and move
-       the button beneath it below that. (S, security hardening) a symlink inside a stored path (`commondir` or
-       `core.worktree` through a symlink) re-pointed after open is not re-resolved on the identity's fast path
-       (FU26-E2 security re-check C6/S1, `probes-FU26E2-sec2/`; Git never writes either layout). (nit) An old
-       alias tab's mark is cleared by an explicit Open only through the exact alias path (`find` matches bytes;
-       accepted). (QA note) H4 (2)'s over-4-KiB refusal cannot be produced through a saved session (the loader
-       cuts queries over 4,096 characters, `repository_tabs.rs:303`).
-       (S) File History: with a failed page, `PanelLeast` reserves the message panel's whole 45 % share, so a
-       short message can scroll needlessly (up to ~60 px at 18 pt in 461 × ~560-620): cap the share by the
-       message panel's measured extent; share `commit_message::MESSAGE_SHARE` instead of the copied 0.45; the
-       walk test's pre-walk clone of the failure region's reveal (FU29-A re-check 2). (S, allocation rule)
-       `FocusReveal`: a record path taking one bounds value, so `Reveals::track` and other per-control reports
-       stop allocating a `Vec` and cloning the reveal per button per frame (FU29-A3).
-       (S) Recovery: the recovery form loads a commit message of up to 64 MiB into a Textarea
-       (`recovery.rs:1243-1245`; `git-core/src/lib.rs:1121`) while submitting caps it at 64 KiB
-       (`work/recovery.rs:885-888`): cap it when the form loads (FU29-C security review, 2026-11-07). (nit)
-       Repository identity: a repository whose `core.worktree` points outside the folder holding `.git` is
-       refused at open with "changed while it was opened", wrong for an unchanged layout: say its work tree
-       lies outside the folder Git found it in (FU26-E2 security re-check round 4, L4). (defect, M; first)
-       Rewritten-series review (Review rewritten branch series…) shows an empty list with no explanation,
-       before and after a real rebase through the app: `recovery-drafts.json` holds the capture, Refresh
-       series stays empty, and the "No captured interactive rebase is available…" error
-       (`recovery_drafts.rs:326`) is never drawn (QA-106e D3/D5, `qa/qa106/REPORT-e.md`,
-       `q106-D3series-dfd209f.png`; blocks D5). (S) In that dialog "Check publication destination…" is not
-       pulled to the text edge (label ~56.5 px, frame at 42). (M) A click ~40 ms after Return closes a dialog
-       is lost: focus returns to the opener's row (18 pt 1480 × 800; History → Manage current branch… → Tab to
-       Done → Return → click another row; 250 ms later wins) (QA-106e D6). (S, keyboard) Tab leaves the open
-       branch chooser while its popover stays drawn (13 pt 461 × 490) (QA-106e D4). (S) After a rebase the
-       status bar and banner show Git's progress fragments ("Rebasing (1/3)Rebasing (2/3)…Successfully
-       rebased…") instead of the outcome (QA-106e). (nit) Saved session: `lenient_git_directories` swallows
-       JSON syntax errors in its first `Value::deserialize` step with `.ok()`; propagate that step with `?`
-       and keep only `from_value` lenient (FU26-E2 re-check, harmless today). (nit) GitHub Files: with a
-       single page of files both pager buttons are disabled and no stop reveals the page label (FU28-A
-       re-check 3; holds at the walked sizes).
-       (S) Changes: an explicit Refresh with a working row selected re-selects it and moves focus to the list
-       (`workspace.rs` `select_working_row`), even from the commit title (FU29-A2b, pre-existing, 2026-11-07);
-       at scale 1.2 the composer's 16 px padding is not device-aligned, so a one-line description snaps up to
-       0.17 px short (pre-existing). (S) With the project pane open in a 461 x 490 window the repository
-       page is laid out at its 520 px floor (`views.rs:8661` `repository_width`), so a merge banner's actions
-       run to x 559-690, past the window's edge (FU30-A2, 2026-11-07): lay the page out in the width it has.
-     - **Found on 2026-11-07 late afternoon (this session's reviews, implementers and release measurement; briefed rounds are in `briefs-q9/`):**
-       (S) Rewritten-series review: Refresh series with a loaded series shrinks the list from up to six rows
-       to one while it reads, so the controls below jump (`rewrite_review.rs` list height from the row count,
-       `load` clears the review). (S, wording) The review's other bounds ("Review at most 100 commits per
-       series", "Commit-series review exceeded its deadline") still read as "unavailable… original objects
-       may have been removed" (`git-core/src/work/rewrite_review.rs` side context), and the shared timeout
-       text (`work.rs` `bounded_write_output`) tells a passive read its result "may have applied partially or
-       remotely". (S, shared) `ScrollCue`: the frame that reserves a gutter draws no bar, so the thumb comes
-       one frame later (`tags.rs` `ScrollCue::list` flags from the last frame; seen in the conflict review
-       and Edit local commits). (M, performance, screen reader) With a screen reader active, a keystroke, a line break or the first frame
-       in a multi-megabyte text field segments the whole text again for its text runs: 62-73 ms in release in a
-       5 MB editor (`docs/benchmarks/2026-11-07-accessible-text-runs.md`), and a caret move ~8 ms: segment only
-       the lines an edit touched and keep the rest (4 ms budget for work a screen reader adds to a frame).
-       (M, kit, keyboard; security re-check) The theme editor's colour picker (`vendor/gpui-component/src/color_picker.rs`):
-       its 12 featured swatches repeat palette colours and share their keyed focus handles (`color-{hex}`), so Tab
-       reaches 83 of its 112 stops and steps back loop, and a focused swatch paints no focus indicator (FU31-C2).
-       Decided: the swatch grid is one Tab stop moved by the arrow keys (roving focus, the focused swatch ringed
-       whole), the hex field the other; the featured row gets distinct ids.
-       (S) The operation error banner draws the failure report's first line, so Git output whose progress
-       ends in a newline before `error: …` (a hook printing `Checking (2/2)\n`) reads "Git operation failed:
-       Checking (2/2)"; draw the first line of Git's text that starts with `error:` or `fatal:`, else the
-       first line (DESIGN.md:273; FU31-C design re-check). (verify) Escape closing History's Columns panel
-       (`main.rs` Escape) may leave focus on a removed control.
-       (S, kit) Kit popovers and menus a key closes (Select, dropdown, context menu) keep hit-testing against
-       the last drawn frame until the next draw, so a click right after the closing key can land on the gone
-       popover (FU32-A code review; FU32-A fixed it for dialogs and sheets). (QA) Rerun QA-106e D6 exactly as
-       recorded (`wtype -k Return`, a click ~40 ms later on a fixture with a stash, opener the stash row) on a
-       build with FU32-A: if the click is still lost, the stash row's selection restore is the cause.
-       (S) Edit local commits: when the form gets shorter (an error line goes, "Base edited" disappears) it draws
-       one frame at the shorter sequence height before 220 px (`interactive_rebase.rs` `Fit`): reset the sequence
-       to 220 px when those lines change. (S, shared) Lists whose bar sits in the dialog's side padding
-       (Worktrees, Reflog, Edit local commits) draw no fade cue on a track shorter than 56 px (DESIGN.md:397):
-       move the shared cue's fades there with the late-thumb fix. (S, verify) `settings.rs`'s nested wheel
-       rule recomputes its step from the window's line height while the list uses the one captured at draw:
-       a mouse-wheel line delta at the list's end may never reach the body (as FU30-B3's design re-check found).
-       (M, focus) Rings covered by a fill painted after them (FU30-C2's `focus_ring::painted_over` run at every
-       stop): a tab-strip Button's ring by its neighbour's fill on every page; Working Changes' header Buttons;
-       Compare's toolbar Button; Compare's and File history's text ring by an 82 × 18 fill inside it; at 18 pt
-       Buttons by neighbour fills and a 1 px fill. Extend the check to every stop once these are fixed.
-       (S, security hardening) Repository identity: a folder above a tab's root re-pointed to another of the
-       person's own repositories with the root's folder name is accepted at the next passive reopen (FU33-A
-       security re-check S1, accepted residual): compare the Git directory's device and inode saved at capture
-       (a same-filesystem move keeps them, so "moved and linked back" still reopens).
-       (S) Rewritten-series review's inspector: a failed changed-file or preview read is drawn after the
-       preview (below the view at 18 pt 461 × 490) while the boxes say "This commit has no changed files." or
-       "Select a file…": say the failure in the box that was being read, through the titled `EmptyState`
-       (FU31-B design re-check F3).
-       (S) Conflict review: at 18 pt 461 × 490 Restore saved draft moves the draft 27 px as the block review
-       lands ("Updating conflict blocks…" takes one line, the landed status two): keep the status's height
-       through the review (FU30-A3).
-       (S) Conflict review: in a 461 px window each side's no-reader message (no unresolved blocks left, a
-       binary file, a side missing) wraps past the versions' 100 px minimum and the footer covers it (FU30-A3
-       design re-check N1): the versions' minimum is the larger of 100 px and the sides' header and message,
-       and the half-tile cut check stops excluding the versions.
-       (S, verify) Theme editor: after Escape closes the colour picker at 18 pt 461 × 490 the trigger's ring is
-       not drawn whole (whole at 13 pt 1480 × 973): reproduce whether it is clipped or drawn late (patch
-       `briefs-q9/probes-FU31C2/agent-local/item6-with-trigger-ring.patch`).
-       (S) Changes: at 18 pt in a 430-437 × 490 window the composer's "Description" label (101 px) runs up to
-       8 px past its 93-100 px column (pre-existing; FU29-A2d3); a tall file list that overflows while the
-       short body does not scroll shows no cue.
-       (nit) Edit local commits' wheel rule: a resize and a wheel before the next prepaint are judged against
-       the old reach, and a turn that changes direction within one frame is misrouted to the body: write the
-       clamped offset back to the list's handle (FU30-B3 re-check).
-       (M, focus, layout) At 18 pt in a 461 × 490 window Blame shows no source lines (their ring 243.5 × 2 px
-       under a later border, FU30-C3's pin) and its four footer Buttons draw no ring; rendered Markdown's side
-       headings overrun the comparison pane and cut two heading Buttons below its foot; the local document
-       dialog's content is a fixed 65 % of the window, taller than its capped body, so its Markdown's ring is
-       cut; its Exact source / Rendered toggles' rings, and the remote manager's search field and Add remote…,
-       are cut on top, right and left at both sizes by the dialog body's clip, a first row flush with it
-       (FU30-C2/C3's audits; pinned there as known failures). Decided fixes (FU30-C design re-checks,
-       2026-11-07): Blame's footer (`blame.rs:578-581`, `flex_shrink_0` up to 260 px, an unwrapped row) becomes a
-       shrinkable clipping region that reveals the focused control (`focus_reveal`, as `branch_actions.rs:1597`'s
-       `content.control`), its row wraps and the lines keep three rows at least (acceptance: Blame's pins leave); the Markdown view shows one
-       Link toggle above both sides (it sets one view-wide `linked`) and each side's header is one unwrapped row
-       (the label truncates, the controls scroll sideways and reveal the focused one, as the PDF and 3D side
-       headers do), then `blocks_room`'s whole-side ring fallback is removed and the blocks keep one line's
-       height; a dialog's content keeps `appearance::button_ring_room` inside the body's clip above its first row and
-       on its sides, through `pt(room)` with `px(room).mx(-room)` on the content wrapper as
-       `branch-chooser-content` (`branch_actions.rs:1595`) does (a negative-margin row changes nothing: FU30-C3
-       measured it; 4 px of top padding cleared all eight cuts), and the local document's Markdown is sized
-       to the capped body (`flex_1().min_h_0()`) instead of 65 % of the window (`markdown_view.rs:1405`).
-       (S, tests) The focus sweep: a list stop's ring is at least one row tall (a collapsed list passes
-       today); a sweep of History and Working Changes in the 461 × 490 half tile at 18 pt; the rendered
-       Markdown's `cx.notify()` on a side press (`markdown_view.rs:1632`) has no test, since no frame shows
-       it yet (FU30-C3 reviews).
-       (S, focus) Whatever a GitHub panel reopen focuses, a held control or the section's first stop, in a
-       list, a field or the confirmation, the first painted frame draws it whole with its ring, and the body
-       moves once: PR rows, the summary, the composers, the confirmation, the fallback onto the first stop
-       and the line-clearing nudge keep the later reveal (FU30-D5 design review, 2026-11-07).
-       (S) The project pane: a keyboard shortcut for Show or hide the project list (Primary+Shift+B beside
-       Toggle Sidebar's Primary+B; the table, user guide, help, palette and menu); its save errors are
-       invisible while it is held back or closed; its 180–360 px range and the page's 520 px floor do not
-       scale with text size; View → Toggle Project List shows no checked state (FU32-D design review).
-       (S) Rewritten-series review: a listed series moves the action row twice as the review opens (as the
-       series lands, then a frame later as the body reveals the list the landing focuses): reveal in the
-       landing's frame (FU31-B2).
-     - **Found on 2026-11-07 evening (this session's reviews):**
-       (S, focus) The branch and remote managers open with focus on the dialog shell, which draws nothing
-       (DESIGN.md: a dialog opens on its first field): focus the search field when the prepared dialog shows
-       (`branch_actions.rs:762`), with the remote manager's query row given ring room (`:1841`). (S, focus)
-       Quick source opens focused on its information region, which is not a stop and draws no ring: open on the
-       source text (a stop with a ring), and walk from the opening focus in its test. (S, focus) Rings covered
-       by later fills (FU30-C2's fill check at list stops): Compare's and File history's text rings under an
-       82 × 18 fill, and several Buttons': keep each fill 1 px inside the pane's edge or draw the ring last.
-       (S, a11y) A clean Working Changes list is a stop: check with Orca that focusing it says "Working tree
-       clean"; if only the list's name is read, give the list its empty line as its description.
-       (M, focus, round FU29-A2e, decided) The Working list is one Tab stop, but each drawn row's Stage/Unstage
-       and each heading's Stage all are stops too (`workspace.rs:4081`, `:5221`, `:5538`), so what Tab reaches
-       depends on the scroll, and a partly drawn row's control takes focus with its ring cut: the list stays
-       one stop; Tab from it reaches the selected row's Stage or Unstage, then the headings' controls, then the
-       composer; every other row's control is `tab_stop(false)` (clickable, exposed, first in its row menu);
-       the control that takes focus is revealed whole with its ring room in that frame (DESIGN.md:395's Reflog
-       precedent; reconcile :395 and :296). (S, wording) A repository whose parent folder loses search
-       permission is refused as "gone" by writes and as "Not a directory" (Other) by a direct open: `open` and
-       `found_at_path` use `fs::metadata` and pass up any error but NotFound. (S) `rewrite_review::content_room`
-       restates `github_view::dialog_chrome`'s constants: one shared `appearance` helper; the review's file box
-       is a fixed 130 px that cuts its third row at 18 pt: whole rows, scaled with text. (S, a11y) The GitHub
-       panel says two announcements after a resize while it was closed (FU30-D2's nit); the panel registers no
-       `DialogKeys`, so its regions' keys are never announced (DESIGN.md:283).
-       (S, round FU30-D8, decided) The GitHub confirmation lays its first frame out from the last frame's
-       measures: a new panel's first long confirmation, and a width-only resize that rewraps its guidance or
-       its buttons, draw one frame with the guidance in the wrong place and Send or Keep editing cut (DESIGN.md
-       :321, :325): decide `inside` and the cap before layout from `panel_width(window)`, the guidance shaped
-       at that width and the chrome from known sizes; tests: a long reply as a new panel's first confirmation
-       at 18 pt 461 × 490, and 1480 → 461 at 13 pt with a long reply focused.
-     - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
-       (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
-       Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
-       description and Commit. File History at 18 pt in 461 × 490: the message area is 15 px tall and draws nothing,
-       the top row ("File history ← B") and Close are cut at the window's right edge. After an external checkout and
-       Ctrl+R, History's refs and sidebar update one frame before the Git actions bar (one-frame lag; low). (verify)
-       FU27-D's QA note expected "History rows 21–520" in the status bar after a restore past the end; it never shows.
-       N2 (new with FU26-E: the stale "Git rev-parse failed" banner and a half-cut notice line beside the mark) is in
-       FU26-E2's fixup pass. File History in windows shorter than 490 px at 18 pt can shrink its revisions to
-       nothing (no scrolling fallback; FU29-A). A status line draws a two-line text whole, its first line rising
-       above the 26 px bar (`views.rs:~9073`; FU29-B: draw the first line only). An unrelated watcher warning set
-       before a tab is marked stays beside the mark (FU26-E2 report; low).
-       Found by QA-106b (2026-11-07; also on the previous build): With eight tabs, Ctrl+T opens the Open Folder dialog and refuses only after a folder is
-       chosen (`repository_tabs.rs:1453`). As History's read lands, Orca announces its list over an open profiles menu.
-       A failed profile store read leaves the menu header "Profiles are unavailable or still loading" above the failure
-       line. The palette's first row is still heard twice on open (QA-106b O2; a slow "go to hi" repeats the whole
-       reading at "i": FU22-B's fail-safe, kept).
-     - **Held Enter residuals (FU21-E landed 2026-11-06: a held Enter that opened a dialog reaches
-       nothing in or behind it until its key-up, input-method repeats included; native QA-106 pending):**
-       (macOS, verify) a Command pressed mid-hold clears the press's start, so if Cocoa keeps repeating
-       Enter across the change the first plain repeat after Command's release reaches a field's or
-       list's binding (never a confirmation; FU21-E review N3, security S8).
-     - **Accessibility and polish found 2026-11-06 (FU22; FU24-C landed 2026-11-06: Keyboard Shortcuts' status
-       says a spoken entry once, the tab strip and window controls keep a ring's room apart):** the palette's
-       first row may be heard twice on open (QA-106 listens). Palette, pre-existing (FU22-B review): a key
-       burst that ends on the reading it started from stays silent even where Orca last spoke another
-       row; a click on an unavailable row leaves the status's reading stale (only the error alert is
-       heard); held Down repeats under 100 ms apart leave the row they end on unheard (QA-94's quiet
-       moves) (FU25-A, with the palette taking FU24-C's returned-row rule and one shared timing owner).
-       FU28-D landed 2026-11-07 (a decorated exact-fit strip case; a field's caret no longer blinks unfocused after its
-       context menu closes, only the code editor's completion and code-action menus holding a blur; nits below).
-       FU27-A landed 2026-11-06 (one reason per group feeds the profiles menu's rebuild key and its rows; the open menu
-       shows and drops Retry as the store fails and recovers); its review's nit (low): the "Profiles: …" line can keep an
-       older failure's text while the menu stays open (only `load_profiles` replaces an error without clearing it, at
-       startup and from Retry; probably unreachable); the `docs/profiles.md:3` Retry nit landed with FU28-D.
-       FU27-C landed 2026-11-06 (the dialogs' ghost walk measures a Button's widest content, its held-back Copied
-       included; Copy commit ID wraps beside its glyph in a column narrower than its content, the glyph beside the first
-       line, Copied in place; one `select_newest` helper); its re-check's nit (low; the glyph tolerance one landed with
-       FU28-D, now 0.25 px): `confirming_with` clones `id` for the test-only selector each frame in release
-       (`copy_feedback.rs:524`).
-       FU27-B landed 2026-11-06 (the GitHub connection pane's "Local worktree:" line keeps to one line, its path
-       elided in the middle as the header's; the panel's stops all draw their rings, checked over 1,526 stops); its
-       probe's two findings (Pulls at 17 pt in 461 × 490, stops 2 and 3 cutting a line at the body's edge; no stop
-       showing `github-captured-identities` at 17 pt 461/440 px and 18 pt 480 px) landed with FU28-A on 2026-11-07.
-     - **A Refresh moves a tab whose `.git` vanished to an enclosing repository (found by FU26-A, 2026-11-06; FU26-E):**
-       `RepositorySession::open` rediscovers from the tab's path, so with an enclosing work tree (a dotfiles
-       repository in the home directory) the tab silently shows, and later writes would target, that repository.
-       Decided: a passive reopen that resolves to another root shows the tab unavailable, never switches.
-       FU26-E landed 2026-11-06 (writes refused and tabs marked once Git finds another repository, or none, at the
-       path; with none, `repository_access::explain`'s reasons on every surface; a quiet read that finds none marks the
-       tab; release: +1.4 ms per Changes read and per write, one `rev-parse` each). Left: the hardening round FU26-E2
-       (every command of an opened repository with `GIT_CEILING_DIRECTORIES` at the parent of the folder holding
-       `.git`, closing the old handle's reads between `.git` vanishing and the mark, the Git directory captured,
-       FU26-E's per-operation `rev-parse` removed; Show latest marking; a running quiet read's banner beside the mark;
-       brief `FU26-E2.md`); an old session's subfolder-path tab reads "is gone" for good (message); `Path::is_dir()` is
-       false on any metadata error, so a network-volume blip marks a tab until the next quiet read; a marked tab's
-       explicit Refresh in Changes keeps the mark's old reason after Git starts finding another repository (low).
-     - **Test infrastructure (2026-11-06; FU20-M and FU22-A (the PDF helper test's torn status read)
-       landed, the testing skill names the recurring races; FU23-A in review: `564d0be6`'s cause was
-       macOS's long `TMPDIR` wrapping the fixture path, and the paging test's seed caches):
-       FU25-C landed 2026-11-06 (one test root per process, removed at exit, a killed process's root swept
-       by the next run); its review's nits landed with FU28-C 2026-11-07. FU26-A landed 2026-11-06 (the
-       long- and in-checkout-`TMPDIR` test causes; `narrow_history_keeps_paging_in_the_column`'s seed caches were
-       already emptied by `59a5a3ef`).
-     - **FU19 (B, C, D, G and E+H landed 2026-11-05 afternoon, D5 the same evening; A (with A2, A3) and C2 (with C3, C4) in flight; F waits for FU19-A's kit dialog file and FU20-A's profile dialogs):**
-       - (A) Focus return: FU19-A, A2, A3 and A4 landed 2026-11-05 night (a closing dialog's
-         focus returned once, never over a later click; a dialog opened as another closes keeps
-         its return; Back's return forgotten on every way out of Settings; a dialog opened before
-         Back's frame keeps focus; History's search held for a loading tab and run or dropped as
-         its restore ends). FU19-A5 landed too (every restore end runs or drops the held search; a
-         restore always ends, including a refused 4 KiB query and a write-refused search).
-         FU27-D landed 2026-11-06 (a restore's unread page leaves paging on the shown history; a page appends only in the
-         window's scope; a saved page past the end shows the last page; the opener on both pages is unreachable and PG5 was
-         already fixed by `a9a62b4b`); its re-check's nits landed with FU28-D 2026-11-07.
-       - (C2) Editor highlights' palette rules: FU19-C2 to C5 landed 2026-11-05 night (More
-         contrast word tints beyond their lines, Find's other matches fitted by the text rule, the
-         current match's off distance, fallbacks keeping Off colours; the hover/selected order in
-         every built-in and Omarchy palette, with One Light, Kanagawa Wave and Kanagawa Lotus
-         tuned and Lotus's body text a narrow exception). Left: a crossed word with no readable
-         step may fall back nearer its moved line (no palette reaches it; low).
-       - (F) Ghost Buttons in dialogs, M (decided 2026-11-05; FU19-F1 landed 2026-11-06: dialogs' side
-         padding max(16 px, the ghost pull + ring room) rounded up to the device pixel, the ten-dialog test; FU19-F2 landed the same afternoon: ghost Buttons on the text edge at FU18-B's dialog sites, tall dialog bodies scrolling in the app's own view with every Tab stop revealed, the series review's inspecting mode and its preview's and messages' rings): dialogs' side padding max(16 px, label inset + ring room), 17 px at
-         18 pt, and the ghost-Button rule applied at FU18-B's dialog sites (profiles, signing,
-         Fetch rules…, Worktree created, Activity, LFS source, rewrite review, revision
-         choices, About's Copy bug diagnostics); the 0.75 rem bars keep their frames (the ring
-         wins); dialogs whose scroll views may cut a ring on the left (profiles, the profile
-         form, Activity, the LFS form, the comparison form; verify); Reset column layout and
-         Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
-         against the scaled label inset.
-     - **FU20 (proposed):**
-       - (GitHub Files: FU20-GH and FU20-GH4 landed 2026-11-05 night (the narrow body's fit, Source's ring, Overview's stop 12, editor rows whole, the body's reveal on return, the list fitted with no file selected, the mode row cache's tests; Changes' range hint may lie below the body's foot, decided); FU20-GH5 landed 2026-11-06 (a text's lines worked out once per change, allocation hygiene: no CPU change in release; the opt-in rest bench; the sweep at `REVEAL_SIZES`); FU20-GH6 landed 2026-11-06 (the PR list's first row and Changes' patch rings whole at 18 pt, a row a list cuts counted where the list shows it, the sweep reading lines as drawn, its found walks always-on; native check in QA-106); also soft-wrapped rows above an editor's top row uncounted (low), the title-and-mode-row height reused from another text size for one frame, and `files_settles_in_a_frame_after_a_resize` hanging under one mutation (test infra); decided 2026-11-05) the panel's Files section fits a narrow
-         body: the changed-file list at most half the body's height, the patch or Source the
-         rest (never fewer than five lines), the mode row wrapping inside the body's width,
-         every ring whole (FU18-F's sweep at 461 × 490: the mode Buttons' rings reach x 449.5 /
-         607 past the body's 423; at 18 pt the patch and Source have zero height under the fixed
-         324 px `FILE_LIST_HEIGHT`; the list taller than the body); the sweep's never-whole lines analysed;
-         the D+E review's bounded list span, scrolled-editor test and padding rows;
-         `the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn` always-on once green
-         (`github_view*`, `focus_reveal.rs`).
-       - (A) Overflow and scroll cues, M (FU20-A and FU20-A2 landed 2026-11-05 night: the branch
-         chooser, the profile dialogs, the worktree manager, the conflict draft in whole code lines,
-         the commit message's overflow cue inside its viewport; FU20-A3 landed (the branch picker's and branch dialogs'
-         disabled reasons; the tracking-branch feedback already worked, now covered); FU20-A4 landed (the conflict review scrolling in a short
-         window, decided; a focus the app moves for the person reveals its target)): the profiles menu's disabled items without a
-         reason (verify, with FU19-F's `profiles.rs`);
-       - (History, remaining; FU20-H landed 2026-11-05 night: Refresh's stash list past a stash chosen meanwhile, Reflog and Tags focus by row identity, the partial subscription item dropped (does not reproduce since `8408dec4`); the tracking-branch feedback covered by FU20-A3 (landed); left (FU22-D landed 2026-11-06: `FocusReveal` keeps handles only for drawn, focused or elsewhere-held controls); FU25-B landed 2026-11-06: a cleared stash inspection hands its focus to the stash list) S: `labelled_scope_toolbar_width`'s per-frame count string (FU20-P, in review).
-       - (C) Text cuts: deferred to upstream (decided 2026-11-05 evening). GPUI's own `.truncate()`
-          (`LineWrapper::truncate_line` in the unvendored core `gpui-pre` 0.3.4, `ceil_char_boundary`)
-          cuts between characters for every overflow ellipsis (subjects, branches, tabs, paths); vendoring
-          the 78,000-line core for a rare visual cut is not worth its upkeep and review surface. Revisit if
-          `gpui-pre` is vendored for another reason or upstream cuts at clusters. The app's own cuts follow
-          grapheme clusters (FU19-D5, landed).
-        - (D) Small visible polish, S (FU20-D landed 2026-11-05 night: Settings' text fields named by their drawn labels; `LineKey` against a scale change did not reproduce: its widths are logical and snapped per frame at the current scale; FU22-C landed 2026-11-06: tabs keep a ring's room apart at 11 pt (the 1.5 padding was the shared outset rounding), a preview chosen again during its in-process decode takes it over (every other phase still stops on supersede, Back and close), popover reduce motion did not reproduce (guard test); `tab_whole_widths` is test-only): FU26-D landed 2026-11-06 (the caret already showed on focus; it is now held a whole blink phase after every key, edit, bound action, selection and composition; the GitHub destination field's ring was whole, now guarded);
-         the 2026-10-28 taste items decided then (profile tile, review row
-         pitch, PR rows' resting surface, the travelling row's edge, a centred "Fetched";
-         verify each); the README's
-         `settings-themes.png` retaken (with a native round).
-     - **Later rounds (accessibility):** (FU19-E+H in flight with FU19-H2) AT-SPI's cache
-       signals fixed at their root (AccessKit #819 backported) and the removed row kept until it
-       leaves the bus; Orca's check in QA-105. The palette speaks its current row twice, plain then "· 1 of 1" (confirmed natively by QA-105); X11 key repeats unmarked (vendored `x11/client.rs`, verify; FU19-D5's fixups touch
-       the Button side); at a window's close the adapter sends no `RemoveAccessible` for any node
-       (upstream behaviour, libatspi keeps the proxies until the app exits; low).
-     - **macOS-only (hosted run or a Mac):** Menlo's metrics for FU17-B's rule (hosted run
-       `42074771762` passed its tests; native position unmeasured); VoiceOver never hears the
-       palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
-       animated AVIF caption on macOS (`native.rs`); VoiceOver's reading of check menu items
-       and of copy announcements from dialogs (the backlog line above).
-     - **Performance, S-M:** FU20-P2 landed 2026-11-05 night (`render_git_actions` builds its text only on a change); FU22-D landed 2026-11-06 (empty states build their line text only on a change); FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); FU25-D landed 2026-11-06 (the header's labels, tooltips, picker names and badge kept per input, the profile button's name and tooltip and `branch_actions.rs`'s picker label included; release: no CPU change, allocation hygiene; `tags.rs`'s read already ran only on a change, `bd8a67f5`); FU26-F landed 2026-11-06 (the shared Button helpers' icon paths and names kept per symbol, the header's line height read once per frame, the status bar's hints and Settings' Back tooltip built only on a change; release: −2.3 to −2.7 % UI-thread CPU per frame at rest); FU28-B landed 2026-11-07 (a dialog error line's state key and text, the project hub's icon paths and recent rows' text kept, the kit's Button key context built from its static name; release: −151 allocations per frame at rest on Projects, −27 to −31 on History and Changes, no CPU change; `empty_state.rs`'s cost was already gone); left:
-       hayro's full-resolution decode profile and the grained-alpha peak on x86-64 (measure);
-       read tags after the history page when only one CPU is available (+5.9 ms on one core,
-       brief 10's follow-up in `c219a6f2`), M; a release scroll measurement for the per-row
-       clip (brief 12).
-     - **Kit input drawing (FU20-GH3, by reading):** a multi-line Input paints one row past its viewport into its padding (`vendor/gpui-base/src/input/base/state.rs:3416`, `element.rs:1187`), clipped at the padded box (GPUI 0.3.4's `overflow_mask` clips y while x is hidden: FU20-GH3's re-check corrected the earlier "no vertical clip" reading), so no row can draw over the border; a native look in QA-105 confirms, and only a row seen past the box would need a vendor fix. Also `conversations.rs:669` replaces a part selector (harmless).
-      - **Dialog Enter nits (FU18-C re-checks; FU19-D5's X11 residuals: a repeat's unpaired release at a poll batch's end can start a fresh press; a held Enter on a Button that keeps focus presses on each X11 repeat; macOS Enter-then-Command may lose one Return):** the window's Enter mark goes stale when the
-       release lands in another window (one ignored Enter; clear it on deactivation); a
-       single-line field's own Enter binding still runs on held repeats (no repository write
-       submits that way).
-     - **Test infrastructure and nits (FU28-C landed 2026-11-07: the PDF helper tests wait on `Slots::waiting`, the
-       hold's send no longer blocks on a full queue; the packager and confirmation-test items and SK1's nits were
-       already fixed):** the GitHub Files title-and-mode-row height reused from another text size for one frame
-       (FU20-GH4); `SerialExecutor::hold` delaying quiet jobs queued during the click (FU17-E);
-       `github_view.rs`'s remaining test premises after FU18-D; tests calling
-       `hold_quiet_reads(true)` directly and the other quiet-read wait helpers checked against
-       FU12-E's window (`repository_tabs.rs:6807`, `motion.rs:8964`, `page_navigation.rs:920`,
-       `recovery.rs`); FU12-D's test needing a Tab first; the M4 Tab test's first-frame scroll;
-       FU11-B's redraw-at-rest nits; FU13-B's click test relying on GPUI's stray frame and its
-       patch note; no press test for the dropped-reply release (FU13-C 1, `main.rs`);
-       `State::reset` clearing the hold (`automatic_refresh.rs:90`), the GIF assertion and the
-       hue order under 7:1 (FU10-C, M1, M2 N3); FU14-B's first-paint gating untested; FU8-D's
-       wrap slack and `FIT_SLACK` only on a test fault; the AVIF-animation fixture not
-       reproducible (Pillow timestamps); the benchmark records' kill-at-work low ends predating FU8fix (a note at the next measurement).
-     - **Tooling and CI:** `qa.py` cannot launch on this host (python-xlib) and has no
-       Hyprland backend, frame recorder or horizontal scroll (QA harness); the QA tooling
-       items (ΔEOK analysis kind, the `;` keysym, per-channel tolerance, `runenv.py:323`
-       measuring its path in characters); zizmor's `$/`,
-       icu/json5 and rust-cache upkeep in CI; LFS 3.8.1 on the runner images and whether to
-       warn before a clone needs LFS (decide with phase 4).
+   - **Open polish queue (consolidated 2026-11-05; audited and rewritten 2026-11-08 at `1e2ad7da`).** "The queues" from here on: this one list replaces every per-session "Queue additions" note. Each landed item is removed from it; new findings are added here, not to HANDOFF. Order: what can write the wrong thing, lose work or expose a secret; user-visible defects and accessibility; layout consistency; macOS-only; test infrastructure and nits; within each, what the public "fully supports Omarchy" claim depends on comes first. Size S/M/L. "verify" marks an item the audit could not settle by reading, so its brief reproduces it first (every brief reproduces first). Each item keeps a current `file:line` and the words that find its original, fuller entry in `git show 1e2ad7da:docs/development/omarchy-full-support.md` (lines 745 to 1105). The audit's DONE and STALE items, with commits and counts, are in HANDOFF's "Audit of everything left" sub-bullet.
+     - **Write safety and secrets.** Ahead of everything else in this list, because a wrong write or a leaked token costs more than any cut control.
+       - (S, briefed `FU34-B`) `redact_diagnostic` leaves `password: x`, handles only the first `://` per token, and prints userinfo split by a `\r` (`crates/git-core/src/work/authentication.rs:407`, `:413`, `:443`). Exposes a secret.
+       - (S, briefed `FU34-C`) Repository identity: a symlink inside a stored path re-pointed after open; a folder above a tab's root re-pointed at the next passive reopen (`crates/git-core/src/lib.rs` fast path; `crates/app/src/worker.rs:1239`). Both can aim a write at another repository. The round also words an outside `core.worktree` truthfully and makes `lenient_git_directories` report a malformed file.
+       - (S, briefed `FU32-B`) "Recovery … 64 MiB": the recovery form loads a message it cannot submit (`crates/app/src/recovery.rs:1243`).
+       - (M, X11 only) "X11 key repeats unmarked", "X11 unpaired release", "held Enter on a Button": a held Enter on a focused Button presses on each X11 repeat (`vendor/gpui-pre-linux/src/linux/x11/client.rs:611`, `:1120`). One defect. Ranks after the Omarchy items of the next section, against the rule above, because Omarchy runs Wayland and only XWayland apps reach it: recorded 2026-11-08.
+       - (S, owner, verify) "Pull-request review: store the GitHub account": the live sign-in needs the owner's account; check the logs hold no token. Raised at phase 5.
+     - **User-visible defects and accessibility.** The Omarchy claim depends on these; the keyboard and Orca routes come first.
+       - (M, briefed `FU29-A2e`) "Working one stop": the Working list as one Tab stop (`crates/app/src/workspace.rs:5187`).
+       - (S) "Reopening the GitHub panel": refused silently while a cancelled read drains (`crates/app/src/github_view.rs:524`, `:655`, `:663`), and the comments that state otherwise (`crates/app/src/views.rs:658`, `:881`). A control that does nothing, on a route people use.
+       - (S) "`.mmd` changed from a link" reads "no Mermaid diagrams" over real Mermaid text, the pointer case included (`crates/app/src/rich_preview.rs:245`, in flight `FU31-B8`).
+       - (S) "branch manager focus", "Remote manager focus", "Quick source opening focus": the dialog takes no focus (`crates/app/src/branch_actions.rs:882`, `:776`; `crates/app/src/revision_inspection.rs:459`). The keyboard route starts here.
+       - (S) "Stashes dialog ignores Ctrl+R" (`crates/app/src/recovery.rs:3483`). The app-wide Refresh key is silently missing.
+       - (S) "Ctrl+T at eight tabs": refused after the picker (`crates/app/src/repository_tabs.rs:1586`). Refuse before asking.
+       - (S) "project pane" shortcut missing from Keyboard Shortcuts (`crates/app/src/shortcuts.rs`, `crates/app/src/main.rs:162`).
+       - (S) "No `DialogKeys`": the GitHub panel lacks dialog keys (`crates/app/src/github_view.rs`).
+       - (S) "commit description's hint" (`crates/app/src/workspace.rs:4565`, kit `9c231582` unused). Orca users hear no hint.
+       - (M) "Blame shows no source lines"; footer rings (one defect, `crates/app/src/blame.rs:574`, `crates/app/src/tab_order_tests.rs:649`).
+       - (M) "Colour picker swatches": no keyboard or name (`vendor/gpui-component/src/color_picker.rs:133`).
+       - (M) "reveal is decided before layout": Send and Keep editing can be cut (`crates/app/src/github_view/review.rs:1558`, `:2062`).
+       - (M) "Rings covered by a fill" and its every-stop check (`crates/app/src/tab_order_tests.rs:183`).
+       - (S) "Exact source / Rendered toggles", "remote manager's search": cut stops pinned as known (`crates/app/src/tab_order_tests.rs:714`, `:1279`).
+       - (S) "GitHub Files: single page": no page reading (`crates/app/src/github_view/review.rs:3381`).
+       - (S) "no RemoveAccessible at close" (`vendor/accesskit_atspi_common/src/adapter.rs:706`). Orca keeps a closed window's nodes.
+       - (S) "Operation error banner": shows the output's first line, not its `fatal:`/`error:` line (`crates/app/src/views.rs:9771`).
+       - (S) "same-count change": the Working list keeps stale rows when the count is unchanged (`crates/app/src/workspace.rs:3465`).
+       - (S) "non-quiet read" centres an off-screen cursor (`crates/app/src/workspace.rs:2416`).
+       - (S) "Kit popovers and menus" (`vendor/gpui-component/src/select.rs:380`, `src/menu/popup_menu.rs:1745`).
+       - (S) "Inspector failed changed-file read" drawn below the view (`crates/app/src/rewrite_review.rs:1356`, `:1693`).
+       - (S) "`Path::is_dir()` is false on any metadata error" and "Parent loses search permission" (one defect, fails safe: the tab is marked, `crates/git-core/src/lib.rs:519`, `:629`).
+       - (S) "marked tab's explicit Refresh" keeps the old reason (`crates/app/src/repository_tabs.rs:1807`).
+       - (S) "Working Changes filter shares" one executor with its reads (`crates/app/src/working_selection.rs:773`).
+       - (L, verify) "Screen reader (Orca) and input-method coverage": no full record yet, `README.md:128` says not checked. The public claim names it, so the QA parts cover what they can.
+       - (S each, verify) Reproduce first: "cold restore" header; "Ctrl+[ then Ctrl+Shift+P"; "explicit Refresh … focus" (`workspace.rs:2735`); "failed draft status wrapping" (`github_view.rs:1943`); "Escape closing" Columns (`main.rs:2446`); "Escape closing File History"; "Theme editor: after Escape"; "save errors invisible" (`project_pane.rs:169`); "Git actions one-frame lag"; "N2 stale banner"; "old session's subfolder-path tab reads 'is gone'" (`worker.rs:1160`); `settings.rs` nested wheel (`:2017`); "Up to date" and the tracking-branch notice; "the Targets inputs" dim at once; "Clean list 'Working tree clean'"; "Two announcements after resize"; "Orca over profiles menu"; palette first row twice (`command_palette.rs:1260`, fail-safe kept).
+     - **Layout consistency.** Visible and frequent, but no control is lost.
+       - (M) "Markdown's side headings overrun" (`crates/app/src/markdown_view.rs:1569`) and "local document 65 %" (`:1405`).
+       - (S) "`ScrollCue` late thumb" and "Lists whose bar" have no fade (one fix, `crates/app/src/tags.rs:762`, `:456`).
+       - (S) "header's and footer's" cue, "From …" width, "`PanelLeast` reserves" in File history (`crates/app/src/file_history.rs:1095`, `:1170`, `:90`).
+       - (S) "Refresh series" shrinks the list; "130 px file box" (`crates/app/src/rewrite_review.rs:614`, `:1666`).
+       - (S) "Restore saved draft moves" 27 px; "no-reader message wraps" (`crates/app/src/conflicts.rs:948`, `:1037`).
+       - (S) "Edit local commits" short frame; "wheel rule" stale reach (`crates/app/src/interactive_rebase.rs:1057`, `:1141`).
+       - (S) "`files_fit` reads last frame's top line"; title-and-mode-row height one frame (`crates/app/src/github_view/review.rs:3908`, `:3830`).
+       - (S) "180–360 px range" (`crates/app/src/views.rs:8602`); "worktree manager's fixed 11 px" (`crates/app/src/worktrees.rs:38`); "Found by the layout grid", conversation cards (`crates/app/src/layout_grid.rs:424`).
+       - (S each, verify) "PR row's held part is `None`"; "Description label" overrun; "scale 1.2 … padding"; "Rewritten-series" moves twice; "Rings under fills"; multi-line Input extra row (`vendor/gpui-base/src/input/base/element.rs:1186`); "History's Changes body is measured a frame late"; "rebase (720 px) and Quick Open (700 px)" past the left edge; "no scroll affordance"; `image_compare.rs:999` snapped width.
+       - (verify) Older phase-3 findings the audit could only reach natively (18 pt and 461 px cuts, GitHub panel insets, header offsets, contrast samples, the "still owed" frame lists): the QA parts confirm or retire them.
+     - **macOS-only (a hosted run or a Mac).** Omarchy does not depend on these. All verify: Menlo's metrics (`main.rs:3018`); VoiceOver palette status (`command_palette.rs:860`), check items and copy announcements; the refused menu-bar item (`platform_polish.rs:437`); the AVIF caption (`worker.rs:2939`); Enter-then-Command and Command pressed mid-hold.
+     - **Performance.** (M, verify) "hayro decode"; "grained-alpha peak"; "idle capture cadence"; the slow write's first busy frame. (M) "tags after history, one CPU" (`crates/app/src/worker.rs`). (S) "per-row clip scroll", verify; "`FocusReveal`: record path" (`crates/app/src/focus_reveal.rs:393`); "`confirming_with` clones `id`" (`crates/app/src/copy_feedback.rs:521`); screen-reader re-segmenting, M (`vendor/gpui-base/src/input/base/state.rs:591`).
+     - **Test infrastructure and nits.**
+       - (M) "real-time waits remain" (`crates/app/src/workspace/confirmation_tests.rs:56`, `crates/app/src/views.rs:36495`, `crates/app/src/theme_editor.rs:4964`).
+       - (S, briefed `FU30-C4`) "theme editor sweep" split; a walk returning to a middle stop (`crates/app/src/focus_ring/sweep.rs:661`, `:274`).
+       - (S) "list stop's ring"; "sweep of History and Working Changes"; "frame-0 test"; `cx.notify()` on a side press; "before any frame check"; "hold_quiet_reads direct"; `FIT_SLACK` (`crates/app/src/focus_ring/sweep.rs:96`, `:578`; `github_view.rs:10943`; `markdown_view.rs:1632`; `motion.rs:8989`; `editor_find.rs:1490`).
+       - (S, verify) `files_settles_in_a_frame_after_a_resize` hanging; "H4 (2)"; "pre-walk clone"; "History rows 21–520"; "Rerun QA-106e D6"; the older test-infrastructure list (FU20-GH4, FU17-E, FU18-D, FU12-D, M4, FU11-B, FU13-B/C, GIF, hue, FU14-B, AVIF fixture, benchmark records); "toolkit's own ghost controls" evidence (`docs/validation.md:838`).
+       - (S, nits) "`views.rs` comments" (with the panel fix above); "Review at most 100" and shared timeout wording (`crates/git-core/src/work/rewrite_review.rs:183`, `work.rs:1977`); "old alias tab's mark"; "copied 0.45"; "Profiles: older failure's text" and profile header above failure (`crates/app/src/profiles.rs:339`, `:592`); `content_room` constants; "a shared fades-only helper" (`crates/app/src/tags.rs:648`); `github-collaboration.md:61` key-name rule; "no checked state" (`crates/app/src/platform_polish.rs:517`); single-line held Enter (`vendor/gpui-base/src/input/base/state.rs:1745`); `settings-themes.png` retaken (`README.md:39`); C2's crossed word (`crates/app/src/appearance.rs:3794`); a selector at `conversations.rs:669`, verify; FU20 (C) text cuts, L, deferred upstream; FU20 (D) taste, owner's call.
+     - **Tooling and CI.** `qa.py` cannot launch here (python-xlib, `scripts/native_qa/x11.py:53`) and has no Hyprland backend, horizontal scroll or frame recorder (M); ΔEOK analysis; the `;` keysym (verify); per-channel tolerance (`analysis.py:32`); `runenv.py:323`; icu/json5 (`Cargo.lock:3726`, `:4058`); rust-cache (`.github/actions/setup-rust/action.yml:94`); LFS 3.8.1 on the runners and whether to warn before a clone needs LFS (decide with phase 4); the driver gaps, verify.
+   - **Audit status of phases 1 to 3 (2026-11-08, at `1e2ad7da`).** Phase 1 is done: first launch, its defaults and its documentation hold as written (`docs/linux.md`, `README.md:82`). Phase 2 is done: list Copy, the selectable message and the opt-out rule hold, and its sentence "only Blame handles it" is out of date (`crates/app/src/working_selection.rs:558`, `crates/app/src/file_history.rs:1726`, `crates/app/src/commit_message/selection.rs:512`). Phase 3's parts 3.3 to 3.7 are done (the `omarchy font set` route, IBM Plex, the theme fixes, the editor and terminal handoffs, the README section); 3.8's "awaiting native evidence" goes to the QA parts. Its older findings hold about 140 done, 3 stale (the entry that System preview is hidden on Linux, which now offers a passive open; the `local-workspaces-error` alert, now `refusal_line`; the commit menu's edge, measured later), 8 still open (moved into the queue above) and about 80 that only a native run can settle: the QA parts confirm or retire those, and about 65 entries were not judged (mostly pixel measurements recorded for past rounds). The plan's parity gaps stay open as written in `README.md:128`: office, audio and video previews (deferred), full Orca and input-method coverage (partly done). **Phases 4 to 7 need what only the owner can give, to be raised when reached and not before:** the license review of `mac` and `ufbx` (phase 4), an x86-64 Omarchy machine (phase 5), Developer ID signing and gitturtle.com (phase 4), and the live GitHub account check.
 4. **Distribution.** Publish versioned release bundles (x86-64 and AArch64, checksums,
    build identity). Resolve the two dependencies the packager flags for license review
    (`mac`, `ufbx`) before distributing. Then add an AUR package (`gitturtle-bin`) and
