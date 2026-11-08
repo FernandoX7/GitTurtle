@@ -2,8 +2,8 @@
 use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gitturtle_core::{
-    CommitRecoveryPlan, OperationKind, RecoveryCommand, RecoveryKind, StashEntry, StashPage,
-    StashSnapshot, WriteCommand,
+    CommitRecoveryPlan, MAX_RECOVERY_MESSAGE_BYTES, OperationKind, RecoveryCommand, RecoveryKind,
+    StashEntry, StashPage, StashSnapshot, WriteCommand,
 };
 use gpui_kit::component::{
     WindowExt,
@@ -972,7 +972,7 @@ impl GitTurtle {
                 if let Some(form) = &self.recovery.amend
                     && form.read(cx).repository.as_ref() == Some(repository)
                 {
-                    if succeeded && form.read(cx).message(cx) == *message {
+                    if succeeded && form.read(cx).message(cx).as_ref() == Some(message) {
                         self.recovery.amend = None;
                     } else if !succeeded {
                         form.update(cx, |form, cx| {
@@ -1215,13 +1215,31 @@ fn list_key_selection(key: &str, selected: Option<usize>, count: usize) -> Optio
     }
 }
 
+/// What Amend edits, beside what the fields opened with.
+struct AmendFields {
+    title: Entity<InputState>,
+    description: Entity<TextareaState>,
+    initial: CommitDraft,
+}
+impl AmendFields {
+    /// The message these fields amend `original` with: `original` byte for
+    /// byte unless they were edited.
+    fn message(&self, original: &str, cx: &App) -> String {
+        let draft = CommitDraft {
+            title: self.title.read(cx).value().to_string(),
+            description: self.description.read(cx).value().to_string(),
+        };
+        amended_message(original, &self.initial, &draft)
+    }
+}
 struct AmendForm {
     owner: WeakEntity<GitTurtle>,
     repository: Option<PathBuf>,
     plan: Arc<CommitRecoveryPlan>,
-    title: Entity<InputState>,
-    description: Entity<TextareaState>,
-    initial: CommitDraft,
+    /// `None` for a message over the most Amend can submit, which is not
+    /// loaded ([`CommitRecoveryPlan::message_too_long`]): the form says so
+    /// in their place and offers no review.
+    fields: Option<AmendFields>,
     error: Option<String>,
     /// Whether the line beneath the fields says that what its last review
     /// was refused for has gone, the integration paused or the conflicts
@@ -1239,39 +1257,44 @@ impl AmendForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let initial = split_message(&plan.target.message);
-        let title = cx.new(|cx| InputState::new(window, cx).default_value(initial.title.clone()));
-        let description =
-            cx.new(|cx| TextareaState::new(window, cx).default_value(initial.description.clone()));
+        let fields = (!plan.message_too_long).then(|| {
+            let initial = split_message(&plan.target.message);
+            let title =
+                cx.new(|cx| InputState::new(window, cx).default_value(initial.title.clone()));
+            let description = cx.new(|cx| {
+                TextareaState::new(window, cx).default_value(initial.description.clone())
+            });
+            AmendFields {
+                title,
+                description,
+                initial,
+            }
+        });
         Self {
             owner,
             repository,
             plan,
-            title,
-            description,
-            initial,
+            fields,
             error: None,
             pause_ended: None,
             opened: 0,
         }
     }
-    fn draft(&self, cx: &App) -> CommitDraft {
-        CommitDraft {
-            title: self.title.read(cx).value().to_string(),
-            description: self.description.read(cx).value().to_string(),
-        }
-    }
-    fn message(&self, cx: &App) -> String {
-        amended_message(&self.plan.target.message, &self.initial, &self.draft(cx))
+    /// The message this form would amend with; `None` where it has no fields.
+    fn message(&self, cx: &App) -> Option<String> {
+        (self.fields.as_ref()).map(|fields| fields.message(&self.plan.target.message, cx))
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.pause_ended = None;
-        if self.title.read(cx).value().trim().is_empty() {
+        let Some(fields) = &self.fields else {
+            return true;
+        };
+        if fields.title.read(cx).value().trim().is_empty() {
             self.error = Some("Enter a commit title.".into());
             cx.notify();
             return false;
         }
-        let message = self.message(cx);
+        let message = fields.message(&self.plan.target.message, cx);
         let expected = Arc::clone(&self.plan);
         let form = cx.entity();
         let failure: Failure = Box::new(move |error, window, cx| {
@@ -1313,32 +1336,44 @@ impl Render for AmendForm {
                         self.plan.staged_paths.len()
                     )),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child("Title")
-                    .child(Input::new(&self.title).aria_label("Amended commit title")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child("Description · optional")
-                    .child(shortcuts::tab_leaves(
-                        Textarea::new(&self.description)
-                            .h(px(170.))
-                            .aria_label("Amended commit description"),
-                    )),
-            )
-            .child(
-                div()
-                    .text_size(crate::appearance::ui_text(11.))
-                    .text_color(rgb(p.muted))
-                    .child("The next step reviews the staged snapshot and the effect on history."),
-            )
+            .map(|form| match &self.fields {
+                Some(fields) => form
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child("Title")
+                            .child(Input::new(&fields.title).aria_label("Amended commit title")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child("Description · optional")
+                            .child(shortcuts::tab_leaves(
+                                Textarea::new(&fields.description)
+                                    .h(px(170.))
+                                    .aria_label("Amended commit description"),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::appearance::ui_text(11.))
+                            .text_color(rgb(p.muted))
+                            .child(
+                                "The next step reviews the staged snapshot and the effect on history.",
+                            ),
+                    ),
+                None => form.child(native_accessibility::text(
+                    "amend-message-too-long",
+                    format!(
+                        "This commit's message is over {} KiB, too long to edit here",
+                        MAX_RECOVERY_MESSAGE_BYTES / 1024
+                    ),
+                )),
+            })
             .children(form_line(
                 self.error.as_deref(),
                 self.pause_ended,
@@ -1350,15 +1385,23 @@ impl Render for AmendForm {
 }
 fn show_amend(form: Entity<AmendForm>, window: &mut Window, cx: &mut App) {
     form.update(cx, |form, _| form.opened += 1);
+    let editable = form.read(cx).fields.is_some();
     window.open_alert_dialog(cx, move |dialog, window, _| {
         let submit = form.clone();
-        dialog
+        let dialog = dialog
             .title("Amend last commit")
             .width(appearance::dialog_width(px(580.), window))
             .max_h(appearance::dialog_max_height(window))
-            .child(form.clone())
-            .footer(crate::tags::dialog_footer("Review amend", Some("Cancel")))
-            .on_ok(move |_, window, cx| submit.update(cx, |form, cx| form.submit(window, cx)))
+            .child(form.clone());
+        if editable {
+            dialog
+                .footer(crate::tags::dialog_footer(REVIEW_AMEND, Some("Cancel")))
+                .on_ok(move |_, window, cx| submit.update(cx, |form, cx| form.submit(window, cx)))
+        } else {
+            // Nothing to review, so Close alone, the default a lone footer
+            // action is: Enter closes the form, as Escape does.
+            dialog.footer(crate::tags::dialog_footer("Close", None))
+        }
     });
 }
 
@@ -3580,7 +3623,7 @@ pub(crate) fn prepare_amend(
 #[cfg(test)]
 pub(crate) fn amend_description(app: &GitTurtle, cx: &App) -> Option<Entity<TextareaState>> {
     let form = app.recovery.amend.as_ref()?;
-    Some(form.read(cx).description.clone())
+    Some(form.read(cx).fields.as_ref()?.description.clone())
 }
 
 #[cfg(test)]
@@ -8872,7 +8915,11 @@ mod tests {
                     .as_ref()
                     .expect("the amend form")
                     .read(cx);
-                (form.error.clone(), form.title.read(cx).value().to_string())
+                let fields = form.fields.as_ref().expect("the amend fields");
+                (
+                    form.error.clone(),
+                    fields.title.read(cx).value().to_string(),
+                )
             }
             PausedForm::Stash => {
                 let form = app
@@ -8884,6 +8931,147 @@ mod tests {
                 (form.error.clone(), form.name.read(cx).value().to_string())
             }
         })
+    }
+
+    /// A window on a checked-out repository whose tip's message is exactly
+    /// `message`, with Amend last commit's form opened on it.
+    async fn amend_form_on<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        message: &str,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let identity = [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ];
+        let git = |arguments: &[&str]| {
+            crate::views::tests::fixture_git(&repository, &[&identity[..], arguments].concat())
+        };
+        git(&["reset", "-q", "--hard"]);
+        let file = fixture.path().join("message");
+        std::fs::write(&file, message).unwrap();
+        git(&[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "--cleanup=verbatim",
+            "-F",
+            file.to_str().unwrap(),
+        ]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let head = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .and_then(|status| status.head.clone())
+                .expect("HEAD")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.prepare_commit_recovery(RecoveryKind::Amend, head, None, window, cx)
+            })
+        });
+        let read = app.update(cx, |app, _| app.recovery.task.take());
+        read.expect("the amend plan is read").await;
+        crate::views::tests::draw(cx);
+        (fixture, app, cx)
+    }
+
+    const AMEND_TITLE: &str = "Title\n\n";
+
+    /// A message over what Amend can submit is not loaded: the form says so
+    /// where the fields would be, and its only action closes it, so nothing
+    /// offered can fail. Enter is that action, and starts no review.
+    #[gpui::test]
+    async fn a_message_past_the_commit_limit_is_refused_in_place_of_the_editor(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let message = format!(
+            "{AMEND_TITLE}{}",
+            "x".repeat(MAX_RECOVERY_MESSAGE_BYTES + 1 - AMEND_TITLE.len())
+        );
+        let (_fixture, app, cx) = amend_form_on(cx, &message).await;
+        let form = app.read_with(cx, |app, _| app.recovery.amend.clone().expect("the form"));
+        assert!(
+            form.read_with(cx, |form, _| form.fields.is_none()),
+            "no editor holds any of the message"
+        );
+        assert_eq!(
+            crate::native_accessibility::written::get("amend-message-too-long")
+                .and_then(|said| said.node.value().map(str::to_owned))
+                .as_deref(),
+            Some("This commit's message is over 64 KiB, too long to edit here"),
+        );
+        assert!(
+            cx.debug_bounds("amend-message-too-long").is_some(),
+            "the notice stands in the form"
+        );
+        assert!(
+            cx.debug_bounds("dialog-ok: Review amend").is_none(),
+            "no review is offered that would fail"
+        );
+        assert!(
+            cx.debug_bounds("dialog-ok: Close").is_some(),
+            "its one action closes it"
+        );
+        cx.update(|window, cx| {
+            window.dispatch_action(
+                Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+                cx,
+            )
+        });
+        crate::views::tests::draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Enter closes it"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.recovery.task.is_none()),
+            "and asks for no review"
+        );
+    }
+
+    /// A message at the limit is loaded whole, byte for byte, and can be
+    /// reviewed as any other.
+    #[gpui::test]
+    async fn a_message_at_the_commit_limit_loads_whole(cx: &mut gpui::TestAppContext) {
+        let message = format!(
+            "{AMEND_TITLE}{}",
+            "x".repeat(MAX_RECOVERY_MESSAGE_BYTES - AMEND_TITLE.len())
+        );
+        let (_fixture, app, cx) = amend_form_on(cx, &message).await;
+        let form = app.read_with(cx, |app, _| app.recovery.amend.clone().expect("the form"));
+        assert_eq!(
+            form.read_with(cx, |form, cx| form.message(cx)).as_deref(),
+            Some(message.as_str()),
+            "the whole message is the form's, unedited"
+        );
+        let description = app
+            .read_with(cx, amend_description)
+            .expect("its description field");
+        assert_eq!(
+            description.read_with(cx, |field, _| field.value().len()),
+            MAX_RECOVERY_MESSAGE_BYTES - AMEND_TITLE.len(),
+            "the description field holds all of it"
+        );
+        assert!(
+            cx.debug_bounds("amend-message-too-long").is_none(),
+            "no notice stands in its place"
+        );
+        assert!(
+            cx.debug_bounds("dialog-ok: Review amend").is_some(),
+            "its review is offered"
+        );
     }
 
     /// Opens `form` at rest and fills its field with `value`, then pauses a
@@ -8941,7 +9129,8 @@ mod tests {
                     app.read_with(cx, |app, _| app.recovery.amend.clone().expect("the form"));
                 cx.update(|window, cx| {
                     form.update(cx, |form, cx| {
-                        form.title.update(cx, |title, cx| {
+                        let fields = form.fields.as_ref().expect("the amend fields");
+                        fields.title.update(cx, |title, cx| {
                             title.set_value("Reworded while paused", window, cx)
                         })
                     })
