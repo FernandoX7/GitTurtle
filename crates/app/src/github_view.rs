@@ -12567,6 +12567,85 @@ mod tests {
         cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
     }
 
+    /// Every frame of a resize across the width where Send and Keep editing go from one row to
+    /// two lays the confirmation out in the form that width decides: at 18 pt, with a long
+    /// reply's region focused in a window 973 px tall, narrowing by one pixel from the last
+    /// width that holds them on one row and widening back, each frame, the first included,
+    /// draws what the form leaves for them, keeps the region at the height it settles at, and
+    /// from the frame after the first draws them whole in the body's view
+    /// ([`assert_confirmation_settled`]). The width is found by laying them out, so it holds
+    /// for the font a platform draws them in.
+    #[gpui::test]
+    async fn the_confirmation_settles_across_its_buttons_row_boundary(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        open_confirmation(
+            (&panel, &pull),
+            confirmed_long_reply(60),
+            (18, 1480., 973.),
+            cx,
+        );
+        // Whether the window `width` px wide stands Keep editing on a row below Send's.
+        let two_rows = |cx: &mut VisualTestContext, width: i32| {
+            cx.simulate_resize(size(px(width as f32), px(973.)));
+            cx.executor().run_until_parked();
+            crate::width_walk::frame(cx);
+            let send = cx.debug_bounds("github-confirm-send").expect("Send");
+            let keep = cx
+                .debug_bounds("github-edit-submission")
+                .expect("Keep editing");
+            keep.top() > send.top() + px(0.5)
+        };
+        // Narrower than the half tile, so the bound holds in a narrower platform font too.
+        let (mut two, mut one) = (400, 1480);
+        assert!(two_rows(cx, two), "two rows at 18 pt in a 400 px window");
+        assert!(!two_rows(cx, one), "one row at 18 pt in a 1,480 px window");
+        while one - two > 1 {
+            let width = (one + two) / 2;
+            if two_rows(cx, width) {
+                two = width;
+            } else {
+                one = width;
+            }
+        }
+        let rooms = cx.update(|window, cx| {
+            (
+                appearance::button_ring_room(cx),
+                review::reveal_room(window, cx),
+            )
+        });
+        for (from, to) in [(one, two), (two, one)] {
+            let at = format!("as the window goes from {from} to {to} px wide at 18 pt");
+            assert_eq!(two_rows(cx, from), from == two, "{at}: the row before");
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            confirm_frames();
+            assert_eq!(two_rows(cx, to), to == two, "{at}: the row after");
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            let frames = confirm_frames();
+            let form = panel
+                .read_with(cx, |panel, _| {
+                    panel.conversations.confirm_form.borrow().clone()
+                })
+                .expect("the form decided");
+            for (index, frame) in frames.iter().enumerate() {
+                assert!(
+                    (frame.chrome - form.chrome).abs() <= px(0.5),
+                    "{at}: frame {index} draws {:?} besides its region and guidance, not the \
+                     {:?} its form leaves",
+                    frame.chrome,
+                    form.chrome
+                );
+            }
+            assert_confirmation_settled(&at, &frames, rooms);
+        }
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A new confirmation is sized for the body it opens in, never for what the last one found
     /// of its own: with a confirmation having left the body's view measured 60 px short of its
     /// room, a long reply opened at 13 pt in a 1,480 × 973 window, whose body is its whole room,
