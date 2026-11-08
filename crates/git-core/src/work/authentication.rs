@@ -400,15 +400,18 @@ impl Drop for AskpassServer {
 
 /// Remove userinfo and query/fragment values from URL-bearing Git diagnostics.
 /// Also redact common credential assignment/header forms, wherever they appear:
-/// a path holding one is cut like any other text.
+/// a path holding one is cut like any other text. A marker with only
+/// whitespace after it on its line names no secret and is left alone: it is
+/// how a prompt such as OpenSSH's `user@host's password: ` ends. The line
+/// ends at its `\n`, so a value after a carriage return is still cut.
 pub fn redact_diagnostic(input: &str) -> String {
     hide_url_credentials(input)
         .lines()
-        .map(|line| {
-            first_credential_marker_end(line).map_or_else(
-                || line.to_owned(),
-                |end| format!("{}[redacted]", &line[..end]),
-            )
+        .map(|line| match first_credential_marker_end(line) {
+            Some(end) if !line[end..].trim().is_empty() => {
+                format!("{}[redacted]", &line[..end])
+            }
+            _ => line.to_owned(),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -622,6 +625,89 @@ mod tests {
         assert_eq!(
             redact_diagnostic("https://x-access-token:SECRET@host/repo.git: failed"),
             "https://[redacted]@host/repo.git: failed"
+        );
+    }
+
+    /// Every credential marker, spelt out so that a marker dropped from the
+    /// list fails a test.
+    const MARKERS: [&str; 14] = [
+        "authorization:",
+        "proxy-authorization:",
+        "password=",
+        "password:",
+        "passwd=",
+        "passwd:",
+        "access_token=",
+        "access_token:",
+        "refresh_token=",
+        "refresh_token:",
+        "token=",
+        "token:",
+        "oauth_token=",
+        "oauth_token:",
+    ];
+
+    /// A marker with nothing after it on its line names no secret, so the
+    /// line is left alone: OpenSSH's `user@host's password: ` read
+    /// `user@host's password:[redacted]` in the dialog once `password:` was
+    /// a marker. Nothing means only whitespace up to the line's `\n`.
+    #[test]
+    fn a_credential_marker_with_nothing_after_it_on_its_line_is_left_alone() {
+        assert_eq!(
+            redact_diagnostic("user@host's password: "),
+            "user@host's password: "
+        );
+        for marker in MARKERS {
+            for marker in [marker.to_owned(), marker.to_ascii_uppercase()] {
+                for whole in [
+                    marker.clone(),
+                    format!("{marker} "),
+                    format!("fatal: {marker}\t  "),
+                    format!("{marker}\r"),
+                    format!("{marker} \u{a0}"),
+                ] {
+                    assert_eq!(redact_diagnostic(&whole), whole);
+                }
+                // A carriage return does not end the line for this rule.
+                for cut in [
+                    format!("{marker}\rSECRET"),
+                    format!("{marker} \r SECRET"),
+                    format!("{marker}\r\rSECRET after"),
+                    format!("{marker} SECRET "),
+                ] {
+                    assert_eq!(redact_diagnostic(&cut), format!("{marker}[redacted]"));
+                }
+                // A line feed does, so the next line is no value of this one.
+                assert_eq!(
+                    redact_diagnostic(&format!("{marker} \nnext line")),
+                    format!("{marker} \nnext line"),
+                );
+                assert_eq!(
+                    redact_diagnostic(&format!("{marker}\r\ntoken=SECRET")),
+                    format!("{marker}\ntoken=[redacted]"),
+                );
+            }
+        }
+        // The cut still runs from the first marker on the line with a value,
+        // and a later marker is that value, whatever follows it.
+        assert_eq!(
+            redact_diagnostic("token: SECRET password: "),
+            "token:[redacted]"
+        );
+        assert_eq!(redact_diagnostic("password: token="), "password:[redacted]");
+        assert_eq!(
+            redact_diagnostic("password: \ntoken: SECRET\npasswd=\t"),
+            "password: \ntoken:[redacted]\npasswd=\t"
+        );
+        // As a failure reads it, the secret after a carriage return is gone
+        // and a marker that had none stays as it was.
+        assert_eq!(
+            reported_redacted(b"password:\rSECRET\n", redact_diagnostic),
+            "password:[redacted]"
+        );
+        assert_eq!(
+            reported_redacted(b"password: \r\nDone.\n", redact_diagnostic),
+            "password: \nDone."
         );
     }
 
