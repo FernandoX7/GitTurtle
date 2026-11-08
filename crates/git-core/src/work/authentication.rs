@@ -433,8 +433,14 @@ pub fn redact_diagnostic(input: &str) -> String {
     result
         .lines()
         .map(|line| {
+            // Redacted from the first marker on the line, wherever it falls
+            // in the list: taking the list's first left the secret after an
+            // earlier marker on the line, as in "token=secret Authorization:".
+            // A marker inside another ("token=" in "access_token=") ends
+            // where the other does, so both keep the same text. Lowercasing
+            // only ASCII keeps every byte offset of `line`.
             let lower = line.to_ascii_lowercase();
-            for marker in [
+            [
                 "authorization:",
                 "proxy-authorization:",
                 "password=",
@@ -443,12 +449,14 @@ pub fn redact_diagnostic(input: &str) -> String {
                 "refresh_token=",
                 "token=",
                 "oauth_token=",
-            ] {
-                if let Some(index) = lower.find(marker) {
-                    return format!("{}[redacted]", &line[..index + marker.len()]);
-                }
-            }
-            line.to_owned()
+            ]
+            .into_iter()
+            .filter_map(|marker| lower.find(marker).map(|index| index + marker.len()))
+            .min()
+            .map_or_else(
+                || line.to_owned(),
+                |end| format!("{}[redacted]", &line[..end]),
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -496,6 +504,32 @@ mod tests {
         assert!(validate_clone_address("https://user:password@example.invalid/repo").is_err());
         assert!(validate_clone_address("https://example.invalid/repo?token=secret").is_err());
         assert!(validate_clone_address("git@example.invalid:repo").is_ok());
+    }
+
+    /// A line is redacted from its first secret marker, wherever it falls in
+    /// the list: with "token=" before "Authorization:", only the later
+    /// marker was redacted and the token's secret stayed, and so it did in a
+    /// failure's report where a carriage return follows that marker
+    /// (`reported_redacted`).
+    #[test]
+    fn a_diagnostic_is_redacted_from_its_first_secret_marker() {
+        assert_eq!(
+            redact_diagnostic("token=SECRET11 Authorization:Done."),
+            "token=[redacted]"
+        );
+        assert_eq!(
+            reported_redacted(b"token=SECRET10 Authorization:\rDone.\n", redact_diagnostic),
+            "token=[redacted]"
+        );
+        assert_eq!(
+            redact_diagnostic("fatal: Password=SECRET12 proxy-authorization: x"),
+            "fatal: Password=[redacted]"
+        );
+        // A marker inside another ends where it does.
+        assert_eq!(
+            redact_diagnostic("access_token=SECRET13"),
+            "access_token=[redacted]"
+        );
     }
 
     #[cfg(unix)]
