@@ -82,16 +82,18 @@ pub(crate) struct Flight {
     pub(crate) slot: Slot,
 }
 
-/// Where the pointer pressed a row's own Stage or Unstage, until it moves.
-/// The rows that write produces put another row, or a heading, where the
-/// pressed row stood, and its control would light up under the still
-/// pointer and show its tooltip though the person never moved to it. Once
-/// they do, what arrived there shows neither until the pointer moves.
+/// Where the pointer pressed a row's own Stage or Unstage, or a heading's
+/// Stage all or Unstage all, until it moves. The rows that write produces
+/// put another row, or a heading, where the pressed row stood, and its
+/// control would light up under the still pointer and show its tooltip
+/// though the person never moved to it. Once they do, what arrived there
+/// shows neither until the pointer moves.
 pub(crate) struct StillPointer {
     at: Point<Pixels>,
-    /// The pressed row: its place in the list, its path and its group.
+    /// The pressed row: its place in the list, its path, which a heading
+    /// does not have, and its group.
     position: usize,
-    path: PathBuf,
+    path: Option<PathBuf>,
     area: ChangeArea,
     /// The list's new rows put something else under the pointer.
     moved: bool,
@@ -208,26 +210,29 @@ impl GitTurtle {
         });
     }
 
-    /// Remembers the pointer where the row at `position`'s own Stage or
-    /// Unstage was pressed and accepted.
+    /// Remembers the pointer where the control of the row at `position`, a
+    /// file's Stage or Unstage or a heading's Stage all or Unstage all, was
+    /// pressed and accepted.
     pub(super) fn hold_still_pointer(&mut self, position: usize, window: &Window) {
         self.still_pointer = None;
-        let Some(&workspace::WorkingRow::File(index, area)) =
-            self.actionable_working_rows().get(position)
-        else {
-            return;
-        };
-        let Some(entry) = self
-            .work_status
-            .as_ref()
-            .and_then(|status| status.entries.get(index))
-        else {
-            return;
+        let (path, area) = match self.actionable_working_rows().get(position) {
+            Some(&workspace::WorkingRow::File(index, area)) => {
+                let Some(entry) = self
+                    .work_status
+                    .as_ref()
+                    .and_then(|status| status.entries.get(index))
+                else {
+                    return;
+                };
+                (Some(entry.path.clone()), area)
+            }
+            Some(&workspace::WorkingRow::Heading(area, _)) => (None, area),
+            _ => return,
         };
         self.still_pointer = Some(StillPointer {
             at: window.mouse_position(),
             position,
-            path: entry.path.clone(),
+            path,
             area,
             moved: false,
         });
@@ -261,9 +266,13 @@ impl GitTurtle {
                 area == still.area
                     && status
                         .and_then(|status| status.entries.get(index))
-                        .is_some_and(|entry| {
-                            crate::working_selection::same_path(&entry.path, &still.path)
+                        .zip(still.path.as_deref())
+                        .is_some_and(|(entry, path)| {
+                            crate::working_selection::same_path(&entry.path, path)
                         })
+            }
+            Some(&workspace::WorkingRow::Heading(area, _)) => {
+                area == still.area && still.path.is_none()
             }
             _ => false,
         };
@@ -289,7 +298,8 @@ impl GitTurtle {
     }
 
     /// Whether the list's rows moved under a pointer that has not moved
-    /// since it pressed a row's Stage or Unstage.
+    /// since it pressed a row's Stage or Unstage or a heading's Stage all or
+    /// Unstage all.
     pub(super) fn still_over_moved_rows(&self) -> bool {
         self.still_pointer.as_ref().is_some_and(|still| still.moved)
     }
@@ -1083,6 +1093,92 @@ mod tests {
                 "the click staged {file}"
             );
         }
+    }
+
+    /// A double-click on Stage all at `pointer`: every file joins Staged, a
+    /// file's row, with its Unstage, takes the heading's place under the
+    /// pointer, and the second press writes nothing. It unstaged that file,
+    /// the press on the heading holding no still pointer for the row's
+    /// guard. Delta's row where the list shows every row; in a shorter list
+    /// the row that showing the confirming heading brings there.
+    async fn double_click_stage_all(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        pointer: Point<Pixels>,
+    ) {
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+        counted_click(cx, pointer, 1);
+        press_lands(app, cx).await;
+        // [Staged 6, alpha, beta, delta, epsilon, gamma, zeta, Unstaged 0]
+        let position = (1..7)
+            .find(|position| {
+                let selector: &'static str = format!("working-stage-{position}").leak();
+                cx.debug_bounds(selector)
+                    .is_some_and(|unstage| unstage.contains(&pointer))
+            })
+            .unwrap_or_else(|| panic!("no file's Unstage arrives under {pointer:?}"));
+        let file = app.read_with(cx, |app, _| {
+            let status = app.work_status.as_ref().expect("a status");
+            match app.working_rows[position] {
+                workspace::WorkingRow::File(index, ChangeArea::Staged) => {
+                    status.entries[index].path.display().to_string()
+                }
+                _ => panic!("row {position} is no Staged file"),
+            }
+        });
+        assert_eq!(
+            staged_and_unstaged(app, cx, &file),
+            Some((true, false)),
+            "the first press staged {file}"
+        );
+        counted_click(cx, pointer, 2);
+        press_lands(app, cx).await;
+        assert_eq!(
+            staged_and_unstaged(app, cx, &file),
+            Some((true, false)),
+            "the second press unstaged {file}, which nobody aimed at"
+        );
+    }
+
+    /// The labelled Stage all, wider than the row's Unstage that replaces
+    /// it, reaches that control from its right end.
+    #[gpui::test]
+    async fn a_double_click_on_the_right_end_of_stage_all_writes_one_stage(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        cx.simulate_resize(size(px(1480.), px(1400.)));
+        draw(cx);
+        let stage_all = cx.debug_bounds("stage-all").expect("Stage all");
+        let pointer = point(stage_all.right() - px(3.), stage_all.center().y);
+        double_click_stage_all(&app, cx, pointer).await;
+    }
+
+    /// The icon-only Stage all of a narrow inspector stands where the row's
+    /// Unstage will, whole.
+    #[gpui::test]
+    async fn a_double_click_on_the_icon_only_stage_all_writes_one_stage(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        // The heading's label gives way before a row's Unstage does, so the
+        // two meet at a width the text's metrics decide; narrower, the rows
+        // draw no control for a second press to reach.
+        let form = (461..1480).step_by(8).find(|width| {
+            cx.simulate_resize(size(px(*width as f32), px(1700.)));
+            draw(cx);
+            draw(cx);
+            cx.debug_bounds("stage-all")
+                .is_some_and(|action| action.size.width <= action.size.height)
+                && cx.debug_bounds("working-stage-1").is_some()
+                && row_in_view(cx, 4)
+        });
+        assert!(
+            form.is_some(),
+            "a width with the icon-only Stage all and a row's Unstage"
+        );
+        let stage_all = cx.debug_bounds("stage-all").expect("Stage all");
+        double_click_stage_all(&app, cx, stage_all.center()).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A press that stays down on the copy of a row in flight, over its

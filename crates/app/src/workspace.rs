@@ -5376,8 +5376,9 @@ impl GitTurtle {
         // press had just staged.
         let picture = controls.is_none();
         // What the rows moved under a pointer that has not moved since it
-        // pressed a row's Stage or Unstage shows no hover and no tooltip
-        // until it moves (`motion::StillPointer`), nor does a picture.
+        // pressed a row's Stage or Unstage or a heading's Stage all or
+        // Unstage all shows no hover and no tooltip until it moves
+        // (`motion::StillPointer`), nor does a picture.
         let still = picture || self.still_over_moved_rows();
         // A control takes the shared look without its hover fill, and no
         // tooltip at all, not even its confirmation's word: gamma's Stage,
@@ -5569,6 +5570,11 @@ impl GitTurtle {
                                         if this.refuse_busy_press(cx) {
                                             return;
                                         }
+                                        // The rows this write lands put a
+                                        // file's control under the pointer,
+                                        // where a double-click's second press
+                                        // unstaged that file.
+                                        this.hold_still_pointer(position, window);
                                         this.write_from(
                                             if staged {
                                                 WriteCommand::UnstageAll
