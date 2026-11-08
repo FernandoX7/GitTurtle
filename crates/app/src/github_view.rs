@@ -11208,10 +11208,11 @@ mod tests {
     /// Escape closed the panel, the panel draws the patch whole with its ring's room in every
     /// frame it paints, the first among them, where the patch keeps focus: at 13 and 18 pt in
     /// a 461 × 490 window with the body scrolled until one of its edges runs through the
-    /// patch as the panel closes, and at 13 pt with the patch whole at the body's foot as it
-    /// closes in a 461 × 490 window, which a 461 × 420 one cuts while the panel is closed. The reopened body revealed the patch only
-    /// once a frame had found it drawn, so the patch came into view in the third or fourth
-    /// frame, cut at the body's foot in the frames before.
+    /// patch as the panel closes, and with the patch whole at the body's foot as it closes in
+    /// a 461 × 490 window, which a 461 × 420 one cuts at 13 pt while the panel is closed, and a
+    /// 380 × 490 one at 18 pt, its text wrapped again above the patch. The reopened body
+    /// revealed the patch only once a frame had found it drawn, so the patch came into view in
+    /// the third or fourth frame, cut at the body's foot in the frames before.
     #[gpui::test]
     async fn every_frame_of_a_reopen_draws_the_held_patch_whole(cx: &mut TestAppContext) {
         let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
@@ -11239,9 +11240,14 @@ mod tests {
                 && part.bottom() + room <= view.bottom() + px(0.5)
         };
         // Each case: its text size, whether the body cuts the patch as the panel closes, and
-        // the window's height as it reopens.
-        for (interface, cut, height) in [(13u8, true, 490.), (18, true, 490.), (13, false, 420.)] {
-            let at = format!("{interface} pt, reopened in 461 × {height}");
+        // the window's size as it reopens.
+        for (interface, cut, (width, height)) in [
+            (13u8, true, (461., 490.)),
+            (18, true, (461., 490.)),
+            (13, false, (461., 420.)),
+            (18, false, (380., 490.)),
+        ] {
+            let at = format!("{interface} pt, reopened in {width} × {height}");
             crate::focus_ring::sweep::interface_size(cx, interface);
             cx.simulate_resize(size(px(461.), px(490.)));
             cx.update(|window, cx| {
@@ -11280,6 +11286,19 @@ mod tests {
                     shown.center().y - body.top(),
                 );
                 if y + down <= px(0.) { y + down } else { y - up }
+            } else if width < 461. {
+                // The text wrapped again lowers the patch, by about 185 px here, so the panel
+                // closes with it where the narrower body still shows its top, cut at the foot
+                // (some 51 px below the body's top at 461 px): wholly out of view it would lose
+                // focus rather than be revealed. Measured at that width.
+                cx.simulate_resize(size(px(width), px(height)));
+                frames(cx);
+                let view = cx.debug_bounds("github-panel").expect("the body");
+                let lower = cx.debug_bounds("github-part-patch").expect("the patch");
+                let content = lower.top() - view.top() - scroll.offset().y;
+                cx.simulate_resize(size(px(461.), px(490.)));
+                frames(cx);
+                view.size.height - px(30.) - content
             } else {
                 y + (body.bottom() - room - shown.bottom())
             };
@@ -11289,6 +11308,7 @@ mod tests {
             );
             scroll.set_offset(point(px(0.), target));
             frames(cx);
+            let closed = scroll.offset().y;
             let shown = cx.debug_bounds("github-part-patch").expect("the patch");
             assert!(
                 whole(shown, body) != cut
@@ -11298,7 +11318,7 @@ mod tests {
             );
             escape(cx);
             assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
-            cx.simulate_resize(size(px(461.), px(height)));
+            cx.simulate_resize(size(px(width), px(height)));
             frames(cx);
             review::BODY_FRAMES.set(Some(Vec::new()));
             crate::copy_feedback::tests::click(cx, "pull-requests");
@@ -11327,11 +11347,19 @@ mod tests {
                 );
             }
             if !cut {
-                // The shorter window's body is shorter than the one the panel closed in.
+                // The shorter window's body is shorter than the one the panel closed in, and
+                // the narrower window's is narrower, with the patch lower in it.
                 let first = drawn[0].view;
                 assert!(
-                    first.size.height < body.size.height,
-                    "{at}: the body {first:?} is shorter than it closed at {body:?}"
+                    first.size.height < body.size.height || first.size.width < body.size.width,
+                    "{at}: the body {first:?} is smaller than it closed at {body:?}"
+                );
+                // Where the body closed, the resized panel cuts the patch, so the first frame
+                // moves the body.
+                assert_ne!(
+                    scroll.offset().y,
+                    closed,
+                    "{at}: the reopened body moves to the patch"
                 );
             }
         }

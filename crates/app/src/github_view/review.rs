@@ -511,8 +511,9 @@ pub(super) struct Reopening {
     /// Where the innermost part of the body holding focus, or a form holding it, lies in the
     /// frame being drawn, as it prepaints ([`Reopening::note`]).
     focused: std::cell::Cell<Option<Bounds<Pixels>>>,
-    /// The part holding the control focus is back on, by its name, until a frame lays it out
-    /// ([`Reopening::marks`]).
+    /// The part holding the control focus is back on, by its name, until a frame has found that
+    /// control or the frames that would have found it have passed ([`Reopening::marks`],
+    /// [`Reopening::settle`]).
     part: std::cell::RefCell<Option<SharedString>>,
     /// That part's layout node in the frame being drawn, whether it draws focus as a ring on
     /// its own edge, and the room its reveal keeps clear of the body's edges ([`HeldMark`]).
@@ -551,12 +552,16 @@ impl Reopening {
         self.laid_out.set(None);
     }
     /// Whether the part of the body called `name` holds the control focus is back on, which
-    /// no frame has laid out yet: the frame being rendered marks it ([`HeldMark`]).
+    /// no frame has found yet: the frame being rendered marks it ([`HeldMark`]).
     fn marks(&self, name: &SharedString) -> bool {
         self.waits() && self.part.borrow().as_ref() == Some(name)
     }
-    /// In the frame that first lays out the part holding the control focus is back on, before
-    /// the body's content prepaints ([`Reopened`]): where this frame's layout puts the part at
+    /// In each frame that lays out the part holding the control focus is back on while reveals
+    /// wait, before the body's content prepaints ([`Reopened`]). The second can differ from the
+    /// first: after a width change while the panel was closed, Files lays the patch's box out
+    /// from the height the first frame measured above it ([`FilesFit`]), 43.5 px taller at 18 pt
+    /// in a 380 × 490 window, and the box revealed in the first frame was cut in the second.
+    /// Where this frame's layout puts the part at
     /// least partly inside `scroll`'s view, so focus stays there ([`Reopening::settle`]),
     /// scrolls the body by the least that shows it whole with its ring's room, as the body's
     /// reveals bring a control into view; a part taller than the view shows its top where it
@@ -569,7 +574,6 @@ impl Reopening {
         window: &mut Window,
     ) -> Option<(Bounds<Pixels>, bool, Pixels, Pixels)> {
         let (layout, ringed, inset) = self.laid_out.take()?;
-        self.part.take();
         let part = window.layout_bounds(layout);
         let view = scroll.bounds();
         if part.bottom() <= view.top() || part.top() >= view.bottom() {
