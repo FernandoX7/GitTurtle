@@ -811,9 +811,7 @@ cover current upstream x86-64 Omarchy.
        text (`work.rs` `bounded_write_output`) tells a passive read its result "may have applied partially or
        remotely". (S, shared) `ScrollCue`: the frame that reserves a gutter draws no bar, so the thumb comes
        one frame later (`tags.rs` `ScrollCue::list` flags from the last frame; seen in the conflict review
-       and Edit local commits). (S, focus) The remote manager's search field and Add remote… draw rings cut
-       by the dialog body's clip (FU30-C's audit exception in `tab_order_tests.rs`).
-       (M, performance, screen reader) With a screen reader active, a keystroke, a line break or the first frame
+       and Edit local commits). (M, performance, screen reader) With a screen reader active, a keystroke, a line break or the first frame
        in a multi-megabyte text field segments the whole text again for its text runs: 62-73 ms in release in a
        5 MB editor (`docs/benchmarks/2026-11-07-accessible-text-runs.md`), and a caret move ~8 ms: segment only
        the lines an edit touched and keep the rest (4 ms budget for work a screen reader adds to a frame).
@@ -867,19 +865,36 @@ cover current upstream x86-64 Omarchy.
        (nit) Edit local commits' wheel rule: a resize and a wheel before the next prepaint are judged against
        the old reach, and a turn that changes direction within one frame is misrouted to the body: write the
        clamped offset back to the list's handle (FU30-B3 re-check).
-       (S, focus) At 18 pt in a 461 × 490 window: Blame's four Buttons draw no ring; rendered Markdown's side
+       (M, focus, layout) At 18 pt in a 461 × 490 window Blame shows no source lines (their ring 243.5 × 2 px
+       under a later border, FU30-C3's pin) and its four footer Buttons draw no ring; rendered Markdown's side
        headings overrun the comparison pane and cut two heading Buttons below its foot; the local document
        dialog's content is a fixed 65 % of the window, taller than its capped body, so its Markdown's ring is
-       cut, and its Exact source / Rendered toggles' rings are cut on top, right and left at both sizes
-       (FU30-C2's audit; pinned there as known failures). Decided fixes (FU30-C design re-check, 2026-11-07
-       evening): Blame's footer (`blame.rs:578-581`, `flex_shrink_0` up to 260 px, an unwrapped row) becomes a
+       cut; its Exact source / Rendered toggles' rings, and the remote manager's search field and Add remote…,
+       are cut on top, right and left at both sizes by the dialog body's clip, a first row flush with it
+       (FU30-C2/C3's audits; pinned there as known failures). Decided fixes (FU30-C design re-checks,
+       2026-11-07): Blame's footer (`blame.rs:578-581`, `flex_shrink_0` up to 260 px, an unwrapped row) becomes a
        shrinkable clipping region that reveals the focused control (`focus_reveal`, as `branch_actions.rs:1597`'s
-       `content.control`), its row wraps and the lines keep a few rows at least; the Markdown view shows one
+       `content.control`), its row wraps and the lines keep three rows at least (acceptance: Blame's pins leave); the Markdown view shows one
        Link toggle above both sides (it sets one view-wide `linked`) and each side's header is one unwrapped row
        (the label truncates, the controls scroll sideways and reveal the focused one, as the PDF and 3D side
        headers do), then `blocks_room`'s whole-side ring fallback is removed and the blocks keep one line's
-       height; the local document's toggle row gets ring room (`py(ring).my(-ring)`) and its Markdown is sized
+       height; a dialog's content keeps `appearance::button_ring_room` inside the body's clip above its first row and
+       on its sides, through `pt(room)` with `px(room).mx(-room)` on the content wrapper as
+       `branch-chooser-content` (`branch_actions.rs:1595`) does (a negative-margin row changes nothing: FU30-C3
+       measured it; 4 px of top padding cleared all eight cuts), and the local document's Markdown is sized
        to the capped body (`flex_1().min_h_0()`) instead of 65 % of the window (`markdown_view.rs:1405`).
+       (S, tests) The focus sweep: a list stop's ring is at least one row tall (a collapsed list passes
+       today); a sweep of History and Working Changes in the 461 × 490 half tile at 18 pt; the rendered
+       Markdown's `cx.notify()` on a side press (`markdown_view.rs:1632`) has no test, since no frame shows
+       it yet (FU30-C3 reviews).
+       (S, focus) Whatever a GitHub panel reopen focuses, a held control or the section's first stop, in a
+       list, a field or the confirmation, the first painted frame draws it whole with its ring, and the body
+       moves once: PR rows, the summary, the composers, the confirmation, the fallback onto the first stop
+       and the line-clearing nudge keep the later reveal (FU30-D5 design review, 2026-11-07).
+       (S) The project pane: a keyboard shortcut for Show or hide the project list (Primary+Shift+B beside
+       Toggle Sidebar's Primary+B; the table, user guide, help, palette and menu); its save errors are
+       invisible while it is held back or closed; its 180–360 px range and the page's 520 px floor do not
+       scale with text size; View → Toggle Project List shows no checked state (FU32-D design review).
        (S) Rewritten-series review: a listed series moves the action row twice as the review opens (as the
        series lands, then a frame later as the body reveals the list the landing focuses): reveal in the
        landing's frame (FU31-B2).
