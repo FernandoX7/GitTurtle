@@ -447,7 +447,10 @@ fn first_credential_marker_end(text: &str) -> Option<usize> {
 
 /// `input` with the userinfo and the query of every URL hidden. A URL starts
 /// at each `://`, several to a whitespace-separated word included; a query
-/// runs to the word's end and so hides any later URL in it.
+/// runs to the word's end and so hides any later URL in it. A marker hidden
+/// with a later URL's userinfo, or with a userinfo or query reached through
+/// whitespace in the authority, cuts the rest of its line: it was text on
+/// that line, and what follows a marker is never shown.
 fn hide_url_credentials(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut copied = 0;
@@ -463,6 +466,7 @@ fn hide_url_credentials(input: &str) -> String {
         previous_start = Some(start);
         let end = start + url_authority_len(&input[start..]);
         let authority = &input[start..end];
+        let line_end = || input[end..].find('\n').map_or(input.len(), |i| end + i);
         if let Some((userinfo, host)) = authority.rsplit_once('@') {
             // A word's first URL keeps its host whatever its userinfo spells
             // (`https://x-access-token:secret@host`). A later one's userinfo,
@@ -474,7 +478,7 @@ fn hide_url_credentials(input: &str) -> String {
                 && first_credential_marker_end(userinfo).is_some()
             {
                 result.push_str("[redacted]");
-                copied = input[end..].find('\n').map_or(input.len(), |i| end + i);
+                copied = line_end();
                 continue;
             }
             result.push_str("[redacted]@");
@@ -492,7 +496,15 @@ fn hide_url_credentials(input: &str) -> String {
         if let Some(query) = rest[..next_url].find(['?', '#']) {
             result.push_str(&rest[..query]);
             result.push_str("?[redacted]");
-            copied = word_end;
+            // A query that whitespace in the authority puts past the word
+            // would likewise take a marker away from the line's cut.
+            copied = if authority.contains(char::is_whitespace)
+                && first_credential_marker_end(&rest[query..]).is_some()
+            {
+                line_end()
+            } else {
+                word_end
+            };
         } else {
             result.push_str(&rest[..next_url]);
             copied = end + next_url;
@@ -847,6 +859,83 @@ mod tests {
         }
     }
 
+    /// A query reached across whitespace in its authority was text on the
+    /// line, and what followed a marker in it was never shown: hiding the
+    /// query takes that marker away from the line's cut, so the line is cut
+    /// here too.
+    #[test]
+    fn a_marker_in_a_query_after_whitespace_in_its_authority_still_cuts_its_line() {
+        for (written, shown) in [
+            (
+                "https://host\r?token=SECRET visible-more",
+                "https://host\r?[redacted]",
+            ),
+            (
+                "fatal: unable to access 'https://example.com\t?password=correct horse staple'",
+                "fatal: unable to access 'https://example.com\t?[redacted]",
+            ),
+            (
+                "https://u\rv@h/p?access_token=A second-word",
+                "https://[redacted]@h/p?[redacted]",
+            ),
+            (
+                "https://u:se\rcret@host/x?token=abc tail",
+                "https://[redacted]@host/x?[redacted]",
+            ),
+            // A fragment is hidden as a query is.
+            (
+                "https://host\r#token=SECRET visible-more",
+                "https://host\r?[redacted]",
+            ),
+            (
+                "https://u\rv@h/p#Authorization:x tail",
+                "https://[redacted]@h/p?[redacted]",
+            ),
+            // Anywhere in the query, and in the colon form.
+            ("https://h\r?a=b&token=c rest", "https://h\r?[redacted]"),
+            ("https://h\r?token: c rest", "https://h\r?[redacted]"),
+            // A later URL in the word, and an authority with the whitespace
+            // only after its `@`.
+            (
+                "https://a,https://b\rc?token=x rest",
+                "https://a,https://b\rc?[redacted]",
+            ),
+            (
+                "https://u@h\rx?token=y rest",
+                "https://[redacted]@h\rx?[redacted]",
+            ),
+            // The cut ends with the line.
+            (
+                "https://host\r?token=a b\nnext line",
+                "https://host\r?[redacted]\nnext line",
+            ),
+            (
+                "https://host\r?token=a b\r\nnext line",
+                "https://host\r?[redacted]\nnext line",
+            ),
+            // With no marker in the query only the word is hidden, and with
+            // no whitespace in the authority a query hides its word, as ever.
+            (
+                "https://host\r?a=b visible",
+                "https://host\r?[redacted] visible",
+            ),
+            ("https://h/p?token=x shown", "https://h/p?[redacted] shown"),
+            (
+                "https://u@h/p#token=x shown",
+                "https://[redacted]@h/p?[redacted] shown",
+            ),
+        ] {
+            assert_eq!(redact_diagnostic(written), shown, "{written:?}");
+        }
+        assert_eq!(
+            reported_redacted(
+                b"https://host\r?token=SECRET visible-more\n",
+                redact_diagnostic
+            ),
+            "?[redacted]"
+        );
+    }
+
     /// What OpenSSH 10.6 and Git 2.56 hand an askpass program, and what the
     /// dialog shows of it. Every prompt reads as its program wrote it, but
     /// for Git's password prompt: it names a URL, whose userinfo is hidden
@@ -1050,8 +1139,9 @@ mod tests {
         }
         fn piece(&mut self) -> String {
             let [secret, secret2, secret3] = [(); 3].map(|()| self.word("SECRET"));
-            let [other, other2] = [(); 2].map(|()| self.word("WORD"));
-            match self.below(14) {
+            let [other, other2, other3] = [(); 3].map(|()| self.word("WORD"));
+            let (space, query) = (self.pick(&["\r", "\t"]), self.pick(&["?", "#"]));
+            match self.below(18) {
                 0 | 1 => {
                     let marker = self.pick(&MARKERS);
                     let marker = if self.below(2) == 0 {
@@ -1086,6 +1176,27 @@ mod tests {
                 // outside any URL.
                 11 => format!("https://{other}\r{other2}"),
                 12 => format!("{other}@{other2}"),
+                // A marker in a query reached through whitespace in the
+                // authority, with words after that query's own.
+                13 => {
+                    let marker = self.pick(&MARKERS);
+                    format!("https://{other}{space}{query}{marker}{secret} {other2}")
+                }
+                14 => {
+                    let marker = self.pick(&MARKERS);
+                    format!("https://{other}{space}{other2}/p{query}{marker}{secret} {other3}")
+                }
+                15 => {
+                    let marker = self.pick(&MARKERS);
+                    format!(
+                        "https://{secret}{space}{secret2}@{other}/p{query}{marker}{secret3} {other2}"
+                    )
+                }
+                // With no whitespace there, a query hides its word as ever.
+                16 => {
+                    let marker = self.pick(&MARKERS);
+                    format!("https://{other}/p{query}{marker}{secret} {other2}")
+                }
                 _ => other,
             }
         }
