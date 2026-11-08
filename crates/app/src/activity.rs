@@ -43,6 +43,10 @@ struct Entry {
 pub(super) struct State {
     entries: Vec<Entry>,
     pub error: Option<String>,
+    /// Saves of the list, which share one job on the preference writer.
+    saver: commit_drafts::CoalescingSaver<(), Vec<Entry>>,
+    /// The wait before asking again after a full queue refused the job.
+    retry: Option<Task<()>>,
 }
 
 fn safe(value: &str, limit: usize) -> String {
@@ -107,11 +111,11 @@ impl State {
         match Self::read() {
             Ok(entries) => Self {
                 entries,
-                error: None,
+                ..Self::default()
             },
             Err(error) => Self {
-                entries: vec![],
                 error: Some(format!("Activity history unavailable: {error:#}")),
+                ..Self::default()
             },
         }
     }
@@ -284,6 +288,12 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
 }
 
 impl GitTurtle {
+    /// Saves the whole list, each write asking at its start and its end. The
+    /// person asked for none of these, so a writer that is merely behind is
+    /// not a failure: they share one job, and one that a full queue refuses
+    /// asks again until there is room, where a refusal once left "Could not
+    /// save activity" in the Activity browser for the window's life and the
+    /// newest list unsaved until the next write.
     pub(super) fn save_activity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .activity
@@ -294,24 +304,48 @@ impl GitTurtle {
             return;
         }
         let entries = self.activity.entries.clone();
-        let response = self.preferences_writer.submit(move || {
-            let path = preferences::settings_path()?.with_file_name("activity.json");
-            let bytes = serde_json::to_vec(&entries)?;
-            anyhow::ensure!(
-                bytes.len() as u64 <= BYTE_LIMIT,
-                "Activity history exceeds its byte limit"
-            );
-            preferences::atomic_write(&path, &bytes)
-        });
+        let response =
+            self.activity
+                .saver
+                .queue_with(&self.preferences_writer, (), entries, |entries| {
+                    let Some(entries) = entries.get(&()) else {
+                        return Ok(());
+                    };
+                    let path = preferences::settings_path()?.with_file_name("activity.json");
+                    let bytes = serde_json::to_vec(entries)?;
+                    anyhow::ensure!(
+                        bytes.len() as u64 <= BYTE_LIMIT,
+                        "Activity history exceeds its byte limit"
+                    );
+                    preferences::atomic_write(&path, &bytes)
+                });
+        let Some(response) = response else {
+            return;
+        };
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Err(error)) = response.await {
-                let _ = this.update_in(cx, |this, _, cx| {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if error.is::<operations::Busy>() {
+                        this.ask_again_to_save_activity(window, cx);
+                        return;
+                    }
                     this.activity.error = Some(format!("Could not save activity: {error:#}"));
                     cx.notify();
                 });
             }
         })
         .detach();
+    }
+    /// Asks again, after the wait, to save the list a full queue refused.
+    fn ask_again_to_save_activity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.activity.retry.is_some() {
+            return;
+        }
+        let retry = self.retry_refused_save(window, cx, |this, window, cx| {
+            this.activity.retry = None;
+            this.save_activity(window, cx);
+        });
+        self.activity.retry = Some(retry);
     }
     pub(super) fn open_activity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let owner = cx.entity();
@@ -402,7 +436,94 @@ impl Render for ActivityBrowser {
 #[cfg(test)]
 mod tests {
     use super::{LIMIT, Outcome, State, target};
+    use crate::{GitTurtle, workspace::REFUSED_SAVE_RETRY};
+    use gpui_kit::{Entity, VisualTestContext, gpui};
     use std::path::Path;
+
+    /// Records an operation in the list and asks for the list to be saved.
+    fn recorded(app: &Entity<GitTurtle>, operation: &str, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.activity.begin(Path::new("/fixture"), operation, "main");
+                app.save_activity(window, cx);
+            })
+        });
+        cx.executor().run_until_parked();
+    }
+
+    fn writer_answers(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        cx.executor().run_until_parked();
+    }
+
+    /// How many entries of the stored list record `operation`.
+    fn stored(operation: &str) -> usize {
+        State::read()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.operation == operation)
+            .count()
+    }
+
+    /// Each write asks twice for the list to be saved, and the person asked
+    /// for neither, so a preference writer that is merely behind is not a
+    /// failure: a queue other saves have filled refuses the job in silence
+    /// and it asks again until the newest list is stored, and any number of
+    /// saves behind a stalled writer keep one slot of the queue. A refusal
+    /// once left "Could not save activity" in the Activity browser for the
+    /// window's life.
+    #[gpui::test]
+    async fn a_writer_that_is_behind_never_fails_an_activity_save(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        let error = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.activity.error.clone())
+        };
+
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        let fillers: Vec<_> = (0..8)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut filler in fillers {
+            assert!(matches!(filler.try_recv(), Ok(None)), "the queue fills");
+        }
+        recorded(&app, "Refused", cx);
+        assert_eq!(error(&app, cx), None);
+        // Still full: refused again, and still nothing to report.
+        cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+        cx.executor().run_until_parked();
+        assert_eq!(error(&app, cx), None);
+
+        drop(held);
+        writer_answers(&app, cx);
+        assert_eq!(stored("Refused"), 0, "only asking again brings it");
+        cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+        cx.executor().run_until_parked();
+        writer_answers(&app, cx);
+        assert_eq!(stored("Refused"), 1, "the newest list reaches the store");
+        assert_eq!(error(&app, cx), None);
+
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        for _ in 0..9 {
+            recorded(&app, "Behind", cx);
+        }
+        let others: Vec<_> = (0..7)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut other in others {
+            assert!(
+                matches!(other.try_recv(), Ok(None)),
+                "the saves keep one slot of the queue"
+            );
+        }
+        drop(held);
+        writer_answers(&app, cx);
+        assert_eq!(stored("Behind"), 9, "the newest list reaches the store");
+        assert_eq!(error(&app, cx), None);
+    }
+
     #[test]
     fn activity_is_bounded_and_does_not_retain_commit_messages() {
         let mut state = State::default();
