@@ -10900,6 +10900,109 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Files' patch, whole in a 461 × 490 window at 13 pt as Escape closes the panel and so
+    /// held, which a larger text size or a shorter window moves out of the reopened body's
+    /// view while the panel is closed, gives way as a click on the header's Pull requests
+    /// reopens the panel: the frame that first draws the reopened panel finds the patch outside
+    /// the body's view, so focus goes to the section's first stop, the changed-file list, drawn
+    /// whole with its ring, as at 18 pt in 461 × 300, 461 × 360 and 461 × 490 windows. Where the
+    /// reopened body still shows the patch, as at 13 pt in a 461 × 300 window, it keeps focus,
+    /// whole. No test reached this way out: the held controls of the others still lay in view,
+    /// or had already left it as the panel closed.
+    #[gpui::test]
+    async fn reopening_after_the_held_patch_moves_out_of_view_focuses_the_file_list(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let (list, patch) = panel.read_with(cx, |panel, _| {
+            (
+                panel.review.file_focus.clone(),
+                panel.review.line_focus.clone(),
+            )
+        });
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..6 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        let focused = |cx: &mut VisualTestContext, focus: &FocusHandle| {
+            cx.update(|window, _| focus.is_focused(window))
+        };
+        // Whether the reopened body shows the held patch: at 18 pt it lies past the body's
+        // fold in each of these windows; at 13 pt in a 461 × 300 one the body still shows it.
+        for (interface, height, shown) in [
+            (18u8, 300., false),
+            (18, 360., false),
+            (13, 300., true),
+            (18, 490., false),
+        ] {
+            let at = format!("reopened at {interface} pt in 461 × {height}");
+            crate::focus_ring::sweep::interface_size(cx, 13);
+            cx.simulate_resize(size(px(461.), px(490.)));
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.pull = Some(pull.clone());
+                    panel.review.show_list = false;
+                    panel.review.section = Section::Files;
+                    panel.review.files = files.clone();
+                    panel.review.selected_file = None;
+                    panel.select_review_file(1, window, cx);
+                })
+            });
+            settle_panel(&app, cx).await;
+            frames(cx);
+            for _ in 0..12 {
+                if focused(cx, &patch) {
+                    break;
+                }
+                cx.simulate_keystrokes("tab");
+                frames(cx);
+            }
+            assert!(focused(cx, &patch), "{at}: Tab reaches the patch");
+            escape(cx);
+            assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+            // While the panel is closed: a new text size and a shorter window.
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(461.), px(height)));
+            frames(cx);
+            crate::copy_feedback::tests::click(cx, "pull-requests");
+            settle_panel(&app, cx).await;
+            assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+            frames(cx);
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let (which, selector, held) = if shown {
+                ("the patch", "github-patch", &patch)
+            } else {
+                ("the changed-file list", "github-file-focus", &list)
+            };
+            assert!(focused(cx, held), "{at}: {which} holds focus");
+            let held = cx.debug_bounds(selector).expect(selector);
+            assert!(
+                held.top() - room >= body.top() - px(0.5)
+                    && held.bottom() + room <= body.bottom() + px(0.5),
+                "{at}: {which} {held:?} holds focus whole in the body {body:?}"
+            );
+            if which == "the changed-file list" {
+                assert!(
+                    outlined(cx, selector),
+                    "{at}: {which} draws its ring after the click"
+                );
+            }
+            escape(cx);
+            crate::copy_feedback::tests::click(cx, "pull-requests");
+            settle_panel(&app, cx).await;
+            frames(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A confirmation a test opens, by what it confirms, and how it is made.
     type Confirming = (&'static str, fn() -> Confirmation);
 
