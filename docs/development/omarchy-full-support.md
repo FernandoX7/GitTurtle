@@ -757,6 +757,10 @@ cover current upstream x86-64 Omarchy.
        Working cursor (`workspace.rs:~2804`, after Refresh or a Fetch that finds nothing). (S) `files_fit` (`review.rs:~3487`) still
        reads the last frame's top line. (S, hardening, no known producer) `redact_diagnostic` leaves forms outside its marker list
        whole (`password: x`) and its URL stage handles only the first `://` per token.
+       (S) Reopening the GitHub panel while a cancelled read drains is refused silently (`operation_busy` is cleared only when the worker
+       replies, `github_view.rs:~655`, `:~663`, `:~524`); the `views.rs` comments saying it refuses while a write runs are inaccurate for reads.
+       (nit) The second press of a double-click on a labelled Stage all's middle lands on the row body, moving the cursor and opening that
+       file's preview (it writes nothing): the guard could cover the row body too.
      - **Found on 2026-11-08 (the FU30-D5b and FU30-D8 reviews):** (M, focus, the first-frame rule, decided
        2026-11-07) the GitHub panel body's reveal is decided before layout, so whatever a reopen or an opening
        confirmation focuses is whole in its first painted frame. Today `review::show` reveals after paint: Send and
