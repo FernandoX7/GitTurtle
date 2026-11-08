@@ -130,6 +130,9 @@ fn markdown_blocks(source: &str) -> Vec<(usize, &str, bool)> {
     if let Some((_, _, true, start, source_line)) = open {
         blocks.push((source_line, &source[start..], true));
     }
+    // A blank block is no diagram, before anything counts it. An unclosed
+    // one keeps its own error, blank or not.
+    blocks.retain(|(_, block, unclosed)| *unclosed || !block.trim().is_empty());
     blocks
 }
 
@@ -275,6 +278,33 @@ fn render(source: &str, max_edge: u32, check: &impl Fn() -> Result<()>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_blank_markdown_fence_is_no_block() {
+        for (name, source) in [
+            ("doc.md", "```mermaid\n```\n"),
+            ("doc.mdx", "```mermaid\n\n \t\n```\n"),
+            ("doc.markdown", "~~~mermaid\n\n~~~\n"),
+        ] {
+            assert!(
+                preview(source, Path::new(name), 800, || Ok(()))
+                    .unwrap()
+                    .is_none(),
+                "{name} holding {source:?} has no diagrams"
+            );
+        }
+        let unclosed = preview("```mermaid\n", Path::new("doc.md"), 800, || Ok(()))
+            .unwrap()
+            .expect("an unclosed fence still says so, blank or not");
+        assert_eq!(unclosed.total, 1);
+        assert!(
+            unclosed.diagrams[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("not closed")),
+            "an unclosed blank fence keeps its own error"
+        );
+    }
 
     #[test]
     fn a_blank_mermaid_file_has_no_diagrams() {

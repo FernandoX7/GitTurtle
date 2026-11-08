@@ -1280,6 +1280,39 @@ mod tests {
         }
     }
 
+    /// A blank Mermaid fence in Markdown is no block on the file route
+    /// either: a `.md` file with a link or a pointer on one side has no
+    /// Rendered view and reaches `prepare_mermaid`, where a blank fence once
+    /// drew an error page and used one of the four slots.
+    #[test]
+    fn prepare_mermaid_leaves_out_a_markdown_files_blank_fence() {
+        let file = gitturtle_core::FileChange {
+            old_path: Some("a.md".into()),
+            new_path: Some("a.md".into()),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Modified,
+            old_mode: "120000".into(),
+            new_mode: "100644".into(),
+        };
+        let fence = |source: &str| format!("```mermaid\n{source}```\n\n");
+        let new = format!(
+            "{}{}",
+            fence("\n"),
+            fence("flowchart LR\n  A --> B\n").repeat(4)
+        );
+        let prepared = prepare_mermaid("notes.txt", &new, &file, || Ok(()))
+            .unwrap()
+            .expect("the regular side draws its diagrams");
+        assert!(prepared.old.pages.is_empty(), "the link side has no pages");
+        assert_eq!(prepared.new.pages.len(), 4, "the four real fences draw");
+        assert_eq!(prepared.new.page_count, 4, "the blank fence is not counted");
+        assert!(
+            prepared.new.pages.iter().all(|page| page.error.is_none()),
+            "no page is an error page"
+        );
+    }
+
     #[test]
     fn absent_and_empty_are_distinct_and_source_is_counted() {
         let empty = Side::prepare(vec![], Path::new("empty.bin"), || Ok(())).unwrap();
