@@ -13897,89 +13897,166 @@ mod tests {
     /// focus on the conversations pane, and opening it again, restores focus to the pane, which
     /// draws its keyboard ring on its edge with its top edge drawn inside the body's clip, the
     /// room a ring takes clear of it: in a 461 × 490 window, at 13 and 18 pt, the pane is
-    /// taller than the body and once showed its bottom with its top above the clip. In a
-    /// 1,480 × 800 window the pane fits, and its ring is whole. Closed on the first
-    /// conversation's Reply, which Tab had moved onto, the panel once gave focus to the pane
-    /// only because the Button's handle went with the closed dialog's frame; it now gives it
-    /// back to Reply (`reopening_gives_focus_back_to_a_body_button`).
+    /// taller than the body, its top above the body's top as the panel closes, and once showed
+    /// its bottom with its top above the clip. In a 1,480 × 800 window the pane fits, and its
+    /// ring is whole. The click moves nothing. Closed with Tab's focus on the first
+    /// conversation's Reply and the body then scrolled until Reply lies outside it, the panel
+    /// holds no control and reopens onto Overview's first stop, the pane, its ring's top edge
+    /// drawn the same way. Closed on Reply in view, the panel once gave focus to the pane only
+    /// because the Button's handle went with the closed dialog's frame; it now gives it back to
+    /// Reply (`reopening_gives_focus_back_to_a_body_button`).
     #[gpui::test]
     async fn a_reopened_prs_conversations_pane_draws_its_rings_top_edge(cx: &mut TestAppContext) {
         let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
-        let section = cx.read(|cx| panel.read(cx).review.section_focus.clone());
+        let (section, scroll) = cx.read(|cx| {
+            let panel = panel.read(cx);
+            (
+                panel.review.section_focus.clone(),
+                panel.review.body_scroll.clone(),
+            )
+        });
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let mut fell_back = 0;
         for sizes in REVEAL_SIZES {
-            let (interface, width, height) = sizes;
-            let at = format!("{interface} pt in {width} × {height}");
-            show_overview(&panel, &pull, sizes, cx);
-            // Into the conversation list, scrolling the body down to it.
-            cx.simulate_keystrokes("tab tab");
-            crate::width_walk::frame(cx);
-            // A click on the pane's edge, beside the list, puts focus on the pane and moves
-            // nothing: only the keyboard reveals.
-            let (body, pane) = (
-                cx.debug_bounds("github-panel").expect("the body"),
-                cx.debug_bounds("github-thread-section").expect("the pane"),
-            );
-            let (top, bottom) = (pane.top().max(body.top()), pane.bottom().min(body.bottom()));
-            cx.simulate_click(
-                point(pane.left() + px(2.), (top + bottom) / 2.),
-                Modifiers::default(),
-            );
-            crate::width_walk::frame(cx);
-            assert!(
-                cx.update(|window, _| section.is_focused(window)),
-                "{at}: the click puts focus on the pane"
-            );
-            escape(cx);
-            assert!(
-                !cx.update(|window, cx| window.has_active_dialog(cx)),
-                "{at}: Escape closes the panel"
-            );
-            cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
-            for _ in 0..4 {
-                crate::width_walk::frame(cx);
-            }
-            assert!(
-                cx.update(|window, _| section.is_focused(window)),
-                "{at}: the reopened panel restores focus to the conversations pane"
-            );
-            let (body, pane) = (
-                cx.debug_bounds("github-panel").expect("the body"),
-                cx.debug_bounds("github-thread-section").expect("the pane"),
-            );
-            let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
-            let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
-                .into_iter()
-                .filter(|ring| near(ring.bounds, pane))
-                .collect();
-            let [ring] = rings[..] else {
-                panic!("{at}: one ring on the pane's edge {pane:?}: {rings:?}");
-            };
-            let room = cx.update(|_, cx| appearance::button_ring_room(cx));
-            assert!(
-                ring.sides[0] && pane.top() >= body.top() + room - px(0.5),
-                "{at}: the ring's top edge lies inside the body {body:?}, its room clear: {ring:?}"
-            );
-            // The case the narrow window is here for: a pane taller than the body, which a
-            // taller body would otherwise turn into a pane that fits without failing.
-            if width < 1000. {
-                assert!(
-                    pane.size.height + room * 2. > body.size.height,
-                    "{at}: the pane {pane:?} is taller than the body {body:?}"
+            for fallback in [false, true] {
+                let (interface, width, height) = sizes;
+                let at = format!(
+                    "{interface} pt in {width} × {height}{}",
+                    if fallback { ", Reply out of view" } else { "" }
                 );
-            }
-            if pane.size.height + room * 2. <= body.size.height {
+                show_overview(&panel, &pull, sizes, cx);
+                // Into the conversation list, scrolling the body down to it.
+                cx.simulate_keystrokes("tab tab");
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                if fallback {
+                    // The body moves until the conversation list, the part holding Reply,
+                    // which holds focus, lies outside it, so closing holds no control.
+                    let list = cx
+                        .debug_bounds("github-part-conversation-list")
+                        .expect("the conversation list");
+                    let outside = |part: Bounds<Pixels>| {
+                        part.bottom() <= body.top() || part.top() >= body.bottom()
+                    };
+                    let y = scroll.offset().y;
+                    let Some(target) = [px(0.), -scroll.max_offset().y]
+                        .into_iter()
+                        .find(|target| outside(list + point(px(0.), *target - y)))
+                    else {
+                        // The body shows the list wherever it scrolls.
+                        assert!(
+                            width > 1000.,
+                            "{at}: the body can move the list out of view"
+                        );
+                        continue;
+                    };
+                    scroll.set_offset(point(px(0.), target));
+                    for _ in 0..3 {
+                        crate::width_walk::frame(cx);
+                    }
+                    let list = cx
+                        .debug_bounds("github-part-conversation-list")
+                        .expect("the conversation list");
+                    assert!(
+                        outside(list),
+                        "{at}: the list {list:?} lies outside the body {body:?}"
+                    );
+                    fell_back += 1;
+                } else {
+                    if width < 1000. {
+                        // On past the pane's top, which Tab left 96 px inside the body at 13 pt:
+                        // the pane this test is for has its top above the body as it closes.
+                        scroll.set_offset(point(
+                            px(0.),
+                            (scroll.offset().y - px(120.)).max(-scroll.max_offset().y),
+                        ));
+                        for _ in 0..3 {
+                            crate::width_walk::frame(cx);
+                        }
+                    }
+                    let pane = cx.debug_bounds("github-thread-section").expect("the pane");
+                    if width < 1000. {
+                        assert!(
+                            pane.top() < body.top(),
+                            "{at}: the pane's top {pane:?} lies above the body's {body:?}"
+                        );
+                    }
+                    // A click on the pane's edge, beside the list, puts focus on the pane and
+                    // moves nothing: only the keyboard reveals.
+                    let offset = scroll.offset().y;
+                    let (top, bottom) =
+                        (pane.top().max(body.top()), pane.bottom().min(body.bottom()));
+                    cx.simulate_click(
+                        point(pane.left() + px(2.), (top + bottom) / 2.),
+                        Modifiers::default(),
+                    );
+                    crate::width_walk::frame(cx);
+                    assert!(
+                        cx.update(|window, _| section.is_focused(window)),
+                        "{at}: the click puts focus on the pane"
+                    );
+                    assert_eq!(scroll.offset().y, offset, "{at}: the click moves nothing");
+                    let moved = cx.debug_bounds("github-thread-section").expect("the pane");
+                    assert_eq!(moved, pane, "{at}: the click leaves the pane where it was");
+                }
+                escape(cx);
                 assert!(
-                    ring.whole,
-                    "{at}: the pane fits, and its ring is whole: {ring:?}"
+                    !cx.update(|window, cx| window.has_active_dialog(cx)),
+                    "{at}: Escape closes the panel"
                 );
-            }
-            if width > 1000. {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+                for _ in 0..4 {
+                    crate::width_walk::frame(cx);
+                }
                 assert!(
-                    ring.whole,
-                    "{at}: the wide window fits the pane whole: {ring:?}"
+                    cx.update(|window, _| section.is_focused(window)),
+                    "{at}: the reopened panel restores focus to the conversations pane"
                 );
+                let (body, pane) = (
+                    cx.debug_bounds("github-panel").expect("the body"),
+                    cx.debug_bounds("github-thread-section").expect("the pane"),
+                );
+                let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+                let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                    .into_iter()
+                    .filter(|ring| near(ring.bounds, pane))
+                    .collect();
+                let [ring] = rings[..] else {
+                    panic!("{at}: one ring on the pane's edge {pane:?}: {rings:?}");
+                };
+                assert!(
+                    ring.sides[0] && pane.top() >= body.top() + room - px(0.5),
+                    "{at}: the ring's top edge lies inside the body {body:?}, its room clear: \
+                     {ring:?}"
+                );
+                // The case the narrow window is here for: a pane taller than the body, which a
+                // taller body would otherwise turn into a pane that fits without failing.
+                if width < 1000. {
+                    assert!(
+                        pane.size.height + room * 2. > body.size.height,
+                        "{at}: the pane {pane:?} is taller than the body {body:?}"
+                    );
+                }
+                if pane.size.height + room * 2. <= body.size.height {
+                    assert!(
+                        ring.whole,
+                        "{at}: the pane fits, and its ring is whole: {ring:?}"
+                    );
+                }
+                if width > 1000. {
+                    assert!(
+                        ring.whole,
+                        "{at}: the wide window fits the pane whole: {ring:?}"
+                    );
+                }
             }
         }
+        assert!(
+            fell_back >= 2,
+            "the narrow windows move the conversation list out of the body"
+        );
     }
 
     /// The panel closed with its body scrolled to its end reopens onto its destination field
