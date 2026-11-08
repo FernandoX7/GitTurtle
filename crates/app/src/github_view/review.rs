@@ -74,6 +74,43 @@ pub(super) enum Section {
     Files,
     Review,
 }
+/// The focus handles of the panel's body Buttons that keep no handle of the panel's own, by
+/// their element ids ([`Panel::button`]): kept by the panel, they outlive the closed dialog's
+/// frame, so reopening gives focus back to the Button that held it ([`Panel::focus_reopened`]).
+/// A Button keeps its handle in its own element state otherwise, which goes with that frame,
+/// and reopening onto Comment on selection or Open captured local comparison took the
+/// section's first stop instead. Each frame keeps the handles the frame before handed out and
+/// the one holding focus, so none outlives the Button it was handed to by more than a frame.
+#[derive(Default)]
+pub(super) struct Buttons(
+    std::cell::RefCell<std::collections::HashMap<ElementId, (FocusHandle, bool)>>,
+);
+impl Buttons {
+    /// The handle of the Button `id` this frame draws.
+    pub(super) fn focus(&self, id: impl Into<ElementId>, cx: &App) -> FocusHandle {
+        let mut handles = self.0.borrow_mut();
+        let (focus, handed) = handles
+            .entry(id.into())
+            .or_insert_with(|| (cx.focus_handle(), true));
+        *handed = true;
+        focus.clone()
+    }
+    /// The handle the Button `id` was last drawn with, if the panel keeps one.
+    #[cfg(test)]
+    pub(super) fn kept(&self, id: impl Into<ElementId>) -> Option<FocusHandle> {
+        self.0
+            .borrow()
+            .get(&id.into())
+            .map(|(focus, _)| focus.clone())
+    }
+    /// As a frame of the panel starts: gives up the handles the last frame handed out to no
+    /// Button, except the one holding focus.
+    pub(super) fn begin_frame(&self, window: &Window) {
+        self.0
+            .borrow_mut()
+            .retain(|_, (focus, handed)| std::mem::take(handed) || focus.is_focused(window));
+    }
+}
 pub(super) struct ReviewState {
     pub section: Section,
     pub body_scroll: ScrollHandle,
@@ -177,11 +214,14 @@ pub(super) struct ReviewState {
     pub pane_held: Option<FocusHandle>,
     /// The control that held focus inside the body's view as the panel last closed, which
     /// reopening gives focus back to where a frame still draws it there
-    /// ([`Panel::focus_reopened`]). Held weakly: a Button that keeps its focus in its own
-    /// element state, as most do, drops it with the closed dialog's frame.
+    /// ([`Panel::focus_reopened`]). Held weakly: a control's handle lives as long as its owner
+    /// keeps it, the panel's for its body's Buttons ([`Buttons`]) and its fields', and a
+    /// handle no owner keeps any more is no control to give focus back to.
     pub held: Option<WeakFocusHandle>,
     /// How the reopened panel settles its focus ([`Reopening`]).
     pub reopening: std::rc::Rc<Reopening>,
+    /// The focus handles of the body's Buttons ([`Buttons`]).
+    pub buttons: Buttons,
     pub preparing: bool,
     /// A preparation the panel's close cancelled, resumed when it reopens.
     suspended: bool,
@@ -252,6 +292,7 @@ impl ReviewState {
             pane_held: None,
             held: None,
             reopening: Default::default(),
+            buttons: Default::default(),
             preparing: false,
             suspended: false,
             prepare_generation: 0,
@@ -2009,6 +2050,30 @@ impl Panel {
         }
         button.track_focus(focus).disabled(disabled)
     }
+    /// The panel's [`button`] `id` in its body, tracking the focus handle the panel keeps for
+    /// it ([`Buttons`]), so reopening gives focus back to it.
+    pub(super) fn button(
+        &self,
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        symbol: &str,
+        active: bool,
+        cx: &App,
+    ) -> gpui_kit::component::button::Button {
+        let id = id.into();
+        let focus = self.review.buttons.focus(id.clone(), cx);
+        button(id, label, symbol, active).track_focus(&focus)
+    }
+    /// `button`, a Button of the body built by a helper of its own, as a copy button is,
+    /// tracking the focus handle the panel keeps for `id` ([`Buttons`]).
+    pub(super) fn held_button(
+        &self,
+        id: impl Into<ElementId>,
+        button: gpui_kit::component::button::Button,
+        cx: &App,
+    ) -> gpui_kit::component::button::Button {
+        button.track_focus(&self.review.buttons.focus(id, cx))
+    }
     /// Whether the pane that `focus` tracks draws the window's keyboard ring:
     /// after a key, and still while the pointer moves, until a pointer press.
     pub(super) fn ringed(&self, focus: &FocusHandle, cx: &App) -> bool {
@@ -2628,11 +2693,12 @@ impl Panel {
                         self.part(["section-0", "section-1"][i], div(), cx)
                     };
                     part.child(
-                        button(
+                        self.button(
                             ("github-section", i),
                             name,
                             "",
                             self.review.section == section,
+                            cx,
                         )
                         .debug_selector(move || format!("github-section-{i}"))
                         .toggled(self.review.section == section)
@@ -2729,20 +2795,24 @@ impl Panel {
                     .items_center()
                     .gap_2()
                     .child(
-                        button("github-add-comment", "Add to review", "plus", true)
+                        self.button("github-add-comment", "Add to review", "plus", true, cx)
                             .disabled(self.pending)
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.add_comment(window, cx)),
                             ),
                     )
                     .child(
-                        button("github-discard-composer", "Discard this comment", "", false)
-                            .disabled(self.pending)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.discard_composer(window, cx)
-                                }),
-                            ),
+                        self.button(
+                            "github-discard-composer",
+                            "Discard this comment",
+                            "",
+                            false,
+                            cx,
+                        )
+                        .disabled(self.pending)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.discard_composer(window, cx)),
+                        ),
                     )
                     .child(
                         label(
@@ -3075,7 +3145,7 @@ impl Panel {
                                 )
                                 .child(div().flex_1())
                                 .child(
-                                    button(
+                                    self.button(
                                         "github-inline-start",
                                         if self.review.composing.is_some() {
                                             "Continue comment"
@@ -3084,6 +3154,7 @@ impl Panel {
                                         },
                                         "plus",
                                         false,
+                                        cx,
                                     )
                                     .debug_selector(|| "github-inline-start".into())
                                     .disabled(
@@ -3398,8 +3469,8 @@ impl Panel {
             .child(clipped(crate::native_accessibility::clips_children(div().id("github-collected-comments").debug_selector(||"github-collected-comments".into()).flex_shrink_0().max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.review.comments.iter().enumerate().map(|(index,comment)|div().flex_shrink_0().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label(("github-draft-position",index),model::position_label(comment)).font_weight(FontWeight::SEMIBOLD))
                 .child(label(("github-draft-body",index),comment.body.clone()))
-                .child(div().flex().gap_2().child(button(("github-edit-inline",index),"Edit","",false).disabled(self.pending||self.review.composing.is_some()).on_click(cx.listener(move|this,_,window,cx|this.edit_comment(index,window,cx))))
-                    .child(button(("github-remove-inline",index),"Remove","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);}})))))))))
+                .child(div().flex().gap_2().child(self.button(("github-edit-inline",index),"Edit","",false, cx).disabled(self.pending||self.review.composing.is_some()).on_click(cx.listener(move|this,_,window,cx|this.edit_comment(index,window,cx))))
+                    .child(self.button(("github-remove-inline",index),"Remove","",false, cx).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);}})))))))))
             .child(self.render_comment_composer(cx)).into_any_element()
     }
 }
