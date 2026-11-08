@@ -136,6 +136,22 @@ impl DiffView {
         self.selection.ids.len()
     }
 
+    /// Selects every changed line, as their checkboxes would.
+    #[cfg(test)]
+    pub(crate) fn select_every_line(&mut self, cx: &mut Context<Self>) {
+        if let Some(partial) = &self.partial {
+            self.selection.ids = partial
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    PartialRow::Change { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            cx.notify();
+        }
+    }
+
     pub fn suspend_partial(&mut self, cx: &mut Context<Self>) {
         self.partial_busy = true;
         self.selection = LineSelection::default();
@@ -996,9 +1012,9 @@ fn line_keys_description(action: &str) -> String {
 
 /// The selection bar's room beside its sides, above and below its controls
 /// and between them, at the default interface size.
-const BAR_INSET: f32 = 12.;
+pub(crate) const BAR_INSET: f32 = 12.;
 const BAR_PADDING: f32 = 8.;
-const BAR_GAP: f32 = 8.;
+pub(crate) const BAR_GAP: f32 = 8.;
 
 /// What Clear's icon form is named and tooltipped.
 const CLEAR_NAME: &str = "Clear line selection";

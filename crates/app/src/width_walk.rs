@@ -22,7 +22,10 @@
 //! group rescales it to, not only its saved width; History and Working
 //! Changes are walked again with the inspector saved at its widest, 480 px,
 //! wider than every narrower window allows it, so it gives way to the
-//! content column's minimum (DESIGN.md, "One responsive order").
+//! content column's minimum (DESIGN.md, "One responsive order"). Working
+//! Changes is walked with a staged diff's every line selected too, under
+//! the longest label its bar holds, which must keep its action and Clear
+//! whole in that order.
 //!
 //! The test text system paints no glyphs, so the walk marks what it checks
 //! with fills a test can find among the painted quads, each with the content
@@ -56,6 +59,11 @@ pub(crate) fn text_mark() -> Hsla {
 /// Every shared control's fill at rest.
 fn control_mark() -> Hsla {
     hsla(0.789, 0.987, 0.456, 0.004)
+}
+
+thread_local! {
+    /// Clear's label as laid out, for its font and size.
+    static CLEAR_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
 /// What the walk fails on.
@@ -111,6 +119,11 @@ enum Rule {
     /// 18 pt in a 461 × 490 half tile: the outcome comes first, and the
     /// hints keep their keys alone, or leave, while it lasts.
     OutcomeCut,
+    /// A diff's line-selection bar lays its controls out against the one
+    /// responsive order: one lies outside the bar, or Clear is wrapped with
+    /// its label, is its icon where its label fits beside the action, or
+    /// is wrapped below where its icon fits there.
+    SelectionBar,
 }
 
 /// The pages the walk lays out.
@@ -122,6 +135,8 @@ pub(crate) enum Page {
     CompareText,
     CompareImage,
     Working,
+    /// Working Changes showing a staged diff with every line selected.
+    WorkingLines,
     GitHub,
 }
 
@@ -136,6 +151,7 @@ const REGIONS: &[&str] = &[
     "preview-file-path",
     "compare-footer",
     "compare-toolbar",
+    "partial-selection-bar",
     "code-editor",
     "preview-content",
     "history-scope-toolbar",
@@ -253,6 +269,9 @@ struct Walk<'a> {
     path: Option<&'static str>,
     findings: Vec<Finding>,
     layouts: usize,
+    /// The forms a diff's line-selection bar took, each as whether Clear was
+    /// its icon and whether it stood beside the action.
+    bar_forms: BTreeSet<(bool, bool)>,
 }
 
 impl Walk<'_> {
@@ -408,6 +427,61 @@ impl Walk<'_> {
         self.inspect_outcome(width, height, cx);
         if self.page == Page::HistorySearch {
             self.inspect_search_state(width, height, cx);
+        }
+        if self.page == Page::WorkingLines {
+            self.inspect_selection_bar(width, height, cx);
+        }
+    }
+
+    /// Records a diff's line-selection bar drawn against the one responsive
+    /// order, read from the controls as laid out, which the bar decided from
+    /// the font before layout (`diff_view::bar_layout`): both whole in the
+    /// bar, Clear's label beside the action where both fit with a pixel to
+    /// spare, else its icon beside it, and wrapped below only where even
+    /// that does not fit.
+    fn inspect_selection_bar(&mut self, width: f32, height: f32, cx: &mut VisualTestContext) {
+        let at = (width, height);
+        let (Some(bar), Some(action), Some(clear)) = (
+            cx.debug_bounds("partial-selection-bar"),
+            cx.debug_bounds("apply-partial-selection"),
+            cx.debug_bounds("clear-partial-selection"),
+        ) else {
+            let detail = "the selection bar with its action and Clear is not drawn".to_owned();
+            self.found(Rule::SelectionBar, "partial-selection-bar", at, detail);
+            return;
+        };
+        let (gap, room, label) = cx.update(|window, _| {
+            let snap = |length: Pixels| window.pixel_snap(length);
+            (
+                snap(appearance::ui_size(crate::diff_view::BAR_GAP)),
+                bar.size.width - snap(appearance::ui_size(crate::diff_view::BAR_INSET)) * 2.,
+                crate::text_button_width(&["Clear"], &CLEAR_LABEL, window),
+            )
+        });
+        let fits = |clear: Pixels| action.size.width + gap + clear <= room - px(1.);
+        let icon = (clear.size.width - clear.size.height).abs() < px(0.5);
+        let beside = (action.top() - clear.top()).abs() < px(0.5);
+        self.bar_forms.insert((icon, beside));
+        let detail = format!("action {action:?}, Clear {clear:?}, bar {bar:?}");
+        let wrong = if [action, clear].iter().any(|control| {
+            control.left() < bar.left()
+                || control.right() > bar.right()
+                || control.top() < bar.top()
+                || control.bottom() > bar.bottom()
+        }) {
+            Some("a control lies outside the bar")
+        } else if !beside && !icon {
+            Some("Clear is wrapped with its label")
+        } else if icon && fits(label) {
+            Some("Clear is its icon where its label fits")
+        } else if !beside && fits(clear.size.width) {
+            Some("Clear is wrapped where its icon fits")
+        } else {
+            None
+        };
+        if let Some(wrong) = wrong {
+            let detail = format!("{wrong}: {detail}");
+            self.found(Rule::SelectionBar, "partial-selection-bar", at, detail);
         }
     }
 
@@ -978,6 +1052,7 @@ async fn walk_with(
         path,
         findings: Vec::new(),
         layouts: 0,
+        bar_forms: BTreeSet::new(),
     };
     for height in [490., 980.] {
         walk.walk(height, cx);
@@ -1031,7 +1106,15 @@ async fn walk_with(
         let fresh = app.read_with(cx, |app, _| app.fresh_outcome().map(str::to_owned));
         assert_eq!(fresh.as_deref(), Some(outcome), "fresh for the whole walk");
     }
+    let bar_forms = std::mem::take(&mut walk.bar_forms);
     walk.verdict();
+    if page == Page::WorkingLines {
+        assert_eq!(
+            bar_forms,
+            BTreeSet::from([(false, true), (true, false), (true, true)]),
+            "{text} pt: (Clear as its icon, beside the action) over the walk"
+        );
+    }
 }
 
 /// Subscribes `app`'s repository again through a watcher that cannot start,
@@ -1172,6 +1255,35 @@ pub(crate) async fn open(
             cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
             None
         }
+        Page::WorkingLines => {
+            // Five removed lines and 120 added, staged: "Unstage 125 lines",
+            // the widest label the bar holds.
+            let edited: String = (0..120).map(|line| format!("Walked {line}\n")).collect();
+            std::fs::write(root.join("README.md"), edited).unwrap();
+            fixture_git(&root, &["add", "README.md"]);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            let index = app.read_with(cx, |app, _| {
+                let entries = &app.work_status.as_ref().unwrap().entries;
+                entries
+                    .iter()
+                    .position(|entry| entry.path == std::path::Path::new("README.md"))
+                    .expect("README.md among the Working rows")
+            });
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.text_mode = crate::TextMode::Unified;
+                    app.select_working(index, gitturtle_core::ChangeArea::Staged, window, cx);
+                })
+            });
+            settle(&app, cx).await;
+            let view = app.read_with(cx, |app, _| app.patch_view.clone().expect("the Diff view"));
+            view.update(cx, |view, cx| view.select_every_line(cx));
+            let selected = view.read_with(cx, |view, _| view.selected_lines());
+            assert_eq!(selected, 125, "every changed line selected");
+            None
+        }
         Page::GitHub => {
             cx.update(|window, cx| crate::github_view::open_offline_fixture(&app, window, cx));
             let (operations, preferences) = app.read_with(cx, |app, _| {
@@ -1300,6 +1412,19 @@ async fn working_changes_keep_their_text_whole_at_13_pt(cx: &mut TestAppContext)
 #[gpui::test]
 async fn working_changes_keep_their_text_whole_at_18_pt(cx: &mut TestAppContext) {
     walk(Page::Working, 18, cx).await;
+}
+
+/// A staged diff with every line selected: its bar's action and Clear stay
+/// whole on one row where they fit, Clear gives way first as its icon, and
+/// only a bar too narrow even for that wraps it below.
+#[gpui::test]
+async fn a_line_selection_keeps_its_bar_whole_at_13_pt(cx: &mut TestAppContext) {
+    walk(Page::WorkingLines, 13, cx).await;
+}
+
+#[gpui::test]
+async fn a_line_selection_keeps_its_bar_whole_at_18_pt(cx: &mut TestAppContext) {
+    walk(Page::WorkingLines, 18, cx).await;
 }
 
 #[gpui::test]
