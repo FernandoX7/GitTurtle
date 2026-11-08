@@ -1,9 +1,16 @@
 //! Unified patch presentation with a separate old/new line-number gutter.
 //! The editor retains the exact patch, so selection, copying, and search never
 //! include presentation-only numbers. No Git reads happen in this component.
+//!
+//! Where it offers a working diff's partial actions, its changed lines are
+//! selected from the keyboard through the text's caret, never a Tab stop per
+//! line: Space toggles the changed lines under the caret or the text
+//! selection ([`DiffView::toggle_at_caret`]), the caret line's checkbox draws
+//! a mark, and the view announces each toggle from its own live region.
 
 use crate::{
     appearance::{CodeFont, palette},
+    native_accessibility::LiveRegion as _,
     partial_view::{PartialActions, PartialRow},
     text::PatchPresentation,
 };
@@ -11,13 +18,14 @@ use gitturtle_core::{ChangeArea, PartialDiff, PartialSelection};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, App, AppContext, Bounds, ClickEvent, ContentMask, Context, Entity, EventEmitter,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled,
-    Subscription, TextAlign, TextRun, Window, canvas,
+    FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Point,
+    Render, Role, SharedString, StatefulInteractiveElement, Styled, Subscription, TextAlign,
+    TextRun, Window, canvas,
     component::{
         Disableable, Sizable,
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
-        input::EditorState,
+        input::{EditorState, Position, RopeExt},
     },
     div, fill, point, px, relative, rgb, size,
 };
@@ -76,6 +84,20 @@ pub struct DiffView {
     partial: Option<Arc<PartialActions>>,
     selection: LineSelection,
     partial_busy: bool,
+    /// What the live region says of the latest Space toggle, with the
+    /// count that names its node afresh for each, so each is announced
+    /// ([`Self::render_announcement`]).
+    announcement: Option<(usize, SharedString)>,
+    announcements: usize,
+    /// The selection bar's Stage / Unstage selected lines and Clear, the
+    /// Tab stops after the text, whose press gives focus back to the text
+    /// ([`Self::render_partial_selection`]).
+    apply_focus: FocusHandle,
+    clear_focus: FocusHandle,
+    /// The room that bar took in the last frame, so the text keeps the
+    /// caret's line whole above it in the frame it comes, goes or changes
+    /// height ([`BarRoom::keep_caret_line`]).
+    bar_room: Rc<BarRoom>,
     viewport: Viewport,
     pending_scroll: Rc<PendingScroll>,
     gutter_origin: Rc<Cell<Option<Point<Pixels>>>>,
@@ -104,7 +126,171 @@ impl DiffView {
     pub fn suspend_partial(&mut self, cx: &mut Context<Self>) {
         self.partial_busy = true;
         self.selection = LineSelection::default();
+        self.announcement = None;
         cx.notify();
+    }
+
+    /// Whether the text holds focus while the per-line controls show, and
+    /// then whether they unstage: Space then selects lines, which the status
+    /// bar names (`GitTurtle::hints_for`).
+    pub(crate) fn line_keys(&self, window: &Window, cx: &App) -> Option<bool> {
+        let partial = self.partial.as_ref()?;
+        self.focus_handle(cx)
+            .is_focused(window)
+            .then_some(partial.diff.area == ChangeArea::Staged)
+    }
+
+    /// The row the text's caret is on.
+    fn caret_row(&self, cx: &App) -> usize {
+        let state = self.editor.read(cx);
+        state.text().offset_to_point(state.cursor()).row
+    }
+
+    /// Space in the focused text while the per-line controls show: it
+    /// toggles the changed lines under the caret or the text selection
+    /// ([`Self::toggle_at_caret`]), once per press, and types nothing; the
+    /// read-only text took it for a space it refused. Elsewhere, as in Find's
+    /// field, the key goes on.
+    fn line_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key != "space"
+            || event.keystroke.modifiers.modified()
+            || self.partial.is_none()
+            || !self.focus_handle(cx).is_focused(window)
+        {
+            return;
+        }
+        cx.stop_propagation();
+        if !event.is_held {
+            self.toggle_at_caret(cx);
+        }
+    }
+
+    /// Toggles every changed line from the text selection's first row to its
+    /// last, the caret's row alone where nothing is selected: all selected
+    /// where any is not, else all cleared, as clicks on their checkboxes
+    /// would, the caret's line becoming the anchor a Shift+click extends
+    /// from. Context, hunk headers and the file's header select nothing, and
+    /// a hunk's lines are reached by selecting them. The live region says
+    /// what changed.
+    fn toggle_at_caret(&mut self, cx: &mut Context<Self>) {
+        if self.partial_busy {
+            return;
+        }
+        let Some(partial) = self.partial.clone() else {
+            return;
+        };
+        let state = self.editor.read(cx);
+        let range = state.selected_range();
+        let text = state.text();
+        let rows = text.offset_to_point(range.start).row..=text.offset_to_point(range.end).row;
+        let caret = text.offset_to_point(state.cursor()).row;
+        let changes: Vec<_> = rows
+            .filter_map(|row| match partial.rows.get(row)? {
+                PartialRow::Change { id, added, line } => Some((row, *id, *added, *line)),
+                _ => None,
+            })
+            .collect();
+        let Some(&(_, last, added, line)) = changes.last() else {
+            return;
+        };
+        let select = changes
+            .iter()
+            .any(|(_, id, ..)| !self.selection.ids.contains(id));
+        for (_, id, ..) in &changes {
+            if select {
+                self.selection.ids.insert(*id);
+            } else {
+                self.selection.ids.remove(id);
+            }
+        }
+        self.selection.anchor = Some(
+            changes
+                .iter()
+                .find(|(row, ..)| *row == caret)
+                .map_or(last, |(_, id, ..)| *id),
+        );
+        let action = self.action().to_lowercase();
+        let state = if select {
+            "selected"
+        } else {
+            "no longer selected"
+        };
+        let said = match &changes[..] {
+            [_] => format!(
+                "{} line {line} {state} to {action}",
+                if added { "Added" } else { "Removed" }
+            ),
+            many => format!(
+                "{} {state} to {action}",
+                crate::counted(many.len(), "line", "lines")
+            ),
+        };
+        self.announcements = self.announcements.wrapping_add(1);
+        self.announcement = Some((self.announcements, said.into()));
+        cx.notify();
+    }
+
+    /// The partial actions' verb: Unstage in the staged area, else Stage.
+    fn action(&self) -> &'static str {
+        if self
+            .partial
+            .as_ref()
+            .is_some_and(|partial| partial.diff.area == ChangeArea::Staged)
+        {
+            "Unstage"
+        } else {
+            "Stage"
+        }
+    }
+
+    /// The polite status node saying the latest toggle, out of flow in a
+    /// 1 px box at the view's top-left, over the gutter's corner where no
+    /// control lies, its text its name and its value, as AT-SPI reads the
+    /// one and macOS the other. Each toggle draws a node of its own, which
+    /// screen readers announce as it appears, as the window's copy
+    /// announcement does (`copy_feedback::announcement`).
+    fn render_announcement(&self) -> Option<AnyElement> {
+        let (said, text) = self.announcement.clone()?;
+        Some(
+            crate::native_accessibility::recorded(
+                div()
+                    .id(SharedString::from(format!(
+                        "partial-line-announcement-{said}"
+                    )))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size(px(1.))
+                    .overflow_hidden()
+                    .role(Role::Status)
+                    .polite()
+                    .aria_label(text.clone())
+                    .aria_value(text),
+            )
+            .into_any_element(),
+        )
+    }
+
+    /// Gives focus back to the text after a press of the selection bar's
+    /// control holding `focus`, which goes with the selection: focus never
+    /// rests on a control that is gone. A pointer press elsewhere leaves
+    /// focus where it is.
+    fn return_focus(&self, focus: &FocusHandle, window: &mut Window, cx: &mut App) {
+        if focus.is_focused(window) {
+            window.focus(&self.focus_handle(cx), cx);
+        }
+    }
+
+    /// Moves the caret to the start of `row`, focusing the text, as a click
+    /// on that row's checkbox does: Space goes on from there. The text's
+    /// offset shows the line's start first, as the move scrolls it to: a
+    /// selection bar the click brings scrolls the text on from that offset
+    /// ([`BarRoom::keep_caret_line`]), in place of the move's own scroll.
+    fn move_caret_to(&self, row: usize, window: &mut Window, cx: &mut App) {
+        self.editor.update(cx, |state, cx| {
+            state.set_scroll_offset(point(px(0.), state.scroll_offset().y), cx);
+            state.set_cursor_position(Position::new(row as u32, 0), window, cx)
+        });
     }
 
     pub fn navigate_change(&mut self, forward: bool, cx: &mut Context<Self>) {
@@ -154,6 +340,7 @@ impl DiffView {
         self.change_index = None;
         self.partial = partial;
         self.selection = LineSelection::default();
+        self.announcement = None;
         self.partial_busy = false;
     }
 
@@ -250,6 +437,11 @@ pub fn new_numbered(
             partial: None,
             selection: LineSelection::default(),
             partial_busy: false,
+            announcement: None,
+            announcements: 0,
+            apply_focus: cx.focus_handle(),
+            clear_focus: cx.focus_handle(),
+            bar_room: Rc::default(),
             viewport,
             pending_scroll: Rc::default(),
             gutter_origin: Rc::default(),
@@ -260,7 +452,10 @@ pub fn new_numbered(
 }
 
 impl Render for DiffView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The caret's row while the text holds focus: its checkbox draws
+        // the caret's mark ([`Self::render_partial_controls`]).
+        let caret = self.line_keys(window, cx).map(|_| self.caret_row(cx));
         let editor = self.editor.clone();
         let scroll_editor = self.editor.clone();
         let pending_scroll = Rc::clone(&self.pending_scroll);
@@ -277,7 +472,7 @@ impl Render for DiffView {
             0.
         };
         let width = action_width + column_width * if single_column { 1. } else { 2. };
-        let controls = self.render_partial_controls(width, cx);
+        let controls = self.render_partial_controls(width, caret, cx);
         let find_partner = self.find_partner.clone();
         // The gutter and the partial actions stand beside the text under
         // Find's bar, which spans them (`editor_find::Editor::beside`), so a
@@ -378,15 +573,41 @@ impl Render for DiffView {
             .overflow_hidden()
             .code_font(cx)
             .text_size(crate::appearance::code_text())
+            .when(self.partial.is_some(), |el| {
+                // Prepainted before the text, once the frame is laid out.
+                let (room, state) = (Rc::clone(&self.bar_room), self.editor.clone());
+                el.child(
+                    canvas(
+                        move |column, _, cx| room.keep_caret_line(column, &state, cx),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            })
             .child(editor.beside(px(width), vec![gutter.into_any_element()]));
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
+            .when(self.partial.is_some(), |el| {
+                // The view's foot, recorded before the text column reads it.
+                let room = Rc::clone(&self.bar_room);
+                el.on_key_down(cx.listener(Self::line_key)).child(
+                    canvas(
+                        move |view, _, _| room.foot.set(Some(view.bottom())),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            })
             .child(content)
             .when(!self.selection.ids.is_empty(), |el| {
                 el.child(self.render_partial_selection(cx))
             })
+            .children(self.render_announcement())
     }
 }
 
@@ -460,10 +681,21 @@ impl DiffView {
         cx.notify();
     }
 
-    fn render_partial_controls(&self, width: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// The per-line checkboxes and each hunk's Stage hunk, over the gutter
+    /// beside the text's visible rows, none of them a Tab stop: a long diff
+    /// would make hundreds, and its lines are selected from the text
+    /// ([`Self::toggle_at_caret`]). The checkbox on the `caret` row, where
+    /// the text holds focus, draws the caret's mark.
+    fn render_partial_controls(
+        &self,
+        width: f32,
+        caret: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let Some(partial) = &self.partial else {
             return Vec::new();
         };
+        let accent = palette(cx).accent;
         let state = self.editor.read(cx);
         let (Some(bounds), Some(line_height), Some(visible)) = (
             state.text_bounds(),
@@ -479,11 +711,7 @@ impl DiffView {
         let input = state.input_bounds();
         let origin = self.gutter_origin.get().unwrap_or(input.origin);
         let top = bounds.origin.y - input.origin.y;
-        let action = if partial.diff.area == ChangeArea::Staged {
-            "Unstage"
-        } else {
-            "Stage"
-        };
+        let action = self.action();
         let mut elements = Vec::new();
         for row in visible.start.min(partial.rows.len())..visible.end.min(partial.rows.len()) {
             let y = top + line_height * row as f32;
@@ -501,6 +729,7 @@ impl DiffView {
                             .child(
                                 Button::new(("partial-hunk", row))
                                     .debug_selector(move || format!("partial-hunk-{row}"))
+                                    .tab_stop(false)
                                     .small()
                                     .w_full()
                                     .h(line_height - px(2.))
@@ -528,8 +757,23 @@ impl DiffView {
                 }
                 PartialRow::Change { id, added, line } => {
                     let id = *id;
+                    // The caret's mark: a 2 px bar in the ring's accent at
+                    // the checkbox's leading side, as tall as its box, a
+                    // mark rather than a ring, since focus stays in the
+                    // text. Out of flow, it moves nothing.
+                    let mark = (caret == Some(row)).then(|| {
+                        div()
+                            .debug_selector(|| "partial-line-caret".into())
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(-5.))
+                            .w(px(2.))
+                            .bg(rgb(accent))
+                    });
                     elements.push(
                         div()
+                            .debug_selector(move || format!("partial-line-{row}"))
                             .absolute()
                             .top(y)
                             .left(px(5.))
@@ -539,30 +783,36 @@ impl DiffView {
                             .items_center()
                             .justify_center()
                             .child(
-                                Checkbox::new(("partial-line", id))
-                                    .small()
-                                    .checked(self.selection.ids.contains(&id))
-                                    .disabled(self.partial_busy)
-                                    .accessibility_label(format!(
-                                        "Select {} line {line} for {}",
-                                        if *added { "added" } else { "removed" },
-                                        action.to_lowercase()
-                                    ))
-                                    .tooltip(format!(
-                                        "Select this changed line. {} selects a range.",
-                                        crate::shortcuts::SHIFT_CLICK
-                                    ))
-                                    .on_click(cx.listener(move |this, checked, window, cx| {
-                                        if this.partial_busy {
-                                            return;
-                                        }
-                                        this.selection.toggle(
-                                            id,
-                                            *checked,
-                                            window.modifiers().shift,
-                                        );
-                                        cx.notify();
-                                    })),
+                                div().relative().flex().children(mark).child(
+                                    Checkbox::new(("partial-line", id))
+                                        .tab_stop(false)
+                                        .small()
+                                        .checked(self.selection.ids.contains(&id))
+                                        .disabled(self.partial_busy)
+                                        .accessibility_label(format!(
+                                            "Select {} line {line} for {}",
+                                            if *added { "added" } else { "removed" },
+                                            action.to_lowercase()
+                                        ))
+                                        .tooltip(format!(
+                                            "Select this changed line. {} selects a range.",
+                                            crate::shortcuts::SHIFT_CLICK
+                                        ))
+                                        .on_click(cx.listener(move |this, checked, window, cx| {
+                                            if this.partial_busy {
+                                                return;
+                                            }
+                                            this.selection.toggle(
+                                                id,
+                                                *checked,
+                                                window.modifiers().shift,
+                                            );
+                                            // The checkbox says what its click did.
+                                            this.announcement = None;
+                                            this.move_caret_to(row, window, cx);
+                                            cx.notify();
+                                        })),
+                                ),
                             )
                             .into_any_element(),
                     );
@@ -599,60 +849,125 @@ impl DiffView {
         y >= top && y < top + height
     }
 
+    /// The bar under the text while lines are selected, right-aligned:
+    /// Stage (or Unstage) with the selection's count, "Stage 3 lines", the
+    /// next Tab stop after the text, and Clear. Either press, from the
+    /// keyboard, gives focus back to the text, as the bar goes with the
+    /// selection ([`Self::return_focus`]). The count stands in the action:
+    /// at 18 pt in a 461 × 490 window the Diff view is 243 px wide and 151
+    /// px tall, where a count beside "Stage selected lines" and Clear ran
+    /// the action past its edge, its ring cut, and wrapped below whole they
+    /// took the text's room. A bar still too narrow for both, as for a
+    /// three-digit count there, wraps Clear below, whole.
     fn render_partial_selection(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = palette(cx);
-        let action = if self
-            .partial
-            .as_ref()
-            .is_some_and(|partial| partial.diff.area == ChangeArea::Staged)
-        {
-            "Unstage"
-        } else {
-            "Stage"
-        };
+        let action = self.action();
         let count = self.selection.ids.len();
+        let lines = crate::counted(count, "line", "lines");
         div()
+            .debug_selector(|| "partial-selection-bar".into())
             .flex_shrink_0()
             .px_3()
             .py_2()
             .flex()
+            .flex_wrap()
             .items_center()
+            .justify_end()
             .gap_2()
             .bg(rgb(palette.panel))
             .border_t_1()
             .border_color(rgb(palette.border))
             .child(
-                div()
-                    .flex_1()
-                    .text_size(crate::appearance::ui_text(11.))
-                    .text_color(rgb(palette.muted))
-                    .child(format!(
-                        "{} selected",
-                        crate::counted(count, "line", "lines")
-                    )),
-            )
-            .child(
-                Button::new("clear-partial-selection")
-                    .small()
-                    .label("Clear")
-                    .disabled(self.partial_busy)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.selection = LineSelection::default();
-                        cx.notify();
-                    })),
-            )
-            .child(
                 Button::new("apply-partial-selection")
+                    .debug_selector(|| "apply-partial-selection".into())
+                    .track_focus(&self.apply_focus)
                     .small()
                     .primary()
-                    .label(format!("{action} selected lines"))
+                    .label(format!("{action} {lines}"))
+                    .accessibility_label(format!(
+                        "{action} {count} selected {}",
+                        if count == 1 { "line" } else { "lines" }
+                    ))
                     .disabled(self.partial_busy)
                     .tooltip("For a replacement, select both the removed and added lines.")
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.return_focus(&this.apply_focus.clone(), window, cx);
                         this.apply_partial(this.selection.ids.iter().copied().collect(), cx)
                     })),
             )
+            .child(
+                Button::new("clear-partial-selection")
+                    .debug_selector(|| "clear-partial-selection".into())
+                    .track_focus(&self.clear_focus)
+                    .small()
+                    .label("Clear")
+                    .disabled(self.partial_busy)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.return_focus(&this.clear_focus.clone(), window, cx);
+                        this.selection = LineSelection::default();
+                        this.announcement = None;
+                        cx.notify();
+                    })),
+            )
             .into_any_element()
+    }
+}
+
+/// The room the selection bar takes under the text, read as each frame is
+/// prepainted, after layout and before the text: the view records its foot,
+/// then the text's column, above the bar, compares the bar with the last
+/// frame's ([`Self::keep_caret_line`]).
+#[derive(Default)]
+struct BarRoom {
+    /// The view's foot in this frame.
+    foot: Cell<Option<Pixels>>,
+    /// The bar's height and the text column's bounds in the last frame.
+    last: Cell<Option<(Pixels, Bounds<Pixels>)>>,
+}
+
+impl BarRoom {
+    /// Where the bar has come, gone or changed height since the last frame,
+    /// keeps the caret's line, if the text showed any of it, whole in the
+    /// text's new height, scrolling by the least, as the text reveals a
+    /// moved caret: the text lays out this same frame at that offset, so no
+    /// frame draws the bar over that line. The text keeps its top under
+    /// Find's bar and ends where its `column` does. In the half tile (18 pt,
+    /// 461 × 490) the bar the first selected line brought covered the
+    /// text's last rows, the caret's among them, until the caret moved.
+    fn keep_caret_line(&self, column: Bounds<Pixels>, editor: &Entity<EditorState>, cx: &mut App) {
+        let Some(foot) = self.foot.get() else {
+            return;
+        };
+        let bar = foot - column.bottom();
+        let Some((was, last)) = self.last.replace(Some((bar, column))) else {
+            return;
+        };
+        if was == bar {
+            return;
+        }
+        editor.update(cx, |state, cx| {
+            let Some(height) = state.line_height() else {
+                return;
+            };
+            let text = state.input_bounds();
+            let room =
+                text.size.height + (column.bottom() - last.bottom()) - (column.top() - last.top());
+            let offset = state.scroll_offset();
+            let row = state.text().offset_to_point(state.cursor()).row;
+            // The line's top below the text's.
+            let line = offset.y + height * row as f32;
+            if line >= text.size.height || line + height <= px(0.) || height > room {
+                return;
+            }
+            let by = if line + height > room {
+                line + height - room
+            } else if line < px(0.) {
+                line
+            } else {
+                return;
+            };
+            state.set_scroll_offset(point(offset.x, offset.y - by), cx);
+        });
     }
 }
 
@@ -965,8 +1280,16 @@ pub(crate) mod painted_rows {
     /// A painted view's editor and the top of its first row.
     pub(crate) type Painted = (gpui_kit::EntityId, Option<Pixels>);
 
+    /// A painted view's editor, the top of its first row and the region
+    /// its text showed, in one frame.
+    pub(crate) struct Frame {
+        pub(crate) editor: gpui_kit::EntityId,
+        pub(crate) top: Option<Pixels>,
+        pub(crate) text: Bounds<Pixels>,
+    }
+
     thread_local! {
-        static ROWS: RefCell<Option<Vec<Painted>>> = const { RefCell::new(None) };
+        static ROWS: RefCell<Option<Vec<Frame>>> = const { RefCell::new(None) };
     }
 
     /// Starts recording, forgetting anything recorded before.
@@ -978,6 +1301,15 @@ pub(crate) mod painted_rows {
     /// scrolled origin, in paint order since [`watch`] or the last call;
     /// recording goes on.
     pub(crate) fn take() -> Vec<Painted> {
+        take_frames()
+            .into_iter()
+            .map(|frame| (frame.editor, frame.top))
+            .collect()
+    }
+
+    /// Each painted view's [`Frame`], in paint order since [`watch`] or the
+    /// last call; recording goes on.
+    pub(crate) fn take_frames() -> Vec<Frame> {
         ROWS.with_borrow_mut(|rows| rows.as_mut().map(std::mem::take).unwrap_or_default())
     }
 
@@ -989,8 +1321,12 @@ pub(crate) mod painted_rows {
     pub(super) fn record(editor: &Entity<EditorState>, cx: &App) {
         ROWS.with_borrow_mut(|rows| {
             if let Some(rows) = rows {
-                let top = editor.read(cx).text_bounds().map(|bounds| bounds.origin.y);
-                rows.push((editor.entity_id(), top));
+                let state = editor.read(cx);
+                rows.push(Frame {
+                    editor: editor.entity_id(),
+                    top: state.text_bounds().map(|bounds| bounds.origin.y),
+                    text: state.input_bounds(),
+                });
             }
         });
     }
@@ -1021,6 +1357,681 @@ mod tests {
         );
         selection.toggle(3, false, false);
         assert_eq!(selection.ids.iter().copied().collect::<Vec<_>>(), [2, 4, 5]);
+    }
+
+    /// Keyboard staging by line in Working's diff (decided 2026-11-07):
+    /// the text's caret and selection reach the per-line checkboxes, at QA's
+    /// full window at 13 pt and its half tile at 18 pt.
+    mod keyboard {
+        use super::*;
+        use crate::gpui;
+        use crate::native_accessibility::written;
+        use crate::views::tests::{fixture_git, history_window_from, settle};
+        use gpui::{Modifiers, VisualTestContext};
+
+        /// The windows and interface text sizes each test walks.
+        const SIZES: [(f32, f32, u8); 2] = [(1480., 973., 13), (461., 490., 18)];
+
+        /// No line selected.
+        const NONE: [usize; 0] = [];
+
+        /// Working Changes showing notes.txt's unstaged diff, its notes 4 and
+        /// 5 replaced by "four" and "five": two removed and two added lines
+        /// between context lines, in Midnight with reduced motion.
+        async fn working(
+            cx: &mut gpui::TestAppContext,
+        ) -> (
+            tempfile::TempDir,
+            Entity<crate::GitTurtle>,
+            &mut VisualTestContext,
+        ) {
+            let (fixture, app, cx) =
+                history_window_from(cx, &crate::views::tests::history_script(1, 12)).await;
+            crate::focus_ring::sweep::prepare(&app, cx);
+            let root = fixture.path().join("narrow");
+            fixture_git(&root, &["reset", "--hard", "--quiet"]);
+            let edited: String = (1..=12)
+                .map(|line| match line {
+                    4 => "four\n".to_owned(),
+                    5 => "five\n".to_owned(),
+                    _ => format!("note {line}\n"),
+                })
+                .collect();
+            std::fs::write(root.join("notes.txt"), edited).unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.text_mode = crate::TextMode::Unified;
+                    app.select_working(0, ChangeArea::Unstaged, window, cx);
+                })
+            });
+            settle(&app, cx).await;
+            (fixture, app, cx)
+        }
+
+        /// The shown diff at one of [`SIZES`].
+        struct Shown {
+            editor: Entity<EditorState>,
+            view: Entity<DiffView>,
+            rows: Arc<[PartialRow]>,
+            at: String,
+        }
+
+        impl Shown {
+            /// The diff drawn in a `width` × `height` window at `interface`
+            /// pt, with no line selected or announced, its text focused.
+            fn at(
+                app: &Entity<crate::GitTurtle>,
+                cx: &mut VisualTestContext,
+                (width, height, interface): (f32, f32, u8),
+            ) -> Self {
+                cx.simulate_resize(size(px(width), px(height)));
+                crate::focus_ring::sweep::interface_size(cx, interface);
+                let (editor, view, rows) = app.read_with(cx, |app, _| {
+                    let Some(crate::Content::Text {
+                        partial: Some(partial),
+                        ..
+                    }) = app.content.as_deref()
+                    else {
+                        panic!("the diff offers its partial actions");
+                    };
+                    (
+                        app.patch_editor.clone().expect("the patch's editor"),
+                        app.patch_view.clone().expect("the Diff view"),
+                        Arc::clone(&partial.rows),
+                    )
+                });
+                view.update(cx, |view, cx| {
+                    view.selection = LineSelection::default();
+                    view.announcement = None;
+                    cx.notify();
+                });
+                let shown = Self {
+                    editor,
+                    view,
+                    rows,
+                    at: format!("{width} × {height} at {interface} pt"),
+                };
+                shown.caret_to(cx, shown.first());
+                shown
+            }
+
+            /// The first changed line's row, removed note 4.
+            fn first(&self) -> usize {
+                self.rows
+                    .iter()
+                    .position(|row| matches!(row, PartialRow::Change { .. }))
+                    .expect("a changed line")
+            }
+
+            /// The context line before it, note 3.
+            fn context(&self) -> usize {
+                let row = self.first() - 1;
+                assert_eq!(self.rows[row], PartialRow::None, "{}", self.at);
+                row
+            }
+
+            /// The selection ID of `row`'s changed line.
+            fn id(&self, row: usize) -> usize {
+                let PartialRow::Change { id, .. } = self.rows[row] else {
+                    panic!("row {row} is no changed line");
+                };
+                id
+            }
+
+            /// Moves the caret to the start of `row`, focusing the text.
+            fn caret_to(&self, cx: &mut VisualTestContext, row: usize) {
+                cx.update(|window, cx| {
+                    self.editor.update(cx, |state, cx| {
+                        state.set_cursor_position(Position::new(row as u32, 0), window, cx)
+                    })
+                });
+                crate::tags::tests::draw(cx);
+            }
+
+            /// Presses and releases each of `keys` in turn, as a keyboard
+            /// does, a key's text reaching the focused field where nothing
+            /// took the key: GPUI clicks a focused Button as Space or Enter
+            /// is released.
+            fn press(&self, cx: &mut VisualTestContext, keys: &str) {
+                for key in keys.split(' ') {
+                    cx.simulate_keystrokes(key);
+                    let keystroke = gpui::Keystroke::parse(key).unwrap();
+                    cx.simulate_event(gpui::KeyUpEvent { keystroke });
+                }
+                crate::tags::tests::draw(cx);
+            }
+
+            fn selected(&self, cx: &mut VisualTestContext) -> Vec<usize> {
+                self.view
+                    .read_with(cx, |view, _| view.selection.ids.iter().copied().collect())
+            }
+
+            fn caret(&self, cx: &mut VisualTestContext) -> usize {
+                self.view.read_with(cx, |view, cx| view.caret_row(cx))
+            }
+
+            fn text_focused(&self, cx: &mut VisualTestContext) -> bool {
+                cx.update(|window, cx| self.view.read(cx).focus_handle(cx).is_focused(window))
+            }
+
+            /// Scrolls the text so `row` is its last whole row, and
+            /// `sideways` to the right, as far as the text scrolls: where
+            /// the whole diff fits, it stays put.
+            fn to_foot(&self, cx: &mut VisualTestContext, row: usize, sideways: Pixels) {
+                self.editor.update(cx, |state, cx| {
+                    let height = state.line_height().expect("the text is laid out");
+                    let text = state.input_bounds().size.height;
+                    let y = (text - height * (row + 1) as f32).min(px(0.));
+                    state.set_scroll_offset(point(-sideways, y), cx);
+                });
+                crate::tags::tests::draw(cx);
+            }
+
+            /// The text's line height and the region it shows, which ends
+            /// where the selection bar, if any, begins.
+            fn text(&self, cx: &mut VisualTestContext) -> (Pixels, Bounds<Pixels>) {
+                let (height, text) = self.editor.read_with(cx, |state, _| {
+                    let height = state.line_height().expect("the text is laid out");
+                    (height, state.input_bounds())
+                });
+                if let Some(bar) = cx.debug_bounds("partial-selection-bar") {
+                    assert!(
+                        text.bottom() <= bar.top() + px(0.01),
+                        "{}: the text {text:?} ends above the bar {bar:?}",
+                        self.at
+                    );
+                }
+                (height, text)
+            }
+
+            /// The top of the caret's line where the latest frame painted
+            /// the text.
+            fn caret_line(&self, cx: &mut VisualTestContext) -> Pixels {
+                let row = self.caret(cx);
+                let (height, _) = self.text(cx);
+                let top = self.editor.read_with(cx, |state, _| {
+                    state.text_bounds().expect("the text is painted").origin.y
+                });
+                top + height * row as f32
+            }
+
+            /// Does `act` and asserts that every frame painted after it
+            /// draws the caret's line whole in the text it shows, `when`.
+            /// Returns the top of that line in the first frame whose text
+            /// ends where it now does, above the selection bar where it
+            /// shows: a frame the text asked for before `act` can come
+            /// first.
+            fn caret_line_after(
+                &self,
+                cx: &mut VisualTestContext,
+                when: &str,
+                act: impl FnOnce(&mut VisualTestContext),
+            ) -> Pixels {
+                painted_rows::watch();
+                act(cx);
+                let frames = painted_rows::take_frames();
+                painted_rows::stop();
+                let (height, now) = self.text(cx);
+                let row = self.caret(cx);
+                let mut first = None;
+                for frame in frames
+                    .iter()
+                    .filter(|frame| frame.editor == self.editor.entity_id())
+                {
+                    let top = frame.top.expect("the text is painted");
+                    let line = top + height * row as f32;
+                    let text = frame.text;
+                    assert!(
+                        line >= text.top() - px(0.01) && line + height <= text.bottom() + px(0.01),
+                        "{}: {when}: a frame draws the caret's line {line:?} to {:?} \
+                         outside its text {text:?}",
+                        self.at,
+                        line + height
+                    );
+                    if first.is_none() && text == now {
+                        first = Some(line);
+                    }
+                }
+                first.unwrap_or_else(|| {
+                    panic!("{}: {when}: a frame draws the text {now:?}", self.at)
+                })
+            }
+
+            /// Asserts that the caret's line, its top at `line`, lies whole
+            /// in the text, above the selection bar where it shows.
+            fn assert_whole(&self, cx: &mut VisualTestContext, line: Pixels, when: &str) {
+                let (height, text) = self.text(cx);
+                assert!(
+                    line >= text.top() - px(0.01) && line + height <= text.bottom() + px(0.01),
+                    "{}: {when}: the caret's line {line:?} to {:?} lies whole in the text {text:?}",
+                    self.at,
+                    line + height
+                );
+            }
+        }
+
+        /// The view's live regions the last frame drew, by element ID with
+        /// what each says: a polite status whose name is its value.
+        fn said() -> Vec<(String, String)> {
+            written::announced_from("partial-line-announcement")
+                .into_iter()
+                .map(|(id, announced)| {
+                    assert_eq!(announced.live, gpui::accesskit::Live::Polite, "{id}");
+                    let node = written::get(&id).expect("the region's node").node;
+                    assert_eq!(node.role(), gpui::accesskit::Role::Status, "{id}");
+                    assert_eq!(
+                        node.label(),
+                        node.value(),
+                        "{id}: AT-SPI reads the name, macOS the value"
+                    );
+                    let text = node.label().expect("a name").to_owned();
+                    (id, text)
+                })
+                .collect()
+        }
+
+        /// Space on a changed line selects it for staging, and Space again
+        /// clears it, each announced from the view's live region in a node
+        /// of its own, as a click on its checkbox selects it; Space on a
+        /// context line selects nothing, types nothing and says nothing,
+        /// and a held Space's repeats do nothing. The view takes the key,
+        /// which goes on as no text. The status bar names Space
+        /// while the text holds focus. In the staged area the lines are
+        /// selected to unstage, and the status bar and the live region say
+        /// so. Before this, Space in the read-only text did nothing and no
+        /// key reached the checkboxes.
+        #[gpui::test]
+        async fn space_selects_the_caret_line_and_space_again_clears_it(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (fixture, app, cx) = working(cx).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                let text = shown.editor.read_with(cx, |state, _| state.value());
+                shown.caret_to(cx, shown.context());
+                shown.press(cx, "space");
+                assert_eq!(
+                    shown.selected(cx),
+                    NONE,
+                    "{at}: a context line selects nothing"
+                );
+                assert_eq!(said(), [], "{at}: and says nothing");
+                shown.caret_to(cx, first);
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), [shown.id(first)], "{at}");
+                let [(selected, said_selected)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_eq!(said_selected, "Removed line 4 selected to stage", "{at}");
+                assert!(
+                    cx.debug_bounds("apply-partial-selection").is_some(),
+                    "{at}: the selection bar shows"
+                );
+                // A held Space's repeats leave the line selected, unsaid.
+                cx.simulate_event(gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse("space").unwrap(),
+                    is_held: true,
+                    prefer_character_input: false,
+                });
+                crate::tags::tests::draw(cx);
+                assert_eq!(shown.selected(cx), [shown.id(first)], "{at}: a repeat");
+                assert_eq!(
+                    said()[..],
+                    [(selected.clone(), said_selected.clone())],
+                    "{at}"
+                );
+                let hints = cx
+                    .update(|window, cx| app.update(cx, |app, cx| app.key_hints(window, cx)))
+                    .expect("the page's hints");
+                assert!(
+                    hints.keys.contains(&(
+                        crate::shortcuts::key_label("space"),
+                        "Select lines to stage"
+                    )),
+                    "{at}: the status bar names Space: {:?}",
+                    hints.keys
+                );
+                // The view takes the key, so the platform sends it on as no
+                // text, nor to an input method.
+                let space = gpui::Keystroke::parse("space").unwrap();
+                let taken = cx.update(|window, cx| {
+                    let down = gpui::KeyDownEvent {
+                        keystroke: space.clone(),
+                        is_held: false,
+                        prefer_character_input: false,
+                    };
+                    !window
+                        .dispatch_event(gpui::PlatformInput::KeyDown(down), cx)
+                        .propagate
+                });
+                assert!(taken, "{at}: Space goes on from the view");
+                cx.simulate_event(gpui::KeyUpEvent { keystroke: space });
+                crate::tags::tests::draw(cx);
+                assert_eq!(shown.selected(cx), NONE, "{at}: Space again clears it");
+                let [(cleared, said_cleared)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_ne!(cleared, selected, "{at}: a node of its own");
+                assert_eq!(
+                    said_cleared, "Removed line 4 no longer selected to stage",
+                    "{at}"
+                );
+                assert_eq!(
+                    shown.editor.read_with(cx, |state, _| state.value()),
+                    text,
+                    "{at}: Space types nothing"
+                );
+                // Focus elsewhere, Space and the hint are the page's again.
+                let list = app.read_with(cx, |app, _| app.file_focus.clone());
+                cx.update(|window, cx| window.focus(&list, cx));
+                crate::tags::tests::draw(cx);
+                let hints = cx
+                    .update(|window, cx| app.update(cx, |app, cx| app.key_hints(window, cx)))
+                    .expect("the page's hints");
+                assert!(
+                    !hints
+                        .keys
+                        .iter()
+                        .any(|(_, action)| *action == "Select lines to stage"),
+                    "{at}: {:?}",
+                    hints.keys
+                );
+            }
+            // The same notes staged: Space selects lines to unstage.
+            fixture_git(&fixture.path().join("narrow"), &["add", "notes.txt"]);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            settle(&app, cx).await;
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.select_working(0, ChangeArea::Staged, window, cx)
+                })
+            });
+            settle(&app, cx).await;
+            let shown = Shown::at(&app, cx, SIZES[1]);
+            shown.press(cx, "space");
+            assert_eq!(shown.selected(cx), [shown.id(shown.first())], "staged");
+            let [(_, text)] = &said()[..] else {
+                panic!("staged: one announcement: {:?}", said());
+            };
+            assert_eq!(text, "Removed line 4 selected to unstage");
+            let hints = cx
+                .update(|window, cx| app.update(cx, |app, cx| app.key_hints(window, cx)))
+                .expect("the page's hints");
+            assert!(
+                hints.keys.contains(&(
+                    crate::shortcuts::key_label("space"),
+                    "Select lines to unstage"
+                )),
+                "staged: the status bar names Space: {:?}",
+                hints.keys
+            );
+        }
+
+        /// Shift+Down twice from a changed line extends the text selection
+        /// over three changed lines, and Space selects all three, then
+        /// clears all three; where some of the lines a selection covers are
+        /// selected and some not, Space selects them all.
+        #[gpui::test]
+        async fn shift_down_twice_then_space_selects_three_lines(cx: &mut gpui::TestAppContext) {
+            let (_fixture, app, cx) = working(cx).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                let three: Vec<_> = (first..first + 3).map(|row| shown.id(row)).collect();
+                shown.press(cx, "shift-down shift-down");
+                assert_eq!(shown.caret(cx), first + 2, "{at}");
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), three, "{at}");
+                let [(_, text)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_eq!(text, "3 lines selected to stage", "{at}");
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), NONE, "{at}: all three cleared");
+                let [(_, text)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_eq!(text, "3 lines no longer selected to stage", "{at}");
+                // The middle line alone, then all three: any unselected
+                // selects them all.
+                shown.caret_to(cx, first + 1);
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), [three[1]], "{at}");
+                shown.caret_to(cx, first);
+                shown.press(cx, "shift-down shift-down space");
+                assert_eq!(shown.selected(cx), three, "{at}");
+            }
+        }
+
+        /// The selection bar never covers the caret's line: with the caret
+        /// on the text's last whole row, the frame that draws the bar Space
+        /// brings scrolls the text by the least that keeps that line whole
+        /// above it, as the text reveals a moved caret, and the frame that
+        /// takes the bar away leaves the line where it is, whole. A click on
+        /// the checkbox of the text's last whole row, the text scrolled
+        /// sideways, brings the bar with the line whole above it and its
+        /// start shown, where the caret goes. In the half tile the bar once
+        /// covered the text's last rows, the caret's among them, until the
+        /// caret moved.
+        #[gpui::test]
+        async fn the_selection_bar_never_covers_the_caret_line(cx: &mut gpui::TestAppContext) {
+            let (_fixture, app, cx) = working(cx).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                // The last changed line, added "five".
+                let row = shown.first() + 3;
+                shown.caret_to(cx, row);
+                shown.to_foot(cx, row, px(0.));
+                let before = shown.caret_line(cx);
+                shown.assert_whole(cx, before, "before Space");
+                let (height, text) = shown.text(cx);
+                let line =
+                    shown.caret_line_after(cx, "the bar comes", |cx| shown.press(cx, "space"));
+                assert_eq!(shown.selected(cx), [shown.id(row)], "{at}");
+                shown.assert_whole(cx, line, "in the frame that draws the bar");
+                let (_, shorter) = shown.text(cx);
+                assert!(
+                    shorter.bottom() < text.bottom(),
+                    "{at}: the bar takes the text's foot"
+                );
+                // The least scroll: the line moves up only as far as the
+                // bar would cover it.
+                let least = (before + height - shorter.bottom()).max(px(0.));
+                assert!(
+                    (f32::from(before - least - line)).abs() < 0.01,
+                    "{at}: the caret's line moved from {before:?} to {line:?}, not by the least, {least:?}"
+                );
+                let after =
+                    shown.caret_line_after(cx, "the bar goes", |cx| shown.press(cx, "space"));
+                assert_eq!(shown.selected(cx), NONE, "{at}");
+                assert_eq!(cx.debug_bounds("partial-selection-bar"), None, "{at}");
+                shown.assert_whole(cx, after, "in the frame that takes the bar away");
+                assert!(
+                    (f32::from(after - line)).abs() < 0.01,
+                    "{at}: the caret's line stays where it was, at {line:?}, not {after:?}"
+                );
+                // A click on the foot row's checkbox, the caret elsewhere.
+                shown.caret_to(cx, shown.context());
+                shown.to_foot(cx, row, px(40.));
+                let cell = cx
+                    .debug_bounds(format!("partial-line-{row}").leak())
+                    .expect("the row's checkbox");
+                cx.simulate_mouse_down(
+                    cell.center(),
+                    gpui::MouseButton::Left,
+                    Modifiers::default(),
+                );
+                let line = shown.caret_line_after(cx, "a click's bar comes", |cx| {
+                    cx.simulate_mouse_up(
+                        cell.center(),
+                        gpui::MouseButton::Left,
+                        Modifiers::default(),
+                    );
+                    crate::tags::tests::draw(cx);
+                });
+                assert_eq!(shown.selected(cx), [shown.id(row)], "{at}");
+                assert_eq!(shown.caret(cx), row, "{at}: the caret moved to the click");
+                shown.assert_whole(cx, line, "in the frame a click's bar comes");
+                assert_eq!(
+                    shown
+                        .editor
+                        .read_with(cx, |state, _| state.scroll_offset().x),
+                    px(0.),
+                    "{at}: the text shows the caret line's start"
+                );
+            }
+        }
+
+        /// With lines selected, Tab from the text moves to Stage selected
+        /// lines, its ring whole, then to Clear; Clear's press from the
+        /// keyboard clears the selection and gives focus back to the text.
+        /// The per-line checkboxes and the hunk's Stage hunk are no Tab
+        /// stops.
+        #[gpui::test]
+        async fn the_selected_lines_action_is_the_next_tab_stop_with_its_ring_whole(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = working(cx).await;
+            let accent: gpui::Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                shown.press(cx, "space");
+                let (apply, clear) = shown.view.read_with(cx, |view, _| {
+                    (view.apply_focus.clone(), view.clear_focus.clone())
+                });
+                for (focus, selector) in [
+                    (&apply, "apply-partial-selection"),
+                    (&clear, "clear-partial-selection"),
+                ] {
+                    shown.press(cx, "tab");
+                    assert!(
+                        cx.update(|window, _| focus.is_focused(window)),
+                        "{at}: Tab reaches {selector}, focus on {:?}",
+                        cx.update(|window, cx| window.focused(cx))
+                    );
+                    let button = cx.debug_bounds(selector).expect("the button is drawn");
+                    let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                        .into_iter()
+                        .filter(|ring| {
+                            ring.bounds.left() < button.left()
+                                && ring.bounds.top() < button.top()
+                                && ring.bounds.right() > button.right()
+                                && ring.bounds.bottom() > button.bottom()
+                        })
+                        .collect();
+                    let [ring] = &rings[..] else {
+                        panic!("{at}: one ring around {selector} {button:?}: {rings:?}");
+                    };
+                    assert!(ring.whole, "{at}: {selector}'s ring is cut: {ring:?}");
+                }
+                shown.press(cx, "space");
+                assert_eq!(
+                    shown.selected(cx),
+                    NONE,
+                    "{at}: Clear cleared the selection"
+                );
+                assert!(shown.text_focused(cx), "{at}: focus is back in the text");
+            }
+        }
+
+        /// The checkbox on the caret's line draws a 2 px accent mark at its
+        /// leading side while the text holds focus, which follows the caret
+        /// from line to line and leaves a context line, and a blurred text,
+        /// unmarked. A click on a checkbox selects its line and moves the
+        /// caret, and with it the mark, there. The selection bar that Space
+        /// or the click brings leaves the line, and its mark, whole above it.
+        #[gpui::test]
+        async fn the_caret_lines_checkbox_mark_follows_the_caret(cx: &mut gpui::TestAppContext) {
+            let (_fixture, app, cx) = working(cx).await;
+            let accent =
+                cx.read(|cx| gpui_kit::Background::from(gpui::Hsla::from(rgb(palette(cx).accent))));
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                let marked = |cx: &mut VisualTestContext, row: usize| {
+                    let mark = cx
+                        .debug_bounds("partial-line-caret")
+                        .unwrap_or_else(|| panic!("{at}: row {row}'s checkbox is marked"));
+                    let cell = cx
+                        .debug_bounds(format!("partial-line-{row}").leak())
+                        .expect("the row's checkbox");
+                    assert!(
+                        mark.top() >= cell.top() && mark.bottom() <= cell.bottom(),
+                        "{at}: the mark {mark:?} lies on row {row}'s checkbox {cell:?}"
+                    );
+                    assert_eq!(mark.size.width, px(2.), "{at}");
+                    assert!(
+                        mark.left() >= cell.left(),
+                        "{at}: inside the gutter's column"
+                    );
+                    let painted = cx.update(|window, _| {
+                        let scale = window.scale_factor();
+                        window.painted_quads().into_iter().any(|quad| {
+                            quad.background == accent
+                                && (quad.bounds.origin.x.as_f32() / scale - f32::from(mark.left()))
+                                    .abs()
+                                    < 0.5
+                                && (quad.bounds.origin.y.as_f32() / scale - f32::from(mark.top()))
+                                    .abs()
+                                    < 0.5
+                        })
+                    });
+                    assert!(painted, "{at}: the mark is painted in the ring's accent");
+                    let (_, text) = shown.text(cx);
+                    assert!(
+                        mark.top() >= text.top() && mark.bottom() <= text.bottom(),
+                        "{at}: the mark {mark:?} shows whole in the text {text:?}"
+                    );
+                };
+                marked(cx, first);
+                // Space where the caret starts, the half tile's last whole
+                // row, brings the bar.
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), [shown.id(first)], "{at}");
+                marked(cx, first);
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), NONE, "{at}");
+                shown.press(cx, "down");
+                marked(cx, first + 1);
+                shown.caret_to(cx, shown.context());
+                assert_eq!(
+                    cx.debug_bounds("partial-line-caret"),
+                    None,
+                    "{at}: no mark on a context line"
+                );
+                // A click on a checkbox moves the caret, and the mark, there:
+                // the second changed line, at the half tile's foot.
+                let cell = cx
+                    .debug_bounds(format!("partial-line-{}", first + 1).leak())
+                    .expect("the row's checkbox");
+                cx.simulate_click(cell.center(), Modifiers::default());
+                crate::tags::tests::draw(cx);
+                assert_eq!(shown.selected(cx), [shown.id(first + 1)], "{at}");
+                assert_eq!(
+                    shown.caret(cx),
+                    first + 1,
+                    "{at}: the caret moved to the click"
+                );
+                assert!(shown.text_focused(cx), "{at}");
+                marked(cx, first + 1);
+                cx.update(|window, cx| window.blur(cx));
+                crate::tags::tests::draw(cx);
+                assert_eq!(
+                    cx.debug_bounds("partial-line-caret"),
+                    None,
+                    "{at}: no mark unfocused"
+                );
+            }
+        }
     }
 
     fn n(old: Option<u64>, new: Option<u64>) -> LineNumbers {

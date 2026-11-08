@@ -7659,17 +7659,20 @@ fn watch_control_height(cx: &App) -> Pixels {
 /// What the status bar's keyboard hints follow from
 /// (`GitTurtle::key_hints`): under a modal dialog or sheet, the keys of the
 /// dialog control holding focus; else the page, and on a Repository page its
-/// mode. The bar's measured hints are kept by it with the font, sizes and
-/// scale factor ([`STATUS_WIDTHS`]), so a frame builds the hints, their
-/// forms and their widths only where one of those changes: every frame
-/// built the page's hints again, a few allocations each, to look the
-/// widths up by them.
+/// mode, or Working's diff text holding focus with its per-line checkboxes
+/// shown, where Space selects lines, for unstaging where `PartialLines` is
+/// true (`diff_view::DiffView::line_keys`). The bar's measured hints are
+/// kept by it with the font, sizes and scale factor ([`STATUS_WIDTHS`]), so
+/// a frame builds the hints, their forms and their widths only where one of
+/// those changes: every frame built the page's hints again, a few
+/// allocations each, to look the widths up by them.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum HintsFor {
     Dialog(shortcuts::DialogKeys),
     Settings,
     Projects,
     Repository(WorkspaceMode),
+    PartialLines(bool),
 }
 
 impl HintsFor {
@@ -7692,6 +7695,17 @@ impl HintsFor {
             Self::Repository(WorkspaceMode::Working) => {
                 vec![key("↑↓", "Review files"), escape("Back to history")]
             }
+            Self::PartialLines(unstage) => vec![
+                (
+                    shortcuts::key_label("space"),
+                    if unstage {
+                        "Select lines to unstage"
+                    } else {
+                        "Select lines to stage"
+                    },
+                ),
+                escape("Back to history"),
+            ],
             Self::Repository(WorkspaceMode::History) => vec![
                 (format!("{}F", primary_label()), "Search"),
                 key("↑↓", "Navigate"),
@@ -9149,8 +9163,24 @@ impl GitTurtle {
         Some(match self.page {
             AppPage::Settings => HintsFor::Settings,
             AppPage::Projects => HintsFor::Projects,
-            AppPage::Repository => HintsFor::Repository(self.mode),
+            AppPage::Repository => self
+                .partial_line_keys(window, cx)
+                .map_or(HintsFor::Repository(self.mode), HintsFor::PartialLines),
         })
+    }
+
+    /// Whether the shown diff's text holds focus with its per-line
+    /// checkboxes, and then whether they unstage
+    /// (`diff_view::DiffView::line_keys`): Space selects lines there.
+    fn partial_line_keys(&self, window: &Window, cx: &App) -> Option<bool> {
+        let Some(ShownText::Editor(editor)) = self.shown_text() else {
+            return None;
+        };
+        let view = self
+            .patch_view
+            .as_ref()
+            .filter(|_| self.patch_editor.as_ref() == Some(editor))?;
+        view.read(cx).line_keys(window, cx)
     }
 
     /// How the status bar lays out in this window, in the one responsive
