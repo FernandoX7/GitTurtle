@@ -343,7 +343,9 @@ impl GitTurtle {
         }
         let retry = self.retry_refused_save(window, cx, |this, window, cx| {
             this.activity.retry = None;
-            this.save_activity(window, cx);
+            if this.activity.saver.is_pending() {
+                this.save_activity(window, cx);
+            }
         });
         self.activity.retry = Some(retry);
     }
@@ -522,6 +524,41 @@ mod tests {
         writer_answers(&app, cx);
         assert_eq!(stored("Behind"), 9, "the newest list reaches the store");
         assert_eq!(error(&app, cx), None);
+    }
+
+    /// A refused save's wait that ends with nothing left to save writes
+    /// nothing: a later write's save took the refused list along, as the
+    /// recent-project save's wait already found.
+    #[gpui::test]
+    async fn a_refused_activity_save_asks_again_only_while_one_waits(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        let fillers: Vec<_> = (0..8)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut filler in fillers {
+            assert!(matches!(filler.try_recv(), Ok(None)), "the queue fills");
+        }
+        recorded(&app, "Refused", cx);
+        drop(held);
+        writer_answers(&app, cx);
+
+        recorded(&app, "Later", cx);
+        writer_answers(&app, cx);
+        assert_eq!(stored("Refused"), 1, "the later save took the list along");
+        assert_eq!(stored("Later"), 1);
+
+        let path = crate::preferences::settings_path()
+            .unwrap()
+            .with_file_name("activity.json");
+        std::fs::remove_file(&path).unwrap();
+        cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+        cx.executor().run_until_parked();
+        writer_answers(&app, cx);
+        assert!(!path.exists(), "nothing waited, so the wait saves nothing");
     }
 
     #[test]
