@@ -3074,24 +3074,51 @@ impl PhraseLine {
     }
 }
 /// A [`PhraseLine`]'s phrases with the width of its gap and of each of its runs, measured in
-/// the text style it is drawn in.
+/// the text style it is drawn in. The line keeps them in the frames that draw it, and gives
+/// them up with the first that does not ([`PreparedPhrases::prepare`]).
 struct PreparedPhrases {
+    /// The text the phrases are of.
+    text: SharedString,
+    /// The font and size the widths were measured in.
+    font: Font,
+    size: Pixels,
     phrases: Vec<Phrase>,
     gap: Pixels,
     /// Each phrase's runs' widths, in the order of [`Phrase::runs`].
     widths: Vec<Vec<Pixels>>,
 }
-/// Where a [`PhraseLine`]'s runs lie in a line of a given width.
+/// How many lines of a given width a [`PhraseLine`]'s runs take ([`PreparedPhrases::flow`]).
 struct Flow {
-    /// Each run's line and its left edge on that line, phrase by phrase, run by run.
-    places: Vec<(usize, Pixels)>,
     lines: usize,
     /// The widest line's width.
     width: Pixels,
 }
 impl PreparedPhrases {
-    fn new(text: &str, style: &TextStyle, window: &Window) -> Self {
+    /// `kept`, what the line kept from the frame before, where it holds `text` measured in
+    /// `style`; otherwise `text` measured in `style`, from the phrases `kept` holds where only
+    /// the style changed. Built and measured in every frame, the line built its phrases and
+    /// shaped each of its runs again whenever its panel or dialog drew.
+    fn prepare(
+        kept: Option<std::rc::Rc<Self>>,
+        text: &SharedString,
+        style: &TextStyle,
+        window: &Window,
+    ) -> std::rc::Rc<Self> {
+        let font = style.font();
         let size = style.font_size.to_pixels(window.rem_size());
+        let phrases = match kept {
+            Some(kept) if kept.text == *text && kept.font == font && kept.size == size => {
+                return kept;
+            }
+            Some(kept) if kept.text == *text => kept.phrases.clone(),
+            _ => {
+                #[cfg(test)]
+                phrase_tests::PREPARED.with(|count| count.set(count.get() + 1));
+                phrase_runs(text)
+            }
+        };
+        #[cfg(test)]
+        phrase_tests::MEASURED.with(|count| count.set(count.get() + 1));
         let text_system = window.text_system();
         // Each run as wide as its text, which a text element would round up to a whole
         // pixel, and in 1/64 px, so a line sums its runs and gaps exactly in any order and
@@ -3102,26 +3129,29 @@ impl PreparedPhrases {
                 .width;
             px((f32::from(width) * 64.).ceil() / 64.)
         };
-        let phrases = phrase_runs(text);
-        Self {
+        std::rc::Rc::new(Self {
             gap: width(" "),
             widths: phrases
                 .iter()
                 .map(|phrase| phrase.runs.iter().map(|run| width(run)).collect())
                 .collect(),
+            text: text.clone(),
+            font,
+            size,
             phrases,
-        }
+        })
     }
 
     /// The runs laid out in lines `width` wide, or on one line where `width` is `None`: each
     /// phrase on the line it starts on where the rest of that line holds it, else on the next
     /// line where a whole line does, and otherwise from where the line has room, its runs
-    /// breaking where they must. Half a pixel of slack absorbs a layout rounding the line's
-    /// width below the sum of its runs.
-    fn flow(&self, width: Option<Pixels>) -> Flow {
+    /// breaking where they must. `place` is told each run's line and its left edge on that
+    /// line, phrase by phrase and run by run, so a frame's layout of a line keeps no list of
+    /// them. Half a pixel of slack absorbs a layout rounding the line's width below the sum
+    /// of its runs.
+    fn flow(&self, width: Option<Pixels>, mut place: impl FnMut(usize, Pixels)) -> Flow {
         let fits = |extent: Pixels| width.is_none_or(|width| extent <= width + px(0.5));
         let mut flow = Flow {
-            places: Vec::new(),
             lines: 0,
             width: px(0.),
         };
@@ -3145,7 +3175,7 @@ impl PreparedPhrases {
                 if end.is_none() {
                     flow.lines += 1;
                 }
-                flow.places.push((flow.lines - 1, left));
+                place(flow.lines - 1, left);
                 end = Some(left + run);
                 flow.width = flow.width.max(left + run);
             }
@@ -3182,7 +3212,7 @@ impl Element for PhraseLine {
 
     fn request_layout(
         &mut self,
-        _: Option<&GlobalElementId>,
+        global_id: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         window: &mut Window,
         _: &mut App,
@@ -3196,7 +3226,13 @@ impl Element for PhraseLine {
                 .line_height
                 .to_pixels(style.font_size, window.rem_size()),
         );
-        let prepared = std::rc::Rc::new(PreparedPhrases::new(&self.text, &style, window));
+        let prepared = window.with_element_state(
+            global_id.expect("a phrase line has an id"),
+            |kept, window| {
+                let prepared = PreparedPhrases::prepare(kept, &self.text, &style, window);
+                (prepared.clone(), prepared)
+            },
+        );
         let id = self.id;
         let mut runs = Vec::new();
         for (index, (phrase, widths)) in prepared.phrases.iter().zip(&prepared.widths).enumerate() {
@@ -3219,7 +3255,7 @@ impl Element for PhraseLine {
                     AvailableSpace::MinContent => Some(px(0.)),
                     AvailableSpace::MaxContent => None,
                 });
-                let flow = flowed.flow(width);
+                let flow = flowed.flow(width, |_, _| {});
                 size(
                     known.width.unwrap_or(flow.width),
                     line_height * flow.lines as f32,
@@ -3244,20 +3280,26 @@ impl Element for PhraseLine {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let flow = layout.prepared.flow(Some(bounds.size.width));
         let unbounded = size(AvailableSpace::MaxContent, AvailableSpace::MaxContent);
         let at = |(line, left): (usize, Pixels)| {
             bounds.origin + point(left, layout.line_height * line as f32)
         };
-        for (run, &place) in layout.runs.iter_mut().zip(&flow.places) {
-            run.prepaint_as_root(at(place), unbounded, window, cx);
-        }
+        #[cfg(test)]
+        let mut places = Vec::new();
+        let mut runs = layout.runs.iter_mut();
+        layout.prepared.flow(Some(bounds.size.width), |line, left| {
+            #[cfg(test)]
+            places.push((line, left));
+            if let Some(run) = runs.next() {
+                run.prepaint_as_root(at((line, left)), unbounded, window, cx);
+            }
+        });
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut phrases = Vec::new();
         #[cfg(test)]
         {
             let id = self.id;
-            let mut places = flow.places.iter().copied();
+            let mut places = places.into_iter();
             for (index, widths) in layout.prepared.widths.iter().enumerate() {
                 let runs: Vec<_> = places.by_ref().take(widths.len()).zip(widths).collect();
                 let (Some(&((first, _), _)), Some(&((last, _), _))) = (runs.first(), runs.last())
@@ -4672,6 +4714,91 @@ pub(crate) mod phrase_tests {
             ],
             "{page:?}"
         );
+    }
+
+    thread_local! {
+        /// How many times a [`PhraseLine`] on this thread built its phrases.
+        pub(crate) static PREPARED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// How many times a [`PhraseLine`] on this thread measured its runs.
+        pub(crate) static MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A phrase line builds its phrases once per text and measures its runs once per text and
+    /// text style, however many frames draw it, a narrower line included, and keeps them only
+    /// while it is drawn: a frame without it drops them. It built and measured them in every
+    /// frame its panel or dialog drew (code review of FU30-D6).
+    #[gpui::test]
+    fn a_phrase_line_prepares_its_phrases_once_per_text(cx: &mut TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+        // From zero before the window opens, which draws its first frame, and for each seed
+        // that follows another on this thread.
+        PREPARED.with(|count| count.set(0));
+        MEASURED.with(|count| count.set(0));
+        crate::views::tests::init_app(cx);
+        let text: Rc<RefCell<Option<&'static str>>> =
+            Rc::new(RefCell::new(Some("Click a changed line · Enter comments")));
+        let shown = text.clone();
+        let (probe, cx) = cx.add_window_view(move |_, _| Probe {
+            width: px(461.),
+            build: Box::new(move || {
+                div()
+                    .text_size(appearance::ui_text(12.))
+                    .children(
+                        shown
+                            .borrow()
+                            .map(|text| PhraseLine::new("probe-line", text)),
+                    )
+                    .into_any_element()
+            }),
+        });
+        let counts = || (PREPARED.with(|n| n.get()), MEASURED.with(|n| n.get()));
+        let draw = |cx: &mut VisualTestContext, frames: usize| {
+            for _ in 0..frames {
+                probe.update(cx, |_, cx| cx.notify());
+                crate::width_walk::frame(cx);
+            }
+        };
+        // The first run's drawn width against its text's at the interface's size.
+        let first_run = |cx: &mut VisualTestContext| {
+            let drawn = cx.debug_bounds("probe-line-0-0").expect("the first run");
+            let text = cx.update(|window, _| {
+                crate::views::shaped_width(
+                    "Click",
+                    appearance::ui_text(12.),
+                    FontWeight::NORMAL,
+                    window,
+                )
+            });
+            (drawn.size.width - text).abs() < px(0.5)
+        };
+        draw(cx, 5);
+        assert_eq!(counts(), (1, 1), "the window's first frame and five more");
+        assert!(first_run(cx), "the runs are measured in the line's style");
+        probe.update(cx, |probe, _| probe.width = px(120.));
+        draw(cx, 3);
+        assert_eq!(counts(), (1, 1), "a narrower line flows the same runs");
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        draw(cx, 3);
+        assert_eq!(
+            counts(),
+            (1, 2),
+            "a new text size measures the same phrases"
+        );
+        assert!(first_run(cx), "the runs are measured again at the new size");
+        *text.borrow_mut() = Some("Click a line · Enter comments");
+        draw(cx, 3);
+        assert_eq!(counts(), (2, 3), "a new text builds its phrases once");
+        let read: Vec<String> = drawn_lines(cx, "probe-line", "Click a line · Enter comments")
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(read.join(" "), "Click a line · Enter comments");
+        *text.borrow_mut() = None;
+        draw(cx, 1);
+        *text.borrow_mut() = Some("Click a line · Enter comments");
+        draw(cx, 2);
+        assert_eq!(counts(), (3, 4), "a frame without the line dropped them");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A box of the window's width at most, `width` wide, drawing what `build` builds.
