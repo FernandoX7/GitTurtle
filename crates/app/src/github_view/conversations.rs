@@ -70,6 +70,10 @@ pub(super) struct ConfirmFit {
     /// window, so a resize changes it in the frame that draws the new size, and this keeps
     /// only what the body gives up beyond it.
     pub short: Pixels,
+    /// How tall the top line stood above the body in the last frame, none while it stood among
+    /// the content: a frame that changes it moves the region, which the top line's own shift
+    /// of the body's scroll reveals nothing for, so the frame reveals a focused region again.
+    pub top_line: Pixels,
 }
 
 /// The sentence the confirmation stands above Send, or in its region after the destination.
@@ -95,6 +99,11 @@ pub(super) struct ConfirmForm {
     /// room around the region for its ring, the row or two rows of Send and Keep editing, and
     /// the gaps between them.
     pub chrome: Pixels,
+    /// How tall the text of the panel's top line stands while a conversation is open, its 12 pt
+    /// lines wrapped at the width they are laid out in ([`top_line_width`]) and the gaps between
+    /// them, before the cap a tall line scrolls under ([`pinned_line_height`]); none where it
+    /// says nothing.
+    pub top_text: Pixels,
 }
 #[cfg(test)]
 impl ConfirmForm {
@@ -117,7 +126,15 @@ struct FormKey {
     scale: f32,
     /// Send's label.
     send: &'static str,
+    /// What the panel's top line says while a conversation is open ([`TopLineTexts`]).
+    top_line: Vec<String>,
 }
+
+/// What the panel's top line says while a conversation is open, in the order
+/// [`Panel::pin_top_line`] draws it: its notice, the failure or cancel that answers there, and
+/// refused input. All none while no conversation is open, where the line stands among the
+/// content and takes none of the room above the body ([`Panel::pinned_line_texts`]).
+pub(super) type TopLineTexts<'a> = [Option<&'a str>; 3];
 
 thread_local! {
     /// Send's label at a compact Button's 12 pt, laid out once per font and size
@@ -135,20 +152,23 @@ thread_local! {
 
 impl State {
     /// The confirmation's form in `window`, whose text style is `style`, with Send reading
-    /// `send`: the one last decided where it was decided for the same width, font, sizes,
-    /// scale and label, so a frame that changes none of them shapes nothing and allocates
-    /// nothing, and otherwise decided now: the guidance shaped at the width with the text
-    /// system's wrap, Send and Keep editing beside each other where their measured labels fit
-    /// the width ([`crate::placed_button_width`]) and on two rows where not, as the actions'
-    /// row wraps them, and the room around the region, the Buttons' frames and the gaps from
-    /// their sizes, each on the device pixel layout places it.
+    /// `send` and the top line saying `top_line`: the guidance's height, the rest of the
+    /// confirmation's and the top line's text's ([`ConfirmForm`]), the ones last decided where
+    /// they were decided for the same width, font, sizes, scale, label and top line, so a frame
+    /// that changes none of them shapes nothing and allocates nothing, and otherwise decided
+    /// now: the guidance and the top line's text shaped with the text system's wrap at the
+    /// widths they are laid out in, Send and Keep editing beside each other where their
+    /// measured labels fit the width ([`crate::placed_button_width`]) and on two rows where
+    /// not, as the actions' row wraps them, and the room around the region, the Buttons' frames
+    /// and the gaps from their sizes, each on the device pixel layout places it.
     pub(super) fn confirm_form(
         &self,
         style: &TextStyle,
         send: &'static str,
+        top_line: TopLineTexts<'_>,
         window: &Window,
         cx: &App,
-    ) -> (Pixels, Pixels) {
+    ) -> (Pixels, Pixels, Pixels) {
         let width = confirm_width(window, cx);
         let size = appearance::ui_text(12.);
         let line = confirm_line(style, window);
@@ -167,18 +187,35 @@ impl State {
                 && key.font.fallbacks == style.font_fallbacks
                 && key.font.weight == style.font_weight
                 && key.font.style == style.font_style
+                && key
+                    .top_line
+                    .iter()
+                    .map(String::as_str)
+                    .eq(top_line.iter().flatten().copied())
         }) {
-            return (form.guidance, form.chrome);
+            return (form.guidance, form.chrome, form.top_text);
         }
         #[cfg(test)]
         CONFIRM_FORMS_DECIDED.with(|decided| decided.set(decided.get() + 1));
         let snap = |length: Pixels| window.pixel_snap(length);
         let gap = snap(rem * 0.5);
+        // A shaping failure counts as more lines than any body holds beside the region.
+        let shaped = |text: &str, width: Pixels| {
+            let lines = crate::image_compare::wrapped_lines(text, size, width, window);
+            line * lines.min(usize::from(u16::MAX)) as f32
+        };
         // Shaped with GPUI's wrap at the width its label is laid out at, the region's or the
         // confirmation's, which are one width: the region keeps no gutter.
-        let lines = crate::image_compare::wrapped_lines(GUIDANCE, size, width, window);
-        // A shaping failure counts as more lines than any body holds beside the region.
-        let guidance = line * lines.min(usize::from(u16::MAX)) as f32;
+        let guidance = shaped(GUIDANCE, width);
+        let wrap = top_line_width(window, cx);
+        let top_text =
+            top_line
+                .iter()
+                .flatten()
+                .enumerate()
+                .fold(Pixels::ZERO, |height, (index, text)| {
+                    height + shaped(text, wrap) + if index > 0 { gap } else { Pixels::ZERO }
+                });
         let placed = |label: &str, cache| {
             crate::placed_button_width(crate::label_text_width(label, cache, window), false, window)
         };
@@ -201,12 +238,52 @@ impl State {
                 rem,
                 scale,
                 send,
+                top_line: top_line
+                    .iter()
+                    .flatten()
+                    .map(|text| (*text).to_owned())
+                    .collect(),
             },
             guidance,
             chrome,
+            top_text,
         });
-        (form.guidance, form.chrome)
+        (form.guidance, form.chrome, form.top_text)
     }
+}
+
+/// The width the panel's top line wraps its text at while a conversation is open, in `window`:
+/// the panel's width less the dialog's 1 px edge and its side padding at either side, the
+/// scroll gutter the line keeps at its right ([`crate::tags::ScrollCue::gutter`]) and the
+/// panel's text inset at its left, as [`Panel::pin_top_line`] lays it out.
+fn top_line_width(window: &Window, cx: &App) -> Pixels {
+    let snap = |length: Pixels| window.pixel_snap(length);
+    snap(super::panel_width(window))
+        - (snap(px(1.)) + snap(gpui_kit::component::dialog::dialog_side_padding(window, cx))) * 2.
+        - snap(crate::tags::ScrollCue::gutter())
+        - snap(super::text_inset())
+}
+
+/// How tall the panel's top line stands above the body in `window` while a conversation is
+/// open, decided before layout as the guidance is: `text`, the height of what it says
+/// ([`ConfirmForm::top_text`]), under the cap past which it scrolls, half the body's room, then
+/// the busy row with its Cancel, a compact Button's height, where `busy`, and the gap between
+/// them, the padding under them and the divider, each on the device pixel layout places it, as
+/// [`Panel::pin_top_line`] lays them out; none where the line holds nothing.
+pub(super) fn pinned_line_height(text: Pixels, busy: bool, window: &Window) -> Pixels {
+    let said = text > Pixels::ZERO;
+    if !said && !busy {
+        return Pixels::ZERO;
+    }
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let gap = snap(window.rem_size() * 0.5);
+    let text = text.min(snap(super::body_max_height(window) / 2.));
+    let row = match (busy, said) {
+        (true, true) => gap + snap(appearance::ui_size(28.)),
+        (true, false) => snap(appearance::ui_size(28.)),
+        (false, _) => Pixels::ZERO,
+    };
+    text + row + gap + snap(px(1.))
 }
 
 /// The width the confirmation lays out its region, its guidance and its Buttons in, in
@@ -738,6 +815,21 @@ impl Panel {
         });
         self.focus_confirmation(window, cx);
     }
+    /// What the top line says in this frame ([`TopLineTexts`]), from the state the panel's
+    /// render builds its lines from.
+    fn pinned_line_texts(&self) -> TopLineTexts<'_> {
+        if self.conversations.active.is_none() {
+            return [None; 3];
+        }
+        [
+            self.notice.as_deref(),
+            self.error
+                .as_deref()
+                .or(self.cancelled)
+                .filter(|_| !self.answers_in_reply()),
+            self.draft_issue.map(DraftIssue::message),
+        ]
+    }
     pub(super) fn focus_confirmation(&self, window: &mut Window, cx: &mut Context<Self>) {
         *self.review.revealed_focus.borrow_mut() = Default::default();
         // A new confirmation shows its destination first.
@@ -804,21 +896,24 @@ impl Panel {
         // One read of the text style for the frame, for the region's line and the form.
         let style = window.text_style();
         let line = confirm_line(&style, window);
-        let (guidance, chrome) = self.conversations.confirm_form(&style, send, window, cx);
+        let (guidance, chrome, top_text) =
+            self.conversations
+                .confirm_form(&style, send, self.pinned_line_texts(), window, cx);
         // The body's view in this frame, less the room the confirmation's reveal keeps at either
         // edge: the room the dialog leaves the body in this window, less the top line standing
-        // above the body while a conversation is open, and less what the last frame found the
-        // body's view short of that room where it overflowed, as the dialog can hold it
-        // ([`ConfirmFit::short`]). Read from the view the last frame drew, a window made only
-        // shorter, 1,480 × 973 to 1,480 × 486 at 13 pt, which rewraps nothing and so measures
-        // nothing new, kept a long reply's region 612 px tall in a 290 px body, Send below its
-        // foot, until some other frame drew.
-        let top_line = if self.review.top_line_pinned.get() {
-            self.review.top_line.get()
-        } else {
-            Pixels::ZERO
-        };
-        let room = window.pixel_snap(super::body_max_height(window) - top_line);
+        // above the body while a conversation is open, as tall as what it says in this frame,
+        // and less what the last frame found the body's view short of that room where it
+        // overflowed, as the dialog can hold it ([`ConfirmFit::short`]). Read from the view the
+        // last frame drew, a window made only shorter, 1,480 × 973 to 1,480 × 486 at 13 pt,
+        // which rewraps nothing and so measures nothing new, kept a long reply's region 612 px
+        // tall in a 290 px body, Send below its foot, until some other frame drew. And read from
+        // the height the last frame drew the top line, a resize that rewrapped a notice on it,
+        // 1,480 to 461 px at 13 pt, laid the region out 39 px too tall, then 39 px too short,
+        // and only in the third frame at its height.
+        let pinned = self.conversations.active.is_some();
+        let top_line = pinned_line_height(top_text, pinned && pending, window);
+        let body_room = super::body_max_height(window);
+        let room = window.pixel_snap(body_room - top_line);
         let left = room - drawn.short - super::review::reveal_room(window, cx) * 2.;
         let floor = line * 2.;
         let inside = chrome + guidance + gap + floor > left;
@@ -965,15 +1060,31 @@ impl Panel {
                 });
             }
         };
+        let stood = self.review.top_line.clone();
         let measure = move |window: &mut Window, cx: &mut App| {
             // The body has laid out and prepainted its own bounds in this frame before what it
-            // holds prepaints.
+            // holds prepaints, and the top line above it its height before that, so what the
+            // body's view gave up beyond the room is measured against the line this frame drew:
+            // a change of the line's height is the line's, never counted as the body's as well.
+            let line_left = if pinned { stood.get() } else { Pixels::ZERO };
             let short = if body_scroll.max_offset().y > Pixels::ZERO {
-                (room - body_scroll.bounds().size.height).max(Pixels::ZERO)
+                (window.pixel_snap(body_room - line_left) - body_scroll.bounds().size.height)
+                    .max(Pixels::ZERO)
             } else {
                 Pixels::ZERO
             };
-            fit.set(ConfirmFit { line, short });
+            fit.set(ConfirmFit {
+                line,
+                short,
+                top_line: line_left,
+            });
+            // The line changed height: this frame has sized the region for it, and the line's
+            // shift of the body's scroll left Send and Keep editing where the change put them,
+            // so where the region holds focus the reveal just below shows it as it lies now.
+            // Revealed only by the double count of the line's change, it took the frame after.
+            if (line_left - drawn.top_line).abs() > px(0.5) && held.is_focused(window) {
+                *revealed.borrow_mut() = Default::default();
+            }
             if (short - drawn.short).abs() > px(0.5) {
                 // The region was sized for another view of the body: the next frame sizes it for
                 // this one and, where the region holds focus, reveals it again as it lies then.

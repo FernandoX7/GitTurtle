@@ -12461,6 +12461,240 @@ mod tests {
         cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
     }
 
+    /// The sentence a test stands on the panel's top line: one line in a 1,480 px window, several
+    /// in a 461 px one.
+    const TOP_LINE_NOTICE: &str = "Check the captured conversation and its exact text before you send this reply, and repeat nothing after an uncertain attempt.";
+
+    /// Opens the first conversation's reply on `pull`, drafts a reply long enough to run past the
+    /// confirmation's region, stands `notice` on the top line above the body, and confirms the
+    /// reply as Review reply… does, its region focused, at `interface` pt in a `width` × `height`
+    /// window: unlike [`open_confirmation`], with `conversations.active` set, as a real reply's.
+    fn open_reply_confirmation(
+        (panel, pull): (&Entity<Panel>, &PullRequest),
+        notice: Option<&str>,
+        (interface, width, height): (u8, f32, f32),
+        cx: &mut VisualTestContext,
+    ) {
+        crate::focus_ring::sweep::interface_size(cx, interface);
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.executor().run_until_parked();
+        let body = (1..80)
+            .map(|line| format!("Line {line} of a reply long enough to run past the region."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull.clone());
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                let target = panel.conversations.threads[0].target.clone();
+                panel.begin_reply(target, window, cx);
+                panel
+                    .conversations
+                    .input
+                    .update(cx, |input, cx| input.set_value(body, window, cx));
+                panel.notice = notice.map(Into::into);
+                panel.review_reply(window, cx);
+                assert!(panel.confirm.is_some(), "the reply is confirmed");
+                assert!(
+                    panel.conversations.active.is_some(),
+                    "its conversation is open"
+                );
+            })
+        });
+        cx.executor().run_until_parked();
+    }
+
+    /// A reply's region keeps its height through a resize that rewraps the top line standing
+    /// above the body: with a real reply's region focused, its conversation open and a notice on
+    /// the top line, every frame drawn as the window goes from 1,480 × 973 to 461 × 973 at
+    /// 13 pt, where the notice wraps onto several lines, and back, the first included, lays the
+    /// region out at the height it settles at. Read from the height the last frame drew, the
+    /// first narrow frame's region was the line's new height too tall, the body measured short
+    /// by as much, the second's as much too short, and the third settled.
+    #[gpui::test]
+    async fn a_reply_confirmation_keeps_its_region_as_the_top_line_rewraps(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        open_reply_confirmation(
+            (&panel, &pull),
+            Some(TOP_LINE_NOTICE),
+            (13, 1480., 973.),
+            cx,
+        );
+        let frames = |cx: &mut VisualTestContext| {
+            cx.executor().run_until_parked();
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            confirm_frames()
+        };
+        let rooms = cx.update(|window, cx| {
+            (
+                appearance::button_ring_room(cx),
+                review::reveal_room(window, cx),
+            )
+        });
+        let line = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("github-top-line")
+                .expect("the top line stands above the body")
+                .size
+                .height
+        };
+        frames(cx);
+        let wide = line(cx);
+        cx.simulate_resize(size(px(461.), px(973.)));
+        let narrowing = frames(cx);
+        let narrow = line(cx);
+        assert!(
+            narrow > wide + px(20.),
+            "the notice wraps onto more lines: {wide:?}, then {narrow:?}"
+        );
+        assert_confirmation_settled(
+            "a real reply's region focused at 13 pt, a notice on the top line, as the window \
+             becomes 461 × 973 from 1,480 × 973",
+            &narrowing,
+            rooms,
+        );
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        let widening = frames(cx);
+        assert_confirmation_settled(
+            "a real reply's region focused at 13 pt, a notice on the top line, as the window \
+             becomes 1,480 × 973 from 461 × 973",
+            &widening,
+            rooms,
+        );
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+    }
+
+    /// The height the confirmation decides before layout for the top line standing above the
+    /// body is the height the line is drawn: with a real reply's conversation open, at 13 and
+    /// 18 pt in 1,480 × 973, 700 × 680 and 461 × 490 windows, for a notice, for a notice with a
+    /// failure and refused input under it, for the busy row alone and under a notice, and for
+    /// a failure too long for half the body, which scrolls under its cap. A frame that changes
+    /// what the line says keeps the region where it settles too.
+    #[gpui::test]
+    async fn the_confirmation_decides_the_top_line_it_draws(cx: &mut TestAppContext) {
+        type Line = (
+            &'static str,
+            Option<&'static str>,
+            Option<String>,
+            Option<DraftIssue>,
+            bool,
+        );
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let lines: [Line; 5] = [
+            ("a notice", Some(TOP_LINE_NOTICE), None, None, false),
+            (
+                "a notice, a failure and refused input",
+                Some(TOP_LINE_NOTICE),
+                Some(TOP_LINE_NOTICE.into()),
+                Some(DraftIssue::Destination),
+                false,
+            ),
+            ("the busy row", None, None, None, true),
+            (
+                "a notice over the busy row",
+                Some(TOP_LINE_NOTICE),
+                None,
+                None,
+                true,
+            ),
+            (
+                "a failure taller than its cap",
+                None,
+                Some(TOP_LINE_NOTICE.repeat(40)),
+                None,
+                false,
+            ),
+        ];
+        for (interface, width, height) in [
+            (13, 1480., 973.),
+            (18, 1480., 973.),
+            (13, 700., 680.),
+            (18, 700., 680.),
+            (13, 461., 490.),
+            (18, 461., 490.),
+        ] {
+            open_reply_confirmation((&panel, &pull), None, (interface, width, height), cx);
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            confirm_frames();
+            let rooms = cx.update(|window, cx| {
+                (
+                    appearance::button_ring_room(cx),
+                    review::reveal_room(window, cx),
+                )
+            });
+            for (kind, notice, error, issue, busy) in lines.clone() {
+                let at = format!("{kind} at {interface} pt in a {width} × {height} window");
+                cx.update(|_, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.notice = notice.map(Into::into);
+                        panel.error = error;
+                        panel.draft_issue = issue;
+                        panel.pending = busy;
+                        cx.notify();
+                    })
+                });
+                cx.executor().run_until_parked();
+                for _ in 0..4 {
+                    crate::width_walk::frame(cx);
+                }
+                let frames = confirm_frames();
+                let settled = frames.last().expect("the confirmation draws").ring;
+                for (index, frame) in frames.iter().enumerate() {
+                    assert!(
+                        (frame.ring.size.height - settled.size.height).abs() <= px(0.5),
+                        "{at}: frame {index} lays the region's ring out {:?} tall, not the {:?} \
+                         it settles at",
+                        frame.ring.size.height,
+                        settled.size.height
+                    );
+                }
+                // At 18 pt in a 461 × 490 window the line leaves the body too little for the
+                // region's two lines and the buttons' two rows, so they cannot fit it together.
+                if (interface, height) != (18, 490.) {
+                    assert_confirmation_settled(&at, &frames, rooms);
+                }
+                let drawn = cx
+                    .debug_bounds("github-top-line")
+                    .unwrap_or_else(|| panic!("{at}: the top line stands above the body"))
+                    .size
+                    .height;
+                let decided = cx.update(|window, cx| {
+                    let form = panel
+                        .read(cx)
+                        .conversations
+                        .confirm_form
+                        .borrow()
+                        .clone()
+                        .expect("the form decided");
+                    conversations::pinned_line_height(form.top_text, busy, window)
+                });
+                assert!(
+                    (drawn - decided).abs() <= px(0.5),
+                    "{at}: the top line is drawn {drawn:?} tall, not the {decided:?} decided"
+                );
+            }
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, _| {
+                    panel.notice = None;
+                    panel.error = None;
+                    panel.draft_issue = None;
+                    panel.pending = false;
+                    panel.confirm = None;
+                    panel.conversations.active = None;
+                })
+            });
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The confirmation lays out the form it decides before layout
     /// ([`conversations::ConfirmForm`]): at 13 and 18 pt in 1,480 × 973, 700 × 680 and 461 ×
     /// 490 windows, for a comment and a long reply, with Send reading the offline fixture's
@@ -12617,9 +12851,10 @@ mod tests {
             let style = window.text_style();
             let panel = panel.read(cx);
             let before = crate::test_support::allocations();
-            let _ = panel
-                .conversations
-                .confirm_form(&style, "Send to GitHub", window, cx);
+            let _ =
+                panel
+                    .conversations
+                    .confirm_form(&style, "Send to GitHub", [None; 3], window, cx);
             crate::test_support::allocations() - before
         });
         assert_eq!(
