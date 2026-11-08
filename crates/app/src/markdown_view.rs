@@ -587,13 +587,16 @@ impl<F: Fn() -> anyhow::Result<()>> Builder<'_, F> {
                 let language = code.lang.clone().unwrap_or_default();
                 if language.eq_ignore_ascii_case("mermaid") {
                     if self.diagrams < gitturtle_preview::mermaid::MAX_DIAGRAMS {
-                        self.diagrams += 1;
                         if let Some(document) = gitturtle_preview::mermaid::preview(
                             &code.value,
                             std::path::Path::new("diagram.mmd"),
                             1200,
                             self.check,
                         )? {
+                            // A blank fence is no document and draws nothing,
+                            // so it leaves its slot; a render error still
+                            // takes one, which is what bounds the work.
+                            self.diagrams += 1;
                             for diagram in document.diagrams {
                                 let (render, width, height) = if let Some(image) = diagram.image {
                                     (
@@ -2203,6 +2206,54 @@ mod tests {
             let error = capture.join().unwrap().unwrap_err();
             assert_eq!(error.to_string(), "Markdown local-image capture cancelled");
         });
+    }
+    /// A blank fence draws nothing, so it leaves all four diagram slots to
+    /// the fences that draw, and the fifth real fence is where the notice
+    /// lands. A fence that fails to render still takes its slot, so the
+    /// bound on diagram work holds.
+    #[test]
+    fn only_a_fence_that_draws_uses_a_diagram_slot() {
+        let fence = |source: &str| format!("```mermaid\n{source}```\n\n");
+        let prepared = |source: &str| {
+            prepare_document(source, std::path::Path::new("README.md"), true, &|| Ok(())).unwrap()
+        };
+        // The lines of a document's diagram pages, those of its pages that
+        // draw an error, and those of its notices.
+        let read = |document: &Document| {
+            let (mut pages, mut failed, mut notices) = (Vec::new(), Vec::new(), Vec::new());
+            for block in &document.blocks {
+                match &block.kind {
+                    Kind::Diagram(page) => {
+                        pages.push(block.line);
+                        if page.error.is_some() {
+                            failed.push(block.line);
+                        }
+                    }
+                    Kind::Notice(_) => notices.push(block.line),
+                    _ => {}
+                }
+            }
+            (pages, failed, notices)
+        };
+        let real = fence("flowchart LR\n  A --> B\n");
+        let (pages, failed, notices) =
+            read(&prepared(&format!("{}{}", fence("\n"), real.repeat(5))));
+        assert_eq!(
+            pages,
+            [5, 10, 15, 20],
+            "after a blank fence, the first four real fences draw"
+        );
+        assert!(failed.is_empty(), "the real fences render");
+        assert_eq!(notices, [25], "the fifth real fence shows the notice");
+        let broken = fence("not a diagram\n");
+        let (pages, failed, notices) = read(&prepared(&format!("{}{real}", broken.repeat(4))));
+        assert_eq!(
+            pages,
+            [1, 5, 9, 13],
+            "four broken fences each draw their error"
+        );
+        assert_eq!(failed, pages, "and each reads as a render error");
+        assert_eq!(notices, [17], "a render error still takes its slot");
     }
     #[test]
     fn gfm_structure_preserves_text_and_never_executes_html() {
