@@ -237,18 +237,19 @@ pub struct SavedTab {
     )]
     pub git_directories: Option<SavedGitDirectories>,
 }
-/// [`SavedTab::git_directories`] as saved, or none where it is malformed: it
-/// degrades alone, so the tab captures them at its first reopen. Failing the
-/// whole session, it dropped every tab, the library and its groups.
+/// [`SavedTab::git_directories`] as saved, or none where a value that parses
+/// has the wrong shape: it degrades alone, so the tab captures them at its
+/// first reopen. Failing the whole session, it dropped every tab, the library
+/// and its groups. A syntax error is the file's, reported as in any other
+/// field: swallowed part way through a token, the rest of the file loaded as
+/// if the field were absent.
 fn lenient_git_directories<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<SavedGitDirectories>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    Ok(serde_json::Value::deserialize(deserializer)
-        .ok()
-        .and_then(|value| serde_json::from_value(value).ok()))
+    Ok(serde_json::from_value(serde_json::Value::deserialize(deserializer)?).ok())
 }
 /// [`worker::GitDirectories`] as a session saves them, byte-safe as a tab's
 /// path is.
@@ -4833,6 +4834,29 @@ mod tests {
                 common: "/c/.git".into(),
             })
         );
+    }
+
+    /// A syntax error inside `git_directories` is a malformed file, reported
+    /// as a syntax error in any other field is; only a value that parses
+    /// but has the wrong shape degrades alone. Swallowed, a token that failed
+    /// part way let the rest of the file load as if the field were absent.
+    #[test]
+    fn a_syntax_error_in_saved_git_directories_is_a_malformed_file() {
+        let file = isolated_session("malformed-syntax.json");
+        std::fs::create_dir_all(file.parent().expect("a folder")).unwrap();
+        for malformed in [
+            br#"{"version":1,"tabs":[{"path":"/a","git_directories":tx}],"active":0}"#.as_slice(),
+            br#"{"version":1,"tabs":[{"path":tx}],"active":0}"#,
+        ] {
+            std::fs::write(&file, malformed).unwrap();
+            let error = Session::load_at(&file).expect_err("the file is malformed");
+            assert!(
+                error
+                    .downcast_ref::<serde_json::Error>()
+                    .is_some_and(serde_json::Error::is_syntax),
+                "{error:#}"
+            );
+        }
     }
 
     /// A tab's captured Git directories are saved with the session and
