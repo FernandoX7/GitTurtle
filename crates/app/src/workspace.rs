@@ -1971,6 +1971,22 @@ fn reveal_heading(
     }
 }
 
+/// The look of a row's control drawn as a picture of itself
+/// (`render_working_row` without `RowControls`): its resting
+/// label, and a pressed fill that is its resting fill, so a press on the row
+/// in flight lights nothing. The kit applies a Button's pressed style to any
+/// Button that is not disabled, the picture's among them, and the still
+/// pointer's variant keeps the shared pressed fill for a control that acts.
+fn picture_control_variant(
+    p: appearance::Palette,
+    cx: &App,
+) -> gpui_kit::component::button::ButtonVariant {
+    gpui_kit::component::button::ButtonVariant::Custom(
+        gpui_kit::component::button::ButtonCustomVariant::new(cx)
+            .foreground(rgb(p.control_label()).into()),
+    )
+}
+
 /// How the Working list scrolls to show a confirming heading whole
 /// ([`GitTurtle::reveal_confirming_heading`]). The list places the heading
 /// when it is next laid out, with the viewport it is drawn in then, which
@@ -5373,8 +5389,13 @@ impl GitTurtle {
                              tooltip: String,
                              cx: &App| {
             if still {
-                copy_feedback::still_feedback_button(mark, action, label, cx)
-                    .with_variant(appearance::still_control_button_variant())
+                copy_feedback::still_feedback_button(mark, action, label, cx).with_variant(
+                    if picture {
+                        picture_control_variant(p, cx)
+                    } else {
+                        appearance::still_control_button_variant()
+                    },
+                )
             } else {
                 copy_feedback::feedback_button(mark, action, label, tooltip, cx)
             }

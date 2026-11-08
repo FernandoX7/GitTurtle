@@ -965,6 +965,67 @@ mod tests {
         );
     }
 
+    /// A press that stays down on the copy of a row in flight, over its
+    /// Stage or Unstage, lights nothing: the copy is a picture of the row.
+    /// The same press on the row's own Stage, before the row left, paints
+    /// the shared pressed fill, so the fill looked for is the one a press
+    /// paints. The copy's is told by the band it is masked to (`row_shown`).
+    /// The kit gave the picture's control that fill too.
+    #[gpui::test]
+    async fn a_press_on_the_travelling_rows_control_draws_no_pressed_fill(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        draw(cx);
+        let pressed: Hsla = cx.read(|cx| {
+            let p = crate::appearance::palette(cx);
+            p.control_fill(p.selected).into()
+        });
+        // How many quads the last frame filled with the pressed fill, under a
+        // mask no taller than `tallest` where it is given.
+        let lit = |cx: &mut VisualTestContext, tallest: Option<Pixels>| {
+            cx.update(|window, _| {
+                let tallest = tallest.map(|height| f32::from(height) * window.scale_factor() + 1.);
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        quad.background.as_solid() == Some(pressed)
+                            && tallest.is_none_or(|tallest| {
+                                quad.content_mask.bounds.size.height.as_f32() <= tallest
+                            })
+                    })
+                    .count()
+            })
+        };
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+        let pointer = cx
+            .debug_bounds("working-stage-5")
+            .expect("epsilon's Stage")
+            .center();
+        cx.simulate_mouse_down(pointer, gpui::MouseButton::Left, Modifiers::default());
+        draw(cx);
+        assert!(lit(cx, None) > 0, "a press lights the row's own Stage");
+        cx.simulate_mouse_up(pointer, gpui::MouseButton::Left, Modifiers::default());
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        rows_arrived(&app, cx).await;
+        assert_eq!(flying(&app, cx), Some(3));
+        draw(cx);
+        let copy = row(cx, 3);
+        assert!(copy.contains(&pointer), "the copy starts under the pointer");
+        cx.simulate_mouse_down(pointer, gpui::MouseButton::Left, Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            lit(cx, Some(copy.size.height)),
+            0,
+            "the copy's control lit up under the press"
+        );
+    }
+
     /// A 1480 × 1400 window in Changes on `staged` staged files and
     /// `unstaged` new ones after them, f00.txt and on, in rows Staged, its
     /// files, Unstaged, its files; more than the list shows.
