@@ -2194,7 +2194,8 @@ impl Panel {
     /// ([`Self::pin_top_line`]), the body's scroll moves by only the difference, so the
     /// conversation below stays where it was drawn. With no room recorded there, the line
     /// moving above the body counted as a new line and scrolled the conversation up by its
-    /// whole height.
+    /// whole height. The confirmation below it reads `flowing` too, for a change of the line's
+    /// height ([`conversations::ConfirmFit::line_among`]).
     fn flow_top_line(
         &self,
         lines: Vec<AnyElement>,
@@ -2533,6 +2534,7 @@ impl Render for Panel {
         // ([`Self::flow_top_line`]).
         let starts = blocks.starts();
         let drawn = self.review.top_line.clone();
+        let line_for_confirmation = flowing.clone();
         let parts = move |children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App| {
             if let Some((top, bottom)) = flowing.get()
                 && let Some(next) = children.iter().find(|part| part.top() >= bottom)
@@ -2702,7 +2704,7 @@ impl Render for Panel {
             .child(self.render_reply_composer(cx))
             // The outbound confirmation, its stop a region that scrolls its destination and
             // text ([`Panel::render_confirmation`]).
-            .when_some(self.confirm.as_ref(),|element,confirmation|element.child(self.render_confirmation(confirmation,window,cx)))
+            .when_some(self.confirm.as_ref(),|element,confirmation|element.child(self.render_confirmation(confirmation,line_for_confirmation,window,cx)))
             .child(self.part("recovery",div(),cx).flex().flex_wrap().items_center().gap_2().child(self.button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open, cx).debug_selector(||"github-recovery-toggle".into()).mr(-text_inset()).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open= !this.review.recovery_open;cx.notify();})))
                 .child(phrases("github-passive-policy",if cfg!(target_os="macos"){"Drafts stay on this Mac · outbound actions are explicit"}else{"Drafts stay on this computer · outbound actions are explicit"}).min_w_0().ml(text_inset()).text_color(rgb(p.muted))))
             .when(self.review.recovery_open,|element|element
@@ -12978,6 +12980,253 @@ mod tests {
                 panel.confirm = None;
             })
         });
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The busy row Refresh PRs draws among the content leaves a focused confirmation in view:
+    /// with no conversation open and a comment's region focused, in a window whose body holds
+    /// the toolbar and the whole confirmation with less room below it than the row takes, at
+    /// 13 pt in a wide window and at 18 pt in a 461 px one, where the row wraps, Refresh PRs
+    /// pressed with the pointer keeps focus on the region and the confirmation open, the row
+    /// pushes Send past the body's foot in the frame that draws it, and the body brings Send and
+    /// Keep editing back whole. Nothing revealed it: focus and the body's size stayed the same.
+    /// The same holds for a confirmation already cut there, the foot through Send or through the
+    /// region with the buttons below it: some of it was in view, so the body is not one the
+    /// person scrolled away from it.
+    #[gpui::test]
+    async fn a_busy_row_among_the_content_reveals_the_focused_confirmation(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::copy_feedback::tests::click;
+        // Where the body's foot falls on the confirmation before the row arrives.
+        #[derive(Clone, Copy, Debug)]
+        enum Foot {
+            BelowIt,
+            ThroughSend,
+            ThroughRegion,
+        }
+        // The room left below the confirmation's reveal, less than any row takes.
+        const SPARE: f32 = 6.;
+        // Of the window's height, the part the dialog's cap follows
+        // ([`appearance::dialog_max_height`]: it starts a tenth of the window down).
+        const CAP_SLOPE: f32 = 0.9;
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let (region, scroll) = panel.read_with(cx, |panel, _| {
+            (
+                panel.conversations.confirm_focus.clone(),
+                panel.review.body_scroll.clone(),
+            )
+        });
+        for (interface, width, foot) in [
+            (13, 1480., Foot::BelowIt),
+            (13, 1480., Foot::ThroughSend),
+            (13, 1480., Foot::ThroughRegion),
+            (18, 461., Foot::BelowIt),
+            (18, 461., Foot::ThroughSend),
+            (18, 461., Foot::ThroughRegion),
+        ] {
+            let at = format!("{foot:?} at {interface} pt in a {width} px wide window");
+            // Nothing on the top line, as opening a PR leaves it: the row arrives on its own.
+            cx.update(|_, cx| panel.update(cx, |panel, _| panel.notice = None));
+            // Tall enough that the body holds all it draws, for what the confirmation needs.
+            let mut height = 2400.;
+            open_confirmation(
+                (&panel, &pull),
+                confirmed_comment(),
+                (interface, width, height),
+                cx,
+            );
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            assert!(
+                panel.read_with(cx, |panel, _| panel.conversations.active.is_none()),
+                "{at}: no conversation is open"
+            );
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let reveal = cx.update(|window, cx| review::reveal_room(window, cx));
+            let frame = *confirm_frames().last().expect("it draws");
+            let send = cx.debug_bounds("github-confirm-send").expect("Send");
+            let wanted = match foot {
+                Foot::BelowIt => frame.actions.bottom() - body.top() + reveal + px(SPARE),
+                Foot::ThroughSend => send.center().y - body.top(),
+                Foot::ThroughRegion => frame.ring.center().y - body.top(),
+            };
+            // The body's cap at exactly that height.
+            for _ in 0..2 {
+                let room = cx.update(|window, _| body_max_height(window));
+                height += f32::from(wanted - room) / CAP_SLOPE;
+                cx.simulate_resize(size(px(width), px(height)));
+                cx.executor().run_until_parked();
+                crate::width_walk::frame(cx);
+            }
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            // Scrolled back to the top, as a wheel would: the shorter body's reveal moved it.
+            scroll.set_offset(point(scroll.offset().x, px(0.)));
+            cx.executor().run_until_parked();
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let refresh = cx.debug_bounds("github-refresh").expect("Refresh PRs");
+            assert!(
+                refresh.top() >= body.top() && refresh.bottom() <= body.bottom(),
+                "{at}: Refresh PRs {refresh:?} lies in the body {body:?} to press"
+            );
+            let frame = *confirm_frames().last().expect("it draws");
+            let send = cx.debug_bounds("github-confirm-send").expect("Send");
+            let cut =
+                |part: Bounds<Pixels>| part.top() < body.bottom() && part.bottom() > body.bottom();
+            let (actions, ring) = (frame.actions, frame.ring);
+            let starts = match foot {
+                Foot::BelowIt => actions.bottom() <= body.bottom(),
+                Foot::ThroughSend => cut(send),
+                Foot::ThroughRegion => cut(ring) && actions.top() >= body.bottom(),
+            };
+            assert!(
+                starts,
+                "{at}: the body {body:?} starts so, over the region {ring:?}, Send {send:?} and \
+                 the buttons {actions:?}"
+            );
+
+            let held = app.update(cx, |app, _| app.operations.hold());
+            click(cx, "github-refresh");
+            cx.executor().run_until_parked();
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            assert!(
+                panel.read_with(cx, |panel, _| panel.pending && panel.confirm.is_some()),
+                "{at}: Refresh PRs is running and the confirmation stays open"
+            );
+            assert!(
+                cx.debug_bounds("github-busy-row").is_some()
+                    && cx.debug_bounds("github-top-line").is_none(),
+                "{at}: the busy row stands among the content"
+            );
+            assert!(
+                cx.update(|window, _| region.is_focused(window)),
+                "{at}: the press leaves focus on the region"
+            );
+            let frames = confirm_frames();
+            assert!(
+                frames
+                    .iter()
+                    .any(|frame| frame.actions.bottom() > body.bottom() + px(0.5)),
+                "{at}: the row pushes Send and Keep editing past the body's foot {:?}: {:?}",
+                body.bottom(),
+                frames.iter().map(|frame| frame.actions).collect::<Vec<_>>()
+            );
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            for shown in ["github-confirm-send", "github-edit-submission"] {
+                let drawn = cx.debug_bounds(shown).expect(shown);
+                assert!(
+                    drawn.top() >= body.top() - px(0.5)
+                        && drawn.bottom() <= body.bottom() + px(0.5),
+                    "{at}: {shown} {drawn:?} lies whole in the body {body:?} after the reveal, \
+                     the body scrolled {:?}",
+                    scroll.offset().y
+                );
+            }
+
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle_panel(&app, cx).await;
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The busy row Refresh PRs draws among the content does not pull back a body the person
+    /// scrolled away from the confirmation: at 18 pt in a 461 × 490 window, with no conversation
+    /// open and a comment's region focused, the body wheeled up so the toolbar shows and the
+    /// confirmation lies below the body's foot, Refresh PRs pressed with the pointer leaves the
+    /// body where the wheel left it and the row and its Cancel, which that press asked for, in
+    /// view.
+    #[gpui::test]
+    async fn a_busy_row_among_the_content_keeps_a_body_scrolled_from_the_confirmation(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::copy_feedback::tests::click;
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| panel.notice = None);
+        });
+        let (region, scroll) = panel.read_with(cx, |panel, _| {
+            (
+                panel.conversations.confirm_focus.clone(),
+                panel.review.body_scroll.clone(),
+            )
+        });
+        open_confirmation((&panel, &pull), confirmed_comment(), (18, 461., 490.), cx);
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        // Scrolled up, as a wheel would, until Refresh PRs stands at the body's top.
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let refresh = cx.debug_bounds("github-refresh").expect("Refresh PRs");
+        let offset = scroll.offset();
+        scroll.set_offset(point(
+            offset.x,
+            (offset.y + body.top() + room - refresh.top()).clamp(-scroll.max_offset().y, px(0.)),
+        ));
+        cx.executor().run_until_parked();
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let refresh = cx.debug_bounds("github-refresh").expect("Refresh PRs");
+        assert!(
+            refresh.top() >= body.top() && refresh.bottom() <= body.bottom(),
+            "Refresh PRs {refresh:?} lies in the body {body:?} to press"
+        );
+        let ring = confirm_frames().last().expect("it draws").ring;
+        assert!(
+            ring.top() >= body.bottom(),
+            "the confirmation {ring:?} lies below the body {body:?}"
+        );
+        let wheeled = scroll.offset();
+
+        let held = app.update(cx, |app, _| app.operations.hold());
+        click(cx, "github-refresh");
+        cx.executor().run_until_parked();
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending && panel.confirm.is_some()),
+            "Refresh PRs is running and the confirmation stays open"
+        );
+        assert!(
+            cx.debug_bounds("github-busy-row").is_some()
+                && cx.debug_bounds("github-top-line").is_none(),
+            "the busy row stands among the content"
+        );
+        assert!(
+            cx.update(|window, _| region.is_focused(window)),
+            "the press leaves focus on the region"
+        );
+        assert_eq!(
+            scroll.offset(),
+            wheeled,
+            "the body stays where the wheel left it"
+        );
+        for shown in ["github-busy-row", "github-cancel"] {
+            let drawn = cx.debug_bounds(shown).expect(shown);
+            assert!(
+                drawn.top() >= body.top() && drawn.bottom() <= body.bottom(),
+                "{shown} {drawn:?} lies whole in the body {body:?}"
+            );
+        }
+
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

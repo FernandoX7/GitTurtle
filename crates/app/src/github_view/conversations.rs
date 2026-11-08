@@ -74,6 +74,15 @@ pub(super) struct ConfirmFit {
     /// the content: a frame that changes it moves the region, which the top line's own shift
     /// of the body's scroll reveals nothing for, so the frame reveals a focused region again.
     pub top_line: Pixels,
+    /// How tall the top line stood among the content in the last frame, none while it stood
+    /// above the body: it lies above the confirmation there, so a frame that changes it moves
+    /// the region inside a body of the same size, and that frame reveals a focused region again
+    /// too, where the last frame showed any of it ([`Self::in_view`]).
+    pub line_among: Pixels,
+    /// Whether the last frame drew the region or Send and Keep editing at least partly inside
+    /// the body's view. Where it drew neither, the person has scrolled the body away from them,
+    /// and a change of the line among the content leaves the body where it is.
+    pub in_view: bool,
 }
 
 /// The sentence the confirmation stands above Send, or in its region after the destination.
@@ -909,9 +918,12 @@ impl Panel {
     /// where the body is about 265 px tall, and no reveal could draw its ring whole. The region
     /// draws its ring on the edge of the room it keeps around itself, inside the confirmation's
     /// padding, whose resting border stays as it is, so nothing moves for the ring.
+    /// `flowing` is where the top line lies among the content this frame, if it does
+    /// ([`Panel::flow_top_line`]), set before the confirmation below it prepaints.
     pub(super) fn render_confirmation(
         &self,
         confirmation: &Confirmation,
+        flowing: std::rc::Rc<std::cell::Cell<Option<(Pixels, Pixels)>>>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1099,12 +1111,21 @@ impl Panel {
             }
         };
         let stood = self.review.top_line.clone();
-        let measure = move |window: &mut Window, cx: &mut App| {
+        let measure = move |children: &[Bounds<Pixels>], window: &mut Window, cx: &mut App| {
             // The body has laid out and prepainted its own bounds in this frame before what it
             // holds prepaints, and the top line above it its height before that, so what the
             // body's view gave up beyond the room is measured against the line this frame drew:
             // a change of the line's height is the line's, never counted as the body's as well.
             let line_left = if pinned { stood.get() } else { Pixels::ZERO };
+            let line_among = flowing
+                .get()
+                .map_or(Pixels::ZERO, |(top, bottom)| bottom - top);
+            // The region's ring, the first of the children, and the buttons, the last.
+            let view = body_scroll.bounds();
+            let in_view = [children.first(), children.last()]
+                .into_iter()
+                .flatten()
+                .any(|part| part.top() < view.bottom() && part.bottom() > view.top());
             let short = if body_scroll.max_offset().y > Pixels::ZERO {
                 (window.pixel_snap(body_room - line_left) - body_scroll.bounds().size.height)
                     .max(Pixels::ZERO)
@@ -1115,12 +1136,23 @@ impl Panel {
                 line,
                 short,
                 top_line: line_left,
+                line_among,
+                in_view,
             });
             // The line changed height: this frame has sized the region for it, and the line's
             // shift of the body's scroll left Send and Keep editing where the change put them,
             // so where the region holds focus the reveal just below shows it as it lies now.
             // Revealed only by the double count of the line's change, it took the frame after.
-            if (line_left - drawn.top_line).abs() > px(0.5) && held.is_focused(window) {
+            // The line among the content moves the region as well, with no such shift: Refresh
+            // PRs pressed with the pointer, focus staying on the region, drew its busy row above
+            // the confirmation, 63 px with the row wrapped, and Send stayed below the body's foot.
+            // A body wheeled away from the confirmation to reach Refresh PRs stays where it is:
+            // revealed, it left the row and the Cancel that press asked for.
+            let changed = |now: Pixels, then: Pixels| (now - then).abs() > px(0.5);
+            if (changed(line_left, drawn.top_line)
+                || (changed(line_among, drawn.line_among) && drawn.in_view))
+                && held.is_focused(window)
+            {
                 *revealed.borrow_mut() = Default::default();
             }
             if (short - drawn.short).abs() > px(0.5) {
@@ -1142,7 +1174,7 @@ impl Panel {
             .on_children_prepainted(move |children, window, cx| {
                 #[cfg(test)]
                 record(&children);
-                measure(window, cx);
+                measure(&children, window, cx);
                 reveal(children, window, cx);
             })
             .map(super::bordered_pane)
