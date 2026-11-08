@@ -1051,24 +1051,9 @@ mod tests {
         fn piece(&mut self) -> String {
             let [secret, secret2, secret3] = [(); 3].map(|()| self.word("SECRET"));
             let [other, other2] = [(); 2].map(|()| self.word("WORD"));
-            match self.below(8) {
+            match self.below(14) {
                 0 | 1 => {
-                    let marker = self.pick(&[
-                        "authorization:",
-                        "proxy-authorization:",
-                        "password=",
-                        "password:",
-                        "passwd=",
-                        "passwd:",
-                        "access_token=",
-                        "access_token:",
-                        "refresh_token=",
-                        "refresh_token:",
-                        "token=",
-                        "token:",
-                        "oauth_token=",
-                        "oauth_token:",
-                    ]);
+                    let marker = self.pick(&MARKERS);
                     let marker = if self.below(2) == 0 {
                         marker.to_ascii_uppercase()
                     } else {
@@ -1085,33 +1070,84 @@ mod tests {
                     let marker = self.pick(&["token=", "PASSWORD=", "Authorization:"]);
                     format!("https://{other},https://{secret}:{marker}{secret2}@{other2}/path")
                 }
+                // Whitespace inside a userinfo, and a marker on either side
+                // of it.
+                7 => format!("https://{secret}\r{secret2}@{other}/path"),
+                8 => format!("https://{secret}:{secret2}\t{secret3}@{other}"),
+                9 => {
+                    let marker = self.pick(&MARKERS);
+                    format!("https://{other}\r{marker}{secret}@{other2}/path")
+                }
+                10 => {
+                    let marker = self.pick(&MARKERS);
+                    format!("https://{marker}{secret}\r{other}@{other2}/path")
+                }
+                // A carriage return in a URL with no userinfo, and an `@`
+                // outside any URL.
+                11 => format!("https://{other}\r{other2}"),
+                12 => format!("{other}@{other2}"),
                 _ => other,
             }
+        }
+        fn gap(&mut self, line: &str) -> &'static str {
+            // A query runs to the word's end and takes a marker glued to it
+            // along, which leaves that marker's next word shown (`?token=x
+            // shown`, as ever): only whitespace follows one.
+            let in_query = line
+                .rsplit(char::is_whitespace)
+                .next()
+                .is_some_and(|word| word.contains('?'));
+            let gaps = [" ", "\t", "\r", " \r", "\r ", ","];
+            self.pick(&gaps[..gaps.len() - usize::from(in_query)])
         }
         fn line(&mut self) -> String {
             let mut line = self.pick(&["", "fatal: ", "remote: "]).to_owned();
             for piece in 0..=self.below(5) {
                 if piece > 0 {
-                    // A query runs to the word's end and takes a marker glued
-                    // to it along, which leaves that marker's next word shown
-                    // (`?token=x shown`, as ever): only whitespace follows one.
-                    let in_query = line
-                        .rsplit(char::is_whitespace)
-                        .next()
-                        .is_some_and(|word| word.contains('?'));
-                    let gaps = [" ", "\t", "\r", " \r", "\r ", ","];
-                    line.push_str(self.pick(&gaps[..gaps.len() - usize::from(in_query)]));
+                    line.push_str(self.gap(&line));
                 }
                 let piece = self.piece();
                 line.push_str(&piece);
+            }
+            // A marker with nothing after it on the line.
+            if self.below(4) == 0 {
+                line.push_str(self.gap(&line));
+                line.push_str(self.pick(&MARKERS));
+                line.push_str(self.pick(&["", " ", "\t ", "\r", " \r "]));
             }
             line
         }
     }
 
-    /// What `redact_diagnostic` hid at 1e2ad7da stays hidden: no generated
-    /// word it did not show comes back, its cut on a line without a URL is a
-    /// prefix of the earlier cut, and no generated secret is shown at all.
+    /// `new` as the property reads it against `old`: where `old` cut this
+    /// line at a marker that has only whitespace after it, `new` shows that
+    /// whitespace, which holds no secret. This is the one exception to
+    /// showing nothing `old` hid.
+    fn without_a_markers_whitespace<'a>(old: &str, new: &'a str) -> &'a str {
+        if old.ends_with("[redacted]") {
+            new.trim_end()
+        } else {
+            new
+        }
+    }
+
+    /// Whether `new` shows only bytes that `old` shows, in their order and
+    /// with the redactions' own words aside.
+    fn shows_only_what_it_showed(old: &str, new: &str) -> bool {
+        let plain = |line: &str| line.replace("?[redacted]", "").replace("[redacted]", "");
+        let (old_shown, new_shown) = (plain(old), plain(without_a_markers_whitespace(old, new)));
+        let mut old_shown = old_shown.chars();
+        new_shown
+            .chars()
+            .all(|byte| old_shown.any(|shown| shown == byte))
+    }
+
+    /// What `redact_diagnostic` hid at 1e2ad7da stays hidden: on no line does
+    /// it show a byte the earlier redaction did not, no generated word it
+    /// did not show comes back, its cut on a line without a URL is a prefix
+    /// of the earlier cut, and no generated secret is shown at all. The one
+    /// exception is the whitespace after a marker with nothing else after it
+    /// (`without_a_markers_whitespace`).
     #[test]
     fn no_generated_diagnostic_shows_what_the_earlier_redaction_hid() {
         const CASES: usize = 20_000;
@@ -1119,7 +1155,9 @@ mod tests {
             state: 0x9E37_79B9_7F4A_7C15,
             words: 0,
         };
-        let (mut leaked, mut shown_again, mut longer_cut) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut leaked, mut shown_again, mut longer_cut, mut bytes_back) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut left_alone = 0;
         for _ in 0..CASES {
             let first_word = generated.words + 1;
             let mut input = generated.line();
@@ -1142,22 +1180,38 @@ mod tests {
                 shown_again.push(input.clone());
             }
             let kept = |line: &'_ str| line.strip_suffix("[redacted]").unwrap_or(line).to_owned();
-            if earlier.split('\n').zip(now.split('\n')).any(|(old, new)| {
+            let lines = || earlier.split('\n').zip(now.split('\n'));
+            if lines().any(|(old, new)| {
+                let new = without_a_markers_whitespace(old, new);
                 !old.contains("://") && !new.contains("://") && !kept(old).starts_with(&kept(new))
             }) {
                 longer_cut.push(input.clone());
             }
+            if earlier.split('\n').count() != now.split('\n').count()
+                || lines().any(|(old, new)| !shows_only_what_it_showed(old, new))
+            {
+                bytes_back.push(input.clone());
+            }
+            left_alone += lines()
+                .filter(|(old, new)| old.ends_with("[redacted]") && !new.ends_with("[redacted]"))
+                .count();
         }
         assert!(
-            leaked.is_empty() && shown_again.is_empty() && longer_cut.is_empty(),
-            "{CASES} cases: {} show a secret, {} show what the earlier redaction hid, {} cut later; first {:?} {:?} {:?}",
+            leaked.is_empty()
+                && shown_again.is_empty()
+                && longer_cut.is_empty()
+                && bytes_back.is_empty(),
+            "{CASES} cases: {} show a secret, {} show a word the earlier redaction hid, {} cut later, {} show a byte it hid; first {:?} {:?} {:?} {:?}",
             leaked.len(),
             shown_again.len(),
             longer_cut.len(),
+            bytes_back.len(),
             leaked.first(),
             shown_again.first(),
             longer_cut.first(),
+            bytes_back.first(),
         );
+        assert!(left_alone > 0, "no generated line has a marker left alone");
     }
 
     #[cfg(unix)]
