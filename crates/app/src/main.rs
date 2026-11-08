@@ -3088,6 +3088,11 @@ struct PreparedPhrases {
     gap: Pixels,
     /// Each phrase's runs' widths, in the order of [`Phrase::runs`].
     widths: Vec<Vec<Pixels>>,
+    /// The width the layout last measured the line at, with `None` for no limit, until the
+    /// line's prepaint flows at it. GPUI snaps a box on both edges, so the box's own width
+    /// can be nearly a device pixel from the width measured, and a line whose extent lay in
+    /// between would draw another number of lines than it was given room for.
+    measured: std::cell::Cell<Option<Option<Pixels>>>,
 }
 /// How many lines of a given width a [`PhraseLine`]'s runs take ([`PreparedPhrases::flow`]).
 struct Flow {
@@ -3141,6 +3146,7 @@ impl PreparedPhrases {
             font,
             size,
             phrases,
+            measured: Default::default(),
         })
     }
 
@@ -3257,6 +3263,7 @@ impl Element for PhraseLine {
                     AvailableSpace::MinContent => Some(px(0.)),
                     AvailableSpace::MaxContent => None,
                 });
+                flowed.measured.set(Some(width));
                 let flow = flowed.flow(width, |_, _| {});
                 size(
                     known.width.unwrap_or(flow.width),
@@ -3286,10 +3293,21 @@ impl Element for PhraseLine {
         let at = |(line, left): (usize, Pixels)| {
             bounds.origin + point(left, layout.line_height * line as f32)
         };
+        // At the width it was measured at, so it draws the lines it was given room for; the
+        // box's own width where that measurement was not of this box.
+        let device_pixel = px(1. / window.scale_factor());
+        let width = layout
+            .prepared
+            .measured
+            .take()
+            .filter(|width| {
+                width.is_none_or(|width| (width - bounds.size.width).abs() <= device_pixel)
+            })
+            .unwrap_or(Some(bounds.size.width));
         #[cfg(test)]
         let mut places = Vec::new();
         let mut runs = layout.runs.iter_mut();
-        layout.prepared.flow(Some(bounds.size.width), |line, left| {
+        layout.prepared.flow(width, |line, left| {
             #[cfg(test)]
             places.push((line, left));
             if let Some(run) = runs.next() {
@@ -4821,6 +4839,94 @@ pub(crate) mod phrase_tests {
         draw(cx, 2);
         assert_eq!(counts(), (3, 4), "a frame without the line dropped them");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A line draws the lines it was measured to take, at 1× and 2×, in a `flex_1` box a
+    /// fractional share of its row, first in the row and after a fractional sibling, for
+    /// texts whose extents lie around the box's width. GPUI snaps a box on both edges, so its
+    /// drawn width can be nearly a device pixel from the width measured: flowed at that, a
+    /// line whose extent lay in between drew another line than was measured, over whatever
+    /// stands below it.
+    #[gpui::test]
+    fn a_phrase_line_draws_the_lines_it_measured_at_a_fractional_width(cx: &mut TestAppContext) {
+        use std::{
+            cell::{Cell, RefCell},
+            rc::Rc,
+        };
+        crate::views::tests::init_app(cx);
+        let row = Rc::new(Cell::new((2, px(800.))));
+        let text = Rc::new(RefCell::new(SharedString::default()));
+        let (shown, line) = (row.clone(), text.clone());
+        let (probe, cx) = cx.add_window_view(move |_, _| Probe {
+            width: px(4000.),
+            build: Box::new(move || {
+                let (children, width) = shown.get();
+                let cell = |selector: &'static str, id: &'static str| {
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .debug_selector(move || selector.into())
+                        .child(PhraseLine::new(id, line.borrow().clone()))
+                };
+                div()
+                    .w(width)
+                    .flex()
+                    .child(cell("phrase-first", "probe-first"))
+                    .child(cell("phrase-second", "probe-second"))
+                    .children((children == 3).then(|| div().flex_1()))
+                    .into_any_element()
+            }),
+        });
+        let mut failures = Vec::new();
+        let mut laid_out = 0;
+        for narrow in 0..12 {
+            let shown: SharedString = format!(
+                "Click a changed line · Enter comments{}",
+                "i".repeat(narrow)
+            )
+            .into();
+            *text.borrow_mut() = shown.clone();
+            let extent = cx.update(|window, _| {
+                let prepared = PreparedPhrases::prepare(None, &shown, &window.text_style(), window);
+                f32::from(prepared.flow(None, |_, _| {}).width)
+            });
+            for scale in [1., 2.] {
+                cx.update(|window, _| window.set_scale_factor(scale));
+                for children in [2, 3] {
+                    let share = children as f32 * scale;
+                    let widths = ((extent - 2.) * share).floor() as i32
+                        ..=((extent + 1.) * share).ceil() as i32;
+                    for device in widths {
+                        row.set((children, px(device as f32 / scale)));
+                        probe.update(cx, |_, cx| cx.notify());
+                        crate::width_walk::frame(cx);
+                        laid_out += 1;
+                        for (selector, prefix) in [
+                            ("phrase-first", "probe-first"),
+                            ("phrase-second", "probe-second"),
+                        ] {
+                            let measured = cx.debug_bounds(selector).expect("the box").size.height;
+                            let lines = drawn_lines(cx, prefix, &shown);
+                            let (first, last) = (&lines[0], &lines[lines.len() - 1]);
+                            let drawn = last.top + last.height - first.top;
+                            if (measured - drawn).abs() > px(0.25) {
+                                failures.push(format!(
+                                    "{scale}x, {selector}, {device} of {children} shares, \
+                                     {extent} wide: measured {measured:?}, drew {drawn:?}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(laid_out > 400, "the sweep laid out only {laid_out}");
+        assert!(
+            failures.is_empty(),
+            "{} of {laid_out} rows draw other lines than they measured:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 
     /// A box of the window's width at most, `width` wide, drawing what `build` builds.
