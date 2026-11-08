@@ -751,6 +751,14 @@ cover current upstream x86-64 Omarchy.
      then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
+     - **Found on 2026-11-08 (the FU30-D5b and FU30-D8 reviews):** (M, focus, the first-frame rule, decided
+       2026-11-07) the GitHub panel body's reveal is decided before layout, so whatever a reopen or an opening
+       confirmation focuses is whole in its first painted frame. Today `review::show` reveals after paint: Send and
+       Keep editing can be cut or outside the body's view for a frame (a short comment whose body bottom falls inside
+       the Buttons' 28 px band is the cut case; each step of a live drag is a frame 0), and a PR row's held part is
+       `None`, so a row cut at close paints cut until the Reveal phase. The rule takes a frame-0 test where the row
+       straddles the body's foot. (S, pre-existing) A change above the confirmation while its region stays focused
+       (a failed draft status wrapping in `submit`) moves Send without a reveal.
      - **Found on 2026-11-07 (native QA-106c on `ec64f91c`, and the morning's reviews; briefed rounds FU30-A
        conflict review draft, FU30-B Edit local commits, FU30-C lists out of the Tab order are in `briefs-q9/`):**
        (keyboard, M) the Diff view's per-line staging checkboxes are mouse-only (no Tab stop; a click does not
