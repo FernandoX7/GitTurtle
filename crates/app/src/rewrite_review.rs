@@ -980,8 +980,23 @@ impl SeriesBrowser {
                 preview.center().y + line / 2. > self.body.scroll().bounds().bottom()
             })
     }
+    /// The text mode the preview draws: the person's choice, except that
+    /// Diagrams, while the chosen file's text has no diagrams for it to
+    /// draw, gives way to Patch, the file's default text mode as Compare's
+    /// Unified is, without forgetting the choice, which a file with diagrams
+    /// draws again. The modes' selected look, the editor the box builds and
+    /// the ring on its edge follow it. Left as the drawn mode, Diagrams drew
+    /// no mode selected, while the row refused it, and a bare sentence in
+    /// the box.
+    fn drawn_mode(&self) -> usize {
+        match self.content.as_deref() {
+            Some(Content::Text { diagrams: None, .. }) if self.text_mode == 3 => 0,
+            _ => self.text_mode,
+        }
+    }
     fn prepare_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.text_mode == 3 {
+        let mode = self.drawn_mode();
+        if mode == 3 {
             return;
         }
         let Some(Content::Text {
@@ -994,17 +1009,16 @@ impl SeriesBrowser {
         else {
             return;
         };
-        let value = [patch, old, new][self.text_mode];
+        let value = [patch, old, new][mode];
         let (editor, decoration) = text::editor_with_decorations(
             value,
-            if self.text_mode == 0 { "diff" } else { "text" },
-            (self.text_mode == 0).then_some(presentation.as_ref()),
+            if mode == 0 { "diff" } else { "text" },
+            (mode == 0).then_some(presentation.as_ref()),
             window,
             cx,
         );
         self.decoration = decoration;
-        self.patch =
-            (self.text_mode == 0).then(|| diff_view::new(editor.clone(), presentation, window, cx));
+        self.patch = (mode == 0).then(|| diff_view::new(editor.clone(), presentation, window, cx));
         self.editor = Some(editor);
     }
     fn check_remote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1077,9 +1091,10 @@ impl SeriesBrowser {
         if self.messages.is_some() {
             return Vec::new();
         }
+        let mode = self.drawn_mode();
         match self.content.as_deref() {
-            Some(Content::Text { .. }) if self.text_mode == 3 => Vec::new(),
-            Some(Content::Text { .. }) if self.text_mode == 0 => self
+            Some(Content::Text { .. }) if mode == 3 => Vec::new(),
+            Some(Content::Text { .. }) if mode == 0 => self
                 .patch
                 .iter()
                 .map(|patch| patch.read(cx).focus_handle(cx))
@@ -1164,27 +1179,16 @@ impl SeriesBrowser {
                 }))
                 .into_any_element();
         }
+        // Diagrams is drawn only for text with diagrams ([`Self::drawn_mode`]).
+        let mode = self.drawn_mode();
         match self.content.as_deref() {
-            Some(Content::Text { diagrams, .. }) if self.text_mode == 3 => {
-                diagrams.as_ref().map_or_else(
-                    || {
-                        div()
-                            .child("No Mermaid diagrams on this file; use Source.")
-                            .into_any_element()
-                    },
-                    |preview| {
-                        rich_preview::render_comparison(
-                            preview,
-                            false,
-                            self.opener(cx),
-                            width,
-                            window,
-                            cx,
-                        )
-                    },
-                )
+            Some(Content::Text {
+                diagrams: Some(preview),
+                ..
+            }) if mode == 3 => {
+                rich_preview::render_comparison(preview, false, self.opener(cx), width, window, cx)
             }
-            Some(Content::Text { .. }) if self.text_mode == 0 => self.patch.as_ref().map_or_else(
+            Some(Content::Text { .. }) if mode == 0 => self.patch.as_ref().map_or_else(
                 || div().into_any_element(),
                 |patch| patch.clone().into_any_element(),
             ),
@@ -1469,6 +1473,7 @@ impl Render for SeriesBrowser {
         let empty = (row_count == 0).then(|| self.empty_reason());
         let modes_refused = self.modes_refusal();
         let diagrams_refused = self.diagrams_refusal();
+        let drawn_mode = self.drawn_mode();
         let [
             messages_refused,
             original_refused,
@@ -1586,7 +1591,7 @@ impl Render for SeriesBrowser {
                 // from one file to the next: the row left as an image or
                 // document landed and came back with the next choice,
                 // moving the preview 34.5 px each way.
-                .when(self.messages.is_none(), |element| element.child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.body.controls(modes.iter().cloned().map(Some).collect(), room)).children(TEXT_MODES.into_iter().enumerate().map(|(mode, (label, key))| { let refused = if mode == 3 { diagrams_refused.clone() } else { modes_refused.clone() }; refusing(button(("series-text-mode", mode), label, "", self.text_mode == mode && refused.is_none()).debug_selector(move || key.into()).track_focus(&modes[mode]).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); })), key, refused) }))))
+                .when(self.messages.is_none(), |element| element.child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.body.controls(modes.iter().cloned().map(Some).collect(), room)).children(TEXT_MODES.into_iter().enumerate().map(|(mode, (label, key))| { let refused = if mode == 3 { diagrams_refused.clone() } else { modes_refused.clone() }; refusing(button(("series-text-mode", mode), label, "", drawn_mode == mode && refused.is_none()).debug_selector(move || key.into()).track_focus(&modes[mode]).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); })), key, refused) }))))
                 // Built for the box's width in the frame it is drawn
                 // (`in_frame`), so the open controls take the form that
                 // width leaves them in the first frame after a resize.
@@ -4423,6 +4428,157 @@ mod tests {
                 "mode {mode} gives the read's error as its reason"
             );
         }
+    }
+
+    /// A review in `app`'s window, its read landed, inspecting `files` as
+    /// a commit's, with none chosen.
+    fn inspecting(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        files: &[FileChange],
+    ) -> Entity<SeriesBrowser> {
+        let browser = cx.update(|window, cx| {
+            let repo = app
+                .read(cx)
+                .repository
+                .clone()
+                .expect("the window's repository");
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(
+                    app.downgrade(),
+                    repo,
+                    "origin".into(),
+                    "main".into(),
+                    window,
+                    cx,
+                )
+            });
+            open_series_dialog(browser.clone(), window, cx);
+            browser
+        });
+        lands(&browser, cx);
+        cx.update(|_, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.inspecting = true;
+                browser.inspect_label = "Rewritten".into();
+                browser.files = files.to_vec();
+                cx.notify();
+            })
+        });
+        crate::tags::tests::draw(cx);
+        browser
+    }
+
+    /// Chooses the inspected commit's file `index` and lands its preview.
+    fn choose(browser: &Entity<SeriesBrowser>, cx: &mut gpui::VisualTestContext, index: usize) {
+        cx.update(|window, cx| browser.update(cx, |browser, cx| browser.file(index, window, cx)));
+        browser.read_with(cx, |browser, _| browser.worker.wait_idle());
+        crate::tags::tests::draw(cx);
+    }
+
+    /// The changed files of `repo`'s last commit, and a lookup of each by
+    /// its path.
+    fn last_commit_files(repo: &GitRepository) -> Vec<FileChange> {
+        // A fresh repository keeps its branch as a loose reference.
+        let head = std::fs::read_to_string(repo.path().join(".git/refs/heads/main")).unwrap();
+        repo.changes_with_renames(head.trim(), 0).unwrap()
+    }
+
+    fn file_index(files: &[FileChange], path: &str) -> usize {
+        files
+            .iter()
+            .position(|file| file.path() == std::path::Path::new(path))
+            .unwrap_or_else(|| panic!("{path} changed"))
+    }
+
+    /// The text modes the last frame drew selected: those that paint a fill
+    /// over their bounds at rest, with the pointer away, which a ghost mode
+    /// at rest does not.
+    fn selected_modes(cx: &mut gpui::VisualTestContext) -> Vec<usize> {
+        (0..4)
+            .filter(|mode| {
+                let key = TEXT_MODES[*mode].1;
+                !crate::views::tests::painted_fills(cx, key).is_empty()
+            })
+            .collect()
+    }
+
+    /// Diagrams, chosen on a Mermaid file, gives way while it cannot apply:
+    /// on `notes.txt` the modes draw Patch, the file's default text mode as
+    /// Compare's Unified is, selected, and the box its patch, while the
+    /// person's choice is kept, so the Mermaid file chosen again draws
+    /// Diagrams selected and its diagrams. Left as the drawn mode, it drew
+    /// no mode selected, while the row refused Diagrams, and the box the
+    /// bare "No Mermaid diagrams on this file; use Source.".
+    #[gpui::test]
+    async fn diagrams_gives_way_to_the_patch_on_a_file_without_them(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "notes\n").unwrap();
+        std::fs::write(repo.path().join("diagram.mmd"), "flowchart LR\n  A --> B\n").unwrap();
+        git(repo.path(), &["add", "."]);
+        git(
+            repo.path(),
+            &["commit", "--quiet", "-m", "Add notes and a diagram"],
+        );
+        let files = last_commit_files(&repo);
+        let (mermaid, notes) = (
+            file_index(&files, "diagram.mmd"),
+            file_index(&files, "notes.txt"),
+        );
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        size_to(&app, cx, 13, 1480., 800.);
+        let browser = inspecting(&app, cx, &files);
+        choose(&browser, cx, mermaid);
+        let diagrams = cx.debug_bounds(TEXT_MODES[3].1).expect("Diagrams is drawn");
+        cx.simulate_click(diagrams.center(), Modifiers::none());
+        cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            selected_modes(cx),
+            [3],
+            "Diagrams is chosen and drawn selected"
+        );
+        choose(&browser, cx, notes);
+        assert_eq!(
+            browser.read_with(cx, |browser, _| browser.text_mode),
+            3,
+            "the person's choice of Diagrams is kept"
+        );
+        assert_eq!(
+            selected_modes(cx),
+            [0],
+            "notes.txt, with no diagrams, draws Patch selected"
+        );
+        let (patch, text) = cx.update(|_, cx| {
+            let browser = browser.read(cx);
+            (
+                browser.patch.is_some(),
+                browser
+                    .editor
+                    .as_ref()
+                    .map(|editor| editor.read(cx).value().to_string()),
+            )
+        });
+        assert!(patch, "the box draws notes.txt's patch");
+        assert!(
+            text.is_some_and(|text| text.contains("+notes")),
+            "the patch is notes.txt's"
+        );
+        choose(&browser, cx, mermaid);
+        assert_eq!(
+            selected_modes(cx),
+            [3],
+            "the Mermaid file chosen again draws Diagrams selected"
+        );
+        assert!(
+            browser.read_with(cx, |browser, _| browser.patch.is_none()),
+            "and its diagrams, not a patch"
+        );
     }
 
     /// Whether the pointer resting on action `id` shows the tooltip `text`,
