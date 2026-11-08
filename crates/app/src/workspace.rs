@@ -5808,8 +5808,17 @@ impl GitTurtle {
                                     busy && looks_busy,
                                 )
                                 .on_click(cx.listener(
-                                    move |this, _, window, cx| {
+                                    move |this, event: &ClickEvent, window, cx| {
                                         cx.stop_propagation();
+                                        // A double-click's second press, on
+                                        // the row the first press's write
+                                        // moved under the pointer, does
+                                        // nothing: it staged a file nobody
+                                        // aimed at, which is worse than a
+                                        // lost press.
+                                        if event.click_count() > 1 && this.still_over_moved_rows() {
+                                            return;
+                                        }
                                         if this.operation_busy.is_none() {
                                             this.hold_still_pointer(position, window);
                                         }

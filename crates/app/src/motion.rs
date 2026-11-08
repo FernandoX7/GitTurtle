@@ -817,28 +817,94 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
-    /// The travelling copy of a row in flight is a picture of the row: it
-    /// takes no click and offers assistive technology nothing. A click on
-    /// epsilon's Stage stages it, and its copy starts to travel from where
-    /// epsilon's row stood, over delta's, which took its place: a second
-    /// click there, as a double-click's, acts on delta's Stage beneath it,
-    /// as a click under a still pointer acts on the row the rows moved there
-    /// (DESIGN.md, "Motion"), and epsilon stays staged. The copy's Unstage
-    /// took that click and unstaged epsilon again, and while it flew
-    /// assistive technology found it beside the list's rows as an "Unstage
-    /// epsilon.txt" button.
-    #[gpui::test]
-    async fn a_click_during_a_flight_never_reaches_the_travelling_row(cx: &mut TestAppContext) {
-        let (_fixture, app, cx) = six_files(cx).await;
+    /// Stages epsilon from its row's Stage, so that its copy starts to
+    /// travel from where its row stood, over delta's, which took its place
+    /// under the pointer that pressed it; the clock stands still. Returns
+    /// that pointer.
+    async fn epsilon_in_flight(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Point<Pixels> {
         // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
         let pointer = cx
             .debug_bounds("working-stage-5")
             .expect("epsilon's Stage")
             .center();
-        toggle(&app, cx, 5).await;
-        // [Staged 3, alpha, beta, epsilon, Unstaged 3, delta, gamma, zeta]:
-        // epsilon travels to row 3 on the test clock, which stands still.
-        assert_eq!(flying(&app, cx), Some(3));
+        toggle(app, cx, 5).await;
+        // [Staged 3, alpha, beta, epsilon, Unstaged 3, delta, gamma, zeta]
+        assert_eq!(flying(app, cx), Some(3));
+        pointer
+    }
+
+    /// A left press and release at `position`, counted by the platform as
+    /// click number `count` of a run; `simulate_click` always counts one.
+    fn counted_click(cx: &mut VisualTestContext, position: Point<Pixels>, count: usize) {
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    position,
+                    modifiers: Modifiers::default(),
+                    button: gpui::MouseButton::Left,
+                    click_count: count,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    position,
+                    modifiers: Modifiers::default(),
+                    button: gpui::MouseButton::Left,
+                    click_count: count,
+                }),
+                cx,
+            );
+        });
+    }
+
+    /// Whether the file `name` has staged and unstaged changes.
+    fn staged_and_unstaged(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        name: &str,
+    ) -> Option<(bool, bool)> {
+        app.read_with(cx, |app, _| {
+            app.work_status.as_ref().and_then(|status| {
+                status
+                    .entries
+                    .iter()
+                    .find(|entry| entry.path == Path::new(name))
+                    .map(|entry| {
+                        (
+                            entry.staged.is_some(),
+                            entry.unstaged.is_some() || entry.untracked,
+                        )
+                    })
+            })
+        })
+    }
+
+    /// Finishes the write a press may have started, the rows it produces and
+    /// the flight it may have started.
+    async fn press_lands(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        if let Some(write) = app.update(cx, |app, _| app.operation_task.take()) {
+            write.await;
+        }
+        rows_arrived(app, cx).await;
+        advance(cx, ROW_TRAVEL.as_millis() as u64);
+    }
+
+    /// The travelling copy of a row in flight is a picture of the row: it
+    /// takes no click and offers assistive technology nothing. A
+    /// double-click's second press, on epsilon's place, finds the copy of
+    /// the row its first press staged over delta's row, which took epsilon's
+    /// place: it writes nothing, neither to epsilon, which stays staged, nor
+    /// to delta, which nobody aimed at (DESIGN.md, "Motion"). The copy's
+    /// Unstage took that press and unstaged epsilon again, and while it flew
+    /// assistive technology found it beside the list's rows as an "Unstage
+    /// epsilon.txt" button; then, beneath the copy, delta's Stage took it
+    /// and staged delta.
+    #[gpui::test]
+    async fn a_click_during_a_flight_never_reaches_the_travelling_row(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        let pointer = epsilon_in_flight(&app, cx).await;
         crate::native_accessibility::written::forget();
         draw(cx);
         let mut failures = Vec::new();
@@ -854,41 +920,49 @@ mod tests {
             Some(copy) if copy.node.is_hidden() => {}
             copy => failures.push(format!("assistive technology finds the copy: {copy:?}")),
         }
-        cx.simulate_click(pointer, Modifiers::default());
-        if let Some(write) = app.update(cx, |app, _| app.operation_task.take()) {
-            write.await;
-        }
-        rows_arrived(&app, cx).await;
-        advance(cx, ROW_TRAVEL.as_millis() as u64);
-        let staged = |cx: &mut VisualTestContext, name: &str| {
-            app.read_with(cx, |app, _| {
-                app.work_status.as_ref().and_then(|status| {
-                    status
-                        .entries
-                        .iter()
-                        .find(|entry| entry.path == Path::new(name))
-                        .map(|entry| {
-                            (
-                                entry.staged.is_some(),
-                                entry.unstaged.is_some() || entry.untracked,
-                            )
-                        })
-                })
-            })
-        };
-        if staged(cx, "epsilon.txt") != Some((true, false)) {
+        counted_click(cx, pointer, 2);
+        press_lands(&app, cx).await;
+        if staged_and_unstaged(&app, cx, "epsilon.txt") != Some((true, false)) {
             failures.push(format!(
-                "the second click unstaged epsilon: {:?}",
-                staged(cx, "epsilon.txt")
+                "the second press unstaged epsilon: {:?}",
+                staged_and_unstaged(&app, cx, "epsilon.txt")
             ));
         }
-        if staged(cx, "delta.txt") != Some((true, false)) {
+        if staged_and_unstaged(&app, cx, "delta.txt") != Some((false, true)) {
             failures.push(format!(
-                "the second click did not reach delta's Stage beneath the copy: {:?}",
-                staged(cx, "delta.txt")
+                "the second press wrote delta, which nobody aimed at: {:?}",
+                staged_and_unstaged(&app, cx, "delta.txt")
             ));
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// A lone click at the same place, not a double-click's second press,
+    /// still acts on what the rows moved under the still pointer: delta's
+    /// Stage, beneath the copy.
+    #[gpui::test]
+    async fn a_single_click_under_a_still_pointer_still_acts_on_the_row_beneath(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        let pointer = epsilon_in_flight(&app, cx).await;
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.still_over_moved_rows()),
+            "the rows moved under the still pointer"
+        );
+        counted_click(cx, pointer, 1);
+        press_lands(&app, cx).await;
+        assert_eq!(
+            staged_and_unstaged(&app, cx, "delta.txt"),
+            Some((true, false)),
+            "the click staged delta beneath the copy"
+        );
+        assert_eq!(
+            staged_and_unstaged(&app, cx, "epsilon.txt"),
+            Some((true, false)),
+            "epsilon stays staged"
+        );
     }
 
     /// The cursor's own row in flight: the list draws a slot at its landing
