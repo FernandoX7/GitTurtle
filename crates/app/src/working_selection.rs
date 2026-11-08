@@ -424,6 +424,44 @@ impl GitTurtle {
             .map(|place| (group, place))
     }
 
+    /// Whether the person has scrolled the list away from the cursor's row:
+    /// the rows drawn hold it and no part of it lies in the list's viewport.
+    /// A write's landing then keeps the list's offset, so the row they
+    /// pressed and its confirmation stay in view: with the cursor on row 5,
+    /// a Stage pressed at row 50 moved the list back to row 5. `false` where
+    /// no such row is drawn or the list was never laid out, which no scroll
+    /// of theirs explains.
+    fn working_cursor_scrolled_away(&self, window: &Window) -> bool {
+        let Some(cursor) = self.shown_working_cursor() else {
+            return false;
+        };
+        let Some(position) = self.working_rows.iter().position(
+            |row| matches!(row, workspace::WorkingRow::File(index, area) if (*index, *area) == cursor),
+        ) else {
+            return false;
+        };
+        let scroll = self.working_scroll.0.borrow();
+        let Some(size) = scroll.last_item_size else {
+            return false;
+        };
+        let row = window.pixel_snap(px(self.settings.density.file_row_height()));
+        let (top, start) = (-scroll.base_handle.offset().y, row * position as f32);
+        start + row <= top || start >= top + size.item.height
+    }
+
+    /// Takes the rows that just landed as laid out, so that a change in their
+    /// number, which brings the selected row into view as the list is next
+    /// drawn (`render_working_inspector`), leaves the list where it is. A
+    /// partly staged file's row leaving Unstaged takes one row away, and the
+    /// list moved back to a cursor the person had scrolled away from.
+    fn keep_working_offset(&self, window: &Window) {
+        let height = window.pixel_snap(px(self.settings.density.file_row_height()))
+            * self.working_rows.len() as f32;
+        if let Some(size) = self.working_scroll.0.borrow_mut().last_item_size.as_mut() {
+            size.contents.height = height;
+        }
+    }
+
     /// The cursor's row left the list while the person was in it, as a file
     /// deleted outside the app takes away the row a menu is open on: the
     /// cursor goes to the file row that took its place in its group, Staged
@@ -823,6 +861,8 @@ impl GitTurtle {
                         this.working_paths.visible_count = visible_count;
                         this.working_paths.conflicted = conflicted;
                         let vacated = this.vacated_working_place(window, cx);
+                        // Asked of the rows still drawn, before these replace them.
+                        let scrolled_away = center_selected && this.working_cursor_scrolled_away(window);
                         this.working_rows = rows;
                         this.working_paths.retained = None;
                         this.release_departed_row_control(window, cx);
@@ -848,10 +888,13 @@ impl GitTurtle {
                                 let height = f32::from(window.pixel_snap(px(this.settings.density.file_row_height())));
                                 this.working_scroll.0.borrow().base_handle.set_offset(anchor.reanchored_offset(next_top, height));
                             }
-                        } else if center_selected && let Some(position) = selected {
+                        } else if center_selected && !scrolled_away && let Some(position) = selected {
                             this.working_scroll.scroll_to_item(position, ScrollStrategy::Center);
                         }
-                        if center_selected { this.reveal_confirming_heading(selected, window, cx); }
+                        // A cursor the person scrolled away from has no say in
+                        // how far a confirming heading moves the list.
+                        if center_selected { this.reveal_confirming_heading(selected.filter(|_| !scrolled_away), window, cx); }
+                        if scrolled_away { this.keep_working_offset(window); }
                         this.rows_moved_under_pointer(window, cx);
                         this.land_working_row(landing, cx);
                     }

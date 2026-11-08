@@ -965,6 +965,223 @@ mod tests {
         );
     }
 
+    /// A 1480 × 1400 window in Changes on `staged` staged files and
+    /// `unstaged` new ones after them, f00.txt and on, in rows Staged, its
+    /// files, Unstaged, its files; more than the list shows.
+    async fn long_list(
+        cx: &mut TestAppContext,
+        staged: usize,
+        unstaged: usize,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        for file in 0..staged + unstaged {
+            let name = format!("f{file:02}.txt");
+            std::fs::write(root.join(&name), format!("{name}\n")).unwrap();
+            if file < staged {
+                fixture_git(&root, &["add", &name]);
+            }
+        }
+        cx.simulate_resize(size(px(1480.), px(1400.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_rows.len()),
+            staged + unstaged + 2
+        );
+        (fixture, app, cx)
+    }
+
+    /// The Working list's offset.
+    fn list_offset(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Pixels {
+        app.read_with(cx, |app, _| {
+            app.working_scroll.0.borrow().base_handle.offset().y
+        })
+    }
+
+    /// Scrolls the Working list so that its top row is `top`, as the person
+    /// scrolling it does, leaving the cursor where it is.
+    fn scroll_list(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, top: usize) {
+        app.update(cx, |app, _| {
+            app.working_scroll
+                .scroll_to_item_strict(top, ScrollStrategy::Top)
+        });
+        draw(cx);
+        draw(cx);
+    }
+
+    /// Whether the row at `position` is drawn whole inside the Working list.
+    fn row_in_view(cx: &mut VisualTestContext, position: usize) -> bool {
+        let pane = cx.debug_bounds("working-pane").expect("the list");
+        let selector: &'static str = format!("working-row-{position}").leak();
+        cx.debug_bounds(selector)
+            .is_some_and(|row| row.top() >= pane.top() && row.bottom() <= pane.bottom())
+    }
+
+    /// The cursor on row 5 and the person scrolled down to row 50, whose
+    /// Stage they press: the list stays where they put it, and the row and
+    /// its Staged confirmation stay in view. The write's own read once
+    /// centred the cursor's row, so the list jumped back to row 5.
+    #[gpui::test]
+    async fn a_stage_with_the_cursor_scrolled_away_keeps_the_lists_offset(
+        cx: &mut TestAppContext,
+    ) {
+        // [Staged 40, f00…f39, Unstaged 20, f40…f59], so that f48 at row 50
+        // lands at row 41, in the same view.
+        let (_fixture, app, cx) = long_list(cx, 40, 20).await;
+        let cursor_row = row(cx, 5).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        let cursor = app.read_with(cx, |app, _| app.working_selected);
+        assert!(cursor.is_some(), "the cursor on row 5");
+        scroll_list(&app, cx, 40);
+        assert!(
+            !row_in_view(cx, 5) && row_in_view(cx, 41) && row_in_view(cx, 50),
+            "scrolled away from the cursor, rows 41 and 50 shown"
+        );
+        let offset = list_offset(&app, cx);
+        toggle(&app, cx, 50).await;
+        draw(cx);
+        assert_eq!(flying(&app, cx), Some(41), "f48 flies to row 41 in view");
+        assert_eq!(list_offset(&app, cx), offset, "as the rows land");
+        advance(cx, ROW_TRAVEL.as_millis() as u64);
+        draw(cx);
+        assert_eq!(list_offset(&app, cx), offset, "when the flight has ended");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_selected),
+            cursor,
+            "the cursor stayed on its file"
+        );
+        assert!(row_in_view(cx, 41), "the pressed row is in view");
+        let confirmed = cx.update(|_, cx| {
+            let repository = app.read(cx).path.clone();
+            crate::copy_feedback::confirmed(
+                &workspace::confirmations::file(
+                    &repository,
+                    Path::new("f48.txt"),
+                    ChangeArea::Staged,
+                ),
+                cx,
+            )
+        });
+        assert!(confirmed, "its Staged confirmation shows");
+    }
+
+    /// As above, where the row's write changes the rows' number: a partly
+    /// staged file's Unstaged row goes and its Staged row stays. The draw
+    /// that follows a change in their number brought the selected row into
+    /// view instead.
+    #[gpui::test]
+    async fn a_stage_that_changes_the_row_count_keeps_the_lists_offset_too(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = long_list(cx, 40, 20).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["add", "f48.txt"]);
+        std::fs::write(root.join("f48.txt"), "edited\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        // [Staged 41, f00…f39, f48, Unstaged 20, its files], Git's status
+        // listing f48, which it tracks, before the new files.
+        let rows = app.read_with(cx, |app, _| app.working_rows.len());
+        assert_eq!(rows, 63);
+        let pressed = position_of(&app, cx, "f48.txt", ChangeArea::Unstaged);
+        let cursor_row = row(cx, 5).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        scroll_list(&app, cx, pressed - 2);
+        assert!(
+            !row_in_view(cx, 5) && row_in_view(cx, pressed),
+            "f48's Unstaged row shown, far from the cursor"
+        );
+        let offset = list_offset(&app, cx);
+        toggle(&app, cx, pressed).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_rows.len()),
+            rows - 1,
+            "the Unstaged row went"
+        );
+        draw(cx);
+        draw(cx);
+        assert_eq!(list_offset(&app, cx), offset);
+        assert!(!row_in_view(cx, 5), "the list stayed away from the cursor");
+    }
+
+    /// The cursor's row in view, which the write moves out of it: the list
+    /// centres the row where it lands, with context around it, as it decided
+    /// for a row the person could see.
+    #[gpui::test]
+    async fn a_stage_of_the_cursors_row_in_view_centres_it_where_it_lands(
+        cx: &mut TestAppContext,
+    ) {
+        // [Staged 30, f00…f29, Unstaged 30, f30…f59]: f56 at row 58 lands at
+        // row 31, far above the rows shown once the list has scrolled to it.
+        let (_fixture, app, cx) = long_list(cx, 30, 30).await;
+        scroll_list(&app, cx, 50);
+        assert!(row_in_view(cx, 58) && !row_in_view(cx, 31), "row 58 shown");
+        let cursor_row = row(cx, 58).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        let offset = list_offset(&app, cx);
+        toggle(&app, cx, 58).await;
+        draw(cx);
+        advance(cx, ROW_TRAVEL.as_millis() as u64);
+        draw(cx);
+        assert_ne!(list_offset(&app, cx), offset, "the list moved to the row");
+        assert!(row_in_view(cx, 31), "the cursor's row lands in view");
+        let (landed, pane) = (
+            row(cx, 31),
+            cx.debug_bounds("working-pane").expect("the list"),
+        );
+        assert!(
+            (landed.center().y - pane.center().y).abs() < landed.size.height,
+            "centred: row {landed:?} in {pane:?}"
+        );
+    }
+
+    /// Stage all pressed with the cursor scrolled away: a cursor the person
+    /// could not see has no say in how far the list moves, which by the
+    /// least move shows the heading that confirms, whole at the foot of the
+    /// list, rather than centring the cursor and losing the heading.
+    #[gpui::test]
+    async fn a_stage_all_with_the_cursor_scrolled_away_shows_its_heading(
+        cx: &mut TestAppContext,
+    ) {
+        // [Staged 10, f00…f09, Unstaged 40, f10…f49]
+        let (_fixture, app, cx) = long_list(cx, 10, 40).await;
+        let cursor_row = row(cx, 2).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        scroll_list(&app, cx, 8);
+        assert!(!row_in_view(cx, 2) && row_in_view(cx, 11), "the heading shown");
+        let stage_all = cx.debug_bounds("stage-all").expect("Stage all");
+        cx.simulate_click(stage_all.center(), Modifiers::default());
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        // [Staged 50, f00…f49, Unstaged 0]: the heading is the last row.
+        assert!(
+            row_in_view(cx, 51),
+            "the confirming heading is whole in the list"
+        );
+        let pane = cx.debug_bounds("working-pane").expect("the list");
+        assert!(
+            (row(cx, 51).bottom() - pane.bottom()).abs() <= px(1.),
+            "by the least move, at the list's foot"
+        );
+    }
+
     /// The cursor's own row in flight: the list draws a slot at its landing
     /// and the copy above it, so the copy would be the only row that tells
     /// assistive technology it is the list's focused item, inside the node
