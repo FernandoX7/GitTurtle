@@ -2966,13 +2966,22 @@ fn comparison_note(
     let one_line = one_line_width(&text, caches.line, size, window) <= room;
     // A note of " · "-separated phrases that wraps breaks between them, as every line of
     // phrases does, where its lines hold it that way; a line of phrases cannot end in an
-    // ellipsis, so one that needs more lines stays the clamped text.
+    // ellipsis, so one that needs more lines stays the clamped text. Counted a device pixel
+    // short of its room: layout rounds the note's padding to whole device pixels, so the
+    // line's box can be that much narrower than `room`, and a note counted as fitting its
+    // lines drew one more than it has, past the height its budget gave it.
+    let phrase_room = room - px(1. / window.scale_factor());
     let by_phrase = !one_line
         && lines > 1
         && text.contains(" · ")
-        && counted_lines(caches.phrase_lines, &text, size, room, window, || {
-            crate::phrase_line_count(&text, size, room, window)
-        }) <= lines;
+        && counted_lines(
+            caches.phrase_lines,
+            &text,
+            size,
+            phrase_room,
+            window,
+            || crate::phrase_line_count(&text, size, phrase_room, window),
+        ) <= lines;
     let whole = one_line
         || by_phrase
         || (lines > 1
@@ -4038,6 +4047,95 @@ mod note_tests {
             assert_eq!(count(px(11.), 2), 2, "another size counts again");
         });
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A note drawn by phrase takes no more than its lines, at each device pixel of width
+    /// around the narrowest that holds them, at the text sizes and display scales where its
+    /// padding is not a whole number of device pixels: layout rounds that padding, so its
+    /// line's box stood up to a device pixel narrower than the room it was counted in, and a
+    /// note counted as fitting two lines drew three, past the height the image left it
+    /// (code review of FU30-D6c).
+    #[gpui::test]
+    fn a_note_drawn_by_phrase_takes_no_more_than_its_lines(cx: &mut gpui_kit::TestAppContext) {
+        const NOTES: [&str; 3] = [
+            "Drag the divider · Before on the left, After on the right · Tab to controls for keyboard adjustment",
+            "Linked zoom and pan · Drag or scroll to move · Equal source coordinates stay aligned",
+            "Animated GIF · 100% = 42.0% of source size · Both versions share the same scale",
+        ];
+        struct Note(Pixels, &'static str);
+        impl Render for Note {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let p = palette(cx);
+                div().w(self.0).children(comparison_note(
+                    "probe-note",
+                    self.1.to_owned(),
+                    2,
+                    GUIDANCE_NOTE,
+                    self.0,
+                    window,
+                    &p,
+                ))
+            }
+        }
+        crate::views::tests::init_app(cx);
+        let (note, cx) = cx.add_window_view(|_, _| Note(px(2000.), NOTES[0]));
+        let mut failures = Vec::new();
+        let mut by_phrase = 0;
+        for text in NOTES {
+            for size in [13, 14, 17, 18, 20] {
+                cx.update(|window, cx| crate::appearance::apply_text_sizes(size, 12, window, cx));
+                for scale in [1., 1.25, 1.5, 2.] {
+                    cx.update(|window, _| window.set_scale_factor(scale));
+                    let (holds, inset) = cx.update(|window, _| {
+                        let mut style = window.text_style();
+                        style.font_size = crate::appearance::ui_text(10.).into();
+                        let text = SharedString::from(text);
+                        let prepared = crate::PreparedPhrases::prepare(None, &text, &style, window);
+                        let (mut under, mut holds) = (1f32, 4000f32);
+                        while holds - under > 1. / 64. {
+                            let middle = (under + holds) / 2.;
+                            if prepared.flow(Some(px(middle)), |_, _| {}).lines <= 2 {
+                                holds = middle;
+                            } else {
+                                under = middle;
+                            }
+                        }
+                        (holds, f32::from(window.rem_size()) * 1.5)
+                    });
+                    let widths = ((holds + inset - 3.) * scale).floor() as i32
+                        ..=((holds + inset + 3.) * scale).ceil() as i32;
+                    for device in widths {
+                        note.update(cx, |note, cx| {
+                            note.0 = px(device as f32 / scale);
+                            note.1 = text;
+                            cx.notify();
+                        });
+                        crate::width_walk::frame(cx);
+                        if cx.debug_bounds("probe-note-0").is_none() {
+                            continue;
+                        }
+                        by_phrase += 1;
+                        let lines = crate::phrase_tests::drawn_lines(cx, "probe-note", text).len();
+                        if lines > 2 {
+                            failures.push(format!(
+                                "{size} pt, {scale}x, {device} device px, {text:?}: {lines} lines"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(
+            by_phrase >= 100,
+            "the sweep drew only {by_phrase} by phrase"
+        );
+        assert!(
+            failures.is_empty(),
+            "{} of {by_phrase} notes took more than their lines:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 }
 
