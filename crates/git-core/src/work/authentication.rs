@@ -465,10 +465,14 @@ fn hide_url_credentials(input: &str) -> String {
         let authority = &input[start..end];
         if let Some((userinfo, host)) = authority.rsplit_once('@') {
             // A word's first URL keeps its host whatever its userinfo spells
-            // (`https://x-access-token:secret@host`). A later one's userinfo
-            // would otherwise take a marker away from the line's cut, and
-            // what follows a marker is never shown, so it cuts the line here.
-            if later_in_word && first_credential_marker_end(userinfo).is_some() {
+            // (`https://x-access-token:secret@host`). A later one's userinfo,
+            // or one that whitespace runs through and so reaches past the
+            // word, would otherwise take a marker away from the line's cut,
+            // and what follows a marker is never shown, so it cuts the line
+            // here.
+            if (later_in_word || userinfo.contains(char::is_whitespace))
+                && first_credential_marker_end(userinfo).is_some()
+            {
                 result.push_str("[redacted]");
                 copied = input[end..].find('\n').map_or(input.len(), |i| end + i);
                 continue;
@@ -499,10 +503,13 @@ fn hide_url_credentials(input: &str) -> String {
 }
 
 /// The length of the URL authority that `text` starts with: up to any of
-/// `/ ? # ' "`, whitespace, or the `://` of the next URL in the word.
+/// `/ ? # ' "`, a space, a newline, or the `://` of the next URL in the word.
+/// Other whitespace does not end it: a carriage return inside a userinfo
+/// (`https://user:se\rcret@host/`) stays inside what is hidden, where a
+/// report keeps only the text after it.
 fn url_authority_len(text: &str) -> usize {
     let end = text
-        .find(|c: char| matches!(c, '/' | '?' | '#' | '\'' | '"') || c.is_whitespace())
+        .find(['/', '?', '#', '\'', '"', ' ', '\n'])
         .unwrap_or(text.len());
     end - usize::from(text[..end].ends_with(':') && text[end..].starts_with("//"))
 }
@@ -750,6 +757,94 @@ mod tests {
             redact_diagnostic("https://c:token=d@two/ rest"),
             "https://[redacted]@two/ rest"
         );
+    }
+
+    /// A carriage return inside userinfo does not end it: a URL's authority
+    /// ends at `/ ? # ' "`, a space or a newline, where
+    /// `https://user:se\rcret@host/` printed `cret@host`, a report showing
+    /// only that much.
+    #[test]
+    fn a_carriage_return_inside_userinfo_stays_hidden() {
+        for (written, shown) in [
+            ("https://user:se\rcret@host/", "https://[redacted]@host/"),
+            (
+                "https://a\r\rb@host/p rest",
+                "https://[redacted]@host/p rest",
+            ),
+            ("https://a\rb@c\rd@host/", "https://[redacted]@host/"),
+            ("https://se\tcret@host/", "https://[redacted]@host/"),
+            (
+                "fatal: 'https://user:se\rcret@host/x': denied",
+                "fatal: 'https://[redacted]@host/x': denied",
+            ),
+            (
+                "url=https://a@one,https://b\rc@two/x rest",
+                "url=https://[redacted]@one,https://[redacted]@two/x rest",
+            ),
+            // Each of the characters that end an authority does, before an
+            // `@` that is then no userinfo's.
+            ("https://a\rb c@host/", "https://a\rb c@host/"),
+            ("https://a\nb@host/", "https://a\nb@host/"),
+            ("https://a\rb/c@host", "https://a\rb/c@host"),
+            ("https://a\rb'c@host", "https://a\rb'c@host"),
+            ("https://a\rb\"c@host", "https://a\rb\"c@host"),
+            ("https://a\rb?c@host", "https://a\rb?[redacted]"),
+            ("https://a\rb#c@host", "https://a\rb?[redacted]"),
+            // A host keeps what follows it, a carriage return included.
+            ("https://u@host\rnext", "https://[redacted]@host\rnext"),
+            // Text around a carriage return outside a URL stays as it was.
+            (
+                "Receiving 10%\rhttps://u:p@host/",
+                "Receiving 10%\rhttps://[redacted]@host/",
+            ),
+            ("plain\rtext a@b", "plain\rtext a@b"),
+            (
+                "https://host/path\rother@text",
+                "https://host/path\rother@text",
+            ),
+            ("https://host\rplain words", "https://host\rplain words"),
+        ] {
+            assert_eq!(redact_diagnostic(written), shown, "{written:?}");
+        }
+        assert_eq!(
+            reported_redacted(b"fatal: https://user:se\rcret@host/\n", redact_diagnostic),
+            "fatal: https://[redacted]@host/"
+        );
+    }
+
+    /// A userinfo that a carriage return runs through hides what used to be
+    /// text after a marker, and what follows a marker is never shown: the
+    /// line is cut there, or hiding the userinfo would bring back the host
+    /// and the rest of the line.
+    #[test]
+    fn a_marker_in_userinfo_after_a_carriage_return_still_cuts_its_line() {
+        for (written, shown) in [
+            ("https://h\rtoken=S@h2/x rest", "https://[redacted]"),
+            ("https://token=a\rb@d/ rest", "https://[redacted]"),
+            ("https://a@b\rtoken=c@d/ rest", "https://[redacted]"),
+            ("https://a\rpassword:x@h/ rest", "https://[redacted]"),
+            (
+                "https://a\rPASSWD=x@h/ rest\nnext",
+                "https://[redacted]\nnext",
+            ),
+            // A space ends the authority, so this marker is the line's own.
+            (
+                "https://a\rpassword: x@h/",
+                "https://a\rpassword:[redacted]",
+            ),
+            // In the host, the marker cuts as any other text does.
+            (
+                "https://a@b\rtoken=c",
+                "https://[redacted]@b\rtoken=[redacted]",
+            ),
+            // No carriage return, no cut: a first URL keeps its host.
+            (
+                "https://c:token=d@two/ rest",
+                "https://[redacted]@two/ rest",
+            ),
+        ] {
+            assert_eq!(redact_diagnostic(written), shown, "{written:?}");
+        }
     }
 
     /// The redaction as it stood at 1e2ad7da, frozen as the oracle of the
