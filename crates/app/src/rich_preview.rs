@@ -269,12 +269,12 @@ impl Literal {
     fn reason(self) -> &'static str {
         match self {
             Self::Link => {
-                "This side is stored as a link, which Diagrams never follows; literal Source \
-                 remains available."
+                "This side is stored as a link, which Diagrams never follows; its stored text is \
+                 below."
             }
             Self::LfsPointer => {
                 "This side's Git LFS object is not in the local store, and no download was \
-                 attempted; literal Source remains available."
+                 attempted; its stored text is below."
             }
         }
     }
@@ -1178,10 +1178,10 @@ mod tests {
             "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
             "a".repeat(64)
         );
-        let link = "This side is stored as a link, which Diagrams never follows; literal \
-                    Source remains available.";
+        let link = "This side is stored as a link, which Diagrams never follows; its stored \
+                    text is below.";
         let lfs = "This side's Git LFS object is not in the local store, and no download was \
-                   attempted; literal Source remains available.";
+                   attempted; its stored text is below.";
         let regular = "100644";
         for (name, old, new, old_mode, new_mode, says, literal_is_old) in [
             (

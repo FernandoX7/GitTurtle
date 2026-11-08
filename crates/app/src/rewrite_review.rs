@@ -5314,9 +5314,9 @@ mod tests {
             );
         }
         const LINK_SIDE: &str = "This side is stored as a link, which Diagrams never follows; \
-                                 literal Source remains available.";
+                                 its stored text is below.";
         const POINTER_SIDE: &str = "This side's Git LFS object is not in the local store, and no \
-                                    download was attempted; literal Source remains available.";
+                                    download was attempted; its stored text is below.";
         for (name, index, literal, format, says) in [
             (
                 "a link changed to a regular file",
