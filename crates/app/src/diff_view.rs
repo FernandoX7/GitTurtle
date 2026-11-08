@@ -670,7 +670,8 @@ impl Render for DiffView {
                 // The view's foot, recorded before the text column reads it,
                 // and its width, which the bar lays out across: a width that
                 // changed under the bar asks for the frame that lays the bar
-                // out across the new one.
+                // out across the new one (`Window::refresh` is ignored while
+                // a frame draws, and the old form stayed).
                 let (room, shown) = (Rc::clone(&self.bar_room), bar.is_some());
                 el.on_key_down(cx.listener(Self::line_key)).child(
                     canvas(
@@ -678,7 +679,7 @@ impl Render for DiffView {
                             room.foot.set(Some(view.bottom()));
                             let width = Some(view.size.width);
                             if room.width.replace(width) != width && shown {
-                                window.refresh();
+                                window.request_animation_frame();
                             }
                         },
                         |_, _, _, _| {},
@@ -1038,13 +1039,15 @@ struct BarLayout {
 
 /// How the selection bar lays out across a Diff view `width` wide, as it
 /// was last drawn, in the one responsive order (DESIGN.md), decided from
-/// the interface font before layout, so no frame draws a part of it cut or
-/// wrapped first: the action and Clear's label on one row where both fit,
-/// else Clear as the shared 28 px icon control beside the action, else
-/// that icon wrapped below, whole. At 18 pt in a 461 × 490 window the view
-/// is 243 px wide, where Clear's label beside a two-digit count wrapped
-/// below and took the text's room before it became an icon. A view not yet
-/// drawn lays it out on one row, labelled.
+/// the interface font before layout: the action and Clear's label on one
+/// row where both fit, else Clear as the shared 28 px icon control beside
+/// the action, else that icon wrapped below, whole. No frame at a settled
+/// width draws a part of it cut or wrapped first; the one frame that
+/// changes the width draws the form the old width chose and asks for the
+/// next, which lays it out across the new one. At 18 pt in a 461 × 490
+/// window the view is 243 px wide, where Clear's label beside a two-digit
+/// count wrapped below and took the text's room before it became an icon.
+/// A view not yet drawn lays it out on one row, labelled.
 fn bar_layout(action: &str, count: usize, width: Option<Pixels>, window: &Window) -> BarLayout {
     let label = format!("{action} {}", crate::counted(count, "line", "lines"));
     let snap = |length: Pixels| window.pixel_snap(length);
@@ -2552,6 +2555,70 @@ mod tests {
                      to unstage. Tab reaches Unstage."
                 )
             );
+        }
+
+        /// Delivers frames as the platform does: only those something asked
+        /// for, each drawing only if that dirtied the window. A test's own
+        /// `window.draw` draws whatever nothing asked for, so it cannot see
+        /// a view left stale. A view that keeps asking fails here.
+        fn requested_frames(cx: &mut VisualTestContext) {
+            for _ in 0..16 {
+                let asked = cx.update(|window, cx| window.simulate_next_frame(cx));
+                cx.executor().run_until_parked();
+                if asked == 0 {
+                    return;
+                }
+            }
+            panic!("the view keeps asking for frames");
+        }
+
+        /// A resize across one of the selection bar's thresholds settles the
+        /// bar with no further input: the frame that draws the new width
+        /// lays the bar out across the old one and asks for the next. A
+        /// redraw asked for while a frame draws is ignored, so the labelled
+        /// Clear stayed wrapped below until something else drew. At 18 pt,
+        /// from 700 px down the view's origin stays put, as under a drag of
+        /// the window's right edge, where the gutter asks for no frame of
+        /// its own; a tile from a wide window moves it.
+        #[gpui::test]
+        async fn a_resize_settles_the_selection_bar_with_no_further_input(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = with_added(cx, 12).await;
+            let form = |cx: &mut VisualTestContext| {
+                let bar = cx
+                    .debug_bounds("partial-selection-bar")
+                    .expect("the bar shows");
+                let apply = cx
+                    .debug_bounds("apply-partial-selection")
+                    .expect("the action");
+                let clear = cx.debug_bounds("clear-partial-selection").expect("Clear");
+                (
+                    clear.size.width == clear.size.height,
+                    clear.top() >= apply.bottom(),
+                    bar.size.height,
+                )
+            };
+            for (from, to) in [
+                (700., 461.),
+                (700., 660.),
+                (660., 640.),
+                (461., 700.),
+                (1480., 461.),
+            ] {
+                let at = format!("18 pt, {from} to {to} px wide");
+                let shown = Shown::at(&app, cx, (from, 490., 18));
+                select_all(&shown, cx);
+                let before = form(cx);
+                cx.simulate_resize(size(px(to), px(490.)));
+                cx.executor().run_until_parked();
+                requested_frames(cx);
+                let settled = form(cx);
+                assert_ne!(before, settled, "{at}: the resize crosses a threshold");
+                shown.view.update(cx, |_, cx| cx.notify());
+                crate::tags::tests::draw(cx);
+                assert_eq!(form(cx), settled, "{at}: no later frame changes the bar");
+            }
         }
 
         /// The selection bar keeps its action and Clear whole inside it,
