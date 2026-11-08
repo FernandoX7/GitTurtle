@@ -585,7 +585,9 @@ impl<F: Fn() -> anyhow::Result<()>> Builder<'_, F> {
             }
             Node::Code(code) => {
                 let language = code.lang.clone().unwrap_or_default();
-                if language.eq_ignore_ascii_case("mermaid") {
+                // A blank fence is no diagram: it takes no slot and, past the
+                // last slot, says no limit.
+                if language.eq_ignore_ascii_case("mermaid") && !code.value.trim().is_empty() {
                     if self.diagrams < gitturtle_preview::mermaid::MAX_DIAGRAMS {
                         if let Some(document) = gitturtle_preview::mermaid::preview(
                             &code.value,
@@ -593,9 +595,8 @@ impl<F: Fn() -> anyhow::Result<()>> Builder<'_, F> {
                             1200,
                             self.check,
                         )? {
-                            // A blank fence is no document and draws nothing,
-                            // so it leaves its slot; a render error still
-                            // takes one, which is what bounds the work.
+                            // A render error still takes a slot, which is
+                            // what bounds the work.
                             self.diagrams += 1;
                             for diagram in document.diagrams {
                                 let (render, width, height) = if let Some(image) = diagram.image {
@@ -2280,6 +2281,14 @@ mod tests {
         );
         assert!(failed.is_empty(), "the real fences render");
         assert_eq!(notices, [25], "the fifth real fence shows the notice");
+        let (pages, failed, notices) =
+            read(&prepared(&format!("{}{}", real.repeat(4), fence("\n"))));
+        assert_eq!(pages, [1, 6, 11, 16], "the four real fences draw");
+        assert!(failed.is_empty(), "the real fences render");
+        assert!(
+            notices.is_empty(),
+            "a blank fence past the last slot shows no notice"
+        );
         let broken = fence("not a diagram\n");
         let (pages, failed, notices) = read(&prepared(&format!("{}{real}", broken.repeat(4))));
         assert_eq!(
