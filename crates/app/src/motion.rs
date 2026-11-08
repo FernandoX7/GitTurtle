@@ -821,7 +821,10 @@ mod tests {
     /// travel from where its row stood, over delta's, which took its place
     /// under the pointer that pressed it; the clock stands still. Returns
     /// that pointer.
-    async fn epsilon_in_flight(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Point<Pixels> {
+    async fn epsilon_in_flight(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> Point<Pixels> {
         // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
         let pointer = cx
             .debug_bounds("working-stage-5")
@@ -972,9 +975,7 @@ mod tests {
     /// paints. The copy's is told by the band it is masked to (`row_shown`).
     /// The kit gave the picture's control that fill too.
     #[gpui::test]
-    async fn a_press_on_the_travelling_rows_control_draws_no_pressed_fill(
-        cx: &mut TestAppContext,
-    ) {
+    async fn a_press_on_the_travelling_rows_control_draws_no_pressed_fill(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = six_files(cx).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
         draw(cx);
@@ -1086,9 +1087,7 @@ mod tests {
     /// its Staged confirmation stay in view. The write's own read once
     /// centred the cursor's row, so the list jumped back to row 5.
     #[gpui::test]
-    async fn a_stage_with_the_cursor_scrolled_away_keeps_the_lists_offset(
-        cx: &mut TestAppContext,
-    ) {
+    async fn a_stage_with_the_cursor_scrolled_away_keeps_the_lists_offset(cx: &mut TestAppContext) {
         // [Staged 40, f00…f39, Unstaged 20, f40…f59], so that f48 at row 50
         // lands at row 41, in the same view.
         let (_fixture, app, cx) = long_list(cx, 40, 20).await;
@@ -1177,9 +1176,7 @@ mod tests {
     /// centres the row where it lands, with context around it, as it decided
     /// for a row the person could see.
     #[gpui::test]
-    async fn a_stage_of_the_cursors_row_in_view_centres_it_where_it_lands(
-        cx: &mut TestAppContext,
-    ) {
+    async fn a_stage_of_the_cursors_row_in_view_centres_it_where_it_lands(cx: &mut TestAppContext) {
         // [Staged 30, f00…f29, Unstaged 30, f30…f59]: f56 at row 58 lands at
         // row 31, far above the rows shown once the list has scrolled to it.
         let (_fixture, app, cx) = long_list(cx, 30, 30).await;
@@ -1211,9 +1208,7 @@ mod tests {
     /// least move shows the heading that confirms, whole at the foot of the
     /// list, rather than centring the cursor and losing the heading.
     #[gpui::test]
-    async fn a_stage_all_with_the_cursor_scrolled_away_shows_its_heading(
-        cx: &mut TestAppContext,
-    ) {
+    async fn a_stage_all_with_the_cursor_scrolled_away_shows_its_heading(cx: &mut TestAppContext) {
         // [Staged 10, f00…f09, Unstaged 40, f10…f49]
         let (_fixture, app, cx) = long_list(cx, 10, 40).await;
         let cursor_row = row(cx, 2).center();
@@ -1221,7 +1216,10 @@ mod tests {
         rows_arrived(&app, cx).await;
         draw(cx);
         scroll_list(&app, cx, 8);
-        assert!(!row_in_view(cx, 2) && row_in_view(cx, 11), "the heading shown");
+        assert!(
+            !row_in_view(cx, 2) && row_in_view(cx, 11),
+            "the heading shown"
+        );
         let stage_all = cx.debug_bounds("stage-all").expect("Stage all");
         cx.simulate_click(stage_all.center(), Modifiers::default());
         let write = app
