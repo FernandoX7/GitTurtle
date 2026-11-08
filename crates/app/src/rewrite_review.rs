@@ -421,6 +421,10 @@ pub(crate) struct SeriesBrowser {
     /// The scroll of a failure taller than the preview's box
     /// ([`Self::preview_prompt`]), from its top for each showing.
     failure_scroll: ScrollHandle,
+    /// The focus of a failure taller than the preview's box, which holds a
+    /// Tab stop only while the failure overflows
+    /// ([`Self::preview_prompt`]).
+    failure_focus: FocusHandle,
     /// The answer of the last line beneath an open control in the preview
     /// that landed, recorded for every line as it lands, in view or not, so
     /// the body scrolls to each click's line once ([`Self::opener`]).
@@ -489,6 +493,7 @@ impl SeriesBrowser {
             preview_bounds: Default::default(),
             preview_error: None,
             failure_scroll: ScrollHandle::new(),
+            failure_focus: cx.focus_handle(),
             line_revealed: Default::default(),
             network_pending: false,
             error: None,
@@ -1147,9 +1152,11 @@ impl SeriesBrowser {
         });
     }
     /// The focus of the one editor the preview shows, the patch or the
-    /// source, which draws no ring of its own: the preview rings its own edge
-    /// for it. The commit messages, two editors side by side, ring each its
-    /// own text instead ([`Self::render_content`]).
+    /// source, or of a failure said in its place, none of which draws a ring
+    /// of its own: the preview rings its own edge for it, which a ring
+    /// outside the box would lose to the box's clip. The commit messages,
+    /// two editors side by side, ring each its own text instead
+    /// ([`Self::render_content`]).
     fn text_focus(&self, cx: &App) -> Vec<FocusHandle> {
         if self.messages.is_some() {
             return Vec::new();
@@ -1167,7 +1174,21 @@ impl SeriesBrowser {
                 .iter()
                 .map(|editor| editor.read(cx).focus_handle(cx))
                 .collect(),
+            None if self.preview_error.is_some() => vec![self.failure_focus.clone()],
             _ => Vec::new(),
+        }
+    }
+
+    /// Scrolls the failure in the preview's box a line, `down` or up, as far
+    /// as its ends.
+    fn scroll_failure(&self, down: bool, window: &Window, cx: &mut Context<Self>) {
+        let scroll = &self.failure_scroll;
+        let line = crate::empty_state::block_height(1, false, window);
+        let (at, end) = (-scroll.offset().y, scroll.max_offset().y.max(Pixels::ZERO));
+        let to = (if down { at + line } else { at - line }).clamp(Pixels::ZERO, end);
+        if to != at {
+            scroll.set_offset(point(scroll.offset().x, -to));
+            cx.notify();
         }
     }
 
@@ -1317,7 +1338,7 @@ impl SeriesBrowser {
                 crate::empty_state::EmptyState::new("series-preview-reading", READING_PREVIEW)
                     .pane(cx)
             }
-            _ => self.preview_prompt(height, cx),
+            _ => self.preview_prompt(height, window, cx),
         }
     }
     /// What the preview's box says with nothing to preview, as a designed
@@ -1329,7 +1350,18 @@ impl SeriesBrowser {
     /// error is at 18 pt in a 461 × 490 window, scrolls inside it, cued by
     /// its scrollbar as every scrolling list is (`tags::ScrollCue`): centred
     /// in the box, which clips, it lost its first and last lines' edges.
-    fn preview_prompt(&self, height: Pixels, cx: &App) -> AnyElement {
+    /// While it overflows it is a Tab stop, as the GitHub confirmation's
+    /// region is, which Up and Down scroll and whose focus rings the box's
+    /// own edge ([`Self::text_focus`]) and, lying inside the box, reveals
+    /// it. Made to fit while focused, it keeps focus and its ring until the
+    /// next Tab, which leaves it for good; otherwise a failure that fits
+    /// tracks no focus, so a press on it takes focus from nothing.
+    fn preview_prompt(
+        &self,
+        height: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if let Some(error) = &self.preview_error {
             let state = crate::empty_state::EmptyState::new("series-preview-failed", error.clone())
                 .titled(Some(PREVIEW_UNAVAILABLE))
@@ -1338,6 +1370,9 @@ impl SeriesBrowser {
                 .min_h(height);
             let scroll = &self.failure_scroll;
             let cue = crate::tags::ScrollCue::new(scroll, Pixels::ZERO);
+            let overflows = cue.kept();
+            let focus = &self.failure_focus;
+            let tracked = overflows || focus.is_focused(window);
             return cue
                 .list(
                     div()
@@ -1346,6 +1381,26 @@ impl SeriesBrowser {
                         .size_full()
                         .overflow_y_scroll()
                         .track_scroll(scroll)
+                        .when(tracked, |failure| {
+                            failure
+                                // The handle carries the Tab stop: GPUI
+                                // ignores the `tab_stop` of the div that
+                                // tracks it.
+                                .track_focus(&focus.clone().tab_stop(overflows))
+                                .role(Role::Group)
+                                .aria_label(PREVIEW_UNAVAILABLE)
+                                .on_key_down(cx.listener(
+                                    |this, event: &KeyDownEvent, window, cx| {
+                                        let down = match event.keystroke.key.as_str() {
+                                            "up" => false,
+                                            "down" => true,
+                                            _ => return,
+                                        };
+                                        this.scroll_failure(down, window, cx);
+                                        cx.stop_propagation();
+                                    },
+                                ))
+                        })
                         .child(state),
                     "series-preview-failure-scrollbar",
                 )
@@ -4783,6 +4838,246 @@ mod tests {
             line.bottom() <= kept.bottom() + slack,
             "scrolled to its end, the error's last line ends at {:?} inside the box, {kept:?}",
             line.bottom()
+        );
+    }
+
+    /// `app`'s review inspecting the last commit of `repo`, its first file
+    /// chosen and its read failed with `error`.
+    fn failed_read(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        repo: &GitRepository,
+        error: &str,
+    ) -> Entity<SeriesBrowser> {
+        let browser = inspecting(app, cx, &last_commit_files(repo));
+        cx.update(|_, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.selected_file = Some(0);
+                browser.preview_error = Some(error.into());
+                cx.notify();
+            })
+        });
+        crate::tags::tests::draw(cx);
+        browser
+    }
+
+    /// A repository in `path` whose last commit adds `notes.txt`.
+    fn committed_notes(path: &std::path::Path) -> GitRepository {
+        use crate::tags::tests::{git, tagged_repository};
+        let repo = tagged_repository(path);
+        std::fs::write(repo.path().join("notes.txt"), "notes\n").unwrap();
+        git(repo.path(), &["add", "notes.txt"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add notes"]);
+        repo
+    }
+
+    /// Whether the failure in the preview's box holds focus.
+    fn failure_focused(browser: &Entity<SeriesBrowser>, cx: &mut gpui::VisualTestContext) -> bool {
+        cx.update(|window, cx| browser.read(cx).failure_focus.is_focused(window))
+    }
+
+    /// A failure taller than the preview's box, a five-line error at 18 pt
+    /// in a 461 × 490 half tile, is a Tab stop while it overflows, by Tab
+    /// and by Shift+Tab: focus on it rings the box's own 1 px edge whole and
+    /// brings the box, which lies below the body's fold, into view; Up and
+    /// Down scroll it a line at a time, to its ends and no further, and move
+    /// nothing else. Made to fit by a resize while it holds focus, it keeps
+    /// focus and its ring until the next Tab, which leaves it for good. It
+    /// scrolled only by the pointer: the keyboard could not reach its last
+    /// lines.
+    #[gpui::test]
+    async fn a_long_preview_failure_is_a_tab_stop_that_up_and_down_scroll(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::focus_ring::sweep;
+        use crate::tags::tests::{draw, rendered, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = committed_notes(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        size_to(&app, cx, 18, 461., 490.);
+        let error = (1..=5)
+            .map(|line| format!("Line {line} of the read's error"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let browser = failed_read(&app, cx, &repo, &error);
+        let mut failures = Vec::new();
+        for key in ["tab", "shift-tab"] {
+            let mut reached = false;
+            let mut walked = Vec::new();
+            sweep::walk_each(
+                &app,
+                cx,
+                key,
+                &format!("the long failure by {key}"),
+                18,
+                &mut walked,
+                &mut |cx, stop, rings| {
+                    if !failure_focused(&browser, cx) {
+                        return;
+                    }
+                    reached = true;
+                    let (kept, body) = (
+                        rendered(cx, "series-file-preview"),
+                        rendered(cx, "rewrite-review-body"),
+                    );
+                    let drawn: Vec<_> = rings.iter().map(|ring| ring.bounds).collect();
+                    if !sweep::rings_edge(&drawn, kept) {
+                        failures.push(format!(
+                            "{stop}: the failure draws no ring on the box's edge, {kept:?}, only \
+                             {drawn:?}"
+                        ));
+                    }
+                    if !lies_in(kept, body) {
+                        failures.push(format!(
+                            "{stop}: the box, {kept:?}, is not revealed in the body, {body:?}"
+                        ));
+                    }
+                },
+            );
+            failures.extend(walked);
+            if !reached {
+                failures.push(format!("{key} never focused the long failure"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        for _ in 0..40 {
+            if failure_focused(&browser, cx) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+        }
+        assert!(failure_focused(&browser, cx), "Tab reaches the failure");
+        let scrolled = |cx: &mut gpui::VisualTestContext| {
+            browser.read_with(cx, |browser, _| {
+                (
+                    -browser.failure_scroll.offset().y,
+                    browser.failure_scroll.max_offset().y,
+                )
+            })
+        };
+        let body_at = |cx: &mut gpui::VisualTestContext| {
+            browser.read_with(cx, |browser, _| browser.body.scroll().offset())
+        };
+        let press = |key: &str, cx: &mut gpui::VisualTestContext| {
+            cx.simulate_keystrokes(key);
+            draw(cx);
+        };
+        let (at, end) = scrolled(cx);
+        assert_eq!(at, px(0.), "the failure shows from its top");
+        assert!(end > px(0.), "the failure overflows the box");
+        let line = cx.update(|window, _| crate::empty_state::block_height(1, false, window));
+        let body = body_at(cx);
+        press("down", cx);
+        assert_eq!(scrolled(cx).0, line.min(end), "Down scrolls it a line");
+        for _ in 0..40 {
+            press("down", cx);
+        }
+        assert_eq!(scrolled(cx).0, end, "Down stops at its end");
+        let (kept, last) = (
+            rendered(cx, "series-file-preview"),
+            rendered(cx, "series-preview-failed-line"),
+        );
+        assert!(
+            last.bottom() <= kept.bottom() + px(0.25),
+            "at its end, the error's last line ends at {:?} inside the box, {kept:?}",
+            last.bottom()
+        );
+        press("up", cx);
+        assert_eq!(
+            scrolled(cx).0,
+            (end - line).max(px(0.)),
+            "Up scrolls it back a line"
+        );
+        assert_eq!(body_at(cx), body, "Up and Down move only the failure");
+        assert!(failure_focused(&browser, cx), "Up and Down keep focus");
+        // A resize that makes it fit leaves focus and the ring where they
+        // are, until the next Tab.
+        size_to(&app, cx, 13, 1480., 800.);
+        assert_eq!(scrolled(cx).1, px(0.), "the failure fits the larger box");
+        assert!(
+            failure_focused(&browser, cx),
+            "made to fit, it keeps focus until the next Tab"
+        );
+        assert!(
+            cx.update(|window, _| window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains("Dialog"))),
+            "made to fit, it is still drawn as what holds focus, so keys still reach the dialog"
+        );
+        let kept = rendered(cx, "series-file-preview");
+        assert!(
+            sweep::rings_edge(&outlines_in(cx, |p| p.accent), kept),
+            "made to fit, it keeps its ring on the box's edge, {kept:?}"
+        );
+        press("tab", cx);
+        assert!(
+            !failure_focused(&browser, cx),
+            "the next Tab leaves the failure that fits"
+        );
+        let mut walked = Vec::new();
+        sweep::walk_each(
+            &app,
+            cx,
+            "tab",
+            "the failure once it fits",
+            13,
+            &mut walked,
+            &mut |cx, stop, _| {
+                assert!(
+                    !failure_focused(&browser, cx),
+                    "{stop}: a failure that fits is no Tab stop"
+                );
+            },
+        );
+        assert!(walked.is_empty(), "{}", walked.join("\n"));
+    }
+
+    /// A failure that fits the preview's box is no Tab stop, by Tab or by
+    /// Shift+Tab, and a press on it takes focus from nothing: there is
+    /// nothing in it for a key to reach.
+    #[gpui::test]
+    async fn a_short_preview_failure_is_no_tab_stop(cx: &mut gpui_kit::TestAppContext) {
+        use crate::focus_ring::sweep;
+        use crate::tags::tests::{draw, rendered, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = committed_notes(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        size_to(&app, cx, 13, 1480., 800.);
+        let browser = failed_read(&app, cx, &repo, "The read's error");
+        for key in ["tab", "shift-tab"] {
+            let mut walked = Vec::new();
+            sweep::walk_each(
+                &app,
+                cx,
+                key,
+                &format!("the short failure by {key}"),
+                13,
+                &mut walked,
+                &mut |cx, stop, _| {
+                    assert!(
+                        !failure_focused(&browser, cx),
+                        "{stop}: a failure that fits is no Tab stop"
+                    );
+                },
+            );
+            assert!(walked.is_empty(), "{}", walked.join("\n"));
+        }
+        let held = cx.update(|window, cx| window.focused(cx));
+        let line = rendered(cx, "series-preview-failed-line");
+        cx.simulate_click(line.center(), Modifiers::none());
+        draw(cx);
+        assert!(
+            !failure_focused(&browser, cx),
+            "a press on a failure that fits does not focus it"
+        );
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            held,
+            "a press on a failure that fits leaves focus where it was"
         );
     }
 
