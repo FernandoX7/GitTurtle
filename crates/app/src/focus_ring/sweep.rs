@@ -172,8 +172,9 @@ pub(crate) fn walk_each(
     failures: &mut Vec<String>,
     each: &mut dyn FnMut(&mut VisualTestContext, &str, &[PaintedOutline]),
 ) -> Vec<Bounds<Pixels>> {
+    let root = app.read_with(cx, |app, _| app.app_focus.clone());
     walk_keyed(
-        app,
+        &root,
         cx,
         key,
         surface,
@@ -194,8 +195,9 @@ fn walk_with(
     failures: &mut Vec<String>,
     between: &mut dyn FnMut(&mut VisualTestContext, bool),
 ) -> Vec<Bounds<Pixels>> {
+    let root = app.read_with(cx, |app, _| app.app_focus.clone());
     walk_keyed(
-        app,
+        &root,
         cx,
         "tab",
         surface,
@@ -226,17 +228,41 @@ pub(crate) fn place(surface: &str, interface: u8, stop: usize, key: &str) -> Str
     )
 }
 
+/// The key contexts around focus in the last frame, innermost first, which
+/// name a stop well enough to find.
+fn focus_contexts(cx: &mut VisualTestContext) -> String {
+    cx.update(|window, _| {
+        let stack = window.context_stack();
+        let names: Vec<_> = stack
+            .iter()
+            .rev()
+            .take(3)
+            .map(|context| format!("{context:?}"))
+            .collect();
+        names.join(" < ")
+    })
+}
+
 /// [`walk_with`], moving focus with `key`, "tab" or "shift-tab", and
-/// running `each` as [`walk_each`] does. The walk meets more than one stop:
-/// a key that leaves focus on the stop it was on fails, at the walk's
-/// first stop as at any later one, from the window's root and from the
-/// stop a dialog opened on alike. A walk whose key moved nothing at its
-/// first stop came round at once and passed, so a view that swallowed Tab
-/// was taken for a surface whose one stop it is; no surface walked has
-/// one stop.
+/// running `each` as [`walk_each`] does; `root` is the window's root, which
+/// fails as a stop. The walk meets more than one stop and comes round at
+/// its first and nowhere else. A key that leaves focus on the stop it was
+/// on fails, at the walk's first stop as at any later one, from the
+/// window's root and from the stop a dialog opened on alike: a walk whose
+/// key moved nothing at its first stop came round at once and passed, so a
+/// view that swallowed Tab was taken for a surface whose one stop it is; no
+/// surface walked has one stop. A key that comes back to any later stop
+/// fails too, naming that stop: a walk of stops 0, 1, 2 and 1 again passed,
+/// so a Tab trap that skipped a surface's first stops did. A round that
+/// leaves out the tab stop the walk started on fails as well, naming that
+/// stop by its key contexts: the first stop is where the first key lands,
+/// so a dialog that opened on A, with Tab order A, B, C, D and Tab from D
+/// wrapping to B, was seen as B, C, D, B and passed. A start on the
+/// window's root, or on a handle that is no tab stop, such as a dialog's
+/// shell, is no stop for the round to meet.
 #[allow(clippy::too_many_arguments)]
 fn walk_keyed(
-    app: &Entity<GitTurtle>,
+    root: &FocusHandle,
     cx: &mut VisualTestContext,
     key: &str,
     surface: &str,
@@ -246,7 +272,8 @@ fn walk_keyed(
     each: &mut dyn FnMut(&mut VisualTestContext, &str, &[PaintedOutline]),
 ) -> Vec<Bounds<Pixels>> {
     let name = key_name(key);
-    let root = app.read_with(cx, |app, _| app.app_focus.clone());
+    let start = cx.update(|window, cx| window.focused(cx));
+    let began = focus_contexts(cx);
     let mut order: Vec<FocusHandle> = Vec::new();
     let mut rings = Vec::new();
     for stop in 0..MAX_STOPS {
@@ -256,17 +283,7 @@ fn walk_keyed(
         // `focus_visible` dropped it here.
         cx.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::none());
         draw(cx, 1);
-        // The key contexts around focus name the stop well enough to find.
-        let contexts = cx.update(|window, _| {
-            let stack = window.context_stack();
-            let names: Vec<_> = stack
-                .iter()
-                .rev()
-                .take(3)
-                .map(|context| format!("{context:?}"))
-                .collect();
-            names.join(" < ")
-        });
+        let contexts = focus_contexts(cx);
         let at = format!("{} ({contexts})", place(surface, interface, stop, key));
         let Some(focused) = cx.update(|window, cx| window.focused(cx)) else {
             failures.push(format!("{at}: {name} left nothing focused"));
@@ -279,10 +296,21 @@ fn walk_keyed(
                 } else {
                     format!("{at}: {name} keeps focus where it was")
                 });
+            } else if seen > 0 {
+                failures.push(format!(
+                    "{at}: {name} returns to stop {seen}, not to the walk's first"
+                ));
+            } else if start
+                .as_ref()
+                .is_some_and(|start| start.tab_stop && start != root && !order.contains(start))
+            {
+                failures.push(format!(
+                    "{at}: {name} comes round without the stop the walk began on ({began})"
+                ));
             }
             return rings;
         }
-        if focused == root {
+        if focused == *root {
             failures.push(format!(
                 "{at}: the window's root holds focus and shows none"
             ));
@@ -572,6 +600,172 @@ fn a_border_drawn_over_a_ring_covers_it(cx: &mut TestAppContext) {
             && strip.bottom() > ring.bounds.bottom(),
         "the later border's left strip, along the ring's left side: {strip:?}"
     );
+}
+
+gpui_kit::actions!(focus_sweep_tests, [FollowRoute]);
+
+/// [`TabRoute`]'s key context, deeper than the kit root's, whose own Tab
+/// would move focus by the frame's tab stops.
+const ROUTE_CONTEXT: &str = "TabRoute";
+
+/// A surface whose Tab and Shift+Tab go where `next` says: from the window's
+/// root to the first stop, and from each stop to the one `next` holds at its
+/// place. Each stop draws a whole ring in the accent while it holds focus, so
+/// its route alone can fail a walk.
+struct TabRoute {
+    root: FocusHandle,
+    stops: Vec<FocusHandle>,
+    next: &'static [usize],
+}
+
+impl Render for TabRoute {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let accent = palette(cx).accent;
+        div()
+            .key_context(ROUTE_CONTEXT)
+            .track_focus(&self.root)
+            .size_full()
+            .on_action(cx.listener(|route, _: &FollowRoute, window, cx| {
+                let from = route.stops.iter().position(|stop| stop.is_focused(window));
+                let to = from.map_or(0, |from| route.next[from]);
+                window.focus(&route.stops[to], cx);
+            }))
+            .children(self.stops.iter().map(|stop| {
+                let drawn = div().track_focus(stop).w(px(100.)).h(px(20.)).m_1();
+                if stop.is_focused(window) {
+                    drawn.border_1().border_color(rgb(accent))
+                } else {
+                    drawn
+                }
+            }))
+    }
+}
+
+/// Where [`walk_route`] leaves focus before the walk's first key.
+#[derive(Clone, Copy, PartialEq)]
+enum Start {
+    /// The window's root, flagged a tab stop here, so that only its being
+    /// the root keeps a walk from asking the round to meet it.
+    Root,
+    /// A stop, as a dialog opens on its first field.
+    Stop(usize),
+    /// A stop whose handle is no tab stop, as a dialog's shell's is not.
+    NoStop(usize),
+}
+
+/// What a walk with `key` finds on a [`TabRoute`] along `next`, from `start`.
+fn walk_route(
+    cx: &mut TestAppContext,
+    next: &'static [usize],
+    start: Start,
+    key: &str,
+) -> Vec<String> {
+    let root = cx.update(|cx| cx.focus_handle().tab_stop(true));
+    let stops: Vec<_> = cx.update(|cx| {
+        (0..next.len())
+            .map(|stop| cx.focus_handle().tab_stop(start != Start::NoStop(stop)))
+            .collect()
+    });
+    let starting = match start {
+        Start::Root => root.clone(),
+        Start::Stop(stop) | Start::NoStop(stop) => stops[stop].clone(),
+    };
+    let (_, cx) = cx.add_window_view({
+        let root = root.clone();
+        move |window, cx| {
+            let route = cx.new(|_| TabRoute { root, stops, next });
+            gpui_kit::component::Root::new(route, window, cx)
+        }
+    });
+    cx.simulate_resize(size(px(300.), px(200.)));
+    cx.update(|window, cx| window.focus(&starting, cx));
+    draw(cx, 2);
+    let mut failures = Vec::new();
+    walk_keyed(
+        &root,
+        cx,
+        key,
+        "A route",
+        13,
+        &mut failures,
+        &mut |_, _| {},
+        &mut |_, _, _| {},
+    );
+    failures
+}
+
+/// A walk comes round at its first stop and nowhere else. A walk whose key
+/// came back to a later stop (stops 0, 1, 2, then 1 again) passed, so a Tab
+/// trap that cycles among a surface's last stops, never reaching its first
+/// again, passed a plain sweep; each way it now fails, naming the stop and
+/// the key. Coming back to the first stop still passes, and a key that moves
+/// nothing keeps its own failures. The first stop is where the first key
+/// lands, so a dialog that opens on A with Tab order A, B, C, D and Tab from
+/// D wrapping to B was seen as B, C, D, B and passed; a round that leaves
+/// out the tab stop the walk started on fails, naming it. A start that is
+/// the window's root or no tab stop is no stop for the round to meet.
+#[gpui::test]
+fn a_walk_comes_round_at_its_first_stop_and_nowhere_else(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.bind_keys([
+            KeyBinding::new("tab", FollowRoute, Some(ROUTE_CONTEXT)),
+            KeyBinding::new("shift-tab", FollowRoute, Some(ROUTE_CONTEXT)),
+        ]);
+    });
+    for key in ["tab", "shift-tab"] {
+        let name = key_name(key);
+        let rounds: [(&'static [usize], Start); 3] = [
+            (&[1, 2, 0], Start::Root),
+            (&[1, 2, 0], Start::Stop(0)),
+            (&[1, 2, 3, 1], Start::NoStop(0)),
+        ];
+        for (next, start) in rounds {
+            let round = walk_route(cx, next, start, key);
+            assert!(round.is_empty(), "{next:?} by {name}: {round:#?}");
+        }
+        let routes: [(&'static [usize], Start, usize, String); 5] = [
+            (
+                &[1, 2, 1],
+                Start::Root,
+                3,
+                format!("{name} returns to stop 1, not to the walk's first"),
+            ),
+            (
+                &[1, 2, 3, 2],
+                Start::Root,
+                4,
+                format!("{name} returns to stop 2, not to the walk's first"),
+            ),
+            (
+                &[1, 2, 2],
+                Start::Root,
+                3,
+                format!("{name} keeps focus where it was"),
+            ),
+            (
+                &[0],
+                Start::Root,
+                1,
+                format!("{name} meets no stop but this one"),
+            ),
+            (
+                &[1, 2, 3, 1],
+                Start::Stop(0),
+                3,
+                format!("{name} comes round without the stop the walk began on"),
+            ),
+        ];
+        for (next, start, stop, finding) in routes {
+            let failures = walk_route(cx, next, start, key);
+            let at = place("A route", 13, stop, key);
+            assert!(
+                matches!(&failures[..], [failure]
+                    if failure.starts_with(&at) && failure.contains(&finding)),
+                "{next:?} by {name}: one failure, at {at:?}, of {finding:?}: {failures:#?}"
+            );
+        }
+    }
 }
 
 /// History and, with its file activated, Compare.
