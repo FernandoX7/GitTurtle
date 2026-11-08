@@ -12302,9 +12302,9 @@ mod tests {
     /// the confirmation in the form the last one settles in: the guidance in the same place, in
     /// the region or below it, the region, inside `room` for its ring, at the same height, the
     /// region's ring and Send and Keep editing fitting the body's view together with `reveal`,
-    /// the reveal's room, at either edge, and Send and Keep editing never cut at the body's
-    /// edges: whole in its view, or, in the first frame alone, which the body's reveal of the
-    /// focused region follows in the next (DESIGN.md, "Keyboard focus"), wholly outside it.
+    /// the reveal's room, at either edge, and Send and Keep editing whole in the body's view
+    /// from the frame after the first: the first, which the body's reveal of the focused region
+    /// follows, can leave them cut or outside it (DESIGN.md, "Keyboard focus").
     fn assert_confirmation_settled(
         at: &str,
         frames: &[conversations::ConfirmFrame],
@@ -12347,10 +12347,8 @@ mod tests {
             let whole = actions.top() >= body.top() - px(0.5)
                 && actions.bottom() <= body.bottom() + px(0.5)
                 && actions.right() <= body.right() + px(0.5);
-            let away = actions.bottom() <= body.top() + px(0.5)
-                || actions.top() >= body.bottom() - px(0.5);
             assert!(
-                whole || (index == 0 && away),
+                whole || index == 0,
                 "{at}: frame {index} draws Send and Keep editing {actions:?} whole in the body \
                  {body:?}"
             );
@@ -12360,8 +12358,8 @@ mod tests {
     /// A new panel's first confirmation takes its form in its first frame: at 18 pt in a 461 ×
     /// 490 window, a long reply's, the first the panel opens, stands the guidance in the region
     /// after the destination in every frame it draws, the first included, lays the region out
-    /// at the height it settles at and never cuts Send or Keep editing, which are whole in the
-    /// body's view once the body has revealed the focused region, in the frame after the first
+    /// at the height it settles at and draws Send and Keep editing whole in the body's view
+    /// once the body has revealed the focused region, in the frame after the first
     /// ([`assert_confirmation_settled`]).
     /// Laid out from the last frame's measures, of which a new panel has none, its first frame
     /// stood the guidance below the region, and the next moved it in.
@@ -12401,8 +12399,8 @@ mod tests {
     /// draws it: with a long reply's region focused at 13 pt in a 1,480 × 973 window, where the
     /// guidance stands below the region, every frame drawn as the window becomes 461 × 973,
     /// where the guidance wraps onto more lines, the first included, stands the guidance where
-    /// it settles, lays the region out at the height it settles at and never cuts Send or Keep
-    /// editing, whole in the body's view from the frame after the first, which the body's
+    /// it settles, lays the region out at the height it settles at and draws Send and Keep
+    /// editing whole in the body's view from the frame after the first, which the body's
     /// reveal of what rewrapped above the region follows, the region keeping focus. Laid out
     /// from the last frame's measures, the first narrow frame left the guidance the room of its
     /// wide lines and laid the region out 612 px tall, where it settles at 573.

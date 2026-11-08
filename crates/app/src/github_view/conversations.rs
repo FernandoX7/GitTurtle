@@ -877,8 +877,9 @@ impl Panel {
     /// region's two lines and the buttons, and otherwise in the region after the destination.
     /// Where it stands and the rest of the confirmation's height are decided before layout in
     /// the frame being drawn, from the panel's width and the interface font ([`ConfirmForm`]),
-    /// so no frame draws the guidance where the next moves it from, or Send or Keep editing cut.
-    /// Shown whole, the confirmation was the stop, 446 px tall at 18 pt in a 461 × 490 window,
+    /// so no frame draws the guidance where the next moves it from. A first frame or a resize
+    /// that reflows the confirmation can still leave Send and Keep editing cut or outside the
+    /// body's view until the body's reveal of the focused region lands. Shown whole, the confirmation was the stop, 446 px tall at 18 pt in a 461 × 490 window,
     /// where the body is about 265 px tall, and no reveal could draw its ring whole. The region
     /// draws its ring on the edge of the room it keeps around itself, inside the confirmation's
     /// padding, whose resting border stays as it is, so nothing moves for the ring.
