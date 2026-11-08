@@ -398,6 +398,9 @@ pub(crate) struct SeriesBrowser {
     /// Why the chosen file's preview could not be read, which the
     /// preview's box says, as the text modes do.
     preview_error: Option<String>,
+    /// The scroll of a failure taller than the preview's box
+    /// ([`Self::preview_prompt`]), from its top for each showing.
+    failure_scroll: ScrollHandle,
     /// The last answer beneath an open control in the preview that the body
     /// was scrolled to as it landed ([`Self::opener`]).
     line_revealed: std::rc::Rc<std::cell::Cell<Option<usize>>>,
@@ -464,6 +467,7 @@ impl SeriesBrowser {
             empty_height: Default::default(),
             preview_bounds: Default::default(),
             preview_error: None,
+            failure_scroll: ScrollHandle::new(),
             line_revealed: Default::default(),
             network_pending: false,
             error: None,
@@ -541,6 +545,7 @@ impl SeriesBrowser {
         self.patch = None;
         self.selected_file = None;
         self.preview_error = None;
+        self.failure_scroll = ScrollHandle::new();
     }
     /// Opens captured bytes for this showing's open controls through the
     /// window's `GitTurtle`, whose keyboard focus ring it draws. A line
@@ -1112,9 +1117,15 @@ impl SeriesBrowser {
         }
     }
 
-    /// The inspected file, `width` wide as its box is in the frame it is
-    /// drawn.
-    fn render_content(&self, width: Pixels, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The inspected file, `width` wide and `height` tall as its box is in
+    /// the frame it is drawn.
+    fn render_content(
+        &self,
+        width: Pixels,
+        height: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if let Some(messages) = &self.messages {
             // Each message's text, below its heading, rings its own 1 px edge
             // while its editor holds focus from the keyboard, as Split's
@@ -1252,7 +1263,7 @@ impl SeriesBrowser {
                 crate::empty_state::EmptyState::new("series-preview-reading", READING_PREVIEW)
                     .pane(cx)
             }
-            _ => self.preview_prompt(cx),
+            _ => self.preview_prompt(height, cx),
         }
     }
     /// What the preview's box says with nothing to preview, as a designed
@@ -1260,12 +1271,32 @@ impl SeriesBrowser {
     /// chosen file's preview could not be read, that the commit changed no
     /// files, or which to choose. A failed read said "Select a file…" here
     /// with its file chosen, its error drawn below the box at the body's
-    /// end.
-    fn preview_prompt(&self, cx: &App) -> AnyElement {
+    /// end. A failure taller than the box, `height` tall, as a five-line
+    /// error is at 18 pt in a 461 × 490 window, scrolls inside it, cued by
+    /// its scrollbar as every scrolling list is (`tags::ScrollCue`): centred
+    /// in the box, which clips, it lost its first and last lines' edges.
+    fn preview_prompt(&self, height: Pixels, cx: &App) -> AnyElement {
         if let Some(error) = &self.preview_error {
-            return crate::empty_state::EmptyState::new("series-preview-failed", error.clone())
+            let state = crate::empty_state::EmptyState::new("series-preview-failed", error.clone())
                 .titled(Some(PREVIEW_UNAVAILABLE))
-                .pane(cx);
+                .centred(cx)
+                .w_full()
+                .min_h(height);
+            let scroll = &self.failure_scroll;
+            let cue = crate::tags::ScrollCue::new(scroll, Pixels::ZERO);
+            return cue
+                .list(
+                    div()
+                        .on_children_prepainted(cue.observe(|_, _, _| {}))
+                        .id("series-preview-failure")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(scroll)
+                        .child(state),
+                    "series-preview-failure-scrollbar",
+                )
+                .size_full()
+                .into_any_element();
         }
         let line = if self.files.is_empty() && !self.pending {
             NO_FILES
@@ -1600,7 +1631,7 @@ impl Render for SeriesBrowser {
                 // Built for the box's width in the frame it is drawn
                 // (`in_frame`), so the open controls take the form that
                 // width leaves them in the first frame after a resize.
-                .child(div().debug_selector(|| "series-file-preview".into()).track_focus(&preview_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).on_children_prepainted(self.body.control(preview_focus.clone(), room)).flex_1().min_h(appearance::ui_size(100.)).flex().flex_col().border_1().border_color(rgb(if text_ringed { p.accent } else { p.border })).overflow_hidden().child(crate::in_frame::in_frame(move |bounds, window, cx| series.update(cx, |this, cx| { this.preview_bounds.set(Some(bounds)); this.render_content(bounds.size.width, window, cx) }).unwrap_or_else(|_| div().into_any_element())).named("rewrite-comparison"))))
+                .child(div().debug_selector(|| "series-file-preview".into()).track_focus(&preview_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).on_children_prepainted(self.body.control(preview_focus.clone(), room)).flex_1().min_h(appearance::ui_size(100.)).flex().flex_col().border_1().border_color(rgb(if text_ringed { p.accent } else { p.border })).overflow_hidden().child(crate::in_frame::in_frame(move |bounds, window, cx| series.update(cx, |this, cx| { this.preview_bounds.set(Some(bounds)); this.render_content(bounds.size.width, bounds.size.height, window, cx) }).unwrap_or_else(|_| div().into_any_element())).named("rewrite-comparison"))))
             // A failed publication check or push, below the series it
             // concerns; the load's own error says why in the list's place.
             // It keeps its height in the scrolling body, which shrank a
@@ -4600,6 +4631,93 @@ mod tests {
         assert!(
             browser.read_with(cx, |browser, _| browser.patch.is_none()),
             "and its diagrams, not a patch"
+        );
+    }
+
+    /// A preview failure taller than the preview's box, a five-line error
+    /// at 18 pt in a 461 × 490 half tile, scrolls inside the box with the
+    /// shared scroll cue rather than being cut: at its top the state starts
+    /// whole in the box, and scrolled by the wheel to its end, the error's
+    /// last line ends in it. Centred in a box that clips, it lost its first
+    /// and last lines' edges.
+    #[gpui::test]
+    async fn a_long_preview_failure_scrolls_in_its_box(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, git, rendered, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "notes\n").unwrap();
+        git(repo.path(), &["add", "notes.txt"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add notes"]);
+        let files = last_commit_files(&repo);
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        size_to(&app, cx, 18, 461., 490.);
+        let browser = inspecting(&app, cx, &files);
+        let error = (1..=5)
+            .map(|line| format!("Line {line} of the read's error"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.update(|_, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.selected_file = Some(0);
+                browser.preview_error = Some(error.clone());
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let slack = px(0.25);
+        let kept = rendered(cx, "series-file-preview");
+        let line = rendered(cx, "series-preview-failed-line");
+        assert!(
+            line.size.height > kept.size.height / 2.,
+            "the error's five lines, {line:?}, fill most of the box, {kept:?}"
+        );
+        let top = cx
+            .debug_bounds("series-preview-failed-title")
+            .unwrap_or(line)
+            .top();
+        assert!(
+            top >= kept.top() - slack,
+            "at its top, the failure starts at {top:?} inside the box, {kept:?}"
+        );
+        assert!(
+            cx.debug_bounds("series-preview-failure-scrollbar")
+                .is_some(),
+            "the box's scrollbar cues the failure's rest"
+        );
+        // The box lies wholly below the body's fold here, so the wheel
+        // first brings it into the body's view, as a person's does: over
+        // the box's place while the body hides it, it reaches no scroller.
+        let wheel = |at: gpui::Point<Pixels>, cx: &mut gpui::VisualTestContext| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: at,
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-300.))),
+                modifiers: Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            draw(cx);
+        };
+        let body = rendered(cx, "rewrite-review-body");
+        wheel(body.center(), cx);
+        let (kept, body) = (
+            rendered(cx, "series-file-preview"),
+            rendered(cx, "rewrite-review-body"),
+        );
+        assert!(
+            body.contains(&kept.center()),
+            "the wheel brought the box, {kept:?}, into the body's view, {body:?}"
+        );
+        for _ in 0..3 {
+            wheel(kept.center(), cx);
+        }
+        let (kept, line) = (
+            rendered(cx, "series-file-preview"),
+            rendered(cx, "series-preview-failed-line"),
+        );
+        assert!(
+            line.bottom() <= kept.bottom() + slack,
+            "scrolled to its end, the error's last line ends at {:?} inside the box, {kept:?}",
+            line.bottom()
         );
     }
 
