@@ -279,20 +279,29 @@ pub(crate) fn painted_outlines_where(
     })
 }
 
-/// The fills the last frame painted over `outline` after it: every quad
-/// with a fill, later in the scene's order than the outline's strips, whose
-/// drawn part, inside its clip, meets the band of one of the outline's four
-/// sides. Its clip masks can leave a side whole while a later fill hides it:
-/// the kit's panel divider, drawn last over the page's first pixel, covered
-/// the navigator ring's left side beside the project pane.
+/// What the last frame painted over `outline` after it: every quad whose
+/// fill or border shows (is not transparent), painted after one of the
+/// outline's strips, whose painted part, inside its clip, meets that strip
+/// where it draws its side's band: the whole quad for a fill, and its
+/// border's strips alone for a border with no fill, whose inside shows
+/// what lies beneath. A side's clip masks can leave it whole while a later
+/// quad hides it: the kit's panel divider, drawn last over the page's first
+/// pixel, covered the navigator ring's left side beside the project pane,
+/// and a divider drawn as a pane's border hides a ring as a fill does.
+/// GPUI orders a primitive one past the highest order among the earlier
+/// ones it meets, so a quad meeting a strip was painted after it exactly
+/// where its order is higher than that strip's; set against the outline's
+/// lowest strip order, a selected row's marker painted beneath the ring,
+/// inside its pane, read as painted over.
 #[cfg(test)]
 pub(crate) fn painted_over(
     cx: &mut gpui_kit::VisualTestContext,
     outline: &PaintedOutline,
 ) -> Vec<Bounds<Pixels>> {
+    use gpui_kit::ScaledPixels;
     cx.update(|window, _| {
         let scale = window.scale_factor();
-        let logical = |bounds: Bounds<gpui_kit::ScaledPixels>| {
+        let logical = |bounds: Bounds<ScaledPixels>| {
             Bounds::from_corners(
                 point(
                     px(bounds.left().as_f32() / scale),
@@ -304,27 +313,69 @@ pub(crate) fn painted_over(
                 ),
             )
         };
-        let (b, w) = (outline.bounds, outline.width);
+        let meets = |a: &Bounds<ScaledPixels>, b: &Bounds<ScaledPixels>| {
+            let met = a.intersect(b);
+            met.size.width > ScaledPixels(0.) && met.size.height > ScaledPixels(0.)
+        };
+        let quads = window.painted_quads();
+        let own = |quad: &gpui_kit::Quad| {
+            quad.background.is_transparent()
+                && quad.border_color == outline.color
+                && logical(quad.bounds) == outline.bounds
+        };
         let band =
             |left, top, right, bottom| Bounds::from_corners(point(left, top), point(right, bottom));
-        let bands = [
-            band(b.left(), b.top(), b.right(), b.top() + w),
-            band(b.right() - w, b.top(), b.right(), b.bottom()),
-            band(b.left(), b.bottom() - w, b.right(), b.bottom()),
-            band(b.left(), b.top(), b.left() + w, b.bottom()),
-        ];
-        window
-            .painted_quads()
-            .into_iter()
-            .filter(|quad| quad.order > outline.order && !quad.background.is_transparent())
-            .map(|quad| logical(quad.bounds.intersect(&quad.content_mask.bounds)))
-            .filter(|drawn| {
-                bands.iter().any(|band| {
-                    let met = drawn.intersect(band);
-                    met.size.width > px(0.) && met.size.height > px(0.)
-                })
+        // The outline's strips where each draws its side's band, and each
+        // strip's order: a rounded outline's strips are masked past their
+        // bands, reaching a Button's own edge inside its ring.
+        let strips: Vec<_> = quads
+            .iter()
+            .filter(|quad| own(quad))
+            .flat_map(|quad| {
+                let (b, w) = (quad.bounds, quad.border_widths);
+                let drawn = b.intersect(&quad.content_mask.bounds);
+                [
+                    band(b.left(), b.top(), b.right(), b.top() + w.top),
+                    band(b.right() - w.right, b.top(), b.right(), b.bottom()),
+                    band(b.left(), b.bottom() - w.bottom, b.right(), b.bottom()),
+                    band(b.left(), b.top(), b.left() + w.left, b.bottom()),
+                ]
+                .map(|side| (drawn.intersect(&side), quad.order))
             })
-            .collect()
+            .collect();
+        let mut over = Vec::new();
+        for quad in quads.iter().filter(|quad| !own(quad)) {
+            let (q, widths) = (quad.bounds, quad.border_widths);
+            let filled = !quad.background.is_transparent();
+            let bordered = !quad.border_color.is_transparent()
+                && [widths.top, widths.right, widths.bottom, widths.left]
+                    .into_iter()
+                    .any(|width| width > ScaledPixels(0.));
+            let painted = if filled {
+                vec![q]
+            } else if bordered {
+                vec![
+                    band(q.left(), q.top(), q.right(), q.top() + widths.top),
+                    band(q.right() - widths.right, q.top(), q.right(), q.bottom()),
+                    band(q.left(), q.bottom() - widths.bottom, q.right(), q.bottom()),
+                    band(q.left(), q.top(), q.left() + widths.left, q.bottom()),
+                ]
+            } else {
+                continue;
+            };
+            over.extend(
+                painted
+                    .into_iter()
+                    .map(|part| part.intersect(&quad.content_mask.bounds))
+                    .filter(|drawn| {
+                        strips
+                            .iter()
+                            .any(|(strip, order)| quad.order > *order && meets(drawn, strip))
+                    })
+                    .map(logical),
+            );
+        }
+        over
     })
 }
 

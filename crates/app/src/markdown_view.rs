@@ -810,6 +810,11 @@ pub struct View {
     /// The window's keyboard ring, which the view draws on its own edge
     /// while it holds focus; none where nothing gave it one.
     ring: Option<crate::focus_ring::FocusRing>,
+    /// Whether each side's blocks had room below its heading as the last
+    /// frame laid them out, where the active side's ring lies; a heading
+    /// wrapped past the pane, as at 18 pt in a 461 × 490 half tile, leaves
+    /// them none, and the ring then lies on the whole side.
+    blocks_room: std::rc::Rc<std::cell::Cell<[bool; 2]>>,
 }
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
@@ -1032,6 +1037,7 @@ impl View {
             depth: 0,
             notice: None,
             ring: None,
+            blocks_room: std::rc::Rc::new(std::cell::Cell::new([true; 2])),
         }
     }
     fn block(&mut self, side: usize, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1341,6 +1347,25 @@ fn open_local_document(
     });
     view
 }
+/// Opens a captured local document's dialog, as a link in a rendered
+/// Markdown opens one, its Markdown rendered and drawing the window's
+/// keyboard `ring`, and hands back the rendered text's focus handle.
+#[cfg(test)]
+pub(crate) fn open_local_markdown(
+    ring: crate::focus_ring::FocusRing,
+    window: &mut Window,
+    cx: &mut App,
+) -> FocusHandle {
+    let source: Arc<str> = "# Companion\n\nCaptured target.\n".into();
+    let path = PathBuf::from("docs/companion.md");
+    let markdown = Arc::new(Comparison {
+        old: Arc::new(Document::notice(&path, false, "No file on this side")),
+        new: Arc::new(prepare_document(&source, &path, true, &|| Ok(())).unwrap()),
+    });
+    let document = open_local_document(path, source, Some(markdown), 1, Some(ring), window, cx);
+    let rendered = document.read(cx).rendered.clone().expect("rendered");
+    rendered.read(cx).focus.clone()
+}
 struct LocalDocument {
     source: Arc<str>,
     editor: Option<Entity<EditorState>>,
@@ -1533,6 +1558,18 @@ impl Render for View {
                         })),
                     );
                 }
+                // In Split, the keys move only the active side, so its list
+                // area under its header takes the keyboard ring on its own
+                // edge, over the blocks, so none moves, or the whole side where
+                // its header leaves the blocks no room; Quick Open's one side
+                // is the whole view's.
+                let ring = (!self.quick && side == self.active_side)
+                    .then(|| self.ring.as_ref().and_then(|ring| ring.edge(&self.focus, rgb(colors.accent))))
+                    .flatten();
+                let room = self.blocks_room.get()[side];
+                let (blocks_ring, side_ring) = if room { (ring, None) } else { (None, ring) };
+                let blocks_room = self.blocks_room.clone();
+                let view = cx.entity().downgrade();
                 let owner = cx.entity().downgrade();
                 let list = gpui_kit::list(self.lists[side].clone(), move |index, _, cx| {
                     owner
@@ -1555,6 +1592,23 @@ impl Render for View {
                     header = header.child("Absent");
                 }
                 div()
+                    // The blocks have room where the layout gives them some
+                    // height; a change draws the ring again where it now lies.
+                    .on_children_prepainted(move |children, window, _| {
+                        let Some(blocks) = children.get(1) else {
+                            return;
+                        };
+                        let mut rooms = blocks_room.get();
+                        let has_room = blocks.size.height >= px(2.);
+                        if rooms[side] != has_room {
+                            rooms[side] = has_room;
+                            blocks_room.set(rooms);
+                            let view = view.clone();
+                            window.on_next_frame(move |_, cx| {
+                                view.update(cx, |_, cx| cx.notify()).ok();
+                            });
+                        }
+                    })
                     .id(("markdown-side", side))
                     .role(Role::Document)
                     .aria_label(format!(
@@ -1573,12 +1627,14 @@ impl Render for View {
                     .flex_col()
                     .border_r_1()
                     .border_color(rgb(colors.border))
+                    .relative()
                     .child(header)
-                    .child(div().flex_1().min_h_0().on_mouse_down(MouseButton::Left,cx.listener(move |this,_,window,cx| {this.active_side=side;this.focus.focus(window,cx);})).child(list))
+                    .child(div().debug_selector(move || format!("markdown-side-{side}-blocks")).flex_1().min_h_0().relative().on_mouse_down(MouseButton::Left,cx.listener(move |this,_,window,cx| {this.active_side=side;this.focus.focus(window,cx);cx.notify();})).child(list).children(blocks_ring))
+                    .children(side_ring)
             }))
-            // Its keyboard ring on its own edge, over both sides, so nothing
-            // moves.
-            .children(self.ring.as_ref().and_then(|ring| ring.edge(&self.focus, rgb(colors.accent))))
+            // Quick Open's one side: its keyboard ring on the view's own
+            // edge, over the side, so nothing moves.
+            .children(self.quick.then(|| self.ring.as_ref().and_then(|ring| ring.edge(&self.focus, rgb(colors.accent)))).flatten())
     }
 }
 

@@ -3201,14 +3201,7 @@ impl GitTurtle {
     /// preview's ring and the inspector's row marker both ask it, so the row
     /// gives up its accent only where the ring is drawn.
     pub(super) fn shown_text(&self) -> Option<ShownText<'_>> {
-        if self.mode == WorkspaceMode::History
-            || self.blame.is_visible()
-            || self.error.is_some()
-            || self
-                .selected_file
-                .and_then(|index| self.files.get(index))
-                .is_none()
-        {
+        if !self.shows_selected_file() {
             return None;
         }
         let Some(Content::Text { patch, .. }) = self.content.as_deref() else {
@@ -3222,6 +3215,18 @@ impl GitTurtle {
             TextMode::After => self.after_editor.as_ref().map(ShownText::Editor),
             TextMode::Diagrams | TextMode::Markdown => None,
         }
+    }
+
+    /// Whether the comparison's pane shows the selected file's content: out
+    /// of History, with a file selected, and no error or Blame in its place.
+    fn shows_selected_file(&self) -> bool {
+        self.mode != WorkspaceMode::History
+            && !self.blame.is_visible()
+            && self.error.is_none()
+            && self
+                .selected_file
+                .and_then(|index| self.files.get(index))
+                .is_some()
     }
 
     /// Whether the comparison's text draws the keyboard ring on its pane's
@@ -3240,9 +3245,11 @@ impl GitTurtle {
         match self.shown_text() {
             Some(ShownText::Editor(editor)) => shows(editor),
             Some(ShownText::Split(view)) => view.read(cx).editors().iter().any(shows),
-            // The rendered Markdown rings its own edge.
+            // The rendered Markdown, the selected file's, rings its own
+            // edge.
             None => {
                 self.text_mode == TextMode::Markdown
+                    && self.shows_selected_file()
                     && self
                         .markdown_view
                         .as_ref()

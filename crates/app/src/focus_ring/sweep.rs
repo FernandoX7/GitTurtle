@@ -206,6 +206,26 @@ fn walk_with(
     )
 }
 
+/// What a failure calls `key`: Tab, or Shift+Tab for "shift-tab".
+fn key_name(key: &str) -> &'static str {
+    if key == "tab" { "Tab" } else { "Shift+Tab" }
+}
+
+/// Where a walk's failure at a stop begins: `surface` at `interface` pt and
+/// the walk's `stop`th stop, counted from 0, by `key`, "tab" or
+/// "shift-tab", as "Tags at 13 pt, stop 3 by Shift+Tab"; the key contexts
+/// around the stop follow. A known failure names its stop by this, its key
+/// with it, since the two walks meet a surface's stops at other places:
+/// matched by "stop 3" alone, the remote manager's known cut ring at
+/// Shift+Tab's stop 3, Add remote…, also let a cut ring pass at Tab's stop
+/// 3, a remote's row.
+pub(crate) fn place(surface: &str, interface: u8, stop: usize, key: &str) -> String {
+    format!(
+        "{surface} at {interface} pt, stop {stop} by {}",
+        key_name(key)
+    )
+}
+
 /// [`walk_with`], moving focus with `key`, "tab" or "shift-tab", and
 /// running `each` as [`walk_each`] does. The walk meets more than one stop:
 /// a key that leaves focus on the stop it was on fails, at the walk's
@@ -225,7 +245,7 @@ fn walk_keyed(
     between: &mut dyn FnMut(&mut VisualTestContext, bool),
     each: &mut dyn FnMut(&mut VisualTestContext, &str, &[PaintedOutline]),
 ) -> Vec<Bounds<Pixels>> {
-    let name = if key == "tab" { "Tab" } else { "Shift+Tab" };
+    let name = key_name(key);
     let root = app.read_with(cx, |app, _| app.app_focus.clone());
     let mut order: Vec<FocusHandle> = Vec::new();
     let mut rings = Vec::new();
@@ -247,7 +267,7 @@ fn walk_keyed(
                 .collect();
             names.join(" < ")
         });
-        let at = format!("{surface} at {interface} pt, stop {stop} ({contexts})");
+        let at = format!("{} ({contexts})", place(surface, interface, stop, key));
         let Some(focused) = cx.update(|window, cx| window.focused(cx)) else {
             failures.push(format!("{at}: {name} left nothing focused"));
             return rings;
@@ -316,17 +336,17 @@ pub(crate) fn rings_edge(rings: &[Bounds<Pixels>], pane: Bounds<Pixels>) -> bool
 
 /// Fails with every stop that failed.
 pub(crate) fn assert_whole(failures: Vec<String>) {
-    assert_whole_except(failures, &[]);
+    assert_whole_except::<&str>(failures, &[]);
 }
 
 /// Fails with every stop that failed, except the known failures, each a
-/// stop's place (the start of its failure, such as "Quick Open at 13 pt,
-/// stop 1") and its finding (part of the failure's text), awaiting the
-/// follow-up its caller names. A known failure that no longer happens fails
-/// too, so its entry leaves with its fix.
-pub(crate) fn assert_whole_except(failures: Vec<String>, known: &[(&str, &str)]) {
-    let matches = |failure: &String, (at, finding): &(&str, &str)| {
-        failure.starts_with(at) && failure.contains(finding)
+/// stop's place (the start of its failure, [`place`], such as "Quick Open
+/// at 13 pt, stop 1 by Tab") and its finding (part of the failure's text),
+/// awaiting the follow-up its caller names. A known failure that no longer
+/// happens fails too, so its entry leaves with its fix.
+pub(crate) fn assert_whole_except<S: AsRef<str>>(failures: Vec<String>, known: &[(S, &str)]) {
+    let matches = |failure: &String, (at, finding): &(S, &str)| {
+        failure.starts_with(at.as_ref()) && failure.contains(finding)
     };
     let unexpected: Vec<_> = failures
         .iter()
@@ -336,7 +356,7 @@ pub(crate) fn assert_whole_except(failures: Vec<String>, known: &[(&str, &str)])
     let fixed: Vec<_> = known
         .iter()
         .filter(|entry| !failures.iter().any(|failure| matches(failure, entry)))
-        .map(|(at, finding)| format!("{at}: {finding}"))
+        .map(|(at, finding)| format!("{}: {finding}", at.as_ref()))
         .collect();
     assert!(
         unexpected.is_empty() && fixed.is_empty(),
@@ -483,6 +503,73 @@ pub(crate) async fn open_dialog<O: Opened>(
     assert!(
         !cx.update(|window, _| window.context_stack().is_empty()),
         "{surface} draws the control it focused"
+    );
+}
+
+/// A ring between the quads [`super::painted_over`] reads as painted over it
+/// or not. Beneath it, two fills stacked under its left side, the upper
+/// ordered past the ring's top, right and bottom strips but not its left,
+/// as a selected row's marker lies beneath a pane's ring. Over it, a border
+/// alone whose strip lies on its left side, which hides that side as a fill
+/// would, and a bordered box around it, whose strips miss every side and
+/// whose inside, unfilled, shows the ring. Counting fills alone, the check
+/// passed a divider drawn as a later border; set against the ring's lowest
+/// strip order, it took the upper fill beneath for one painted over it.
+struct Covered;
+
+impl Render for Covered {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let edge = |left: f32, top: f32, width: f32, height: f32| {
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(width))
+                .h(px(height))
+        };
+        div()
+            .size_full()
+            .relative()
+            .child(edge(10., 30., 20., 20.).bg(rgb(0x202020)))
+            .child(edge(15., 35., 10., 10.).bg(rgb(0x404040)))
+            .child(
+                edge(20., 20., 100., 40.)
+                    .border_1()
+                    .border_color(rgb(0x3366ff)),
+            )
+            .child(
+                edge(20., 0., 60., 80.)
+                    .border_l_1()
+                    .border_color(rgb(0x808080)),
+            )
+            .child(
+                edge(0., 0., 200., 100.)
+                    .border_1()
+                    .border_color(rgb(0x808080)),
+            )
+    }
+}
+
+#[gpui::test]
+fn a_border_drawn_over_a_ring_covers_it(cx: &mut TestAppContext) {
+    let (_, cx) = cx.add_window_view(|_, _| Covered);
+    cx.simulate_resize(size(px(300.), px(200.)));
+    draw(cx, 1);
+    let rings = super::painted_outlines(cx, rgb(0x3366ff).into());
+    let [ring] = rings[..] else {
+        panic!("one ring: {rings:?}");
+    };
+    // GPUI masks each side's strip half its width short of the corners.
+    let over = super::painted_over(cx, &ring);
+    let [strip] = over[..] else {
+        panic!("the later border's strip alone: {over:?}");
+    };
+    assert!(
+        strip.left() == px(20.)
+            && strip.right() == px(21.)
+            && strip.top() < ring.bounds.top()
+            && strip.bottom() > ring.bounds.bottom(),
+        "the later border's left strip, along the ring's left side: {strip:?}"
     );
 }
 
