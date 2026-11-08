@@ -408,8 +408,16 @@ pub struct Tab {
     warm: Option<WarmTab>,
     pub error: Option<String>,
 }
-type SessionSaveCompletion =
-    futures::future::Shared<futures::future::BoxFuture<'static, std::result::Result<(), String>>>;
+/// Why a session save did not finish: a full queue refused it, which only
+/// asks again, or it really failed, which the window reports.
+#[derive(Clone, Debug)]
+enum SessionSaveFailure {
+    Busy,
+    Failed(String),
+}
+type SessionSaveCompletion = futures::future::Shared<
+    futures::future::BoxFuture<'static, std::result::Result<(), SessionSaveFailure>>,
+>;
 
 /// Where a warm tab shown again puts focus: the control it was left with,
 /// for as long as its repository is the one shown. A cold tab's restore
@@ -457,6 +465,8 @@ pub struct State {
     pending_search: Option<PendingSearch>,
     panel_observers: Vec<Subscription>,
     pub save_pending: Option<Task<()>>,
+    /// The wait before asking again after a full queue refused the save.
+    save_retry: Option<Task<()>>,
     saver: commit_drafts::CoalescingSaver<(), Session>,
     save_completion: Option<SessionSaveCompletion>,
     closing: bool,
@@ -2039,8 +2049,13 @@ impl GitTurtle {
                 response
                     .map(|result| match result {
                         Ok(Ok(())) => Ok(()),
-                        Ok(Err(error)) => Err(format!("{error:#}")),
-                        Err(_) => Err("Repository session saving was interrupted".into()),
+                        Ok(Err(error)) if error.is::<operations::Busy>() => {
+                            Err(SessionSaveFailure::Busy)
+                        }
+                        Ok(Err(error)) => Err(SessionSaveFailure::Failed(format!("{error:#}"))),
+                        Err(_) => Err(SessionSaveFailure::Failed(
+                            "Repository session saving was interrupted".into(),
+                        )),
                     })
                     .boxed()
                     .shared(),
@@ -2094,6 +2109,10 @@ impl GitTurtle {
             }
         }));
     }
+    /// Saves the session shortly after the tabs change. The person asked for
+    /// none of these, so a writer that is merely behind is not a failure: a
+    /// save a full queue refuses reports nothing and asks again with the
+    /// newest session.
     pub(super) fn save_repository_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let timer = cx
             .background_executor()
@@ -2103,14 +2122,29 @@ impl GitTurtle {
             let response = this.update(cx, |this, cx| this.queue_session_snapshot(cx));
             if let Ok(response) = response {
                 let result = response.await;
-                let _ = this.update(cx, |this, cx| {
-                    if let Err(error) = result {
+                let _ = this.update_in(cx, |this, window, cx| match result {
+                    Ok(()) => {}
+                    Err(SessionSaveFailure::Busy) => this.ask_again_to_save_session(window, cx),
+                    Err(SessionSaveFailure::Failed(error)) => {
                         this.draft_save_error = Some(format!("Repository session: {error}"));
                         cx.notify();
                     }
                 });
             }
         }));
+    }
+    /// Asks again, after the wait, to save the session a full queue refused.
+    fn ask_again_to_save_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.repository_tabs.save_retry.is_some() {
+            return;
+        }
+        let retry = self.retry_refused_save(window, cx, |this, window, cx| {
+            this.repository_tabs.save_retry = None;
+            if this.repository_tabs.saver.is_pending() {
+                this.save_repository_session(window, cx);
+            }
+        });
+        self.repository_tabs.save_retry = Some(retry);
     }
     fn observe_tab_panels(&mut self, cx: &mut Context<Self>) {
         self.repository_tabs.panel_observers.clear();
@@ -3937,6 +3971,104 @@ mod tests {
         let after = Session::load_at(&destination).unwrap();
         assert_eq!(after.tabs.len(), 1);
         assert_eq!(after.tabs[0].path.path(), root, "the saved path stays");
+    }
+
+    /// The session is saved as tabs change, and the person asks for none of
+    /// those saves, so a preference writer that is merely behind is not a
+    /// failure: a queue other saves have filled refuses the save in silence
+    /// and it asks again until the newest session is stored. A refusal once
+    /// read "Repository session: Background executor is busy" beneath the
+    /// commit message.
+    #[gpui::test]
+    async fn a_writer_that_is_behind_never_fails_the_session_save(cx: &mut TestAppContext) {
+        use crate::workspace::REFUSED_SAVE_RETRY;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let destination = fixture.path().join("session-behind-a-busy-writer.json");
+        let saved = destination.clone();
+        cx.update(|_, cx| app.update(cx, |app, _| app.repository_tabs.save_path = Some(saved)));
+        // The wait before a session save, and then the ask's own turn.
+        let wait = std::time::Duration::from_millis(250);
+        let pass = |time: std::time::Duration, cx: &mut VisualTestContext| {
+            cx.executor().advance_clock(time);
+            cx.executor().run_until_parked();
+        };
+        let answer = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.preferences_writer.drain());
+            cx.executor().run_until_parked();
+        };
+        let error =
+            |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.draft_save_error.clone());
+        let change = |group: &str, cx: &mut VisualTestContext| {
+            let group = group.to_owned();
+            cx.update(|_, cx| app.update(cx, |app, _| app.repository_tabs.groups.push(group)));
+        };
+        pass(wait, cx);
+        answer(cx);
+
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        let fillers: Vec<_> = (0..8)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut filler in fillers {
+            assert!(matches!(filler.try_recv(), Ok(None)), "the queue fills");
+        }
+        change("Refused", cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.save_repository_session(window, cx)));
+        pass(wait, cx);
+        assert_eq!(error(cx), None);
+        // Still full: refused again, and still nothing to report.
+        pass(REFUSED_SAVE_RETRY, cx);
+        pass(wait, cx);
+        assert_eq!(error(cx), None);
+
+        drop(held);
+        answer(cx);
+        let stored = |cx: &mut VisualTestContext| {
+            answer(cx);
+            Session::load_at(&destination)
+                .map(|session| session.groups)
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            stored(cx),
+            Vec::<String>::new(),
+            "only asking again brings it"
+        );
+
+        change("Newest", cx);
+        pass(REFUSED_SAVE_RETRY, cx);
+        pass(wait, cx);
+        assert_eq!(
+            stored(cx),
+            vec!["Refused".to_owned(), "Newest".to_owned()],
+            "the newest session reaches the store"
+        );
+        assert_eq!(error(cx), None);
+    }
+
+    /// A writer whose thread has stopped can never take the save, so asking
+    /// again could not help: the window says so.
+    #[gpui::test]
+    async fn a_stopped_writer_still_reports_the_session_save(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.preferences_writer = crate::operations::SerialExecutor::stopped("stopped");
+                app.save_repository_session(window, cx);
+            })
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(250));
+        cx.executor().run_until_parked();
+        let error = app
+            .read_with(cx, |app, _| app.draft_save_error.clone())
+            .expect("the failure is reported");
+        assert!(error.starts_with("Repository session:"), "{error}");
+        assert!(
+            app.read_with(cx, |app, _| app.repository_tabs.save_retry.is_none()),
+            "nothing asks again"
+        );
     }
 
     /// A worktree's row opens that worktree's own root, as Git lists it, and
