@@ -198,12 +198,13 @@ impl DiffView {
     /// row to its last, the caret's row alone where nothing is selected:
     /// all selected where any is not, else all cleared, as clicks on their
     /// checkboxes would, the caret's line becoming the anchor a Shift+click
-    /// extends from. A selection ending at the start of a row the caret is
-    /// not on draws nothing on that row, which it leaves out: Shift+Up twice
-    /// from a line's start once toggled that line with the two drawn above
-    /// it. Context, hunk headers and the file's header select nothing, and
-    /// a hunk's lines are reached by selecting them. The live region says
-    /// what changed.
+    /// extends from. A selection ending at the start of a row draws nothing
+    /// on that row, which it leaves out, wherever the caret is: Shift+Up
+    /// twice from a line's start once toggled that line with the two drawn
+    /// above it, and a forward selection ending there selected a line never
+    /// drawn selected, for the next press to stage. Context, hunk headers
+    /// and the file's header select nothing, and a hunk's lines are reached
+    /// by selecting them. The live region says what changed.
     fn toggle_at_caret(&mut self, cx: &mut Context<Self>) {
         if self.partial_busy {
             return;
@@ -219,7 +220,7 @@ impl DiffView {
             text.offset_to_point(range.start),
             text.offset_to_point(range.end),
         );
-        let last = if end.row > start.row && end.column == 0 && end.row != caret {
+        let last = if end.row > start.row && end.column == 0 {
             end.row - 1
         } else {
             end.row
@@ -2410,8 +2411,8 @@ mod tests {
         /// Shift+Up twice from a changed line's start selects the text from
         /// two lines up to that line's start, which the text draws over the
         /// two lines above it alone: Space selects those two, never the line
-        /// the selection ends at the start of, where the caret is not. Space
-        /// once toggled that line too, a line the drawn selection left out.
+        /// the selection ends at the start of. Space once toggled that line
+        /// too, a line the drawn selection left out.
         #[gpui::test]
         async fn space_toggles_only_the_lines_the_text_selection_draws(
             cx: &mut gpui::TestAppContext,
@@ -2434,6 +2435,49 @@ mod tests {
                     panic!("{at}: one announcement: {:?}", said());
                 };
                 assert_eq!(text, "2 lines selected to stage", "{at}");
+            }
+        }
+
+        /// A selection ending at the start of a line draws nothing on that
+        /// line, with the caret on it as with the caret at the other end:
+        /// Space leaves it out. Shift+Down reaches one column into the next
+        /// line, which it draws selected, and Shift+Left takes that column
+        /// back, ending the selection at that line's start with the caret
+        /// there: Space selected that line too, one never drawn selected,
+        /// and the next press staged it.
+        #[gpui::test]
+        async fn space_leaves_out_a_line_the_selection_ends_at_the_start_of(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = working(cx).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                shown.press(cx, "shift-down shift-left");
+                assert_eq!(
+                    shown.caret(cx),
+                    first + 1,
+                    "{at}: the caret is on the next line"
+                );
+                shown.press(cx, "space");
+                assert_eq!(
+                    shown.selected(cx),
+                    [shown.id(first)],
+                    "{at}: the one line the selection draws"
+                );
+                let [(_, text)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_eq!(text, "Removed line 4 selected to stage", "{at}");
+                // From the line's second column the selection ends there too.
+                let shown = Shown::at(&app, cx, size);
+                shown.press(cx, "right shift-down shift-left space");
+                assert_eq!(
+                    shown.selected(cx),
+                    [shown.id(first)],
+                    "{at}: from its second column"
+                );
             }
         }
 
