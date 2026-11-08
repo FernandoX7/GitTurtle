@@ -847,6 +847,129 @@ mod tests {
         }
     }
 
+    /// What OpenSSH 10.6 and Git 2.56 hand an askpass program, and what the
+    /// dialog shows of it. Every prompt reads as its program wrote it, but
+    /// for Git's password prompt: it names a URL, whose userinfo is hidden
+    /// wherever it appears.
+    const PROMPTS: [(&str, &str); 10] = [
+        ("user@host's password: ", "user@host's password: "),
+        ("(user@host) Password: ", "(user@host) Password: "),
+        (
+            "Enter user@host's old password: ",
+            "Enter user@host's old password: ",
+        ),
+        (
+            "Retype user@host's new password: ",
+            "Retype user@host's new password: ",
+        ),
+        (
+            "Enter passphrase for key '/home/u/.ssh/id_ed25519': ",
+            "Enter passphrase for key '/home/u/.ssh/id_ed25519': ",
+        ),
+        (
+            "Enter PIN for 'ED25519-SK SHA256:abc': ",
+            "Enter PIN for 'ED25519-SK SHA256:abc': ",
+        ),
+        (
+            "Username for 'https://example.com': ",
+            "Username for 'https://example.com': ",
+        ),
+        (
+            "Password for 'https://u@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        (
+            "The authenticity of host 'example.com (192.0.2.1)' can't be established.\nED25519 key fingerprint is: SHA256://b+c\nThis key is not known by any other names.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            "The authenticity of host 'example.com (192.0.2.1)' can't be established.\nED25519 key fingerprint is: SHA256://b+c\nThis key is not known by any other names.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ",
+        ),
+        (
+            "Please type 'yes', 'no' or the fingerprint: ",
+            "Please type 'yes', 'no' or the fingerprint: ",
+        ),
+    ];
+
+    /// Git's and OpenSSH's failures, and what a report keeps of them.
+    const FAILURES: [(&str, &str); 14] = [
+        (
+            "fatal: Authentication failed for 'https://example.com/repo.git/'",
+            "fatal: Authentication failed for 'https://example.com/repo.git/'",
+        ),
+        (
+            "fatal: could not read Username for 'https://example.com': terminal prompts disabled",
+            "fatal: could not read Username for 'https://example.com': terminal prompts disabled",
+        ),
+        (
+            "git@example.com: Permission denied (publickey,password).",
+            "git@example.com: Permission denied (publickey,password).",
+        ),
+        (
+            "user@host: Permission denied, please try again.",
+            "user@host: Permission denied, please try again.",
+        ),
+        (
+            "Host key verification failed.",
+            "Host key verification failed.",
+        ),
+        (
+            "remote: Invalid username or password.",
+            "remote: Invalid username or password.",
+        ),
+        (
+            "fatal: Could not read from remote repository.",
+            "fatal: Could not read from remote repository.",
+        ),
+        (
+            "fatal: could not read Password for 'https://u@example.com': terminal prompts disabled",
+            "fatal: could not read Password for 'https://[redacted]@example.com': terminal prompts disabled",
+        ),
+        (
+            "fatal: unable to access 'https://u:secret@example.com/x?token=abc': The requested URL returned error: 403",
+            "fatal: unable to access 'https://[redacted]@example.com/x?[redacted] The requested URL returned error: 403",
+        ),
+        (
+            "fatal: repository 'https://x-access-token:secret@example.com/r.git/' not found",
+            "fatal: repository 'https://[redacted]@example.com/r.git/' not found",
+        ),
+        ("Authorization: Bearer secret", "Authorization:[redacted]"),
+        ("remote: password: hunter2", "remote: password:[redacted]"),
+        ("remote: token=abc123 for you", "remote: token=[redacted]"),
+        (
+            "error: helper said access_token: abc",
+            "error: helper said access_token:[redacted]",
+        ),
+    ];
+
+    #[test]
+    fn a_prompt_reads_as_written_and_a_failure_loses_only_its_secrets() {
+        for (written, shown) in PROMPTS.into_iter().chain(FAILURES) {
+            assert_eq!(redact_diagnostic(written), shown, "{written:?}");
+        }
+    }
+
+    /// The same prompts over the askpass socket, the path by which they
+    /// reach the redaction and the dialog.
+    #[cfg(unix)]
+    #[test]
+    fn the_authentication_dialog_shows_each_prompt_as_the_table_says() {
+        for (written, shown) in PROMPTS {
+            let control = OperationControl::default();
+            let server = AskpassServer::new(control.clone()).unwrap();
+            let socket = server.socket.clone();
+            let helper = thread::spawn(move || askpass_exchange(&socket, written).unwrap());
+            let started = Instant::now();
+            let prompt = loop {
+                if let Some(prompt) = control.take_prompt() {
+                    break prompt;
+                }
+                assert!(started.elapsed() < Duration::from_secs(3), "{written:?}");
+                thread::sleep(Duration::from_millis(5));
+            };
+            assert_eq!(prompt.message, shown, "{written:?}");
+            assert!(control.answer(prompt.id, Some("fixture-answer".into())));
+            assert_eq!(helper.join().unwrap(), b"fixture-answer");
+        }
+    }
+
     /// The redaction as it stood at 1e2ad7da, frozen as the oracle of the
     /// generated diagnostics below: what it hid stays hidden.
     fn earlier_redaction(input: &str) -> String {
