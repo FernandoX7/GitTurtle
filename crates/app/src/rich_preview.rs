@@ -234,6 +234,52 @@ impl Comparison {
     }
 }
 
+/// A side kept as literal text rather than read as a source of diagrams: a
+/// link, whose text names a target no preview follows, or a Git LFS pointer
+/// whose object the local store does not hold, whose text is only the
+/// pointer. The one judgement of a side: [`prepare_mermaid`] keeps such a
+/// side literal, and the rewritten-series review says why a file with no
+/// side left to draw shows no diagrams.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Literal {
+    Link,
+    LfsPointer,
+}
+
+impl Literal {
+    /// What the side stored with `mode` and holding `text` is, if it stays
+    /// literal.
+    pub(super) fn of(mode: &str, text: &str) -> Option<Self> {
+        if mode == "120000" {
+            Some(Self::Link)
+        } else if gitturtle_preview::detect_lfs_pointer(text.as_bytes()).is_some() {
+            Some(Self::LfsPointer)
+        } else {
+            None
+        }
+    }
+    /// The side's caption beside the other side's diagrams.
+    fn format(self) -> &'static str {
+        match self {
+            Self::Link => "Symbolic link",
+            Self::LfsPointer => "Git LFS pointer",
+        }
+    }
+    /// What the side says in the place of diagrams.
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Link => {
+                "This side is stored as a link, which Diagrams never follows; literal Source \
+                 remains available."
+            }
+            Self::LfsPointer => {
+                "This side's Git LFS object is not in the local store, and no download was \
+                 attempted; literal Source remains available."
+            }
+        }
+    }
+}
+
 pub(super) fn prepare_mermaid(
     old: &str,
     new: &str,
@@ -242,21 +288,17 @@ pub(super) fn prepare_mermaid(
 ) -> anyhow::Result<Option<Comparison>> {
     // Symlinks and unresolved LFS pointers remain literal identities, including
     // those with Mermaid suffixes; only verified content is a diagram source.
-    if [file.old_mode.as_str(), file.new_mode.as_str()].contains(&"120000")
-        || [old, new]
-            .iter()
-            .any(|source| gitturtle_preview::detect_lfs_pointer(source.as_bytes()).is_some())
-    {
-        return Ok(None);
-    }
+    // Each side is judged alone, so the other side, regular text, still draws.
+    let old_literal = Literal::of(&file.old_mode, old);
+    let new_literal = Literal::of(&file.new_mode, new);
     let old_name = file.old_path.as_deref().unwrap_or_else(|| file.path());
     let new_name = file.new_path.as_deref().unwrap_or_else(|| file.path());
-    let old_document = if file.old_path.is_some() {
+    let old_document = if file.old_path.is_some() && old_literal.is_none() {
         gitturtle_preview::mermaid::preview(old, old_name, 1600, &check)?
     } else {
         None
     };
-    let new_document = if file.new_path.is_some() {
+    let new_document = if file.new_path.is_some() && new_literal.is_none() {
         gitturtle_preview::mermaid::preview(new, new_name, 1600, &check)?
     } else {
         None
@@ -265,16 +307,32 @@ pub(super) fn prepare_mermaid(
         return Ok(None);
     }
     let mut sides = Vec::with_capacity(2);
-    for (source, name, present, document) in [
-        (old, old_name, file.old_path.is_some(), old_document),
-        (new, new_name, file.new_path.is_some(), new_document),
+    for (source, name, present, document, literal) in [
+        (
+            old,
+            old_name,
+            file.old_path.is_some(),
+            old_document,
+            old_literal,
+        ),
+        (
+            new,
+            new_name,
+            file.new_path.is_some(),
+            new_document,
+            new_literal,
+        ),
     ] {
         check()?;
         let mut side = Side::unavailable(name, present, None);
         side.page_kind = "Diagram";
-        side.metadata.format = "Mermaid diagrams".into();
+        side.metadata.format = literal.map_or("Mermaid diagrams", Literal::format).into();
         if present {
-            side.capture(Arc::from(source.as_bytes()), &check)?;
+            // A literal side's text is not captured either: capturing reads
+            // it to decide what another application could open it as.
+            if literal.is_none() {
+                side.capture(Arc::from(source.as_bytes()), &check)?;
+            }
             side.metadata.source = Some(Arc::from(source));
         }
         if let Some(document) = document {
@@ -311,9 +369,14 @@ pub(super) fn prepare_mermaid(
                 ));
             }
         } else if present {
-            side.metadata
-                .details
-                .push("No Mermaid diagrams on this side; literal Source remains available.".into());
+            side.metadata.details.push(
+                literal
+                    .map_or(
+                        "No Mermaid diagrams on this side; literal Source remains available.",
+                        Literal::reason,
+                    )
+                    .into(),
+            );
         }
         sides.push(Arc::new(side));
     }
@@ -1088,6 +1151,133 @@ mod tests {
         }
         assert!(cx.debug_bounds("system-preview-1").is_some());
         assert!(cx.debug_bounds("system-preview-0").is_none());
+    }
+
+    /// Only a side that is itself a link or a Git LFS pointer stays literal,
+    /// and what it stores never reaches a decoder, even text that would
+    /// parse as a diagram: the other side, regular text, draws its own.
+    /// Where no side is left to draw, there is no comparison.
+    #[test]
+    fn prepare_mermaid_keeps_only_the_literal_side_literal() {
+        let file = |old_mode: &str, new_mode: &str| gitturtle_core::FileChange {
+            old_path: Some("a.mmd".into()),
+            new_path: Some("a.mmd".into()),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Modified,
+            old_mode: old_mode.into(),
+            new_mode: new_mode.into(),
+        };
+        let diagram = "flowchart LR\n  A --> B\n";
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "a".repeat(64)
+        );
+        let link = "This side is stored as a link, which Diagrams never follows; literal \
+                    Source remains available.";
+        let lfs = "This side's Git LFS object is not in the local store, and no download was \
+                   attempted; literal Source remains available.";
+        let regular = "100644";
+        for (name, old, new, old_mode, new_mode, says, literal_is_old) in [
+            (
+                "a link before",
+                diagram,
+                diagram,
+                "120000",
+                regular,
+                link,
+                true,
+            ),
+            (
+                "a link after",
+                diagram,
+                diagram,
+                regular,
+                "120000",
+                link,
+                false,
+            ),
+            (
+                "a pointer before",
+                pointer.as_str(),
+                diagram,
+                regular,
+                regular,
+                lfs,
+                true,
+            ),
+            (
+                "a pointer after",
+                diagram,
+                pointer.as_str(),
+                regular,
+                regular,
+                lfs,
+                false,
+            ),
+        ] {
+            let prepared = prepare_mermaid(old, new, &file(old_mode, new_mode), || Ok(()))
+                .unwrap()
+                .unwrap_or_else(|| panic!("{name}: the regular side draws its diagram"));
+            let (literal, drawn, stored) = if literal_is_old {
+                (&prepared.old, &prepared.new, old)
+            } else {
+                (&prepared.new, &prepared.old, new)
+            };
+            assert!(
+                drawn.pages.len() == 1 && drawn.pages[0].error.is_none(),
+                "{name}: the regular side draws one diagram"
+            );
+            assert!(
+                literal.pages.is_empty() && literal.page_count == 0,
+                "{name}: the literal side is never decoded"
+            );
+            assert!(
+                literal.captured.is_none() && literal.system_preview.is_none(),
+                "{name}: the literal side offers nothing to open"
+            );
+            assert_eq!(
+                literal.metadata.details,
+                [says],
+                "{name}: the literal side says what it is"
+            );
+            assert_eq!(
+                literal.metadata.source.as_deref(),
+                Some(stored),
+                "{name}: its literal text stays available"
+            );
+        }
+        for (name, old, new, old_mode, new_mode) in [
+            ("links on both sides", diagram, diagram, "120000", "120000"),
+            (
+                "pointers on both sides",
+                pointer.as_str(),
+                pointer.as_str(),
+                regular,
+                regular,
+            ),
+            (
+                "a pointer then a link",
+                pointer.as_str(),
+                diagram,
+                regular,
+                "120000",
+            ),
+            (
+                "a link then a blank file",
+                diagram,
+                " \n",
+                "120000",
+                regular,
+            ),
+        ] {
+            assert!(
+                prepare_mermaid(old, new, &file(old_mode, new_mode), || Ok(()))
+                    .unwrap()
+                    .is_none(),
+                "{name}: no side is left to draw"
+            );
+        }
     }
 
     #[test]

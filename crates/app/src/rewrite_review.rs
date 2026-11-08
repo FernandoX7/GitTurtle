@@ -727,11 +727,14 @@ impl SeriesBrowser {
     /// Mermaid file stored as a link, or whose Git LFS object the local
     /// store lacks, says so, since what it stands for could hold diagrams,
     /// and only one whose text was read says it has none. "This file has no
-    /// Mermaid diagrams." once stood for every text file without them. It
-    /// judges the side Diagrams would draw, the one after the change or, for
-    /// a file the change removed, the one before: judged by either side, a
-    /// Mermaid file changed from a link to a regular file read as stored as
-    /// a link.
+    /// Mermaid diagrams." once stood for every text file without them. Only
+    /// a file with no side left to draw comes here: a link or a pointer on
+    /// one side stays literal and the other draws ([`Literal`]). It judges
+    /// the side after the change or, for a file the change removed, the one
+    /// before: judged by either side, a Mermaid file changed from a link to
+    /// a blank regular file read as stored as a link.
+    ///
+    /// [`Literal`]: crate::rich_preview::Literal
     fn no_diagrams(&self, old: &str, new: &str) -> &'static str {
         let Some(file) = self.selected_file.and_then(|index| self.files.get(index)) else {
             return NOT_DIAGRAMS;
@@ -748,13 +751,12 @@ impl SeriesBrowser {
                 extension.eq_ignore_ascii_case("mmd") || extension.eq_ignore_ascii_case("mermaid")
             });
         if !mermaid {
-            NOT_DIAGRAMS
-        } else if mode == "120000" {
-            LINKED
-        } else if gitturtle_preview::detect_lfs_pointer(text.as_bytes()).is_some() {
-            NO_LFS_OBJECT
-        } else {
-            NO_DIAGRAMS
+            return NOT_DIAGRAMS;
+        }
+        match crate::rich_preview::Literal::of(mode, text) {
+            Some(crate::rich_preview::Literal::Link) => LINKED,
+            Some(crate::rich_preview::Literal::LfsPointer) => NO_LFS_OBJECT,
+            None => NO_DIAGRAMS,
         }
     }
     /// Why Edit local commits… refuses a press, and whether it looks it:
@@ -5176,37 +5178,49 @@ mod tests {
     /// stood for all three, though the link's target or the object could
     /// hold diagrams. The reason judges the side Diagrams would draw, the
     /// one after the change or, for a file it removed, the one before: a
-    /// Mermaid file changed from a link to a regular file once read as
+    /// Mermaid file changed from a link to a blank regular file once read as
     /// stored as a link.
+    ///
+    /// Only the literal side stays literal. Where one side of the change is
+    /// a link or a Git LFS pointer and the other holds Mermaid text, the
+    /// other draws its diagram, Diagrams opens and the literal side says
+    /// what it is: an `.mmd` going from a link or a pointer to real Mermaid
+    /// text read "This file has no Mermaid diagrams.", which was untrue.
     #[gpui::test]
     async fn diagrams_says_why_a_file_shows_none(cx: &mut gpui_kit::TestAppContext) {
-        use crate::tags::tests::{git, tagged_repository, window};
+        use crate::tags::tests::{draw, git, rendered, tagged_repository, window};
         use std::os::unix::fs::symlink;
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
         let diagram = "flowchart LR\n  A --> B\n";
+        // A Git LFS pointer whose object the local store does not hold.
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "a".repeat(64)
+        );
         symlink("notes.txt", repo.path().join("was-link.mmd")).unwrap();
         symlink("notes.txt", repo.path().join("gone-link.mmd")).unwrap();
+        symlink("notes.txt", repo.path().join("link-to-blank.mmd")).unwrap();
         std::fs::write(repo.path().join("now-link.mmd"), diagram).unwrap();
+        std::fs::write(repo.path().join("was-pointer.mmd"), &pointer).unwrap();
+        std::fs::write(repo.path().join("pointer-to-blank.mmd"), &pointer).unwrap();
+        std::fs::write(repo.path().join("now-pointer.mmd"), diagram).unwrap();
         git(repo.path(), &["add", "."]);
         git(repo.path(), &["commit", "--quiet", "-m", "Add the sides"]);
         std::fs::remove_file(repo.path().join("was-link.mmd")).unwrap();
         std::fs::write(repo.path().join("was-link.mmd"), diagram).unwrap();
         std::fs::remove_file(repo.path().join("gone-link.mmd")).unwrap();
+        std::fs::remove_file(repo.path().join("link-to-blank.mmd")).unwrap();
+        std::fs::write(repo.path().join("link-to-blank.mmd"), " \n").unwrap();
         std::fs::remove_file(repo.path().join("now-link.mmd")).unwrap();
         symlink("notes.txt", repo.path().join("now-link.mmd")).unwrap();
+        std::fs::write(repo.path().join("was-pointer.mmd"), diagram).unwrap();
+        std::fs::write(repo.path().join("pointer-to-blank.mmd"), " \n").unwrap();
+        std::fs::write(repo.path().join("now-pointer.mmd"), &pointer).unwrap();
         std::fs::write(repo.path().join("notes.txt"), "notes\n").unwrap();
         std::fs::write(repo.path().join("blank.mmd"), " \n\n").unwrap();
         std::fs::write(repo.path().join("link.mmd"), "flowchart LR\n  A --> B\n").unwrap();
-        // A Git LFS pointer whose object the local store does not hold.
-        std::fs::write(
-            repo.path().join("missing.mmd"),
-            format!(
-                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
-                "a".repeat(64)
-            ),
-        )
-        .unwrap();
+        std::fs::write(repo.path().join("missing.mmd"), &pointer).unwrap();
         git(repo.path(), &["add", "."]);
         git(repo.path(), &["commit", "--quiet", "-m", "Add files"]);
         let mut files = last_commit_files(&repo);
@@ -5220,6 +5234,14 @@ mod tests {
             file_index(&files, "was-link.mmd"),
             file_index(&files, "now-link.mmd"),
             file_index(&files, "gone-link.mmd"),
+        );
+        let (was_pointer, now_pointer) = (
+            file_index(&files, "was-pointer.mmd"),
+            file_index(&files, "now-pointer.mmd"),
+        );
+        let (link_to_blank, pointer_to_blank) = (
+            file_index(&files, "link-to-blank.mmd"),
+            file_index(&files, "pointer-to-blank.mmd"),
         );
         // Stored as a link, whose text names its target.
         files[link].new_mode = "120000".into();
@@ -5235,8 +5257,12 @@ mod tests {
             ),
             ("a text file", notes, NOT_DIAGRAMS),
             ("a blank Mermaid file", blank, NO_DIAGRAMS),
-            ("a link changed to a regular file", was_link, NO_DIAGRAMS),
-            ("a regular file changed to a link", now_link, LINKED),
+            ("a link changed to a blank file", link_to_blank, NO_DIAGRAMS),
+            (
+                "a pointer changed to a blank file",
+                pointer_to_blank,
+                NO_DIAGRAMS,
+            ),
             ("a link the commit removed", gone_link, LINKED),
         ] {
             choose(&browser, cx, index);
@@ -5256,6 +5282,87 @@ mod tests {
                 Some(reason),
                 "Diagrams says why, for {name}"
             );
+        }
+        const LINK_SIDE: &str = "This side is stored as a link, which Diagrams never follows; \
+                                 literal Source remains available.";
+        const POINTER_SIDE: &str = "This side's Git LFS object is not in the local store, and no \
+                                    download was attempted; literal Source remains available.";
+        for (name, index, literal, format, says) in [
+            (
+                "a link changed to a regular file",
+                was_link,
+                0,
+                "Symbolic link",
+                LINK_SIDE,
+            ),
+            (
+                "a pointer changed to a regular file",
+                was_pointer,
+                0,
+                "Git LFS pointer",
+                POINTER_SIDE,
+            ),
+            (
+                "a regular file changed to a link",
+                now_link,
+                1,
+                "Symbolic link",
+                LINK_SIDE,
+            ),
+            (
+                "a regular file changed to a pointer",
+                now_pointer,
+                1,
+                "Git LFS pointer",
+                POINTER_SIDE,
+            ),
+        ] {
+            choose(&browser, cx, index);
+            let (kept, drawn) = browser.read_with(cx, |browser, _| {
+                let Some(Content::Text {
+                    diagrams: Some(diagrams),
+                    ..
+                }) = browser.content.as_deref()
+                else {
+                    panic!("{name}: the regular side draws its diagram");
+                };
+                if literal == 0 {
+                    (diagrams.old.clone(), diagrams.new.clone())
+                } else {
+                    (diagrams.new.clone(), diagrams.old.clone())
+                }
+            });
+            assert!(
+                drawn.pages.len() == 1
+                    && drawn.pages[0].render.is_some()
+                    && drawn.pages[0].error.is_none(),
+                "{name}: the regular side draws one diagram"
+            );
+            assert!(
+                kept.pages.is_empty() && kept.page_count == 0,
+                "{name}: the literal side is never decoded"
+            );
+            assert!(
+                kept.captured.is_none() && kept.system_preview.is_none(),
+                "{name}: the literal side offers nothing to open"
+            );
+            assert_eq!(
+                kept.metadata.details,
+                [says],
+                "{name}: the literal side says what it is"
+            );
+            cx.update(|_, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.text_mode = 3;
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            let node = crate::native_accessibility::written::get(TEXT_MODES[3].1)
+                .unwrap_or_else(|| panic!("Diagrams is drawn for {name}"))
+                .node;
+            assert!(!node.is_disabled(), "Diagrams opens, for {name}");
+            rendered(cx, format!("rich-side-format-{literal}/{format}").leak());
         }
     }
 
