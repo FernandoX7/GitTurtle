@@ -218,9 +218,21 @@ const CHOOSE_FILE: &str = "Select a file to inspect its captured commit bytes.";
 /// image's or a document's.
 const NO_TEXT: &str = "This file's preview has no patch or source.";
 
-/// Why Diagrams waits for a preview whose text has Mermaid diagrams, where
-/// the preview has none.
+/// Why Diagrams waits for a Mermaid file (`.mmd`, `.mermaid`) whose text
+/// was read and holds no diagrams.
 const NO_DIAGRAMS: &str = "This file has no Mermaid diagrams.";
+
+/// Why Diagrams waits for a Mermaid file stored as a link: its text names
+/// the link's target, which no preview follows.
+const LINKED: &str = "This file is stored as a link, which Diagrams never follows.";
+
+/// Why Diagrams waits for a Mermaid file whose Git LFS object the local
+/// store does not hold: its text is the object's pointer.
+const NO_LFS_OBJECT: &str =
+    "This file's Git LFS object is not in the local store. No download was attempted.";
+
+/// Why Diagrams waits for any other file without diagrams: what it shows.
+const NOT_DIAGRAMS: &str = "Diagrams shows Mermaid files and the Mermaid diagrams in Markdown.";
 
 /// The text modes' names, by mode, and the keys their tooltips are drawn
 /// under ([`refusing`]).
@@ -692,10 +704,43 @@ impl SeriesBrowser {
             Some(Content::Text {
                 diagrams: Some(_), ..
             }) => None,
-            Some(Content::Text { .. } | Content::Images { .. } | Content::Rich(_)) => {
-                Some(NO_DIAGRAMS.into())
-            }
+            Some(Content::Text { old, new, .. }) => Some(self.no_diagrams(old, new).into()),
+            Some(Content::Images { .. } | Content::Rich(_)) => Some(NOT_DIAGRAMS.into()),
             _ => self.modes_refusal(),
+        }
+    }
+    /// Why the chosen file's text, `old` and `new`, has no diagrams: a
+    /// Mermaid file stored as a link, or whose Git LFS object the local
+    /// store lacks, says so, since what it stands for could hold diagrams,
+    /// and only one whose text was read says it has none. "This file has no
+    /// Mermaid diagrams." once stood for every text file without them.
+    fn no_diagrams(&self, old: &str, new: &str) -> &'static str {
+        let Some(file) = self.selected_file.and_then(|index| self.files.get(index)) else {
+            return NOT_DIAGRAMS;
+        };
+        let mermaid = |path: &std::path::Path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("mmd")
+                        || extension.eq_ignore_ascii_case("mermaid")
+                })
+        };
+        if ![file.old_path.as_deref(), file.new_path.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(mermaid)
+        {
+            NOT_DIAGRAMS
+        } else if [file.old_mode.as_str(), file.new_mode.as_str()].contains(&"120000") {
+            LINKED
+        } else if [old, new]
+            .iter()
+            .any(|text| gitturtle_preview::detect_lfs_pointer(text.as_bytes()).is_some())
+        {
+            NO_LFS_OBJECT
+        } else {
+            NO_DIAGRAMS
         }
     }
     /// Why Edit local commits… refuses a press, and whether it looks it:
@@ -4365,7 +4410,7 @@ mod tests {
                 if kind != "diagrams" {
                     assert_eq!(
                         diagrams.description(),
-                        Some(notice.as_deref().unwrap_or(NO_DIAGRAMS)),
+                        Some(notice.as_deref().unwrap_or(NOT_DIAGRAMS)),
                         "{at}: Diagrams says why it waits, for {name}"
                     );
                 }
@@ -4719,6 +4764,70 @@ mod tests {
             "scrolled to its end, the error's last line ends at {:?} inside the box, {kept:?}",
             line.bottom()
         );
+    }
+
+    /// Diagrams says why a file shows none: a Mermaid file stored as a
+    /// link, that Diagrams never follows a link; one whose Git LFS object is
+    /// not in the local store, that; and a file that is not Mermaid or
+    /// Markdown, what Diagrams shows. "This file has no Mermaid diagrams."
+    /// stood for all three, though the link's target or the object could
+    /// hold diagrams.
+    #[gpui::test]
+    async fn diagrams_says_why_a_file_shows_none(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "notes\n").unwrap();
+        std::fs::write(repo.path().join("link.mmd"), "flowchart LR\n  A --> B\n").unwrap();
+        // A Git LFS pointer whose object the local store does not hold.
+        std::fs::write(
+            repo.path().join("missing.mmd"),
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+                "a".repeat(64)
+            ),
+        )
+        .unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add files"]);
+        let mut files = last_commit_files(&repo);
+        let (link, missing, notes) = (
+            file_index(&files, "link.mmd"),
+            file_index(&files, "missing.mmd"),
+            file_index(&files, "notes.txt"),
+        );
+        // Stored as a link, whose text names its target.
+        files[link].new_mode = "120000".into();
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let browser = inspecting(&app, cx, &files);
+        for (name, index, reason) in [
+            ("a Mermaid file stored as a link", link, LINKED),
+            (
+                "a Mermaid file whose LFS object is missing",
+                missing,
+                NO_LFS_OBJECT,
+            ),
+            ("a text file", notes, NOT_DIAGRAMS),
+        ] {
+            choose(&browser, cx, index);
+            assert!(
+                browser.read_with(cx, |browser, _| matches!(
+                    browser.content.as_deref(),
+                    Some(Content::Text { diagrams: None, .. })
+                )),
+                "{name}'s text lands, with no diagrams"
+            );
+            let node = crate::native_accessibility::written::get(TEXT_MODES[3].1)
+                .unwrap_or_else(|| panic!("Diagrams is drawn for {name}"))
+                .node;
+            assert!(node.is_disabled(), "Diagrams waits, for {name}");
+            assert_eq!(
+                node.description(),
+                Some(reason),
+                "Diagrams says why, for {name}"
+            );
+        }
     }
 
     /// Whether the pointer resting on action `id` shows the tooltip `text`,
