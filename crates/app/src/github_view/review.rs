@@ -2432,7 +2432,9 @@ impl Panel {
     /// inside the body's view, for reopening to give focus back to ([`Self::focus_reopened`]).
     /// A control that cannot take focus back holds nothing, so the reopen goes straight to the
     /// shown section's first stop: the confirmation's controls, which reopening drops, where
-    /// focus sat on what no frame drew until the fallback moved it two frames later.
+    /// focus sat on what no frame drew until the fallback moved it two frames later; and a
+    /// Button disabled as the panel closes, no Tab stop, such as Next PR page on the last page,
+    /// which the reopen once focused.
     pub(super) fn hold_closing_focus(&mut self, window: &Window, cx: &App) {
         let shown = self
             .review
@@ -2440,7 +2442,7 @@ impl Panel {
             .shows_focus(&self.review.body_scroll, window);
         self.review.held = window
             .focused(cx)
-            .filter(|focus| shown && !self.confirmation_holds(focus))
+            .filter(|focus| shown && focus.tab_stop && !self.confirmation_holds(focus))
             .map(|focus| focus.downgrade());
         // The innermost part on the focus path of the frame the window last drew, the panel's.
         self.review.held_part = self.review.held.as_ref().and_then(|_| {

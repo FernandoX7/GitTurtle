@@ -10925,6 +10925,62 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Enter on Next PR page reaching the last page leaves focus on the Button, now disabled and
+    /// no Tab stop. Closed from there, the panel holds no control, so the reopen puts focus on
+    /// the destination field, its first stop, before any frame. The reopen once gave focus back
+    /// to the disabled Button, where only the next Tab could move it on.
+    #[gpui::test]
+    async fn reopening_passes_over_a_button_disabled_as_the_panel_closed(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, _pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        crate::focus_ring::sweep::interface_size(cx, 13);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = None;
+                panel.create = false;
+                panel.review.show_list = true;
+                panel.has_next = true;
+                panel.page = 1;
+                cx.notify();
+            })
+        });
+        cx.executor().run_until_parked();
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        frames(cx);
+        let next = panel
+            .read_with(cx, |panel, _| panel.review.buttons.kept("github-next"))
+            .expect("Next PR page is drawn");
+        cx.update(|window, cx| next.focus(window, cx));
+        frames(cx);
+        cx.simulate_keystrokes("enter");
+        settle_panel(&app, cx).await;
+        frames(cx);
+        assert!(
+            cx.update(|window, _| next.is_focused(window))
+                && panel.read_with(cx, |panel, _| panel.page == 2 && !panel.has_next),
+            "Enter reaches the last page with focus on the now disabled Button"
+        );
+        escape(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        let field = panel.read_with(cx, |panel, cx| panel.destination.read(cx).focus_handle(cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        assert!(
+            cx.update(|window, _| field.is_focused(window) && !next.is_focused(window)),
+            "the reopened panel puts focus on the destination field before any frame"
+        );
+        settle_panel(&app, cx).await;
+        frames(cx);
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "focus stays on the destination field"
+        );
+    }
+
     /// Files' patch, whole in a 461 × 490 window at 13 pt as Escape closes the panel and so
     /// held, which a larger text size or a shorter window moves out of the reopened body's
     /// view while the panel is closed, gives way as a click on the header's Pull requests
