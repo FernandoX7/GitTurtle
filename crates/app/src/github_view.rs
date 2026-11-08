@@ -2753,6 +2753,15 @@ impl Render for Panel {
                         [&*observed, &*pull_revealed, &*list_revealed],
                         move |window, cx| {
                             let _ = panel.update(cx, |panel, cx| {
+                                // With no PR open or new PR started, focus falls to the
+                                // destination field, the body's first part, shown from the top
+                                // whatever offset the body closed at, as a reopen that never
+                                // held a control shows it. The field needed no reveal where the
+                                // body closed, so the body stayed there, the fixture's banner
+                                // above it out of view.
+                                if panel.pull.is_none() && !panel.create {
+                                    panel.review.body_scroll.set_offset(point(px(0.), px(0.)));
+                                }
                                 panel.focus_visible_section(window, cx);
                                 cx.notify();
                             });
@@ -14156,7 +14165,9 @@ mod tests {
     /// 461 × 490 window. Every frame the reopened panel draws shows the Button whole with its
     /// ring's room, and the last draws its ring. The reopen took the body back to its top,
     /// as it does for its destination field, before it restored the Button: at 13 pt Refresh
-    /// PRs, closed with the body 32.5 px down, came back with the body at its top.
+    /// PRs, closed with the body 32.5 px down, came back with the body at its top. A window
+    /// shortened while the panel is closed can leave the Button wholly out of view; the focus
+    /// that falls to the destination field then shows the body from its top.
     #[gpui::test]
     async fn reopening_onto_a_held_button_with_no_pr_keeps_the_body_where_it_closed(
         cx: &mut TestAppContext,
@@ -14262,6 +14273,76 @@ mod tests {
             }
         }
         assert!(scrolled > 0, "some case closes with the body scrolled");
+
+        // A Button the window's shortening puts wholly below the body cannot be revealed, so
+        // focus falls to the destination field, and the body is at its top whatever offset it
+        // closed at: at 13 pt, the offline fixture's banner above the field, Copy sign-in command
+        // held with the body scrolled as far as keeps the field whole with its ring, and the
+        // window going from 490 to 420 px while the panel is closed. The field needed no reveal
+        // where the body closed, so the body stayed there, the banner above it out of view.
+        // (Without the banner the field is the body's first part, and revealing it reaches the
+        // top by itself.)
+        let id = "github-sign-in-help";
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        open_panel(&app, cx).await;
+        panel.update(cx, |panel, cx| {
+            panel.review.fixture = true;
+            panel.review.connection_open = true;
+            cx.notify();
+        });
+        scroll.set_offset(point(px(0.), px(0.)));
+        frames(cx);
+        let held = panel
+            .read_with(cx, |panel, _| panel.review.buttons.kept(id))
+            .expect("the panel keeps the Button's handle");
+        cx.update(|window, cx| held.focus(window, cx));
+        frames(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let field = cx.debug_bounds("github-destination").expect("the field");
+        let closed = scroll.offset().y - (field.top() - room - body.top());
+        assert!(closed < px(0.), "the banner lies above the field");
+        scroll.set_offset(point(px(0.), closed));
+        frames(cx);
+        assert_eq!(scroll.offset().y, closed, "the body scrolls that far");
+        let field = cx.debug_bounds("github-destination").expect("the field");
+        let button = cx.debug_bounds(id).expect(id);
+        assert!(
+            whole(field, body) && button.top() < body.bottom() && button.bottom() > body.top(),
+            "the body {body:?} shows the field {field:?} whole and the Button {button:?}"
+        );
+        escape(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        cx.simulate_resize(size(px(461.), px(420.)));
+        frames(cx);
+        crate::copy_feedback::tests::click(cx, "pull-requests");
+        settle_panel(&app, cx).await;
+        frames(cx);
+        let destination =
+            panel.read_with(cx, |panel, cx| panel.destination.read(cx).focus_handle(cx));
+        assert!(
+            cx.update(|window, _| destination.is_focused(window)),
+            "focus falls to the destination field"
+        );
+        assert_eq!(
+            scroll.offset().y,
+            px(0.),
+            "the body, closed at {closed:?}, is at its top"
+        );
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let field = cx.debug_bounds("github-destination").expect("the field");
+        let banner = cx.debug_bounds("github-fixture-mode").expect("the banner");
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let ring = crate::focus_ring::painted_outlines(cx, accent)
+            .into_iter()
+            .any(|ring| ring.whole && ring.bounds.contains(&field.center()));
+        assert!(
+            whole(field, body) && ring && banner.top() >= body.top(),
+            "the field {field:?} is whole with its ring and the banner {banner:?} in view in \
+             {body:?}"
+        );
+        escape(cx);
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
