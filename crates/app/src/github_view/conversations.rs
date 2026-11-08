@@ -832,10 +832,16 @@ impl Panel {
     }
     pub(super) fn focus_confirmation(&self, window: &mut Window, cx: &mut Context<Self>) {
         *self.review.revealed_focus.borrow_mut() = Default::default();
-        // A new confirmation shows its destination first.
+        // A new confirmation shows its destination first, and is sized for the body it opens
+        // in, never for what the last one found of its own.
         self.conversations
             .confirm_scroll
             .set_offset(point(px(0.), px(0.)));
+        let fit = &self.conversations.confirm_fit;
+        fit.set(ConfirmFit {
+            short: Pixels::ZERO,
+            ..fit.get()
+        });
         self.conversations.confirm_focus.focus(window, cx);
         cx.notify();
     }

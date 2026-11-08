@@ -12569,6 +12569,46 @@ mod tests {
         cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
     }
 
+    /// A new confirmation is sized for the body it opens in, never for what the last one found
+    /// of its own: with a confirmation having left the body's view measured 60 px short of its
+    /// room, a long reply opened at 13 pt in a 1,480 × 973 window, whose body is its whole room,
+    /// lays its region out at the height it settles at from its first frame. Kept from the last
+    /// confirmation, the first frame's region was 60 px too short.
+    #[gpui::test]
+    async fn a_new_confirmation_takes_no_short_body_from_the_last_one(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                let fit = &panel.conversations.confirm_fit;
+                fit.set(conversations::ConfirmFit {
+                    short: px(60.),
+                    ..fit.get()
+                });
+            })
+        });
+        open_confirmation(
+            (&panel, &pull),
+            confirmed_long_reply(60),
+            (13, 1480., 973.),
+            cx,
+        );
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let frames = confirm_frames();
+        let settled = frames.last().expect("the confirmation draws").ring;
+        for (index, frame) in frames.iter().enumerate() {
+            assert!(
+                (frame.ring.size.height - settled.size.height).abs() <= px(0.5),
+                "frame {index} lays the region's ring out {:?} tall, not the {:?} it settles at",
+                frame.ring.size.height,
+                settled.size.height
+            );
+        }
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+    }
+
     /// The height the confirmation decides before layout for the top line standing above the
     /// body is the height the line is drawn: with a real reply's conversation open, at 13 and
     /// 18 pt in 1,480 × 973, 700 × 680 and 461 × 490 windows, for a notice, for a notice with a
