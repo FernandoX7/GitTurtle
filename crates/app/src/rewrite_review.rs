@@ -5129,6 +5129,7 @@ mod tests {
         std::fs::remove_file(repo.path().join("now-link.mmd")).unwrap();
         symlink("notes.txt", repo.path().join("now-link.mmd")).unwrap();
         std::fs::write(repo.path().join("notes.txt"), "notes\n").unwrap();
+        std::fs::write(repo.path().join("blank.mmd"), " \n\n").unwrap();
         std::fs::write(repo.path().join("link.mmd"), "flowchart LR\n  A --> B\n").unwrap();
         // A Git LFS pointer whose object the local store does not hold.
         std::fs::write(
@@ -5147,6 +5148,7 @@ mod tests {
             file_index(&files, "missing.mmd"),
             file_index(&files, "notes.txt"),
         );
+        let blank = file_index(&files, "blank.mmd");
         let (was_link, now_link, gone_link) = (
             file_index(&files, "was-link.mmd"),
             file_index(&files, "now-link.mmd"),
@@ -5165,6 +5167,7 @@ mod tests {
                 NO_LFS_OBJECT,
             ),
             ("a text file", notes, NOT_DIAGRAMS),
+            ("a blank Mermaid file", blank, NO_DIAGRAMS),
             ("a link changed to a regular file", was_link, NO_DIAGRAMS),
             ("a regular file changed to a link", now_link, LINKED),
             ("a link the commit removed", gone_link, LINKED),
