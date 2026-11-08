@@ -12298,6 +12298,344 @@ mod tests {
         cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
     }
 
+    /// Asserts that each of `frames`, the confirmation's frames since something changed, draws
+    /// the confirmation in the form the last one settles in: the guidance in the same place, in
+    /// the region or below it, the region, inside `room` for its ring, at the same height, the
+    /// region's ring and Send and Keep editing fitting the body's view together with `reveal`,
+    /// the reveal's room, at either edge, and Send and Keep editing never cut at the body's
+    /// edges: whole in its view, or, in the first frame alone, which the body's reveal of the
+    /// focused region follows in the next (DESIGN.md, "Keyboard focus"), wholly outside it.
+    fn assert_confirmation_settled(
+        at: &str,
+        frames: &[conversations::ConfirmFrame],
+        (room, reveal): (Pixels, Pixels),
+    ) {
+        let settled = *frames
+            .last()
+            .unwrap_or_else(|| panic!("{at}: the confirmation draws"));
+        let region = |frame: &conversations::ConfirmFrame| frame.ring.size.height - room * 2.;
+        let place = |frame: &conversations::ConfirmFrame| {
+            if frame.inside {
+                "in the region"
+            } else {
+                "below the region"
+            }
+        };
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(
+                frame.inside,
+                settled.inside,
+                "{at}: frame {index} of {} stands the guidance {}, where it settles {}",
+                frames.len(),
+                place(frame),
+                place(&settled)
+            );
+            assert!(
+                (region(frame) - region(&settled)).abs() <= px(0.5),
+                "{at}: frame {index} lays the region out {:?} tall, not the {:?} it settles at",
+                region(frame),
+                region(&settled)
+            );
+            let (actions, body) = (frame.actions, frame.body);
+            let together = actions.bottom() - frame.ring.top();
+            assert!(
+                together <= body.size.height - reveal * 2. + px(0.5),
+                "{at}: frame {index}: the region's ring and Send and Keep editing, {together:?} \
+                 together, fit the body's {:?} view",
+                body.size.height
+            );
+            let whole = actions.top() >= body.top() - px(0.5)
+                && actions.bottom() <= body.bottom() + px(0.5)
+                && actions.right() <= body.right() + px(0.5);
+            let away = actions.bottom() <= body.top() + px(0.5)
+                || actions.top() >= body.bottom() - px(0.5);
+            assert!(
+                whole || (index == 0 && away),
+                "{at}: frame {index} draws Send and Keep editing {actions:?} whole in the body \
+                 {body:?}"
+            );
+        }
+    }
+
+    /// A new panel's first confirmation takes its form in its first frame: at 18 pt in a 461 ×
+    /// 490 window, a long reply's, the first the panel opens, stands the guidance in the region
+    /// after the destination in every frame it draws, the first included, lays the region out
+    /// at the height it settles at and never cuts Send or Keep editing, which are whole in the
+    /// body's view once the body has revealed the focused region, in the frame after the first
+    /// ([`assert_confirmation_settled`]).
+    /// Laid out from the last frame's measures, of which a new panel has none, its first frame
+    /// stood the guidance below the region, and the next moved it in.
+    #[gpui::test]
+    async fn a_new_panels_first_confirmation_takes_its_form_in_its_first_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        open_confirmation(
+            (&panel, &pull),
+            confirmed_long_reply(60),
+            (18, 461., 490.),
+            cx,
+        );
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let at = "a new panel's first confirmation, a long reply, at 18 pt in a 461 × 490 window";
+        let frames = confirm_frames();
+        assert!(
+            frames.last().is_some_and(|frame| frame.inside),
+            "{at}: the guidance settles in the region"
+        );
+        let rooms = cx.update(|window, cx| {
+            (
+                appearance::button_ring_room(cx),
+                review::reveal_room(window, cx),
+            )
+        });
+        assert_confirmation_settled(at, &frames, rooms);
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A window made only narrower lays the confirmation out for its width in the frame that
+    /// draws it: with a long reply's region focused at 13 pt in a 1,480 × 973 window, where the
+    /// guidance stands below the region, every frame drawn as the window becomes 461 × 973,
+    /// where the guidance wraps onto more lines, the first included, stands the guidance where
+    /// it settles, lays the region out at the height it settles at and never cuts Send or Keep
+    /// editing, whole in the body's view from the frame after the first, which the body's
+    /// reveal of what rewrapped above the region follows, the region keeping focus. Laid out
+    /// from the last frame's measures, the first narrow frame left the guidance the room of its
+    /// wide lines and laid the region out 612 px tall, where it settles at 573.
+    #[gpui::test]
+    async fn a_narrower_window_lays_the_confirmation_out_for_its_width_at_once(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let region = panel.read_with(cx, |panel, _| panel.conversations.confirm_focus.clone());
+        open_confirmation(
+            (&panel, &pull),
+            confirmed_long_reply(80),
+            (13, 1480., 973.),
+            cx,
+        );
+        for _ in 0..6 {
+            crate::width_walk::frame(cx);
+        }
+        let wide = cx
+            .debug_bounds("github-confirm-guidance")
+            .expect("the guidance");
+        assert!(
+            confirm_frames().last().is_some_and(|frame| !frame.inside),
+            "at 13 pt in a 1,480 × 973 window the guidance stands below the region"
+        );
+        // Width only: the height stays, so only what rewraps changes the room.
+        cx.simulate_resize(size(px(461.), px(973.)));
+        cx.executor().run_until_parked();
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let narrow = cx
+            .debug_bounds("github-confirm-guidance")
+            .expect("the guidance");
+        assert!(
+            narrow.size.height > wide.size.height + px(0.5),
+            "the guidance wraps onto more lines: {wide:?}, then {narrow:?}"
+        );
+        assert!(
+            cx.update(|window, _| region.is_focused(window)),
+            "the region keeps focus"
+        );
+        let rooms = cx.update(|window, cx| {
+            (
+                appearance::button_ring_room(cx),
+                review::reveal_room(window, cx),
+            )
+        });
+        assert_confirmation_settled(
+            "a long reply's region focused at 13 pt as the window becomes 461 × 973 from \
+             1,480 × 973",
+            &confirm_frames(),
+            rooms,
+        );
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+    }
+
+    /// The confirmation lays out the form it decides before layout
+    /// ([`conversations::ConfirmForm`]): at 13 and 18 pt in 1,480 × 973, 700 × 680 and 461 ×
+    /// 490 windows, for a comment and a long reply, with Send reading the offline fixture's
+    /// label and GitHub's, the region and the guidance are laid out at the width the form was
+    /// decided at, the guidance as tall as the form's, and the confirmation draws besides its
+    /// region and the guidance what the form leaves for the room around the region and Send and
+    /// Keep editing, which stand on one row in some of them and on two in others.
+    #[gpui::test]
+    async fn the_confirmation_lays_out_the_form_it_decides(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let confirmations: [Confirming; 2] = [
+            ("a comment", confirmed_comment),
+            ("a long reply", || confirmed_long_reply(40)),
+        ];
+        let mut rows = std::collections::BTreeSet::new();
+        for fixture in [true, false] {
+            cx.update(|_, cx| panel.update(cx, |panel, _| panel.review.fixture = fixture));
+            for (interface, width, height) in [
+                (13, 1480., 973.),
+                (18, 1480., 973.),
+                (13, 700., 680.),
+                (18, 700., 680.),
+                (13, 461., 490.),
+                (18, 461., 490.),
+            ] {
+                for (kind, confirmation) in confirmations {
+                    let at = format!(
+                        "{kind} at {interface} pt in a {width} × {height} window, Send for {}",
+                        if fixture { "the fixture" } else { "GitHub" }
+                    );
+                    open_confirmation(
+                        (&panel, &pull),
+                        confirmation(),
+                        (interface, width, height),
+                        cx,
+                    );
+                    for _ in 0..4 {
+                        crate::width_walk::frame(cx);
+                    }
+                    let settled = *confirm_frames().last().expect("the confirmation draws");
+                    let form = panel
+                        .read_with(cx, |panel, _| {
+                            panel.conversations.confirm_form.borrow().clone()
+                        })
+                        .expect("the form decided");
+                    let mut place =
+                        |selector: &'static str| cx.debug_bounds(selector).expect(selector);
+                    let (guidance, region, send, keep) = (
+                        place("github-confirm-guidance"),
+                        place("github-confirm-region"),
+                        place("github-confirm-send"),
+                        place("github-edit-submission"),
+                    );
+                    for (name, laid) in [("guidance", guidance), ("region", region)] {
+                        assert!(
+                            (laid.size.width - form.width()).abs() <= px(0.01),
+                            "{at}: the {name} {laid:?} is laid out at the {:?} its form was \
+                             decided at",
+                            form.width()
+                        );
+                    }
+                    assert!(
+                        (guidance.size.height - form.guidance).abs() <= px(0.5),
+                        "{at}: the guidance {guidance:?} is as tall as its form's {:?}",
+                        form.guidance
+                    );
+                    assert!(
+                        (settled.chrome - form.chrome).abs() <= px(0.5),
+                        "{at}: the confirmation draws {:?} besides its region and guidance, the \
+                         {:?} its form leaves (Send {send:?}, Keep editing {keep:?})",
+                        settled.chrome,
+                        form.chrome
+                    );
+                    rows.insert(keep.top() > send.top() + px(0.5));
+                }
+            }
+        }
+        assert_eq!(
+            rows.len(),
+            2,
+            "Send and Keep editing stand on one row in some windows and on two in others"
+        );
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.review.fixture = true;
+                panel.confirm = None;
+            })
+        });
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The confirmation decides its form again only when what it was decided for changes
+    /// ([`conversations::ConfirmForm`]): with a long reply's region focused at 13 pt in a
+    /// 1,480 × 973 window, more frames, the keys that scroll the region and a window made only
+    /// shorter decide nothing; a narrower window, a larger text size and Send's other label each
+    /// decide it once; and a frame that keeps the form allocates nothing for it.
+    #[gpui::test]
+    async fn the_confirmation_decides_its_form_only_when_its_width_size_or_text_changes(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let decided = || conversations::CONFIRM_FORMS_DECIDED.with(std::cell::Cell::get);
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        open_confirmation(
+            (&panel, &pull),
+            confirmed_long_reply(60),
+            (13, 1480., 973.),
+            cx,
+        );
+        frames(cx);
+        let opened = decided();
+        assert!(opened > 0, "the confirmation decides its form as it opens");
+        frames(cx);
+        cx.simulate_keystrokes("down");
+        frames(cx);
+        cx.simulate_keystrokes("pagedown");
+        frames(cx);
+        assert_eq!(
+            decided(),
+            opened,
+            "frames and the region's keys decide nothing"
+        );
+        cx.simulate_resize(size(px(1480.), px(700.)));
+        cx.executor().run_until_parked();
+        frames(cx);
+        assert_eq!(
+            decided(),
+            opened,
+            "a window made only shorter decides nothing"
+        );
+        cx.simulate_resize(size(px(461.), px(700.)));
+        cx.executor().run_until_parked();
+        frames(cx);
+        assert_eq!(decided(), opened + 1, "a narrower window decides it once");
+        crate::focus_ring::sweep::interface_size(cx, 18);
+        frames(cx);
+        assert_eq!(decided(), opened + 2, "a larger text size decides it once");
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.fixture = false;
+                cx.notify();
+            })
+        });
+        cx.executor().run_until_parked();
+        frames(cx);
+        assert_eq!(decided(), opened + 3, "Send's other label decides it once");
+        let allocated = cx.update(|window, cx| {
+            let style = window.text_style();
+            let panel = panel.read(cx);
+            let before = crate::test_support::allocations();
+            let _ = panel
+                .conversations
+                .confirm_form(&style, "Send to GitHub", window, cx);
+            crate::test_support::allocations() - before
+        });
+        assert_eq!(
+            allocated, 0,
+            "a frame that keeps the form allocates nothing for it"
+        );
+        assert_eq!(decided(), opened + 3, "nor decides it again");
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.review.fixture = true;
+                panel.confirm = None;
+            })
+        });
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The confirmation's region cues what lies past its edges with the shared scroll cue's
     /// edge fades in the dialog's surface (`tags::ScrollCue`): at 18 pt in a 461 × 490 window a
     /// long reply's region, opened at its top, fades its foot and not its top, and after End

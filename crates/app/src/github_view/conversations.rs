@@ -35,8 +35,11 @@ pub(super) struct State {
     pub confirm_focus: FocusHandle,
     /// The scroll of the confirmation's region, at its top as each confirmation opens.
     pub confirm_scroll: ScrollHandle,
-    /// What the confirmation drew besides its region in the last frame ([`ConfirmFit`]).
+    /// What the last frame found of the confirmation's lines and the body's view ([`ConfirmFit`]).
     pub confirm_fit: std::rc::Rc<std::cell::Cell<ConfirmFit>>,
+    /// The confirmation's form, decided before layout for the width, font and text it was
+    /// decided for ([`ConfirmForm`]).
+    pub confirm_form: std::cell::RefCell<Option<ConfirmForm>>,
     /// The conversation list's scroll, which Tab moves to show a conversation's actions
     /// (`Panel::conversation_part`), and the focus it last showed.
     pub list_scroll: ScrollHandle,
@@ -55,16 +58,10 @@ pub(super) struct State {
     /// into view ([`Panel::reveal_outcome`]).
     pub outcome_shown: std::rc::Rc<std::cell::RefCell<Option<Shown>>>,
 }
-/// What the outbound confirmation drew besides its region in the last frame, which the region
-/// leaves room for in the panel's body ([`Panel::render_confirmation`]).
+/// What the last frame found of the outbound confirmation besides its form
+/// ([`Panel::render_confirmation`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct ConfirmFit {
-    /// Everything the confirmation's content draws besides its region and the guidance: the
-    /// room around the region for its ring, the row of Send and Keep editing, and the gap
-    /// between them.
-    pub chrome: Pixels,
-    /// The guidance sentence's height, wherever it is drawn.
-    pub guidance: Pixels,
     /// How far apart its 12 pt lines are drawn ([`confirm_line`]), which the frame that drew
     /// it read from the text style, for the keys that scroll the region a line.
     pub line: Pixels,
@@ -74,27 +71,167 @@ pub(super) struct ConfirmFit {
     /// only what the body gives up beyond it.
     pub short: Pixels,
 }
-impl ConfirmFit {
-    /// Whether `other` measures the same, to a half pixel.
-    fn agrees(&self, other: &Self) -> bool {
-        [
-            (self.chrome, other.chrome),
-            (self.guidance, other.guidance),
-            (self.short, other.short),
-        ]
-        .into_iter()
-        .all(|(a, b)| (a - b).abs() <= px(0.5))
+
+/// The sentence the confirmation stands above Send, or in its region after the destination.
+const GUIDANCE: &str = "Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.";
+
+/// What the outbound confirmation draws besides its region, decided before layout in the frame
+/// being drawn from the panel's width and the interface font, so the frame that lays it out
+/// decides where the guidance stands and how tall the region may be from what it draws
+/// ([`Panel::render_confirmation`]). Decided from the last frame's layout, a new panel's first
+/// long confirmation at 18 pt in a 461 × 490 window drew its guidance below the region and the
+/// region as tall as if no buttons stood below it, and a long reply's in a window made only
+/// narrower, 1,480 × 973 to 461 × 973 at 13 pt, kept the room of the guidance's fewer,
+/// wider lines and laid the region out 612 px tall where it settles at 573, each for one
+/// frame. It is decided again only when what it was decided for changes
+/// ([`State::confirm_form`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ConfirmForm {
+    key: FormKey,
+    /// The guidance sentence's height, its 12 pt lines wrapped at the width, wherever it is
+    /// drawn.
+    pub guidance: Pixels,
+    /// Everything the confirmation's content draws besides its region and the guidance: the
+    /// room around the region for its ring, the row or two rows of Send and Keep editing, and
+    /// the gaps between them.
+    pub chrome: Pixels,
+}
+#[cfg(test)]
+impl ConfirmForm {
+    /// The width it was decided at ([`confirm_width`]).
+    pub(super) fn width(&self) -> Pixels {
+        self.key.width
+    }
+}
+/// What a [`ConfirmForm`] was decided for.
+#[derive(Clone, Debug, PartialEq)]
+struct FormKey {
+    /// The width the confirmation lays its content out in ([`confirm_width`]).
+    width: Pixels,
+    /// The interface font, its size and its line ([`confirm_line`]), the rem size the gaps
+    /// follow, and the display's scale.
+    font: Font,
+    size: Pixels,
+    line: Pixels,
+    rem: Pixels,
+    scale: f32,
+    /// Send's label.
+    send: &'static str,
+}
+
+thread_local! {
+    /// Send's label at a compact Button's 12 pt, laid out once per font and size
+    /// ([`crate::label_text_width`]).
+    static SEND_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// Keep editing's, likewise.
+    static KEEP_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+thread_local! {
+    /// How many times a confirmation's form was decided, its guidance shaped, for a test.
+    pub(super) static CONFIRM_FORMS_DECIDED: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+impl State {
+    /// The confirmation's form in `window`, whose text style is `style`, with Send reading
+    /// `send`: the one last decided where it was decided for the same width, font, sizes,
+    /// scale and label, so a frame that changes none of them shapes nothing and allocates
+    /// nothing, and otherwise decided now: the guidance shaped at the width with the text
+    /// system's wrap, Send and Keep editing beside each other where their measured labels fit
+    /// the width ([`crate::placed_button_width`]) and on two rows where not, as the actions'
+    /// row wraps them, and the room around the region, the Buttons' frames and the gaps from
+    /// their sizes, each on the device pixel layout places it.
+    pub(super) fn confirm_form(
+        &self,
+        style: &TextStyle,
+        send: &'static str,
+        window: &Window,
+        cx: &App,
+    ) -> (Pixels, Pixels) {
+        let width = confirm_width(window, cx);
+        let size = appearance::ui_text(12.);
+        let line = confirm_line(style, window);
+        let (rem, scale) = (window.rem_size(), window.scale_factor());
+        let mut kept = self.confirm_form.borrow_mut();
+        if let Some(form) = kept.as_ref().filter(|form| {
+            let key = &form.key;
+            key.width == width
+                && key.size == size
+                && key.line == line
+                && key.rem == rem
+                && key.scale == scale
+                && key.send == send
+                && key.font.family == style.font_family
+                && key.font.features == style.font_features
+                && key.font.fallbacks == style.font_fallbacks
+                && key.font.weight == style.font_weight
+                && key.font.style == style.font_style
+        }) {
+            return (form.guidance, form.chrome);
+        }
+        #[cfg(test)]
+        CONFIRM_FORMS_DECIDED.with(|decided| decided.set(decided.get() + 1));
+        let snap = |length: Pixels| window.pixel_snap(length);
+        let gap = snap(rem * 0.5);
+        // Shaped with GPUI's wrap at the width its label is laid out at, the region's or the
+        // confirmation's, which are one width: the region keeps no gutter.
+        let lines = crate::image_compare::wrapped_lines(GUIDANCE, size, width, window);
+        // A shaping failure counts as more lines than any body holds beside the region.
+        let guidance = line * lines.min(usize::from(u16::MAX)) as f32;
+        let placed = |label: &str, cache| {
+            crate::placed_button_width(crate::label_text_width(label, cache, window), false, window)
+        };
+        let rows = if placed(send, &SEND_LABEL) + gap + placed("Keep editing", &KEEP_LABEL) <= width
+        {
+            1.
+        } else {
+            2.
+        };
+        let chrome = snap(appearance::button_ring_room(cx)) * 2.
+            + gap
+            + snap(appearance::ui_size(28.)) * rows
+            + gap * (rows - 1.);
+        let form = kept.insert(ConfirmForm {
+            key: FormKey {
+                width,
+                font: style.font(),
+                size,
+                line,
+                rem,
+                scale,
+                send,
+            },
+            guidance,
+            chrome,
+        });
+        (form.guidance, form.chrome)
     }
 }
 
-/// How far apart the confirmation's 12 pt lines are drawn: the root style's line height at
-/// that size, snapped to a device pixel, as a text element lays its lines out. Read from the
-/// style as each frame renders, so a confirmation's first frame keeps the region's two-line
-/// floor: read from the last frame's measure, a new panel's first confirmation had none.
-fn confirm_line(window: &Window) -> Pixels {
+/// The width the confirmation lays out its region, its guidance and its Buttons in, in
+/// `window`, from the panel's width ([`super::panel_width`]): less the dialog's 1 px edge and
+/// its side padding at either side, the gutter the body keeps for its scrollbar past the room
+/// its rings take there, and the confirmation's own padding and border at either side, each a
+/// length layout places on a device pixel. Read from the window rather than the last frame's
+/// layout, so the frame a resize draws decides the form from the width it lays out.
+fn confirm_width(window: &Window, cx: &App) -> Pixels {
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let (edge, ring) = (snap(px(1.)), appearance::button_ring_room(cx));
+    snap(super::panel_width(window))
+        - (edge + snap(gpui_kit::component::dialog::dialog_side_padding(window, cx))) * 2.
+        - (snap(ring + crate::tags::ScrollCue::gutter()) - snap(ring))
+        - (snap(super::text_inset() - px(1.)) + edge) * 2.
+}
+
+/// How far apart the confirmation's 12 pt lines are drawn: the line height of `style`, the
+/// window's text style, at that size, snapped to a device pixel, as a text element lays its
+/// lines out. Read from the style as each frame renders, so a confirmation's first frame keeps
+/// the region's two-line floor: read from the last frame's measure, a new panel's first
+/// confirmation had none.
+fn confirm_line(style: &TextStyle, window: &Window) -> Pixels {
     window.pixel_snap(
-        window
-            .text_style()
+        style
             .line_height
             .to_pixels(appearance::ui_text(12.).into(), window.rem_size()),
     )
@@ -155,13 +292,17 @@ fn region_fades(scroll: ScrollHandle) -> impl IntoElement {
 }
 
 /// One frame of the outbound confirmation as it prepainted, for tests: the room around the
-/// region its ring lies on, where Send and Keep editing lie, and the body's view.
+/// region its ring lies on, where Send and Keep editing lie, the body's view, whether the
+/// guidance stood in the region, and what the confirmation drew besides the region and the
+/// guidance ([`ConfirmForm::chrome`]).
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ConfirmFrame {
     pub ring: Bounds<Pixels>,
     pub actions: Bounds<Pixels>,
     pub body: Bounds<Pixels>,
+    pub inside: bool,
+    pub chrome: Pixels,
 }
 #[cfg(test)]
 thread_local! {
@@ -212,6 +353,7 @@ impl State {
             confirm_focus: cx.focus_handle().tab_stop(true),
             confirm_scroll: ScrollHandle::new(),
             confirm_fit: Default::default(),
+            confirm_form: Default::default(),
             list_scroll: ScrollHandle::new(),
             list_revealed: Default::default(),
             list_blocks: Default::default(),
@@ -629,17 +771,19 @@ impl Panel {
     /// The outbound confirmation. Its one Tab stop is a region that scrolls the destination,
     /// with every full identity it names, and then the text Send sends: the region is as tall
     /// as what it holds, up to the room the panel's body leaves beside the rest of the
-    /// confirmation, which the last frame measured ([`ConfirmFit`]), and never less than two
-    /// lines, so the region's ring and Send and Keep editing below it stay in view together
-    /// where the body can hold them. Laid out by what it holds in each frame, a confirmation
-    /// opens at its own height: sized from what the last one held, a short comment's opened as
-    /// tall as the long reply's before it, and a new panel's took the whole room. The
-    /// guidance sentence stands above Send where the body holds it, the region's two lines and
-    /// the buttons, and otherwise in the region after the destination. Shown whole, the
-    /// confirmation was the stop, 446 px tall at 18 pt in a 461 × 490 window, where the body is
-    /// about 265 px tall, and no reveal could draw its ring whole. The region draws its ring on
-    /// the edge of the room it keeps around itself, inside the confirmation's padding, whose
-    /// resting border stays as it is, so nothing moves for the ring.
+    /// confirmation, and never less than two lines, so the region's ring and Send and Keep
+    /// editing below it stay in view together where the body can hold them. Laid out by what it
+    /// holds in each frame, a confirmation opens at its own height: sized from what the last one
+    /// held, a short comment's opened as tall as the long reply's before it, and a new panel's
+    /// took the whole room. The guidance sentence stands above Send where the body holds it, the
+    /// region's two lines and the buttons, and otherwise in the region after the destination.
+    /// Where it stands and the rest of the confirmation's height are decided before layout in
+    /// the frame being drawn, from the panel's width and the interface font ([`ConfirmForm`]),
+    /// so no frame draws the guidance where the next moves it from, or Send or Keep editing cut.
+    /// Shown whole, the confirmation was the stop, 446 px tall at 18 pt in a 461 × 490 window,
+    /// where the body is about 265 px tall, and no reveal could draw its ring whole. The region
+    /// draws its ring on the edge of the room it keeps around itself, inside the confirmation's
+    /// padding, whose resting border stays as it is, so nothing moves for the ring.
     pub(super) fn render_confirmation(
         &self,
         confirmation: &Confirmation,
@@ -651,7 +795,16 @@ impl Panel {
         let drawn = self.conversations.confirm_fit.get();
         // The room around the region its ring lies on the edge of.
         let ring = appearance::button_ring_room(cx);
-        let gap = window.rem_size() * 0.5;
+        let gap = window.pixel_snap(window.rem_size() * 0.5);
+        let send = if self.review.fixture {
+            "Send to offline fixture"
+        } else {
+            "Send to GitHub"
+        };
+        // One read of the text style for the frame, for the region's line and the form.
+        let style = window.text_style();
+        let line = confirm_line(&style, window);
+        let (guidance, chrome) = self.conversations.confirm_form(&style, send, window, cx);
         // The body's view in this frame, less the room the confirmation's reveal keeps at either
         // edge: the room the dialog leaves the body in this window, less the top line standing
         // above the body while a conversation is open, and less what the last frame found the
@@ -667,28 +820,11 @@ impl Panel {
         };
         let room = window.pixel_snap(super::body_max_height(window) - top_line);
         let left = room - drawn.short - super::review::reveal_room(window, cx) * 2.;
-        let line = confirm_line(window);
         let floor = line * 2.;
-        let inside = drawn.chrome + drawn.guidance + gap + floor > left;
+        let inside = chrome + guidance + gap + floor > left;
         // The tallest the region is: what it holds is laid out up to this in the same frame.
-        let cap = (left
-            - drawn.chrome
-            - if inside {
-                Pixels::ZERO
-            } else {
-                drawn.guidance + gap
-            })
-        .max(floor);
-        let fit = self.conversations.confirm_fit.clone();
-        let guidance = div()
-            .on_children_prepainted(move |children, _, _| {
-                if let Some(drawn) = children.first() {
-                    let mut kept = fit.get();
-                    kept.guidance = drawn.size.height;
-                    fit.set(kept);
-                }
-            })
-            .child(label("github-confirm-guidance","Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.").text_color(rgb(p.muted)));
+        let cap = (left - chrome - if inside { Pixels::ZERO } else { guidance + gap }).max(floor);
+        let guidance = label("github-confirm-guidance", GUIDANCE).text_color(rgb(p.muted));
         let (within, below) = if inside {
             (Some(guidance), None)
         } else {
@@ -795,35 +931,41 @@ impl Panel {
                         .child(label("github-confirm-text", text)),
                 ),
         );
-        // What the confirmation draws besides the region, measured as it prepaints: the room
-        // around the region, the guidance where it stands below it, and the row of buttons,
-        // with the gaps between them.
+        // What the body's view gave the confirmation, read as it prepaints, and the line the
+        // region's keys move it by.
         let (fit, revealed, held) = (
             self.conversations.confirm_fit.clone(),
             self.review.revealed_focus.clone(),
             focus.clone(),
         );
         let body_scroll = self.review.body_scroll.clone();
-        let measure = move |children: &[Bounds<Pixels>], window: &mut Window, cx: &mut App| {
-            let (Some(around), Some(span)) = (
-                children.first(),
-                children.iter().copied().reduce(|a, b| a.union(&b)),
-            ) else {
-                return;
-            };
-            let region = around.size.height - ring * 2.;
-            #[cfg(test)]
-            CONFIRM_FRAMES.with(|frames| {
-                frames.borrow_mut().push(ConfirmFrame {
-                    ring: *around,
-                    actions: children[children.len() - 1],
-                    body: body_scroll.bounds(),
-                })
-            });
-            let guidance = match children {
-                [_, guidance, _] => guidance.size.height + window.rem_size() * 0.5,
-                _ => Pixels::ZERO,
-            };
+        // Each frame as it prepaints, for tests ([`ConfirmFrame`]).
+        #[cfg(test)]
+        let record = {
+            let body_scroll = body_scroll.clone();
+            move |children: &[Bounds<Pixels>]| {
+                let (Some(around), Some(span)) = (
+                    children.first(),
+                    children.iter().copied().reduce(|a, b| a.union(&b)),
+                ) else {
+                    return;
+                };
+                let below = match children {
+                    [_, guidance, _] => guidance.size.height + gap,
+                    _ => Pixels::ZERO,
+                };
+                CONFIRM_FRAMES.with(|frames| {
+                    frames.borrow_mut().push(ConfirmFrame {
+                        ring: *around,
+                        actions: children[children.len() - 1],
+                        body: body_scroll.bounds(),
+                        inside: children.len() == 2,
+                        chrome: span.size.height - (around.size.height - ring * 2.) - below,
+                    })
+                });
+            }
+        };
+        let measure = move |window: &mut Window, cx: &mut App| {
             // The body has laid out and prepainted its own bounds in this frame before what it
             // holds prepaints.
             let short = if body_scroll.max_offset().y > Pixels::ZERO {
@@ -831,15 +973,9 @@ impl Panel {
             } else {
                 Pixels::ZERO
             };
-            let measured = ConfirmFit {
-                chrome: span.size.height - region - guidance,
-                guidance: fit.get().guidance,
-                line,
-                short,
-            };
-            fit.set(measured);
-            if !measured.agrees(&drawn) {
-                // The region was sized from another measure: the next frame sizes it from
+            fit.set(ConfirmFit { line, short });
+            if (short - drawn.short).abs() > px(0.5) {
+                // The region was sized for another view of the body: the next frame sizes it for
                 // this one and, where the region holds focus, reveals it again as it lies then.
                 let (revealed, held) = (revealed.clone(), held.clone());
                 window.defer(cx, move |window, _| {
@@ -855,7 +991,9 @@ impl Panel {
             .debug_selector(|| "github-confirmation".into())
             .flex_shrink_0()
             .on_children_prepainted(move |children, window, cx| {
-                measure(&children, window, cx);
+                #[cfg(test)]
+                record(&children);
+                measure(window, cx);
                 reveal(children, window, cx);
             })
             .map(super::bordered_pane)
@@ -892,20 +1030,10 @@ impl Panel {
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        self.button(
-                            "github-confirm-send",
-                            if self.review.fixture {
-                                "Send to offline fixture"
-                            } else {
-                                "Send to GitHub"
-                            },
-                            "",
-                            true,
-                            cx,
-                        )
-                        .debug_selector(|| "github-confirm-send".into())
-                        .disabled(pending)
-                        .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
+                        self.button("github-confirm-send", send, "", true, cx)
+                            .debug_selector(|| "github-confirm-send".into())
+                            .disabled(pending)
+                            .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                     )
                     .child(
                         self.button("github-edit-submission", "Keep editing", "", false, cx)
