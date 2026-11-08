@@ -550,9 +550,11 @@ impl GitTurtle {
                 // Reopening onto its destination field, its first part, the panel shows its
                 // body from the top, the banner above the field included. Closed with the body
                 // scrolled down, it reopened there, the field at the body's edge and what lies
-                // above it out of view, since the field alone was whole. An open PR or a new
-                // one keeps the body where it was, beside what reopening focuses.
-                if panel.pull.is_none() && !panel.create {
+                // above it out of view, since the field alone was whole. Reopening onto
+                // another control of the body that held focus as it closed, as an open PR or
+                // a new one does, keeps the body where it was, and the first frame reveals the
+                // control where a size change while closed moved it ([`review::Reopened`]).
+                if panel.reopens_onto_destination(cx) {
                     panel.review.body_scroll.set_offset(point(px(0.), px(0.)));
                 }
                 cx.notify();
@@ -13930,6 +13932,122 @@ mod tests {
             escape(cx);
         }
         assert!(scrolled > 0, "some size scrolls the body");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// With no PR open, a Button of the body that held focus as Escape closed the panel takes
+    /// it back as a click on the header's Pull requests reopens it, the body where it closed:
+    /// Refresh PRs and Connect GitHub CLI account, each reached by Tab and the body then
+    /// scrolled on as far as keeps the Button whole with its ring's room, at 13 and 18 pt in a
+    /// 461 × 490 window. Every frame the reopened panel draws shows the Button whole with its
+    /// ring's room, and the last draws its ring. The reopen took the body back to its top,
+    /// as it does for its destination field, before it restored the Button: at 13 pt Refresh
+    /// PRs, closed with the body 32.5 px down, came back with the body at its top.
+    #[gpui::test]
+    async fn reopening_onto_a_held_button_with_no_pr_keeps_the_body_where_it_closed(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        // Tab's bindings, the installed focus ring and motion at rest.
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| panel.close(window, cx));
+            panel
+        });
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let whole = |part: Bounds<Pixels>, view: Bounds<Pixels>| {
+            part.top() - room >= view.top() - px(0.5)
+                && part.bottom() + room <= view.bottom() + px(0.5)
+        };
+        let focused = |cx: &mut VisualTestContext, id: &'static str| {
+            let focus = panel.read_with(cx, |panel, _| panel.review.buttons.kept(id));
+            cx.update(|window, _| focus.is_some_and(|focus| focus.is_focused(window)))
+        };
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        let mut scrolled = 0;
+        for interface in [13u8, 18] {
+            for (id, part) in [("github-refresh", "refresh"), ("github-connect", "connect")] {
+                let at = format!("{id} at {interface} pt in 461 × 490");
+                cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+                cx.simulate_resize(size(px(461.), px(490.)));
+                draw(cx);
+                open_panel(&app, cx).await;
+                if !panel.read_with(cx, |panel, _| panel.review.connection_open) {
+                    crate::copy_feedback::tests::click(cx, "github-account-options");
+                    cx.run_until_parked();
+                }
+                // Tab from the destination field, the body at its top.
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| panel.focus_visible_section(window, cx))
+                });
+                scroll.set_offset(point(px(0.), px(0.)));
+                frames(cx);
+                let mut stops = 0;
+                while !focused(cx, id) {
+                    stops += 1;
+                    assert!(stops <= 12, "{at}: Tab reaches the Button");
+                    cx.simulate_keystrokes("tab");
+                    frames(cx);
+                }
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let button = cx.debug_bounds(id).expect(id);
+                let y = (scroll.offset().y - (button.top() - room - body.top()))
+                    .clamp(-scroll.max_offset().y, px(0.));
+                scroll.set_offset(point(px(0.), y));
+                frames(cx);
+                let closed = scroll.offset().y;
+                let button = cx.debug_bounds(id).expect(id);
+                assert!(
+                    whole(button, body) && ringed(cx, id),
+                    "{at}: the body {body:?} shows the Button {button:?} whole with its ring at \
+                     {closed:?} as the panel closes"
+                );
+                if closed < px(0.) {
+                    scrolled += 1;
+                }
+                escape(cx);
+                assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+                review::BODY_FRAMES.set(Some(Vec::new()));
+                crate::copy_feedback::tests::click(cx, "pull-requests");
+                settle_panel(&app, cx).await;
+                frames(cx);
+                let drawn = review::BODY_FRAMES.take().expect("watched");
+                assert!(focused(cx, id), "{at}: the Button takes focus back");
+                assert!(
+                    drawn.len() >= 2,
+                    "{at}: the reopened panel drew {} frames",
+                    drawn.len()
+                );
+                for (index, frame) in drawn.iter().enumerate() {
+                    let (_, shown) = frame
+                        .parts
+                        .iter()
+                        .find(|(name, _)| name == part)
+                        .unwrap_or_else(|| panic!("{at}: frame {index} draws {part}: {frame:?}"));
+                    assert!(
+                        whole(*shown, frame.view),
+                        "{at}: frame {index} draws the Button {shown:?} whole in {:?}",
+                        frame.view
+                    );
+                }
+                assert_eq!(
+                    scroll.offset().y,
+                    closed,
+                    "{at}: the body stays where it closed"
+                );
+                assert!(ringed(cx, id), "{at}: the Button draws its ring");
+                escape(cx);
+            }
+        }
+        assert!(scrolled > 0, "some case closes with the body scrolled");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

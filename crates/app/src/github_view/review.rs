@@ -2386,6 +2386,19 @@ impl Panel {
         }
         cx.notify();
     }
+    /// Whether reopening, with no PR open or new PR started, puts focus on the destination
+    /// field ([`Self::focus_reopened`]): no control held focus inside the body's view as the
+    /// panel closed, or the field did.
+    pub(super) fn reopens_onto_destination(&self, cx: &App) -> bool {
+        self.pull.is_none()
+            && !self.create
+            && self
+                .review
+                .held
+                .as_ref()
+                .and_then(|held| held.upgrade())
+                .is_none_or(|held| held == self.destination.read(cx).focus_handle(cx))
+    }
     /// Records the control that holds focus as the panel closes, if the last frame drew it
     /// inside the body's view, for reopening to give focus back to ([`Self::focus_reopened`]).
     pub(super) fn hold_closing_focus(&mut self, window: &Window, cx: &App) {
