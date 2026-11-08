@@ -637,8 +637,11 @@ impl Render for DiffView {
             .readonly(true)
             .bordered(false)
             .aria_label(self.label.clone())
-            .when(self.partial.is_some(), |editor| {
-                editor.aria_description(line_keys_description(self.action()))
+            .when(self.partial.is_some() && !self.partial_busy, |editor| {
+                editor.aria_description(line_keys_description(
+                    self.action(),
+                    !self.selection.ids.is_empty(),
+                ))
             })
             .text_size(crate::appearance::code_text());
         let editor = match &find_partner {
@@ -1020,15 +1023,20 @@ impl DiffView {
     }
 }
 
-/// What the diff text's accessible description says while the per-line
-/// controls show: what Space and Tab do there, as the GitHub panel's patch
-/// lines say what their keys do. `action` is the partial actions' verb.
-fn line_keys_description(action: &str) -> String {
+/// What the diff text's accessible description says while Space selects
+/// lines there, so not during a partial write: what Space does and, while
+/// lines are `selected` and the bar is drawn, that Tab reaches its action,
+/// as the GitHub panel's patch lines say what their keys do. `action` is the
+/// partial actions' verb.
+fn line_keys_description(action: &str, selected: bool) -> String {
     let verb = action.to_lowercase();
-    format!(
-        "Space selects the changed line at the caret, or the selected lines, to {verb}. \
-         Tab reaches {action}."
-    )
+    let space =
+        format!("Space selects the changed line at the caret, or the selected lines, to {verb}.");
+    if selected {
+        format!("{space} Tab reaches {action}.")
+    } else {
+        space
+    }
 }
 
 /// The selection bar's room beside its sides, above and below its controls
@@ -2570,9 +2578,11 @@ mod tests {
         }
 
         /// While the per-line controls show, the diff text says what Space
-        /// and Tab do there, in its accessible description, as the GitHub
-        /// panel's patch lines say what their keys do; in the staged area
-        /// they unstage.
+        /// does there, and what Tab does while lines are selected and the
+        /// bar it reaches is drawn, in its accessible description, as the
+        /// GitHub panel's patch lines say what their keys do; in the staged
+        /// area they unstage. While a partial write runs Space does nothing,
+        /// so the text says nothing of it, as the status bar leaves it out.
         #[gpui::test]
         async fn the_text_describes_space_and_tab_while_lines_can_be_selected(
             cx: &mut gpui::TestAppContext,
@@ -2583,10 +2593,37 @@ mod tests {
             assert_eq!(
                 node.description(),
                 Some(
+                    "Space selects the changed line at the caret, or the selected lines, to stage."
+                ),
+                "no line selected: no bar for Tab to reach"
+            );
+            shown.press(cx, "space");
+            let node = crate::views::tests::input_node(cx, &shown.editor);
+            assert_eq!(
+                node.description(),
+                Some(
                     "Space selects the changed line at the caret, or the selected lines, \
                      to stage. Tab reaches Stage."
-                )
+                ),
+                "a line selected: Tab reaches the bar's action"
             );
+            // A write that took the selection along: its lines stay
+            // selected, and Space does nothing until it ends.
+            shown.view.update(cx, |view, cx| {
+                view.partial_busy = true;
+                cx.notify();
+            });
+            crate::tags::tests::draw(cx);
+            let node = crate::views::tests::input_node(cx, &shown.editor);
+            assert_eq!(
+                node.description(),
+                None,
+                "Space does nothing during a write"
+            );
+            shown.view.update(cx, |view, cx| {
+                view.partial_busy = false;
+                cx.notify();
+            });
             fixture_git(&fixture.path().join("narrow"), &["add", "notes.txt"]);
             cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
             settle(&app, cx).await;
@@ -2597,6 +2634,15 @@ mod tests {
             });
             settle(&app, cx).await;
             let shown = Shown::at(&app, cx, SIZES[0]);
+            let node = crate::views::tests::input_node(cx, &shown.editor);
+            assert_eq!(
+                node.description(),
+                Some(
+                    "Space selects the changed line at the caret, or the selected lines, \
+                     to unstage."
+                )
+            );
+            shown.press(cx, "space");
             let node = crate::views::tests::input_node(cx, &shown.editor);
             assert_eq!(
                 node.description(),
