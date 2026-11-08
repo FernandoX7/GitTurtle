@@ -248,9 +248,38 @@ impl EmptyState {
         native_accessibility::static_text(line, self.name())
     }
 
-    /// Centered in the pane it fills, the line wrapping inside the pane's
-    /// inset and the action below it.
+    /// The title [`Self::titled`] gives, as each form draws it: 14 px
+    /// regular, read by itself as static text, `{id}-title` in tests;
+    /// `place` lays it out in the form.
+    fn title(&self, place: impl FnOnce(Stateful<Div>) -> Stateful<Div>) -> Option<AnyElement> {
+        let id = self.id;
+        self.title.clone().map(|title| {
+            native_accessibility::static_text(
+                place(
+                    div()
+                        .id("title")
+                        .debug_selector(move || format!("{id}-title"))
+                        .text_size(appearance::ui_text(TITLE_TEXT))
+                        .child(title.clone()),
+                ),
+                title,
+            )
+            .into_any_element()
+        })
+    }
+
+    /// Centered in the pane it fills, its title above its line where it
+    /// has one ([`Self::titled`]), the line wrapping inside the pane's inset
+    /// and the action below it.
     pub(crate) fn pane(self, cx: &App) -> AnyElement {
+        self.centred(cx).size_full().into_any_element()
+    }
+
+    /// [`Self::pane`]'s state for a host that sizes it: one that scrolls a
+    /// state taller than itself gives it its own height as the least, so it
+    /// centres as a pane's does where it fits and grows past the host, which
+    /// scrolls it, where it does not.
+    pub(crate) fn centred(self, cx: &App) -> Stateful<Div> {
         let id = self.id;
         let line = self.read(
             self.line(cx)
@@ -258,10 +287,15 @@ impl EmptyState {
                 .max_w(appearance::ui_size(LINE_MAX))
                 .text_center(),
         );
+        let title = self.title(|title| {
+            title
+                .w_full()
+                .max_w(appearance::ui_size(LINE_MAX))
+                .text_center()
+        });
         div()
             .id(id)
             .debug_selector(move || id.into())
-            .size_full()
             .flex()
             .flex_col()
             .items_center()
@@ -272,9 +306,20 @@ impl EmptyState {
             .px(appearance::ui_size(PANE_INSET))
             .py(appearance::ui_size(GAP / 2.))
             .gap(appearance::ui_size(GAP))
-            .child(line)
+            .child(match title {
+                // As `block` draws a title above its line.
+                Some(title) => div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_2()
+                    .child(title)
+                    .child(line)
+                    .into_any_element(),
+                None => line.into_any_element(),
+            })
             .children(self.action)
-            .into_any_element()
     }
 
     /// In a row of controls, as the Git action bar's counts are, the action
@@ -304,17 +349,7 @@ impl EmptyState {
     pub(crate) fn block(self, cx: &App) -> AnyElement {
         let id = self.id;
         let line = self.read(self.line(cx).w_full());
-        let title = self.title.clone().map(|title| {
-            native_accessibility::static_text(
-                div()
-                    .id("title")
-                    .debug_selector(move || format!("{id}-title"))
-                    .w_full()
-                    .text_size(appearance::ui_text(TITLE_TEXT))
-                    .child(title.clone()),
-                title,
-            )
-        });
+        let title = self.title(|title| title.w_full());
         div()
             .id(id)
             .debug_selector(move || id.into())

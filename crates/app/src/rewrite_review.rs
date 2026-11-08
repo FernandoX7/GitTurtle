@@ -203,6 +203,10 @@ const READING_PREVIEW: &str = "Reading preview…";
 /// below the body's view ([`SeriesBrowser::preview_read_hidden`]).
 const READING_ROW: &str = "Reading…";
 
+/// The title a failed read of a chosen file's preview keeps above the
+/// read's error in the preview's box (DESIGN.md, "Empty and edge states").
+const PREVIEW_UNAVAILABLE: &str = "Preview unavailable";
+
 /// What the preview's box says for a commit that changed no files.
 const NO_FILES: &str = "This commit has no changed files.";
 
@@ -1260,6 +1264,7 @@ impl SeriesBrowser {
     fn preview_prompt(&self, cx: &App) -> AnyElement {
         if let Some(error) = &self.preview_error {
             return crate::empty_state::EmptyState::new("series-preview-failed", error.clone())
+                .titled(Some(PREVIEW_UNAVAILABLE))
                 .pane(cx);
         }
         let line = if self.files.is_empty() && !self.pending {
@@ -4407,6 +4412,23 @@ mod tests {
         assert!(
             lies_in(said, kept),
             "the failure {said:?} is said in the preview's box {kept:?}"
+        );
+        // Under its title, as every failure keeps its title above its
+        // explanation (DESIGN.md, "Empty and edge states"): it had none.
+        let (title, line) = (
+            cx.debug_bounds("series-preview-failed-title")
+                .expect("the failure's title is drawn"),
+            rendered(cx, "series-preview-failed-line"),
+        );
+        assert!(
+            lies_in(title, kept) && title.bottom() <= line.top(),
+            "the title {title:?} lies in the box {kept:?}, above the error {line:?}"
+        );
+        assert!(
+            crate::native_accessibility::written::labels()
+                .iter()
+                .any(|(_, name)| name.as_deref() == Some("Preview unavailable")),
+            "the title reads \"Preview unavailable\""
         );
         assert!(
             cx.debug_bounds("series-preview-empty").is_none(),
