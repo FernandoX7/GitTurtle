@@ -1136,7 +1136,7 @@ impl Panel {
             .when_some(self.conversations.pagination_notice.as_ref(),|element,notice|element.child(label("github-thread-pagination-limit",notice.clone()).text_color(rgb(p.warning))))
             .child(self.part("conversations-pager", div(), cx).flex().flex_wrap().items_center().gap_2()
                 .child(self.button("github-threads-previous","Previous conversations","",false, cx).disabled(self.pending||previous.is_none()).on_click(cx.listener(move|this,_,window,cx|{if let Some(cursor)=previous.clone(){this.thread_page(cursor,window,cx);}})))
-                .child(label("github-threads-page",format!("Page {} · {} total conversations",self.conversations.cursors.len(),self.conversations.total)).text_color(rgb(p.muted)))
+                .child(super::phrases("github-threads-page",format!("Page {} · {} total conversations",self.conversations.cursors.len(),self.conversations.total)).min_w_0().text_color(rgb(p.muted)))
                 .child(self.button("github-threads-next","Next conversations","",false, cx).disabled(self.pending||next.is_none()).on_click(cx.listener(move|this,_,window,cx|this.thread_page(next.clone(),window,cx))))))).into_any_element()
     }
 }
