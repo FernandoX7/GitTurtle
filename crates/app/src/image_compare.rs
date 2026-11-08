@@ -1455,7 +1455,7 @@ impl GitTurtle {
                             "image-source-scale",
                             scale_notice,
                             note_lines,
-                            &SCALE_LINE,
+                            SCALE_NOTE,
                             width,
                             window,
                             &p,
@@ -1464,7 +1464,7 @@ impl GitTurtle {
                             "image-interaction-guidance",
                             guidance.into(),
                             note_lines,
-                            &GUIDANCE_LINE,
+                            GUIDANCE_NOTE,
                             width,
                             window,
                             &p,
@@ -1787,6 +1787,10 @@ fn side_details(index: usize, side: &worker::ImageSide) -> String {
 /// were laid out for ([`group_width`]).
 type LabelWidths<const N: usize> = std::cell::RefCell<Option<(crate::views::LineKey, [Pixels; N])>>;
 
+/// The lines a text takes, under the font and sizes, the text, its size and its room they
+/// were counted for ([`counted_lines`]).
+type LineCount = std::cell::RefCell<Option<(crate::views::LineKey, String, Pixels, Pixels, usize)>>;
+
 thread_local! {
     /// Each side caption's name, laid out.
     static BEFORE_CAPTION: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
@@ -1809,7 +1813,31 @@ thread_local! {
     /// The scale notice and the guidance, each laid out as one line.
     static SCALE_LINE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static GUIDANCE_LINE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The lines each takes by phrase and as one wrapping text.
+    static SCALE_PHRASE_LINES: LineCount = const { std::cell::RefCell::new(None) };
+    static SCALE_WRAPPED_LINES: LineCount = const { std::cell::RefCell::new(None) };
+    static GUIDANCE_PHRASE_LINES: LineCount = const { std::cell::RefCell::new(None) };
+    static GUIDANCE_WRAPPED_LINES: LineCount = const { std::cell::RefCell::new(None) };
 }
+
+/// What a comparison note keeps between the frames that draw it ([`comparison_note`]).
+#[derive(Clone, Copy)]
+struct NoteCaches {
+    line: &'static std::thread::LocalKey<crate::views::TextWidth>,
+    phrase_lines: &'static std::thread::LocalKey<LineCount>,
+    wrapped_lines: &'static std::thread::LocalKey<LineCount>,
+}
+
+const SCALE_NOTE: NoteCaches = NoteCaches {
+    line: &SCALE_LINE,
+    phrase_lines: &SCALE_PHRASE_LINES,
+    wrapped_lines: &SCALE_WRAPPED_LINES,
+};
+const GUIDANCE_NOTE: NoteCaches = NoteCaches {
+    line: &GUIDANCE_LINE,
+    phrase_lines: &GUIDANCE_PHRASE_LINES,
+    wrapped_lines: &GUIDANCE_WRAPPED_LINES,
+};
 
 /// Where a comparison's open controls stand ([`open_place`]): the room they
 /// take their one form from, and whether that is on the sides' names' line.
@@ -2886,6 +2914,36 @@ fn one_line_width(
     })
 }
 
+/// What `count` counts, the lines `text` takes at `size` in `room`, again only when they or
+/// the font change. A note that counted its lines in every frame built its phrases and
+/// measured each of their runs again whenever the comparison drew, each frame of a playback
+/// among them.
+fn counted_lines(
+    cache: &'static std::thread::LocalKey<LineCount>,
+    text: &str,
+    size: Pixels,
+    room: Pixels,
+    window: &Window,
+    count: impl FnOnce() -> usize,
+) -> usize {
+    let key = crate::views::LineKey::current(window);
+    cache.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        match &*cache {
+            Some((font, counted, at, within, lines))
+                if *font == key && counted == text && *at == size && *within == room =>
+            {
+                *lines
+            }
+            _ => {
+                let lines = count();
+                *cache = Some((key, text.to_owned(), size, room, lines));
+                lines
+            }
+        }
+    })
+}
+
 /// A muted note of the comparison, `id`, in a column `width` wide, on up to
 /// `lines` lines: whole where it fits them, wrapping inside its room, and
 /// otherwise ending in an ellipsis at a character boundary on its last line,
@@ -2895,7 +2953,7 @@ fn comparison_note(
     id: &'static str,
     text: String,
     lines: usize,
-    cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
+    caches: NoteCaches,
     width: Pixels,
     window: &Window,
     p: &crate::appearance::Palette,
@@ -2905,16 +2963,22 @@ fn comparison_note(
     }
     let size = crate::appearance::ui_text(10.);
     let room = width - window.rem_size() * 1.5;
-    let one_line = one_line_width(&text, cache, size, window) <= room;
+    let one_line = one_line_width(&text, caches.line, size, window) <= room;
     // A note of " · "-separated phrases that wraps breaks between them, as every line of
     // phrases does, where its lines hold it that way; a line of phrases cannot end in an
     // ellipsis, so one that needs more lines stays the clamped text.
     let by_phrase = !one_line
         && lines > 1
         && text.contains(" · ")
-        && crate::phrase_line_count(&text, size, room, window) <= lines;
-    let whole =
-        one_line || by_phrase || (lines > 1 && wrapped_lines(&text, size, room, window) <= lines);
+        && counted_lines(caches.phrase_lines, &text, size, room, window, || {
+            crate::phrase_line_count(&text, size, room, window)
+        }) <= lines;
+    let whole = one_line
+        || by_phrase
+        || (lines > 1
+            && counted_lines(caches.wrapped_lines, &text, size, room, window, || {
+                wrapped_lines(&text, size, room, window)
+            }) <= lines);
     let tooltip = text.clone();
     Some(
         native_accessibility::static_text(
@@ -2957,6 +3021,8 @@ pub(crate) fn text_line(size: Pixels, window: &Window) -> Pixels {
 /// The lines `text` wraps to at `size` in `room`, as its text element lays
 /// it out in the inherited interface font.
 pub(crate) fn wrapped_lines(text: &str, size: Pixels, room: Pixels, window: &Window) -> usize {
+    #[cfg(test)]
+    note_tests::WRAPPED.with(|count| count.set(count.get() + 1));
     let style = window.text_style();
     window
         .text_system()
@@ -3769,7 +3835,7 @@ mod note_tests {
                     "probe-note",
                     NOTE.to_owned(),
                     2,
-                    &GUIDANCE_LINE,
+                    GUIDANCE_NOTE,
                     self.0,
                     window,
                     &p,
@@ -3813,6 +3879,165 @@ mod note_tests {
             cx.debug_bounds("probe-note-0").is_none(),
             "a note its lines cannot hold by phrase stays the clamped text"
         );
+    }
+
+    thread_local! {
+        /// How many times this thread counted a text's lines as one wrapping text.
+        pub(super) static WRAPPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A note that wraps counts its lines once per text, size and room, by phrase or as one
+    /// wrapping text, however many frames draw it: each frame of a playback draws the
+    /// comparison, and the note built its phrases and measured their runs again in every one
+    /// (code review of FU30-D6c).
+    #[gpui::test]
+    fn a_wrapped_note_counts_its_lines_once_per_text_size_and_room(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::phrase_tests::{MEASURED, PREPARED};
+        const NOTE: &str = "Drag the divider · Before on the left, After on the right · Tab to controls for keyboard adjustment";
+        const LONGER: &str = "Drag the divider · Before on the left, After on the right · Tab to the controls for keyboard adjustment";
+        const SENTENCE: &str = "An absent or unavailable side stays empty. The available image is shown at full opacity.";
+        struct Note {
+            width: Pixels,
+            text: &'static str,
+            weight: FontWeight,
+        }
+        impl Render for Note {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let p = palette(cx);
+                let style = TextStyleRefinement {
+                    font_weight: Some(self.weight),
+                    ..Default::default()
+                };
+                let note = window.with_text_style(Some(style), |window| {
+                    comparison_note(
+                        "probe-note",
+                        self.text.to_owned(),
+                        2,
+                        GUIDANCE_NOTE,
+                        self.width,
+                        window,
+                        &p,
+                    )
+                });
+                div().w(self.width).children(note)
+            }
+        }
+        // From nothing before the window opens, which draws its first frame, and for each
+        // seed that follows another on this thread, whose counts these caches would answer.
+        PREPARED.set(0);
+        MEASURED.set(0);
+        WRAPPED.set(0);
+        GUIDANCE_PHRASE_LINES.take();
+        GUIDANCE_WRAPPED_LINES.take();
+        crate::views::tests::init_app(cx);
+        let (note, cx) = cx.add_window_view(|_, _| Note {
+            width: px(4000.),
+            text: NOTE,
+            weight: FontWeight::NORMAL,
+        });
+        let counts = || (PREPARED.get(), MEASURED.get(), WRAPPED.get());
+        assert_eq!(counts(), (0, 0, 0), "a note on one line counts nothing");
+        // A width for the share of the note's one line, at the size the window is at.
+        let share = |of: f32, cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                one_line_width(
+                    NOTE,
+                    &GUIDANCE_LINE,
+                    crate::appearance::ui_text(10.),
+                    window,
+                ) * of
+                    + window.rem_size() * 1.5
+            })
+        };
+        let draw = |change: &dyn Fn(&mut Note), frames: usize, cx: &mut VisualTestContext| {
+            note.update(cx, |note, cx| {
+                change(note);
+                cx.notify();
+            });
+            crate::width_walk::frame(cx);
+            for _ in 0..frames {
+                note.update(cx, |_, cx| cx.notify());
+                crate::width_walk::frame(cx);
+            }
+        };
+        let by_phrase = |cx: &mut VisualTestContext| cx.debug_bounds("probe-note-0").is_some();
+
+        let width = share(0.95, cx);
+        draw(&|note| note.width = width, 8, cx);
+        assert!(by_phrase(cx), "the note is laid out by phrase");
+        assert_eq!(
+            counts(),
+            (2, 2, 0),
+            "counted once and laid out once, however many frames draw it"
+        );
+
+        draw(&|note| note.width = width - px(1.), 8, cx);
+        assert!(by_phrase(cx));
+        assert_eq!(counts(), (3, 3, 0), "a new room counts it once more");
+
+        draw(&|note| note.weight = FontWeight::BOLD, 8, cx);
+        assert!(by_phrase(cx));
+        assert_eq!(counts(), (4, 4, 0), "a new font counts it once more");
+        draw(&|note| note.weight = FontWeight::NORMAL, 0, cx);
+        assert_eq!(counts(), (5, 5, 0));
+
+        // At the width it has, so the new size is the only change a frame draws.
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        draw(&|_| {}, 8, cx);
+        assert!(by_phrase(cx));
+        assert_eq!(
+            counts(),
+            (6, 7, 0),
+            "a new size counts it once more, and the line measures its runs at it"
+        );
+
+        draw(&|note| note.text = LONGER, 8, cx);
+        assert!(by_phrase(cx));
+        assert_eq!(
+            counts(),
+            (8, 9, 0),
+            "a new text is counted once and laid out once"
+        );
+
+        let narrow = share(0.25, cx);
+        draw(&|note| note.width = narrow, 8, cx);
+        assert!(!by_phrase(cx), "its lines cannot hold it by phrase");
+        assert_eq!(
+            counts(),
+            (9, 10, 1),
+            "where the phrases do not fit, it is counted as one text, once"
+        );
+
+        draw(&|note| note.text = SENTENCE, 8, cx);
+        assert_eq!(
+            counts(),
+            (9, 10, 2),
+            "a note with no phrases is counted only as one text, once"
+        );
+        // A size of its own in the key: a note's moves only with the interface's, which the
+        // rest of the key also holds, so no note draws this.
+        cx.update(|window, _| {
+            let count = |size, lines| {
+                counted_lines(
+                    &GUIDANCE_WRAPPED_LINES,
+                    SENTENCE,
+                    size,
+                    px(100.),
+                    window,
+                    || lines,
+                )
+            };
+            assert_eq!(count(px(10.), 1), 1);
+            assert_eq!(
+                count(px(10.), 2),
+                1,
+                "the same size answers what it counted"
+            );
+            assert_eq!(count(px(11.), 2), 2, "another size counts again");
+        });
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 }
 
