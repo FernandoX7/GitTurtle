@@ -727,31 +727,31 @@ impl SeriesBrowser {
     /// Mermaid file stored as a link, or whose Git LFS object the local
     /// store lacks, says so, since what it stands for could hold diagrams,
     /// and only one whose text was read says it has none. "This file has no
-    /// Mermaid diagrams." once stood for every text file without them.
+    /// Mermaid diagrams." once stood for every text file without them. It
+    /// judges the side Diagrams would draw, the one after the change or, for
+    /// a file the change removed, the one before: judged by either side, a
+    /// Mermaid file changed from a link to a regular file read as stored as
+    /// a link.
     fn no_diagrams(&self, old: &str, new: &str) -> &'static str {
         let Some(file) = self.selected_file.and_then(|index| self.files.get(index)) else {
             return NOT_DIAGRAMS;
         };
-        let mermaid = |path: &std::path::Path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| {
-                    extension.eq_ignore_ascii_case("mmd")
-                        || extension.eq_ignore_ascii_case("mermaid")
-                })
+        let (path, mode, text) = if file.new_path.is_some() {
+            (file.new_path.as_deref(), file.new_mode.as_str(), new)
+        } else {
+            (file.old_path.as_deref(), file.old_mode.as_str(), old)
         };
-        if ![file.old_path.as_deref(), file.new_path.as_deref()]
-            .into_iter()
-            .flatten()
-            .any(mermaid)
-        {
+        let mermaid = path
+            .and_then(|path| path.extension())
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("mmd") || extension.eq_ignore_ascii_case("mermaid")
+            });
+        if !mermaid {
             NOT_DIAGRAMS
-        } else if [file.old_mode.as_str(), file.new_mode.as_str()].contains(&"120000") {
+        } else if mode == "120000" {
             LINKED
-        } else if [old, new]
-            .iter()
-            .any(|text| gitturtle_preview::detect_lfs_pointer(text.as_bytes()).is_some())
-        {
+        } else if gitturtle_preview::detect_lfs_pointer(text.as_bytes()).is_some() {
             NO_LFS_OBJECT
         } else {
             NO_DIAGRAMS
@@ -5107,12 +5107,27 @@ mod tests {
     /// not in the local store, that; and a file that is not Mermaid or
     /// Markdown, what Diagrams shows. "This file has no Mermaid diagrams."
     /// stood for all three, though the link's target or the object could
-    /// hold diagrams.
+    /// hold diagrams. The reason judges the side Diagrams would draw, the
+    /// one after the change or, for a file it removed, the one before: a
+    /// Mermaid file changed from a link to a regular file once read as
+    /// stored as a link.
     #[gpui::test]
     async fn diagrams_says_why_a_file_shows_none(cx: &mut gpui_kit::TestAppContext) {
         use crate::tags::tests::{git, tagged_repository, window};
+        use std::os::unix::fs::symlink;
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
+        let diagram = "flowchart LR\n  A --> B\n";
+        symlink("notes.txt", repo.path().join("was-link.mmd")).unwrap();
+        symlink("notes.txt", repo.path().join("gone-link.mmd")).unwrap();
+        std::fs::write(repo.path().join("now-link.mmd"), diagram).unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add the sides"]);
+        std::fs::remove_file(repo.path().join("was-link.mmd")).unwrap();
+        std::fs::write(repo.path().join("was-link.mmd"), diagram).unwrap();
+        std::fs::remove_file(repo.path().join("gone-link.mmd")).unwrap();
+        std::fs::remove_file(repo.path().join("now-link.mmd")).unwrap();
+        symlink("notes.txt", repo.path().join("now-link.mmd")).unwrap();
         std::fs::write(repo.path().join("notes.txt"), "notes\n").unwrap();
         std::fs::write(repo.path().join("link.mmd"), "flowchart LR\n  A --> B\n").unwrap();
         // A Git LFS pointer whose object the local store does not hold.
@@ -5132,6 +5147,11 @@ mod tests {
             file_index(&files, "missing.mmd"),
             file_index(&files, "notes.txt"),
         );
+        let (was_link, now_link, gone_link) = (
+            file_index(&files, "was-link.mmd"),
+            file_index(&files, "now-link.mmd"),
+            file_index(&files, "gone-link.mmd"),
+        );
         // Stored as a link, whose text names its target.
         files[link].new_mode = "120000".into();
         let (app, cx) = window(cx, &repo);
@@ -5145,6 +5165,9 @@ mod tests {
                 NO_LFS_OBJECT,
             ),
             ("a text file", notes, NOT_DIAGRAMS),
+            ("a link changed to a regular file", was_link, NO_DIAGRAMS),
+            ("a regular file changed to a link", now_link, LINKED),
+            ("a link the commit removed", gone_link, LINKED),
         ] {
             choose(&browser, cx, index);
             assert!(
