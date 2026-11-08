@@ -4320,6 +4320,73 @@ mod tests {
         );
     }
 
+    /// With more than one row shown, the series list keeps the row at its
+    /// top as a text size changes its rows' height, in the frame that
+    /// changes them: at row 2 of eight, which is selected, at 13 pt in a
+    /// 1,480 × 800 window, it is still at row 2 at 18 pt. Its offset is
+    /// carried over in rows; left in pixels it read as a row nearer the top
+    /// of the taller rows, and the list moved with no key.
+    #[gpui::test]
+    async fn the_series_list_keeps_its_row_as_a_text_size_changes_its_rows(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let rows = 8;
+        let browser = listed_review(&app, cx, rows);
+        size_to(&app, cx, 13, 1480., 800.);
+        let before = cx.update(|window, _| series_row_height(window));
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.select(2, window, cx);
+                browser
+                    .rows_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(point(px(0.), -before * 2.));
+            })
+        });
+        draw(cx);
+        let from_row_2 = |shown: usize| (2..2 + shown).map(|row| (row, true)).collect::<Vec<_>>();
+        let shown = cx.update(|window, cx| rows_shown(rows, window, cx));
+        assert!(shown > 1, "the list shows several rows at 13 pt: {shown}");
+        assert_eq!(
+            rows_seen(cx, rows),
+            from_row_2(shown),
+            "the list is at row 2 at 13 pt"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = 18;
+                appearance::apply_text_sizes(18, app.settings.code_text_size, window, cx);
+                cx.notify();
+            })
+        });
+        // One frame, which no key follows.
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let after = cx.update(|window, _| series_row_height(window));
+        assert_ne!(before, after, "the text size changes a row's height");
+        let shown = cx.update(|window, cx| rows_shown(rows, window, cx));
+        assert!(shown > 1, "the list shows several rows at 18 pt: {shown}");
+        assert_eq!(
+            rows_seen(cx, rows),
+            from_row_2(shown),
+            "at 18 pt, the list keeps row 2 at its top"
+        );
+        assert_eq!(
+            browser.read_with(cx, |browser, _| browser.selected),
+            2,
+            "nothing changed the selection"
+        );
+    }
+
     /// The text modes keep their row for every preview, Diagrams among
     /// them, refused with their reason where it has no text or no Mermaid
     /// diagrams, so the preview's box keeps its place and size before a file
