@@ -10933,6 +10933,37 @@ mod tests {
     async fn reopening_passes_over_a_button_disabled_as_the_panel_closed(cx: &mut TestAppContext) {
         let (_fixture, app, panel, _pull, cx) = fixture_panel(cx).await;
         crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let next = next_pressed_to_the_last_page(&app, &panel, cx).await;
+        escape(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        let field = panel.read_with(cx, |panel, cx| panel.destination.read(cx).focus_handle(cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        assert!(
+            cx.update(|window, _| field.is_focused(window) && !next.is_focused(window)),
+            "the reopened panel puts focus on the destination field before any frame"
+        );
+        settle_panel(&app, cx).await;
+        four_frames(cx);
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "focus stays on the destination field"
+        );
+    }
+
+    /// Four frames of the window, each drawn.
+    fn four_frames(cx: &mut VisualTestContext) {
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+    }
+
+    /// Enter on Next PR page reaching the last page, with no PR open, at 13 pt in a
+    /// 1,480 × 800 window: focus stays on the now disabled Button, whose handle this returns.
+    async fn next_pressed_to_the_last_page(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        cx: &mut VisualTestContext,
+    ) -> FocusHandle {
         crate::focus_ring::sweep::interface_size(cx, 13);
         cx.simulate_resize(size(px(1480.), px(800.)));
         cx.update(|_, cx| {
@@ -10946,39 +10977,248 @@ mod tests {
             })
         });
         cx.executor().run_until_parked();
-        let frames = |cx: &mut VisualTestContext| {
-            for _ in 0..4 {
-                crate::width_walk::frame(cx);
-            }
-        };
-        frames(cx);
+        four_frames(cx);
         let next = panel
             .read_with(cx, |panel, _| panel.review.buttons.kept("github-next"))
             .expect("Next PR page is drawn");
         cx.update(|window, cx| next.focus(window, cx));
-        frames(cx);
+        four_frames(cx);
         cx.simulate_keystrokes("enter");
-        settle_panel(&app, cx).await;
-        frames(cx);
+        settle_panel(app, cx).await;
+        four_frames(cx);
         assert!(
             cx.update(|window, _| next.is_focused(window))
                 && panel.read_with(cx, |panel, _| panel.page == 2 && !panel.has_next),
             "Enter reaches the last page with focus on the now disabled Button"
         );
+        next
+    }
+
+    /// A Button disabled only by a read in flight keeps the person's place. Escape cancels the
+    /// read, so the Button is enabled again as a click on the header's Pull requests reopens the
+    /// panel, and it takes focus back, whole in every frame with its ring in the last, at 13 and
+    /// 18 pt in a 461 × 490 window: Refresh PRs, with the body where it closed, and a PR's
+    /// Refresh conversations and Next conversations. Held only where it was a Tab stop as the
+    /// panel closed, each gave focus to the section's first stop, and with no PR open the body
+    /// went back to its top.
+    #[gpui::test]
+    async fn reopening_gives_focus_back_to_a_button_a_read_disabled(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let whole = |part: Bounds<Pixels>, view: Bounds<Pixels>| {
+            part.top() - room >= view.top() - px(0.5)
+                && part.bottom() + room <= view.bottom() + px(0.5)
+        };
+        let focused = |cx: &mut VisualTestContext, id: &'static str| {
+            let focus = panel.read_with(cx, |panel, _| panel.review.buttons.kept(id));
+            cx.update(|window, _| focus.is_some_and(|focus| focus.is_focused(window)))
+        };
+        let tab_stop = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.focused(cx).is_some_and(|focus| focus.tab_stop))
+        };
+        let mut scrolled = 0;
+        for interface in [13u8, 18] {
+            for (id, part, selector) in [
+                ("github-refresh", "refresh", "github-part-refresh"),
+                (
+                    "github-threads-refresh",
+                    "conversations-header",
+                    "github-part-conversations-header",
+                ),
+                (
+                    "github-threads-next",
+                    "conversations-pager",
+                    "github-part-conversations-pager",
+                ),
+            ] {
+                let at = format!("{id} at {interface} pt in 461 × 490");
+                let open = id != "github-refresh";
+                crate::focus_ring::sweep::interface_size(cx, interface);
+                cx.simulate_resize(size(px(461.), px(490.)));
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.pull = open.then(|| pull.clone());
+                        panel.create = false;
+                        panel.review.show_list = !open;
+                        panel.review.section = Section::Overview;
+                        panel.review.connection_open = !open;
+                        panel.conversations.next_cursor =
+                            (id == "github-threads-next").then(|| "next".to_owned());
+                        panel.review.body_scroll.set_offset(point(px(0.), px(0.)));
+                        panel
+                            .conversations
+                            .list_scroll
+                            .set_offset(point(px(0.), px(0.)));
+                        panel.focus_visible_section(window, cx);
+                        cx.notify();
+                    })
+                });
+                settle_panel(&app, cx).await;
+                four_frames(cx);
+                for _ in 0..40 {
+                    if focused(cx, id) {
+                        break;
+                    }
+                    cx.simulate_keystrokes("tab");
+                    four_frames(cx);
+                }
+                assert!(focused(cx, id), "{at}: Tab reaches the Button");
+                if !open {
+                    // On as far as keeps the Button whole with its ring's room, so the body has
+                    // somewhere to go back from.
+                    let body = cx.debug_bounds("github-panel").expect("the body");
+                    let button = cx.debug_bounds(id).expect(id);
+                    let y = (scroll.offset().y - (button.top() - room - body.top()))
+                        .clamp(-scroll.max_offset().y, px(0.));
+                    scroll.set_offset(point(px(0.), y));
+                    four_frames(cx);
+                }
+                // Enter starts the read, held as a slow request is. It goes down and comes up: a
+                // dialog opened while it is down takes no Enter until it does, which the next
+                // case's press would be.
+                let read = app.read_with(cx, |app, _| app.operations.hold());
+                let keystroke = gpui::Keystroke::parse("enter").unwrap();
+                cx.simulate_event(gpui::KeyDownEvent {
+                    keystroke: keystroke.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                });
+                cx.simulate_event(gpui::KeyUpEvent { keystroke });
+                four_frames(cx);
+                assert!(
+                    panel.read_with(cx, |panel, _| panel.pending),
+                    "{at}: the read is under way"
+                );
+                assert!(
+                    focused(cx, id) && !tab_stop(cx),
+                    "{at}: the Button holds focus, disabled and no Tab stop"
+                );
+                let closed = scroll.offset().y;
+                if !open && closed < px(0.) {
+                    scrolled += 1;
+                }
+                escape(cx);
+                assert!(
+                    !cx.update(|window, cx| window.has_active_dialog(cx)),
+                    "{at}: Escape closes the panel"
+                );
+                assert!(
+                    panel.read_with(cx, |panel, _| !panel.pending && panel.review.held.is_some()),
+                    "{at}: closing cancels the read and holds the Button"
+                );
+                // The cancelled read ends before the click, which the header refuses until then.
+                drop(read);
+                settle_panel(&app, cx).await;
+                four_frames(cx);
+                review::BODY_FRAMES.set(Some(Vec::new()));
+                crate::copy_feedback::tests::click(cx, "pull-requests");
+                settle_panel(&app, cx).await;
+                four_frames(cx);
+                let drawn = review::BODY_FRAMES.take().expect("watched");
+                assert!(
+                    cx.update(|window, cx| window.has_active_dialog(cx)),
+                    "{at}: the header's Pull requests opens the panel"
+                );
+                assert!(
+                    focused(cx, id) && tab_stop(cx),
+                    "{at}: the Button, enabled again, takes focus back as a Tab stop"
+                );
+                assert!(
+                    drawn.len() >= 2,
+                    "{at}: the reopened panel drew {} frames",
+                    drawn.len()
+                );
+                for (index, frame) in drawn.iter().enumerate() {
+                    let (_, shown) = frame
+                        .parts
+                        .iter()
+                        .find(|(name, _)| name == part)
+                        .unwrap_or_else(|| panic!("{at}: frame {index} draws {part}: {frame:?}"));
+                    assert!(
+                        whole(*shown, frame.view),
+                        "{at}: frame {index} draws {part} {shown:?} whole in {:?}",
+                        frame.view
+                    );
+                }
+                if !open {
+                    assert_eq!(
+                        scroll.offset().y,
+                        closed,
+                        "{at}: the body stays where it closed"
+                    );
+                }
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let shown = cx.debug_bounds(selector).expect(selector);
+                let ring = crate::focus_ring::painted_outlines(cx, accent)
+                    .into_iter()
+                    .any(|ring| ring.whole && shown.contains(&ring.bounds.center()));
+                assert!(
+                    whole(shown, body) && ring,
+                    "{at}: {part} {shown:?} is whole in the body {body:?} with the Button's ring"
+                );
+            }
+        }
+        assert_eq!(scrolled, 2, "Refresh PRs closes with the body scrolled");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Next PR page on the last page, with a read in flight as Escape closes the panel: the read
+    /// disabled it too, so closing holds it, but the last page keeps it disabled as the panel
+    /// reopens. The frames that find it drawn find no Tab stop, so focus goes to the destination
+    /// field, as it does with no read in flight
+    /// (`reopening_passes_over_a_button_disabled_as_the_panel_closed`).
+    #[gpui::test]
+    async fn reopening_passes_over_a_held_button_the_last_page_keeps_disabled(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, _pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let next = next_pressed_to_the_last_page(&app, &panel, cx).await;
+        // A read from elsewhere, as a click on Refresh PRs starts, which leaves focus where it is.
+        let read = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.refresh(2, window, cx)));
+        four_frames(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending)
+                && cx.update(|window, _| next.is_focused(window)),
+            "the read is under way with focus on Next PR page"
+        );
         escape(cx);
         assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(
+            panel.read_with(cx, |panel, _| panel.review.held.is_some()),
+            "closing during the read holds the Button"
+        );
+        // The cancelled read ends before the click, which the header refuses until then.
+        drop(read);
+        settle_panel(&app, cx).await;
+        four_frames(cx);
         let field = panel.read_with(cx, |panel, cx| panel.destination.read(cx).focus_handle(cx));
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        crate::copy_feedback::tests::click(cx, "pull-requests");
+        settle_panel(&app, cx).await;
+        four_frames(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the header's Pull requests opens the panel"
+        );
         assert!(
             cx.update(|window, _| field.is_focused(window) && !next.is_focused(window)),
-            "the reopened panel puts focus on the destination field before any frame"
+            "the Button, still disabled, gives way to the destination field"
         );
-        settle_panel(&app, cx).await;
-        frames(cx);
-        assert!(
-            cx.update(|window, _| field.is_focused(window)),
-            "focus stays on the destination field"
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.review.body_scroll.offset().y),
+            px(0.),
+            "the destination field shows the body from its top"
         );
+        let shown = cx.debug_bounds("github-destination").expect("the field");
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let ring = crate::focus_ring::painted_outlines(cx, accent)
+            .into_iter()
+            .any(|ring| ring.whole && ring.bounds.contains(&shown.center()));
+        assert!(ring, "the field {shown:?} draws its ring whole");
     }
 
     /// Files' patch, whole in a 461 × 490 window at 13 pt as Escape closes the panel and so

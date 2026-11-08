@@ -637,11 +637,12 @@ impl Reopening {
     /// For the body's `on_children_prepainted`, once its parts have prepainted and it has
     /// recorded what it showed ([`record_shown`]): moves the reopened focus on. Held, once a
     /// frame has found the control drawn, or once the frames that would have found it have
-    /// passed, focus stays where this frame shows it inside the view and is revealed whole in
-    /// the next frame, or otherwise goes to the shown section's first stop by `fallback`,
-    /// revealed whole in the frame after that; the reveals recorded in `revealed` are
-    /// forgotten, so they run again. Revealing, the phase ends with the frame that finds focus
-    /// drawn, whose parts have revealed it.
+    /// passed, focus stays where this frame shows it inside the view as a Tab stop and is
+    /// revealed whole in the next frame, or otherwise goes to the shown section's first stop by
+    /// `fallback`, revealed whole in the frame after that: a Button held through a read that
+    /// this frame still draws disabled, as Next PR page is on the last page, is no Tab stop.
+    /// The reveals recorded in `revealed` are forgotten, so they run again. Revealing, the
+    /// phase ends with the frame that finds focus drawn, whose parts have revealed it.
     pub(super) fn settle(
         &self,
         scroll: &ScrollHandle,
@@ -654,7 +655,8 @@ impl Reopening {
             Reopen::Settled => {}
             Reopen::Held(frames) => {
                 if focus_in_body(window) || frames + 1 >= Self::FRAMES {
-                    let shown = self.shows_focus(scroll, window);
+                    let shown = self.shows_focus(scroll, window)
+                        && window.focused(cx).is_some_and(|focus| focus.tab_stop);
                     self.phase.set(Reopen::Reveal(0));
                     self.part.take();
                     for revealed in revealed {
@@ -2434,7 +2436,10 @@ impl Panel {
     /// shown section's first stop: the confirmation's controls, which reopening drops, where
     /// focus sat on what no frame drew until the fallback moved it two frames later; and a
     /// Button disabled as the panel closes, no Tab stop, such as Next PR page on the last page,
-    /// which the reopen once focused.
+    /// which the reopen once focused. A read in flight disables a Button only until closing
+    /// cancels it, so with one under way a control that is no Tab stop is held all the same,
+    /// and the reopen keeps the person's place on Refresh PRs, Refresh conversations or Next
+    /// conversations; one the read did not alone disable fails [`Reopening::settle`]'s check.
     pub(super) fn hold_closing_focus(&mut self, window: &Window, cx: &App) {
         let shown = self
             .review
@@ -2442,7 +2447,9 @@ impl Panel {
             .shows_focus(&self.review.body_scroll, window);
         self.review.held = window
             .focused(cx)
-            .filter(|focus| shown && focus.tab_stop && !self.confirmation_holds(focus))
+            .filter(|focus| {
+                shown && (focus.tab_stop || self.pending) && !self.confirmation_holds(focus)
+            })
             .map(|focus| focus.downgrade());
         // The innermost part on the focus path of the frame the window last drew, the panel's.
         self.review.held_part = self.review.held.as_ref().and_then(|_| {
