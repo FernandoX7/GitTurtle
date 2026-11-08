@@ -721,9 +721,13 @@ mod tests {
 
     /// The travelling copy of a row in flight is no Tab stop: Tab from the
     /// list through the window's stops while notes.txt's row travels to
-    /// Staged never focuses inside the copy's bounds, and focus never rests
-    /// on nothing. The copy's Stage, keeping the kit's own handle, was a
-    /// stop, which took focus and lost it as the row landed.
+    /// Staged, halfway through its flight, where the copy shows most of its
+    /// height between beta's row and the Unstaged heading, never focuses
+    /// inside the copy: focus in the list is on the list itself or on a
+    /// handle the list keeps for its rows' controls, no ring is drawn inside
+    /// the copy's bounds, and focus never rests on nothing. The copy's
+    /// Stage, keeping the kit's own handle, was a stop, which took focus and
+    /// lost it as the row landed.
     #[gpui::test]
     async fn tab_during_a_flight_never_focuses_inside_the_travelling_row(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working(cx, false).await;
@@ -746,8 +750,20 @@ mod tests {
         rows_arrived(&app, cx).await;
         draw(cx);
         // [Staged 3, alpha, beta, notes, Unstaged 0]: notes.txt travels to
-        // row 3 on the test clock, which stands still below.
+        // row 3 on the test clock, which stands still below once the copy
+        // has come halfway. In its first frame it lay wholly beneath the
+        // Unstaged heading, which took its place, and drew nothing.
         assert_eq!(flying(&app, cx), Some(3));
+        advance(cx, 75);
+        let beta = row(cx, 2);
+        let copy = row(cx, 3);
+        let scale = cx.update(|window, _| window.scale_factor());
+        assert!(
+            row_shown(cx, copy) > 0.8 * f32::from(copy.size.height) * scale
+                && copy.top() >= beta.bottom() - px(0.5),
+            "halfway, the copy {copy:?} shows most of its height below beta {beta:?}: {}",
+            row_shown(cx, copy)
+        );
         let accent: Hsla = cx.read(|cx| rgb(crate::appearance::palette(cx).accent).into());
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
@@ -771,6 +787,18 @@ mod tests {
                 point(copy.left() - px(4.), copy.top() - px(4.)),
                 point(copy.right() + px(4.), copy.bottom() + px(4.)),
             );
+            let (in_list, kept) = cx.update(|window, cx| {
+                let app = app.read(cx);
+                (
+                    app.file_focus.contains_focused(window, cx),
+                    app.file_focus.is_focused(window) || app.row_control_focused(window, cx),
+                )
+            });
+            if in_list && !kept {
+                failures.push(format!(
+                    "Tab {step}: focus inside the travelling row, on a handle the list keeps for none of its rows"
+                ));
+            }
             let rings = crate::focus_ring::painted_outlines(cx, accent);
             if rings.is_empty() {
                 failures.push(format!("Tab {step}: no ring"));
@@ -1448,12 +1476,14 @@ mod tests {
     }
 
     /// How [`write_frames`] presses a row's Stage or Unstage.
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     enum Press {
         /// A click on it.
         Click,
         /// Enter, the control holding focus.
         Enter,
+        /// Space, the control holding focus.
+        Space,
     }
 
     /// Presses the Stage or Unstage control of `name`'s row in `area` as
@@ -1461,13 +1491,16 @@ mod tests {
     /// a step can ask for another: the press, the write's outcome, its
     /// status read, the rows that read produces, each 16 ms of the row's
     /// flight; then the same for a quiet read of the same status, as the
-    /// local watcher's after a write.
+    /// local watcher's after a write. `as_it_ends` runs once the write has
+    /// run, before its reply lands, as a change made outside the app then
+    /// would.
     async fn write_frames(
         app: &Entity<GitTurtle>,
         cx: &mut VisualTestContext,
         name: &str,
         area: ChangeArea,
         press: Press,
+        as_it_ends: impl FnOnce(),
         frames: &mut Vec<Frame>,
     ) {
         let what = format!("{name} from {area:?}");
@@ -1476,22 +1509,31 @@ mod tests {
         let control = cx.debug_bounds(selector).expect(selector);
         // The rows wait for the frames before them to be drawn.
         let mut held = Some(app.update(cx, |app, _| app.file_paths.executor().hold()));
-        match press {
-            Press::Click => cx.simulate_click(control.center(), Modifiers::default()),
-            Press::Enter => {
-                let enter = gpui::Keystroke::parse("enter").unwrap();
-                cx.simulate_event(gpui::KeyDownEvent {
-                    keystroke: enter.clone(),
-                    is_held: false,
-                    prefer_character_input: false,
-                });
-                cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+        let key = match press {
+            Press::Click => {
+                cx.simulate_click(control.center(), Modifiers::default());
+                None
             }
+            Press::Enter => Some("enter"),
+            Press::Space => Some("space"),
+        };
+        if let Some(key) = key {
+            let key = gpui::Keystroke::parse(key).unwrap();
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: key.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(gpui::KeyUpEvent { keystroke: key });
         }
         one_frame(app, cx, frames, format!("{what}: the press"));
         let write = app
             .update(cx, |app, _| app.operation_task.take())
             .expect("the write");
+        // The write runs on the operation executor's thread, and its reply
+        // lands only as its task is awaited below.
+        app.read_with(cx, |app, _| app.operations.drain());
+        as_it_ends();
         write.await;
         for read in ["its read", "a quiet read"] {
             if read == "a quiet read" {
@@ -1575,7 +1617,7 @@ mod tests {
             for (name, area) in [("delta.txt", unstaged), ("alpha.txt", staged)] {
                 let from = frames.len();
                 app.update(cx, |app, _| app.working_probe.line.set(ProbeLine::Once));
-                write_frames(&app, cx, name, area, Press::Click, &mut frames).await;
+                write_frames(&app, cx, name, area, Press::Click, || (), &mut frames).await;
                 frames.extend(recorded(&app, cx, &format!("after {name}")));
                 let lines = frames[from..].iter().filter(|frame| frame.line).count();
                 assert_eq!(lines, 1, "{text} pt: {name}'s write draws the line once");
@@ -1608,34 +1650,47 @@ mod tests {
                 moved.join("; ")
             );
             // Back as it was for the next size.
-            write_frames(&app, cx, "delta.txt", staged, Press::Click, &mut Vec::new()).await;
+            write_frames(
+                &app,
+                cx,
+                "delta.txt",
+                staged,
+                Press::Click,
+                || (),
+                &mut Vec::new(),
+            )
+            .await;
             write_frames(
                 &app,
                 cx,
                 "alpha.txt",
                 unstaged,
                 Press::Click,
+                || (),
                 &mut Vec::new(),
             )
             .await;
         }
     }
 
-    /// Enter on a row's Stage draws a focus ring in every frame the window
-    /// draws from the press through the row's departure, its flight and the
-    /// quiet read after it, as no Tab stop leaves focus on an element the
-    /// frame does not draw (DESIGN.md, "Keyboard focus"): the Stage's own
-    /// while its row is drawn, then the list's edge once the rows without it
-    /// land. Handed to the list in the deferred work of the frame that first
-    /// drew those rows, focus lay for that frame on a handle no element drew,
-    /// and it drew no ring.
-    #[gpui::test]
-    async fn a_stage_from_the_keyboard_draws_a_ring_in_every_frame(cx: &mut TestAppContext) {
-        let (_fixture, app, cx) = six_files(cx).await;
+    /// In [`six_files`]' window, [Staged 2, alpha, beta, Unstaged 4, delta,
+    /// epsilon, gamma, zeta], Tabs from the list onto delta's Stage and
+    /// presses it with `press`, recording every frame the window draws from
+    /// the press through the write's reads, the row's flight and the quiet
+    /// read after them ([`write_frames`], which runs `as_it_ends` as the
+    /// write ends), and checks that each of them draws a focus ring, as no
+    /// Tab stop leaves focus on an element the frame does not draw
+    /// (DESIGN.md, "Keyboard focus"): the Stage's own while its row is
+    /// drawn, then the list's edge once rows without it land, the list
+    /// holding focus.
+    async fn a_keyboard_stage_rings_every_frame(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        press: Press,
+        as_it_ends: impl FnOnce(),
+    ) {
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
         draw(cx);
-        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]:
-        // Tab from the list onto delta's Stage.
         let accent: Hsla = cx.read(|cx| rgb(crate::appearance::palette(cx).accent).into());
         let stage = cx.debug_bounds("working-stage-4").expect("delta's Stage");
         let ringed = |cx: &mut VisualTestContext| {
@@ -1660,21 +1715,22 @@ mod tests {
                 break;
             }
         }
-        assert!(ringed(cx), "Tab reaches delta's Stage");
+        assert!(ringed(cx), "{press:?}: Tab reaches delta's Stage");
         app.update(cx, |app, _| {
             app.working_probe.line.set(workspace::ProbeLine::Watch)
         });
         let mut frames = Vec::new();
         write_frames(
-            &app,
+            app,
             cx,
             "delta.txt",
             ChangeArea::Unstaged,
-            Press::Enter,
+            press,
+            as_it_ends,
             &mut frames,
         )
         .await;
-        frames.extend(recorded(&app, cx, "after delta.txt"));
+        frames.extend(recorded(app, cx, "after delta.txt"));
         app.update(cx, |app, _| {
             app.working_probe.line.set(workspace::ProbeLine::Off)
         });
@@ -1685,22 +1741,98 @@ mod tests {
             .collect();
         assert!(
             ringless.is_empty(),
-            "{} frames; drawn with no ring: {ringless:#?}",
+            "{press:?}: {} frames; drawn with no ring: {ringless:#?}",
             frames.len()
         );
         assert_eq!(
             frames.first().and_then(|frame| frame.ring),
             Some("a row's control"),
-            "the press's frame rings the Stage"
+            "{press:?}: the press's frame rings the Stage"
         );
         assert_eq!(
             frames.last().and_then(|frame| frame.ring),
             Some("the list's edge"),
-            "the last frame rings the list"
+            "{press:?}: the last frame rings the list"
         );
         assert!(
             cx.update(|window, cx| app.read(cx).file_focus.is_focused(window)),
-            "the list holds focus"
+            "{press:?}: the list holds focus"
+        );
+    }
+
+    /// Enter or Space on a row's Stage draws a focus ring in every frame
+    /// ([`a_keyboard_stage_rings_every_frame`]). Handed to the list in the
+    /// deferred work of the frame that first drew the rows without delta's
+    /// Unstaged row, focus lay for that frame on a handle no element drew,
+    /// and it drew no ring.
+    #[gpui::test]
+    async fn a_stage_from_the_keyboard_draws_a_ring_in_every_frame(cx: &mut TestAppContext) {
+        for press in [Press::Enter, Press::Space] {
+            let (_fixture, app, cx) = six_files(cx).await;
+            a_keyboard_stage_rings_every_frame(&app, cx, press, || ()).await;
+            // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma,
+            // zeta]: the press staged delta alone.
+            assert_eq!(
+                app.read_with(cx, |app, _| app.working_paths.staged_count),
+                3,
+                "{press:?} stages delta"
+            );
+        }
+    }
+
+    /// A Stage from the keyboard whose status read fails, the index made
+    /// unreadable as the write ends, draws a ring in every frame too: the
+    /// failed read takes every row away and Changes says it is unavailable,
+    /// and focus goes to the list as the rows go, which draws its ring in the
+    /// next frame. Left to the list's render, that frame drew no ring.
+    #[gpui::test]
+    async fn a_keyboard_stage_whose_status_read_fails_draws_a_ring_in_every_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = six_files(cx).await;
+        let index = fixture.path().join("narrow").join(".git").join("index");
+        a_keyboard_stage_rings_every_frame(&app, cx, Press::Enter, || {
+            std::fs::write(&index, b"not an index").unwrap()
+        })
+        .await;
+        assert!(
+            app.read_with(cx, |app, _| app.work_status.is_none()
+                && app.working_rows.is_empty()),
+            "the status read failed"
+        );
+        assert!(
+            cx.debug_bounds("working-unavailable").is_some(),
+            "Changes says it is unavailable"
+        );
+    }
+
+    /// A Stage from the keyboard whose new rows cannot be prepared, the path
+    /// filter holding a query longer than it takes, draws a ring in every
+    /// frame too: the filter's error takes every row away, and focus goes to
+    /// the list as the rows go. Left to the list's render, the frame that
+    /// first drew the error drew no ring.
+    #[gpui::test]
+    async fn a_keyboard_stage_whose_rows_fail_draws_a_ring_in_every_frame(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        // Set without filtering, as a query typed and not yet prepared: the
+        // rows the write's read asks for meet it.
+        let query = "x".repeat(crate::path_filter::MAX_QUERY_BYTES + 1);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.working_filter
+                    .update(cx, |input, cx| input.set_value(&query, window, cx))
+            })
+        });
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 8);
+        a_keyboard_stage_rings_every_frame(&app, cx, Press::Enter, || ()).await;
+        assert!(
+            app.read_with(cx, |app, _| app.working_paths.error.is_some()
+                && app.working_rows.is_empty()),
+            "the rows' preparation failed"
+        );
+        assert!(
+            cx.debug_bounds("working-filter-error").is_some(),
+            "the filter's error is drawn"
         );
     }
 

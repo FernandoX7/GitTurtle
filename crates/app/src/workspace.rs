@@ -54,12 +54,13 @@ pub(crate) struct WorkingInspectorLayout {
 /// as its row leaves the list, as a Stage's file moves to Staged, is given
 /// up too, and focus goes to the list itself: kept, it went to the row's
 /// Stage when a refresh brought the row back, which took the ring, and
-/// Enter staged the file again. Rows that land from the path filter hand
-/// that focus on before the frame that draws them
-/// (`GitTurtle::release_departed_row_control`); the list's render hands it
-/// on in that frame's deferred work only where the rows go otherwise, as
-/// after a failed status read or a tab's rows replaced, and that one frame
-/// draws no ring.
+/// Enter staged the file again. Rows that land from the path filter, and a
+/// failed status read or a failed preparation of the rows that takes every
+/// row away, hand that focus on before the frame that draws the list without
+/// that row (`GitTurtle::release_departed_row_control`); the list's render
+/// hands it on in that frame's deferred work only where the rows go
+/// otherwise, as a tab's rows replaced as another repository opens, and that
+/// one frame draws no ring.
 #[derive(Clone, Default)]
 pub(crate) struct RowControls(Rc<RefCell<RowControlsState>>);
 
@@ -197,6 +198,16 @@ impl RowControls {
             .handles
             .values()
             .any(|kept| kept.focus.is_focused(window) && !listed(&kept.row, kept.position))
+    }
+
+    /// Whether one of these handles holds focus.
+    #[cfg(test)]
+    fn hold_focus(&self, window: &Window) -> bool {
+        self.0
+            .borrow()
+            .handles
+            .values()
+            .any(|kept| kept.focus.is_focused(window))
     }
 }
 
@@ -2572,7 +2583,7 @@ impl GitTurtle {
                         this.work_status = None;
                         this.working_paths.reset();
                         this.integration_state = None;
-                        this.working_rows.clear();
+                        this.clear_working_rows(window, cx);
                         this.follow_working_menu(window, cx);
                         this.working_travel = Default::default();
                         this.working_selected = None;
@@ -3147,6 +3158,18 @@ impl GitTurtle {
         !self.file_focus.is_focused(window) && self.file_focus.contains_focused(window, cx)
     }
 
+    /// Whether a handle the Working list keeps for its rows' controls holds
+    /// focus (`RowControls`), as no control of a row's travelling copy can.
+    #[cfg(test)]
+    pub(super) fn row_control_focused(&self, window: &Window, cx: &App) -> bool {
+        let layout = self.working_layout.take();
+        let focused = layout
+            .as_ref()
+            .is_some_and(|layout| layout.read(cx).row_controls.hold_focus(window));
+        self.working_layout.set(layout);
+        focused
+    }
+
     /// Whether the shown rows still list the row a row control stands in
     /// (`RowControls`): a heading's area, or a file's path in its area. The
     /// row at `drawn`, where the list last drew it, is asked first, and the
@@ -3171,11 +3194,17 @@ impl GitTurtle {
     /// Gives focus to the list itself where a row control holds it whose row
     /// the shown rows no longer list, as the rows that took that row away
     /// land, as a row's Stage after Enter or Space sends its file to the
-    /// other group: the frame that first draws those rows then draws the
-    /// list's ring. Left to that frame's render (`RowControls::begin`), the
-    /// hand-off waited for its deferred work, and the frame was drawn with
-    /// focus on a handle no element drew, with no ring.
+    /// other group, or as a failed status read or a failed preparation of
+    /// the rows takes every row away (`clear_working_rows`): the frame that
+    /// first draws the list without that row then draws the list's ring.
+    /// Left to that frame's render (`RowControls::begin`), the hand-off
+    /// waited for its deferred work, and the frame was drawn with focus on a
+    /// handle no element drew, with no ring. Only Changes draws those
+    /// controls and that list.
     pub(super) fn release_departed_row_control(&self, window: &mut Window, cx: &mut App) {
+        if self.mode != WorkspaceMode::Working {
+            return;
+        }
         let Some(layout) = self.working_layout.take() else {
             return;
         };

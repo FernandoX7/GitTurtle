@@ -33680,6 +33680,143 @@ pub(crate) mod tests {
         );
     }
 
+    /// A row's Stage whose file then leaves Working Changes gives focus back
+    /// to the list too, and the cursor takes the row that took its place: at
+    /// 13 pt in a 1480 × 973 window, notes.txt staged and then written back
+    /// to its committed text, so it stands in Staged and in Unstaged, with
+    /// omega.txt untracked after it, and the cursor on its Unstaged row, Tab
+    /// from the list onto that row's Stage and Enter stages it, which leaves
+    /// nothing of it to commit or stage: both its rows leave the list, focus
+    /// returns to the list, which draws its ring, and the cursor goes to
+    /// omega.txt, the row that took its place among Unstaged (DESIGN.md,
+    /// "Keyboard focus").
+    #[gpui::test]
+    async fn a_stage_whose_file_leaves_working_changes_gives_the_cursor_to_its_neighbour(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = working_window(cx).await;
+        let root = fixture.path().join("narrow");
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        let committed = fixture_git_output(&root, &["show", "HEAD:notes.txt"]);
+        assert!(committed.status.success(), "notes.txt is committed");
+        fixture_git(&root, &["add", "notes.txt"]);
+        std::fs::write(root.join("notes.txt"), &committed.stdout).unwrap();
+        std::fs::write(root.join("omega.txt"), "omega\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        let row_of = |cx: &mut VisualTestContext, name: &str, group| {
+            app.read_with(cx, |app, _| {
+                let status = app.shown_working_status().expect("a status");
+                app.working_rows
+                    .iter()
+                    .enumerate()
+                    .find_map(|(at, row)| match row {
+                        crate::workspace::WorkingRow::File(index, area)
+                            if *area == group
+                                && status.entries[*index].path == std::path::Path::new(name) =>
+                        {
+                            Some((at, *index))
+                        }
+                        _ => None,
+                    })
+            })
+        };
+        let unstaged = gitturtle_core::ChangeArea::Unstaged;
+        // [Staged 3, alpha, beta, notes, Unstaged 2, notes, omega]
+        assert!(
+            row_of(cx, "notes.txt", gitturtle_core::ChangeArea::Staged).is_some(),
+            "notes.txt among Staged"
+        );
+        let (notes, notes_index) =
+            row_of(cx, "notes.txt", unstaged).expect("notes.txt among Unstaged");
+        assert!(
+            row_of(cx, "omega.txt", unstaged).is_some(),
+            "omega.txt among Unstaged"
+        );
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let ringed = |cx: &mut VisualTestContext, position: usize| {
+            let selector: &'static str = format!("working-stage-{position}").leak();
+            cx.debug_bounds(selector).is_some_and(|stage| {
+                crate::focus_ring::painted_outlines(cx, accent)
+                    .iter()
+                    .any(|ring| {
+                        ring.bounds.intersects(&stage)
+                            && (ring.bounds.size.width - stage.size.width).abs() <= px(10.)
+                    })
+            })
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.choose_working_selection(notes_index, unstaged, false, false, window, cx);
+                window.focus(&app.file_focus, cx);
+                app.focus_ring.mark(window);
+            })
+        });
+        settle(&app, cx).await;
+        draw(cx);
+        for _ in 0..8 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            if ringed(cx, notes) {
+                break;
+            }
+        }
+        assert!(ringed(cx, notes), "Tab reaches notes.txt's Unstaged Stage");
+        let enter = gpui::Keystroke::parse("enter").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: enter.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("Enter runs the Stage");
+        write.await;
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        // [Staged 2, alpha, beta, Unstaged 1, omega]
+        assert!(
+            app.read_with(cx, |app, _| app
+                .work_status
+                .as_ref()
+                .expect("a status")
+                .entries
+                .iter()
+                .all(|entry| entry.path != std::path::Path::new("notes.txt"))),
+            "notes.txt left Working Changes"
+        );
+        assert!(
+            cx.update(|window, cx| app.read(cx).file_focus.is_focused(window)),
+            "focus returned to the list"
+        );
+        let pane = cx.debug_bounds("working-pane").expect("the list");
+        let list_ring = crate::focus_ring::painted_outlines(cx, accent)
+            .into_iter()
+            .find(|outline| {
+                (outline.bounds.left() - pane.left()).abs() < px(0.5)
+                    && (outline.bounds.right() - pane.right()).abs() < px(0.5)
+                    && (outline.bounds.top() - pane.top()).abs() < px(0.5)
+            });
+        assert!(
+            list_ring.as_ref().is_some_and(|ring| ring.whole),
+            "the list's ring on {pane:?}: {list_ring:?}"
+        );
+        let (_, omega) = row_of(cx, "omega.txt", unstaged).expect("omega.txt stays");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.shown_working_cursor()),
+            Some((omega, unstaged)),
+            "the cursor on omega.txt, the row that took notes.txt's place"
+        );
+    }
+
     /// The short Working body's track lies over the list's rows and its
     /// focus ring, so it paints no fill and no edge there: at 13 and 18 pt in
     /// a 461 × 490 window, with the list focused from the keyboard, nothing

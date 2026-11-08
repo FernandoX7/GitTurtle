@@ -496,10 +496,14 @@ impl GitTurtle {
     }
 
     /// No rows to show: the status is gone, or the filter failed and its
-    /// error replaces the list.
-    fn clear_working_rows(&mut self) {
+    /// error replaces the list. A row control holding focus leaves with its
+    /// row, and focus goes to the list as the rows go, so the frame that
+    /// first draws the list without them draws its ring
+    /// ([`Self::release_departed_row_control`]).
+    pub(super) fn clear_working_rows(&mut self, window: &mut Window, cx: &mut App) {
         self.working_rows.clear();
         self.working_paths.retained = None;
+        self.release_departed_row_control(window, cx);
     }
 
     /// The filter is preparing the first rows, with no earlier result to
@@ -761,7 +765,7 @@ impl GitTurtle {
         self.interrupt_working_travel();
         let departure = self.working_departure();
         let Some(status) = self.work_status.clone() else {
-            self.clear_working_rows();
+            self.clear_working_rows(window, cx);
             self.follow_working_menu(window, cx);
             cx.notify();
             return;
@@ -851,8 +855,8 @@ impl GitTurtle {
                         this.rows_moved_under_pointer(window, cx);
                         this.land_working_row(landing, cx);
                     }
-                    Ok(Err(error)) => { this.working_paths.error = Some(error.to_string()); this.clear_working_rows(); this.working_selection.clear(); this.land_working_row(None, cx); }
-                    Err(_) => { this.working_paths.error = Some("Path filtering stopped. Edit or clear the query to retry.".into()); this.clear_working_rows(); this.working_selection.clear(); this.land_working_row(None, cx); }
+                    Ok(Err(error)) => { this.working_paths.error = Some(error.to_string()); this.clear_working_rows(window, cx); this.working_selection.clear(); this.land_working_row(None, cx); }
+                    Err(_) => { this.working_paths.error = Some("Path filtering stopped. Edit or clear the query to retry.".into()); this.clear_working_rows(window, cx); this.working_selection.clear(); this.land_working_row(None, cx); }
                 }
                 this.follow_working_menu(window, cx);
                 cx.notify();
