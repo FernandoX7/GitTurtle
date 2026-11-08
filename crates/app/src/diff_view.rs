@@ -805,11 +805,24 @@ impl DiffView {
             .get()
             .map_or(px(0.), |painted| state.scroll_offset().y - painted);
         let top = bounds.origin.y - input.origin.y + shift;
-        let reach = (shift.abs() / line_height).ceil() as usize;
+        // The rows the text shows at that offset: the ones it last showed,
+        // moved by the rows it has scrolled since, a part of a row taking
+        // one more. However far a scrollbar drag or a jump moved the text,
+        // only the viewport's rows are built; the range once widened on both
+        // sides by the whole jump, 40,000 checkboxes for 20,000 rows.
+        let moved = -shift / line_height;
         let rows = partial.rows.len();
+        let first = visible
+            .start
+            .saturating_add_signed(moved.floor() as isize)
+            .min(rows);
+        let end = visible
+            .end
+            .saturating_add_signed(moved.ceil() as isize)
+            .min(rows);
         let action = self.action();
         let mut elements = Vec::new();
-        for row in visible.start.saturating_sub(reach).min(rows)..(visible.end + reach).min(rows) {
+        for row in first..end {
             let y = top + line_height * row as f32;
             match &partial.rows[row] {
                 PartialRow::None => {}
@@ -2618,6 +2631,62 @@ mod tests {
                 shown.view.update(cx, |_, cx| cx.notify());
                 crate::tags::tests::draw(cx);
                 assert_eq!(form(cx), settled, "{at}: no later frame changes the bar");
+            }
+        }
+
+        /// A jump of the text's scroll, as a scrollbar drag makes, builds
+        /// the checkboxes of the rows it shows and no others, in the frame
+        /// that draws it, each on its row: the range they are built over was
+        /// widened on both sides by the whole jump, so a jump of 20,000 rows
+        /// built up to 40,000 of them in that frame.
+        #[gpui::test]
+        async fn a_long_scroll_jump_builds_the_checkboxes_of_the_rows_it_shows(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = with_added(cx, 600).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let (height, text) = shown.text(cx);
+                let first = shown.first();
+                for row in [first + 500, first] {
+                    painted_rows::watch();
+                    shown.editor.update(cx, |state, cx| {
+                        let sideways = state.scroll_offset().x;
+                        state.set_scroll_offset(point(sideways, -height * row as f32), cx);
+                    });
+                    crate::tags::tests::draw(cx);
+                    let frames = painted_rows::take_frames();
+                    painted_rows::stop();
+                    let frame = frames
+                        .iter()
+                        .find(|frame| frame.editor == shown.editor.entity_id())
+                        .unwrap_or_else(|| panic!("{at}: a frame draws the jump"));
+                    let top = frame.top.expect("the text is painted");
+                    let bound = (text.size.height / height).ceil() as usize + 2;
+                    assert!(
+                        frame.cells.len() <= bound,
+                        "{at}: the jump to row {row} builds {} checkboxes for a text \
+                         of at most {bound} rows",
+                        frame.cells.len()
+                    );
+                    let shows = ((frame.text.top() - top) / height).floor() as usize
+                        ..((frame.text.bottom() - top) / height).ceil() as usize;
+                    for row in shows.filter(|row| {
+                        matches!(shown.rows.get(*row), Some(PartialRow::Change { .. }))
+                    }) {
+                        let (_, cell) = frame
+                            .cells
+                            .iter()
+                            .find(|(drawn, _)| *drawn == row)
+                            .unwrap_or_else(|| panic!("{at}: row {row}'s checkbox is built"));
+                        let line = top + height * row as f32;
+                        assert!(
+                            cell.center().y > line && cell.center().y < line + height,
+                            "{at}: row {row}'s checkbox {cell:?} lies on its row, at {line:?}"
+                        );
+                    }
+                }
             }
         }
 
