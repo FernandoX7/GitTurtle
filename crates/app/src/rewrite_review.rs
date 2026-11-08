@@ -5220,8 +5220,13 @@ mod tests {
         std::fs::write(repo.path().join("was-pointer.mmd"), &pointer).unwrap();
         std::fs::write(repo.path().join("pointer-to-blank.mmd"), &pointer).unwrap();
         std::fs::write(repo.path().join("now-pointer.mmd"), diagram).unwrap();
+        std::fs::write(repo.path().join("blank-to-link.mmd"), " \n").unwrap();
+        std::fs::write(repo.path().join("blank-to-pointer.mmd"), " \n").unwrap();
         git(repo.path(), &["add", "."]);
         git(repo.path(), &["commit", "--quiet", "-m", "Add the sides"]);
+        std::fs::remove_file(repo.path().join("blank-to-link.mmd")).unwrap();
+        symlink("notes.txt", repo.path().join("blank-to-link.mmd")).unwrap();
+        std::fs::write(repo.path().join("blank-to-pointer.mmd"), &pointer).unwrap();
         std::fs::remove_file(repo.path().join("was-link.mmd")).unwrap();
         std::fs::write(repo.path().join("was-link.mmd"), diagram).unwrap();
         std::fs::remove_file(repo.path().join("gone-link.mmd")).unwrap();
@@ -5258,6 +5263,10 @@ mod tests {
             file_index(&files, "link-to-blank.mmd"),
             file_index(&files, "pointer-to-blank.mmd"),
         );
+        let (blank_to_link, blank_to_pointer) = (
+            file_index(&files, "blank-to-link.mmd"),
+            file_index(&files, "blank-to-pointer.mmd"),
+        );
         // Stored as a link, whose text names its target.
         files[link].new_mode = "120000".into();
         let (app, cx) = window(cx, &repo);
@@ -5279,6 +5288,12 @@ mod tests {
                 NO_DIAGRAMS,
             ),
             ("a link the commit removed", gone_link, LINKED),
+            ("a blank file changed to a link", blank_to_link, LINKED),
+            (
+                "a blank file changed to a pointer",
+                blank_to_pointer,
+                NO_LFS_OBJECT,
+            ),
         ] {
             choose(&browser, cx, index);
             assert!(
