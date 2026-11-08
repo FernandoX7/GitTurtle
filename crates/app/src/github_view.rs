@@ -11221,6 +11221,67 @@ mod tests {
         assert!(ring, "the field {shown:?} draws its ring whole");
     }
 
+    /// The busy row's Cancel goes with the read closing cancels, so it is no place to come back
+    /// to: closed from it, every frame of the reopened panel draws focus on the destination
+    /// field. Held, focus sat on a control no frame drew until the fallback moved it two frames
+    /// later.
+    #[gpui::test]
+    async fn reopening_gives_no_focus_to_the_cancel_closing_takes_away(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, _pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        crate::focus_ring::sweep::interface_size(cx, 13);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = None;
+                panel.create = false;
+                panel.review.show_list = true;
+                cx.notify();
+            })
+        });
+        cx.executor().run_until_parked();
+        four_frames(cx);
+        let read = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.refresh(1, window, cx)));
+        four_frames(cx);
+        let cancel = panel.read_with(cx, |panel, _| panel.cancel_request.handle().clone());
+        cx.update(|window, cx| cancel.focus(window, cx));
+        four_frames(cx);
+        assert!(
+            cx.debug_bounds("github-cancel").is_some()
+                && cx.update(|window, _| cancel.is_focused(window)),
+            "the busy row's Cancel holds focus, drawn in the body"
+        );
+        escape(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        // The cancelled read ends before the reopen, which is refused until then.
+        drop(read);
+        settle_panel(&app, cx).await;
+        four_frames(cx);
+        let field = panel.read_with(cx, |panel, cx| panel.destination.read(cx).focus_handle(cx));
+        review::BODY_FRAMES.set(Some(Vec::new()));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(&app, cx).await;
+        four_frames(cx);
+        let drawn = review::BODY_FRAMES.take().expect("watched");
+        assert!(
+            drawn.len() >= 2,
+            "the reopened panel drew {} frames",
+            drawn.len()
+        );
+        for (index, frame) in drawn.iter().enumerate() {
+            assert_eq!(
+                frame.focused.as_ref(),
+                Some(&field),
+                "frame {index} draws focus on the destination field"
+            );
+        }
+        assert!(
+            cx.debug_bounds("github-cancel").is_none(),
+            "the reopened panel draws no busy row"
+        );
+    }
+
     /// Files' patch, whole in a 461 × 490 window at 13 pt as Escape closes the panel and so
     /// held, which a larger text size or a shorter window moves out of the reopened body's
     /// view while the panel is closed, gives way as a click on the header's Pull requests

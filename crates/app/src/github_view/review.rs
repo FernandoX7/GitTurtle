@@ -2433,8 +2433,9 @@ impl Panel {
     /// Records the control that holds focus as the panel closes, if the last frame drew it
     /// inside the body's view, for reopening to give focus back to ([`Self::focus_reopened`]).
     /// A control that cannot take focus back holds nothing, so the reopen goes straight to the
-    /// shown section's first stop: the confirmation's controls, which reopening drops, where
-    /// focus sat on what no frame drew until the fallback moved it two frames later; and a
+    /// shown section's first stop: the confirmation's controls, which reopening drops, and the
+    /// busy row's Cancel, which closing takes away with its read, where focus sat on what no
+    /// frame drew until the fallback moved it two frames later; and a
     /// Button disabled as the panel closes, no Tab stop, such as Next PR page on the last page,
     /// which the reopen once focused. A read in flight disables a Button only until closing
     /// cancels it, so with one under way a control that is no Tab stop is held all the same,
@@ -2448,7 +2449,10 @@ impl Panel {
         self.review.held = window
             .focused(cx)
             .filter(|focus| {
-                shown && (focus.tab_stop || self.pending) && !self.confirmation_holds(focus)
+                shown
+                    && (focus.tab_stop || self.pending)
+                    && focus != self.cancel_request.handle()
+                    && !self.confirmation_holds(focus)
             })
             .map(|focus| focus.downgrade());
         // The innermost part on the focus path of the frame the window last drew, the panel's.
