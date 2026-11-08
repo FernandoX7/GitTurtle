@@ -457,7 +457,7 @@ impl Opened for AnyOpened {
 }
 
 /// Opens a dialog with `open`, lets its reads finish, walks it, and closes
-/// it.
+/// it. Returns the bounds of every ring the walk saw ([`walk`]).
 async fn walk_dialog<O: Opened>(
     app: &Entity<GitTurtle>,
     cx: &mut VisualTestContext,
@@ -465,10 +465,11 @@ async fn walk_dialog<O: Opened>(
     interface: u8,
     failures: &mut Vec<String>,
     open: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) -> O,
-) {
+) -> Vec<Bounds<Pixels>> {
     open_dialog(app, cx, surface, open).await;
-    walk(app, cx, surface, interface, failures);
+    let rings = walk(app, cx, surface, interface, failures);
     close_dialogs(cx, surface, interface, failures);
+    rings
 }
 
 /// Opens a dialog with `open` from History's list and lets the reads it
@@ -654,30 +655,43 @@ async fn settings_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
     assert_whole(failures);
 }
 
-/// The theme editor, opened over Settings. Walked in the same test as
-/// Settings, the two surfaces' 196 stops took 68 s on a hosted Ubuntu
-/// runner, past nextest's 60 s slow mark.
-#[gpui::test]
-async fn the_theme_editor_draws_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+/// The theme editor, opened over Settings and walked at `interface` pt; a
+/// walk that meets no stop fails. One test a size: walked in the same test
+/// as Settings, the two surfaces' 196 stops took 68 s on a hosted Ubuntu
+/// runner, past nextest's 60 s slow mark, and both sizes in a test of their
+/// own still took 34.6 s alone in a debug build.
+async fn the_theme_editor_walked_at(interface: u8, cx: &mut TestAppContext) {
     let (_fixture, app, cx) = views::tests::history_window(cx).await;
     cx.update(|_, cx| theme_editor::init(cx));
     prepare(&app, cx);
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     views::tests::settle(&app, cx).await;
+    interface_size(cx, interface);
+    let surface = "the theme editor";
     let mut failures = Vec::new();
-    for interface in SIZES {
-        interface_size(cx, interface);
-        walk_dialog(
-            &app,
-            cx,
-            "the theme editor",
-            interface,
-            &mut failures,
-            |app, window, cx| app.open_theme_editor(None, window, cx),
-        )
-        .await;
+    let rings = walk_dialog(
+        &app,
+        cx,
+        surface,
+        interface,
+        &mut failures,
+        |app, window, cx| app.open_theme_editor(None, window, cx),
+    )
+    .await;
+    if rings.is_empty() {
+        failures.push(format!("{surface} at {interface} pt: Tab meets no stop"));
     }
     assert_whole(failures);
+}
+
+#[gpui::test]
+async fn the_theme_editor_draws_a_whole_ring_at_every_stop_at_13_pt(cx: &mut TestAppContext) {
+    the_theme_editor_walked_at(13, cx).await;
+}
+
+#[gpui::test]
+async fn the_theme_editor_draws_a_whole_ring_at_every_stop_at_18_pt(cx: &mut TestAppContext) {
+    the_theme_editor_walked_at(18, cx).await;
 }
 
 /// The project hub, and History beside the project pane in a window that
