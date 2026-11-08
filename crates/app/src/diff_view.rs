@@ -589,6 +589,9 @@ impl Render for DiffView {
                         // Notifications alone do not mark that boundary.
                         painted_scroll.clear();
                         painted_room.painted_at(&editor, cx);
+                        if painted_room.ask_again(&editor, cx) {
+                            window.request_animation_frame();
+                        }
                         // The partial actions are placed from this origin
                         // as the view renders, before this paint, so a paint
                         // that finds it moved, the first one or one after the
@@ -1148,6 +1151,10 @@ struct BarRoom {
     /// beside it are placed from, with any scroll asked for since
     /// ([`DiffView::render_partial_controls`]).
     painted: Cell<Option<Pixels>>,
+    /// The offset a reveal asked for that the text's end, as the text last
+    /// laid out, stopped short of, asked for again once it has laid out
+    /// above the bar ([`Self::ask_again`]).
+    refused: Cell<Option<Pixels>>,
 }
 
 impl BarRoom {
@@ -1164,13 +1171,16 @@ impl BarRoom {
         }
         editor.update(cx, |state, cx| {
             let room = state.input_bounds().size.height - height;
-            Self::keep_whole(room, state, cx);
+            self.keep_whole(room, state, cx);
         });
     }
 
     /// Scrolls the text by the least that keeps the caret's line, if the
-    /// text showed any of it, whole in `room` from the text's top.
-    fn keep_whole(room: Pixels, state: &mut EditorState, cx: &mut Context<EditorState>) {
+    /// text showed any of it, whole in `room` from the text's top. The text
+    /// clamps that scroll to the end it last laid out, before the room
+    /// shrank, so near the file's end it can stop short: that offset is
+    /// kept for [`Self::ask_again`].
+    fn keep_whole(&self, room: Pixels, state: &mut EditorState, cx: &mut Context<EditorState>) {
         let Some(height) = state.line_height() else {
             return;
         };
@@ -1189,12 +1199,35 @@ impl BarRoom {
         } else {
             return;
         };
-        state.set_scroll_offset(point(offset.x, offset.y - by), cx);
+        let wanted = offset.y - by;
+        state.set_scroll_offset(point(offset.x, wanted), cx);
+        self.refused
+            .set((state.scroll_offset().y != wanted).then_some(wanted));
     }
 
     /// Records the offset the text painted at, once it has painted.
     fn painted_at(&self, editor: &Entity<EditorState>, cx: &App) {
         self.painted.set(Some(editor.read(cx).scroll_offset().y));
+    }
+
+    /// Once the text has painted, and so holds the end and height it laid
+    /// out with above the bar, asks again for the offset a reveal was
+    /// refused, saying whether it did, as that asks for a frame to draw it.
+    /// The offset is asked for as it stands rather than the line revealed
+    /// anew, since the refused reveal can leave the line wholly under the
+    /// bar, where it no longer counts as shown. With the caret on the
+    /// file's last row at 18 pt in 461 × 490, a bar wrapped to two rows,
+    /// 112 px, outran the 75 px the text scrolls past its end, and the
+    /// line stayed under it.
+    fn ask_again(&self, editor: &Entity<EditorState>, cx: &mut App) -> bool {
+        let Some(wanted) = self.refused.take() else {
+            return false;
+        };
+        editor.update(cx, |state, cx| {
+            let sideways = state.scroll_offset().x;
+            state.set_scroll_offset(point(sideways, wanted), cx);
+        });
+        true
     }
 
     /// Where the bar has come, gone or changed height since the last frame,
@@ -1220,7 +1253,7 @@ impl BarRoom {
             let text = state.input_bounds();
             let room =
                 text.size.height + (column.bottom() - last.bottom()) - (column.top() - last.top());
-            Self::keep_whole(room, state, cx);
+            self.keep_whole(room, state, cx);
         });
     }
 }
@@ -2688,6 +2721,85 @@ mod tests {
                     }
                 }
             }
+        }
+
+        /// Selects the changed lines `ids` as a click would dirty the view,
+        /// leaving the frames it brings to `requested_frames`.
+        fn select_ids(shown: &Shown, cx: &mut VisualTestContext, ids: &[usize]) {
+            shown.view.update(cx, |view, cx| {
+                view.selection.ids = ids.iter().copied().collect();
+                cx.notify();
+            });
+            cx.executor().run_until_parked();
+        }
+
+        /// Each changed line's selection ID, in the diff's order.
+        fn change_ids(shown: &Shown) -> Vec<usize> {
+            shown
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    PartialRow::Change { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// With the caret on the file's last row, a selection bar wrapped to
+        /// two rows, which comes or grows from one row, leaves the caret's
+        /// line whole just above it, with no further input. The text's end
+        /// as it last laid out stopped the reveal short of a bar that tall,
+        /// and nothing asked again: at 18 pt in 461 × 490 the bar is about
+        /// 112 px and the text scrolls about 75 px past its end.
+        #[gpui::test]
+        async fn the_caret_line_at_the_files_end_stays_whole_above_a_wrapped_bar(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = with_added(cx, 12).await;
+            let whole = |shown: &Shown, cx: &mut VisualTestContext, when: &str| {
+                let (height, text) = shown.text(cx);
+                let line = shown.caret_line(cx);
+                shown.assert_whole(cx, line, when);
+                assert!(
+                    (f32::from(line + height - text.bottom())).abs() < 0.01,
+                    "{}: {when}: the caret's line ends at the text's foot {:?}, not at {:?}",
+                    shown.at,
+                    text.bottom(),
+                    line + height
+                );
+            };
+            let wrapped = |cx: &mut VisualTestContext| {
+                let apply = cx
+                    .debug_bounds("apply-partial-selection")
+                    .expect("the action");
+                let clear = cx.debug_bounds("clear-partial-selection").expect("Clear");
+                clear.top() >= apply.bottom()
+            };
+            let shown = Shown::at(&app, cx, SIZES[1]);
+            let ids = change_ids(&shown);
+            let last = shown
+                .rows
+                .iter()
+                .rposition(|row| matches!(row, PartialRow::Change { .. }))
+                .expect("a changed line");
+            shown.caret_to(cx, last);
+            shown.to_foot(cx, last, px(0.));
+            select_ids(&shown, cx, &ids);
+            requested_frames(cx);
+            assert!(wrapped(cx), "{}: the bar wraps", shown.at);
+            whole(&shown, cx, "the bar came wrapped");
+            // From a bar on one row, the caret's line just above it.
+            let shown = Shown::at(&app, cx, SIZES[1]);
+            shown.caret_to(cx, last);
+            shown.to_foot(cx, last, px(0.));
+            select_ids(&shown, cx, &ids[..3]);
+            requested_frames(cx);
+            assert!(!wrapped(cx), "{}: three lines' bar is one row", shown.at);
+            whole(&shown, cx, "the bar came on one row");
+            select_ids(&shown, cx, &ids);
+            requested_frames(cx);
+            assert!(wrapped(cx), "{}: the bar wraps", shown.at);
+            whole(&shown, cx, "the bar grew to two rows");
         }
 
         /// The selection bar keeps its action and Clear whole inside it,
