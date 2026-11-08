@@ -102,6 +102,28 @@ fn open_series_dialog(form: Entity<SeriesBrowser>, window: &mut Window, cx: &mut
     });
 }
 
+/// What the review dialog's height cap ([`appearance::dialog_max_height`])
+/// leaves its content in `window`, as [`open_series_dialog`] lays the dialog
+/// out: the cap less its 1 px edge above and below, the kit's 16 px padding
+/// above the title and below the footer, the title's one line, a rem with a
+/// line height of one, and the half rem under it, the footer's gap, which
+/// gives back the ring's room the content keeps below its body, and Back to
+/// repository's compact Button, 28 px at the default interface size
+/// (`crate::button_frame`). The body takes that room as the dialog lays it
+/// out; the series list, whose height is set before layout, keeps the rest
+/// of the body its room from it.
+fn content_room(window: &Window, cx: &App) -> Pixels {
+    const EDGE: Pixels = px(1.);
+    const PADDING: Pixels = px(16.);
+    let footer_gap = crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx);
+    appearance::dialog_max_height(window)
+        - EDGE * 2.
+        - PADDING * 2.
+        - window.rem_size() * 1.5
+        - footer_gap
+        - appearance::ui_size(28.)
+}
+
 /// The series list's key context, where Return is the list's own
 /// (`interactive_rebase::init`): it inspects the selected commit's files
 /// rather than taking the review dialog's default action, which closed the
@@ -1158,12 +1180,14 @@ impl SeriesBrowser {
 impl Render for SeriesBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        // Never more than the whole dialog's cap, its title and footer
-        // included: a loose bound; the `min_h_0` chain from the dialog's
-        // content down to the body shrinks it to the room the cap leaves.
-        let height = (f32::from(window.viewport_size().height) - 250.)
-            .clamp(240., 690.)
-            .min(f32::from(appearance::dialog_max_height(window)));
+        // The body takes the room the dialog's height cap leaves it as the
+        // dialog lays out its title, footer and padding: the `min_h_0` chain
+        // from the dialog's content down to the body shrinks it there, and
+        // an inspector, which fills that room, asks for the whole cap. A
+        // window less 250 px once stood for that room, a bound the body
+        // stopped at: at 13 pt in a 461 × 490 window it ended the dialog
+        // 53.5 px short of its cap's foot.
+        let cap = appearance::dialog_max_height(window);
         // The body scrolls, so it clips its controls on both axes. It keeps
         // the focus ring's room around them, giving it back through its
         // margin, and a wrapper keeps the room below them inside the
@@ -1238,7 +1262,7 @@ impl Render for SeriesBrowser {
         let row_count = self.review.as_ref().map_or(0, |review| review.rows.len());
         let row_height = appearance::ui_size(68.);
         let list_height = (row_height * row_count.clamp(1, 6) as f32 + px(2.))
-            .min((px(height) - appearance::ui_size(210.)).max(row_height + px(2.)));
+            .min((content_room(window, cx) - appearance::ui_size(210.)).max(row_height + px(2.)));
         let selected = self
             .review
             .as_ref()
@@ -1264,7 +1288,7 @@ impl Render for SeriesBrowser {
             empty.as_ref().map(|empty| &empty.description),
             selected.as_ref(),
         );
-        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("rewrite-review-body").debug_selector(|| "rewrite-review-body".into()).min_w_0().min_h_0().p(room).m(-room).pl(lead).ml(-lead).max_h(px(height) + room * 2.).when(self.inspecting, |element| element.h(px(height) + room)).overflow_y_scroll().track_scroll(self.body.scroll()).flex().flex_col().gap_2()
+        div().debug_selector(|| "rewrite-review-content".into()).flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("rewrite-review-body").debug_selector(|| "rewrite-review-body".into()).min_w_0().min_h_0().p(room).m(-room).pl(lead).ml(-lead).when(self.inspecting, |element| element.h(cap)).overflow_y_scroll().track_scroll(self.body.scroll()).flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .when(!self.inspecting, |element| element
@@ -3410,6 +3434,149 @@ mod tests {
             );
             cx.update(|window, cx| review.update(cx, |review, cx| review.back(window, cx)));
             draw(cx);
+        }
+    }
+
+    /// The review's dialog as the last frame painted it: the smallest quad
+    /// edged on every side around the body, which holds no edged box of its
+    /// own around it.
+    fn dialog_frame(cx: &mut gpui::VisualTestContext) -> Bounds<Pixels> {
+        let body = cx.debug_bounds("rewrite-review-body").expect("the body");
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: gpui_kit::ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    let widths = quad.border_widths;
+                    [widths.top, widths.right, widths.bottom, widths.left]
+                        .iter()
+                        .all(|width| width.as_f32() > 0.)
+                })
+                .map(|quad| {
+                    Bounds::from_corners(
+                        point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                        point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                    )
+                })
+                .filter(|frame| {
+                    frame.top() < body.top()
+                        && frame.bottom() > body.bottom()
+                        && frame.left() < body.left()
+                        && frame.right() > body.right()
+                })
+                .min_by(|a, b| a.size.height.partial_cmp(&b.size.height).unwrap())
+                .expect("the dialog's frame")
+        })
+    }
+
+    /// The review's body takes the room the dialog's height cap leaves it,
+    /// measured as the dialog lays out its title, footer and padding: an
+    /// inspector fills it, the dialog's foot on its cap's, and the series
+    /// running past it at 18 pt in a 461 × 490 window takes all of it too,
+    /// at 13 and 18 pt in that window and in a 1,480 × 800 one; the content
+    /// takes [`content_room`], which the series list keeps its rest from. A
+    /// window less 250 px once stood for that room, which the body stopped
+    /// at: at 13 pt in the 461 × 490 window it ended the dialog 53.5 px short
+    /// of its cap's foot.
+    #[gpui::test]
+    async fn the_body_takes_the_room_the_dialog_cap_leaves(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let browser = cx.update(|window, cx| {
+            let repo = app
+                .read(cx)
+                .repository
+                .clone()
+                .expect("the window's repository");
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(
+                    app.downgrade(),
+                    repo,
+                    "origin".into(),
+                    "main".into(),
+                    window,
+                    cx,
+                )
+            });
+            open_series_dialog(browser.clone(), window, cx);
+            browser
+        });
+        lands(&browser, cx);
+        let slack = px(0.5);
+        for (text, width, height) in [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 1480., 800.),
+            (18, 1480., 800.),
+        ] {
+            let at = format!("{text} pt in {width} × {height}");
+            size_to(&app, cx, text, width, height);
+            let (foot, room) = cx.update(|window, cx| {
+                (
+                    crate::theme_editor::status_bar_top(window) - appearance::DIALOG_MARGIN,
+                    content_room(window, cx),
+                )
+            });
+            for inspecting in [false, true] {
+                let state = if inspecting { "inspecting" } else { "the series" };
+                cx.update(|_, cx| {
+                    browser.update(cx, |browser, cx| {
+                        browser.inspecting = inspecting;
+                        cx.notify();
+                    })
+                });
+                // The inspector lays out its final room in the first frame
+                // that draws it, and keeps it once everything has settled.
+                let frames: &[&str] = if inspecting {
+                    &["in its first frame", "settled"]
+                } else {
+                    &["settled"]
+                };
+                for &drawn in frames {
+                    if drawn == "settled" {
+                        draw(cx);
+                        draw(cx);
+                    } else {
+                        cx.update(|window, cx| {
+                            window.refresh();
+                            window.draw(cx).clear(cx);
+                        });
+                    }
+                    let state = format!("{state}, {drawn}");
+                    let frame = dialog_frame(cx);
+                    let content = cx
+                        .debug_bounds("rewrite-review-content")
+                        .expect("the review's content");
+                    let body = cx.debug_bounds("rewrite-review-body").expect("the body");
+                    let scrolls = browser.read_with(cx, |browser, _| {
+                        browser.body.scroll().max_offset().y > px(0.)
+                    });
+                    if !inspecting && !scrolls {
+                        assert!(
+                            frame.bottom() <= foot + slack,
+                            "{at}: {state} fits its dialog {frame:?} inside its cap's foot {foot:?}"
+                        );
+                        continue;
+                    }
+                    assert!(
+                        (frame.bottom() - foot).abs() <= slack,
+                        "{at}: {state}'s dialog {frame:?} ends at its cap's foot {foot:?}"
+                    );
+                    assert!(
+                        (content.size.height - room).abs() <= slack,
+                        "{at}: {state}'s content {content:?} takes the room the cap leaves, {room:?}"
+                    );
+                    assert!(
+                        (body.bottom() - content.bottom()).abs() <= slack,
+                        "{at}: {state}'s body {body:?} reaches the content's foot {content:?}"
+                    );
+                }
+            }
         }
     }
 
