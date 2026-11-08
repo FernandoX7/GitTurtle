@@ -402,70 +402,106 @@ impl Drop for AskpassServer {
 /// Also redact common credential assignment/header forms, wherever they appear:
 /// a path holding one is cut like any other text.
 pub fn redact_diagnostic(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    for part in input.split_inclusive(char::is_whitespace) {
-        let Some(start) = part.find("://") else {
-            result.push_str(part);
-            continue;
-        };
-        let authority_start = start + 3;
-        let authority_end = part[authority_start..]
-            .find(['/', '?', '#', '\'', '"', '\n', '\r', ' '])
-            .map_or(part.len(), |i| authority_start + i);
-        let authority = &part[authority_start..authority_end];
-        result.push_str(&part[..authority_start]);
-        if let Some((_, host)) = authority.rsplit_once('@') {
-            result.push_str("[redacted]@");
-            result.push_str(host);
-        } else {
-            result.push_str(authority);
-        }
-        let remainder = &part[authority_end..];
-        if let Some(query) = remainder.find(['?', '#']) {
-            result.push_str(&remainder[..query]);
-            result.push_str("?[redacted]");
-            let suffix = remainder.trim_end_matches(char::is_whitespace);
-            result.push_str(&remainder[suffix.len()..]);
-        } else {
-            result.push_str(remainder);
-        }
-    }
-    result
+    hide_url_credentials(input)
         .lines()
         .map(|line| {
-            // Redacted from the first marker on the line, wherever it falls
-            // in the list: taking the list's first left the secret after an
-            // earlier marker on the line, as in "token=secret Authorization:".
-            // A marker inside another ("token=" in "access_token=") ends
-            // where the other does, so both keep the same text. Lowercasing
-            // only ASCII keeps every byte offset of `line`.
-            let lower = line.to_ascii_lowercase();
-            [
-                "authorization:",
-                "proxy-authorization:",
-                "password=",
-                "password:",
-                "passwd=",
-                "passwd:",
-                "access_token=",
-                "access_token:",
-                "refresh_token=",
-                "refresh_token:",
-                "token=",
-                "token:",
-                "oauth_token=",
-                "oauth_token:",
-            ]
-            .into_iter()
-            .filter_map(|marker| lower.find(marker).map(|index| index + marker.len()))
-            .min()
-            .map_or_else(
+            first_credential_marker_end(line).map_or_else(
                 || line.to_owned(),
                 |end| format!("{}[redacted]", &line[..end]),
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Where the first credential marker in `text` ends, wherever it falls in the
+/// list: taking the list's first left the secret after an earlier marker on
+/// the line, as in "token=secret Authorization:". A marker inside another
+/// ("token=" in "access_token=") ends where the other does, so both keep the
+/// same text. Lowercasing only ASCII keeps every byte offset of `text`.
+fn first_credential_marker_end(text: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    [
+        "authorization:",
+        "proxy-authorization:",
+        "password=",
+        "password:",
+        "passwd=",
+        "passwd:",
+        "access_token=",
+        "access_token:",
+        "refresh_token=",
+        "refresh_token:",
+        "token=",
+        "token:",
+        "oauth_token=",
+        "oauth_token:",
+    ]
+    .into_iter()
+    .filter_map(|marker| lower.find(marker).map(|index| index + marker.len()))
+    .min()
+}
+
+/// `input` with the userinfo and the query of every URL hidden. A URL starts
+/// at each `://`, several to a whitespace-separated word included; a query
+/// runs to the word's end and so hides any later URL in it.
+fn hide_url_credentials(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut copied = 0;
+    // The first whitespace after the last authority, kept so that a word of
+    // many URLs is scanned once.
+    let mut word_end = 0;
+    let mut previous_start = None;
+    while let Some(found) = input[copied..].find("://") {
+        let start = copied + found + 3;
+        result.push_str(&input[copied..start]);
+        let later_in_word = previous_start
+            .is_some_and(|previous: usize| !input[previous..start].contains(char::is_whitespace));
+        previous_start = Some(start);
+        let end = start + url_authority_len(&input[start..]);
+        let authority = &input[start..end];
+        if let Some((userinfo, host)) = authority.rsplit_once('@') {
+            // A word's first URL keeps its host whatever its userinfo spells
+            // (`https://x-access-token:secret@host`). A later one's userinfo
+            // would otherwise take a marker away from the line's cut, and
+            // what follows a marker is never shown, so it cuts the line here.
+            if later_in_word && first_credential_marker_end(userinfo).is_some() {
+                result.push_str("[redacted]");
+                copied = input[end..].find('\n').map_or(input.len(), |i| end + i);
+                continue;
+            }
+            result.push_str("[redacted]@");
+            result.push_str(host);
+        } else {
+            result.push_str(authority);
+        }
+        if end > word_end {
+            word_end = input[end..]
+                .find(char::is_whitespace)
+                .map_or(input.len(), |i| end + i);
+        }
+        let rest = &input[end..word_end];
+        let next_url = rest.find("://").unwrap_or(rest.len());
+        if let Some(query) = rest[..next_url].find(['?', '#']) {
+            result.push_str(&rest[..query]);
+            result.push_str("?[redacted]");
+            copied = word_end;
+        } else {
+            result.push_str(&rest[..next_url]);
+            copied = end + next_url;
+        }
+    }
+    result.push_str(&input[copied..]);
+    result
+}
+
+/// The length of the URL authority that `text` starts with: up to any of
+/// `/ ? # ' "`, whitespace, or the `://` of the next URL in the word.
+fn url_authority_len(text: &str) -> usize {
+    let end = text
+        .find(|c: char| matches!(c, '/' | '?' | '#' | '\'' | '"') || c.is_whitespace())
+        .unwrap_or(text.len());
+    end - usize::from(text[..end].ends_with(':') && text[end..].starts_with("//"))
 }
 
 pub(super) fn validate_clone_address(source: &str) -> Result<()> {
@@ -589,6 +625,47 @@ mod tests {
         );
     }
 
+    /// Every `://` in a whitespace-separated word is a URL of its own: only
+    /// the first had its userinfo hidden, and the rest of the word was
+    /// shown.
+    #[test]
+    fn every_url_in_a_word_has_its_userinfo_and_query_hidden() {
+        assert_eq!(
+            redact_diagnostic("url=https://a:b@one,https://c:d@two/x?y=1"),
+            "url=https://[redacted]@one,https://[redacted]@two/x?[redacted]"
+        );
+        assert_eq!(
+            redact_diagnostic("a://u@h1,b://v@h2,c://w@h3/p rest"),
+            "a://[redacted]@h1,b://[redacted]@h2,c://[redacted]@h3/p rest"
+        );
+        assert_eq!(
+            redact_diagnostic("https://h/p,https://c:d@two/x rest"),
+            "https://h/p,https://[redacted]@two/x rest"
+        );
+        // A query still hides the word's end, any later URL in it included.
+        assert_eq!(
+            redact_diagnostic("https://h/p?a=1,https://c:d@two/x rest"),
+            "https://h/p?[redacted] rest"
+        );
+        // One word's URLs do not reach the next word's.
+        assert_eq!(
+            redact_diagnostic("https://a@one https://b@two"),
+            "https://[redacted]@one https://[redacted]@two"
+        );
+        // A marker in a later URL's userinfo once cut its line, the URL being
+        // shown: the line is still cut there, or what followed would return.
+        assert_eq!(
+            redact_diagnostic("https://a@one,https://c:token=d@two/ rest"),
+            "https://[redacted]@one,https://[redacted]"
+        );
+        // The first URL's userinfo was always hidden whatever it spelt, and
+        // never cut the line.
+        assert_eq!(
+            redact_diagnostic("https://c:token=d@two/ rest"),
+            "https://[redacted]@two/ rest"
+        );
+    }
+
     /// The redaction as it stood at 1e2ad7da, frozen as the oracle of the
     /// generated diagnostics below: what it hid stays hidden.
     fn earlier_redaction(input: &str) -> String {
@@ -668,12 +745,9 @@ mod tests {
             format!("{kind}{:07}", self.words)
         }
         fn piece(&mut self) -> String {
-            let (secret, secret2, other) = (
-                self.word("SECRET"),
-                self.word("SECRET"),
-                self.word("WORD"),
-            );
-            match self.below(5) {
+            let [secret, secret2, secret3] = [(); 3].map(|()| self.word("SECRET"));
+            let [other, other2] = [(); 2].map(|()| self.word("WORD"));
+            match self.below(8) {
                 0 | 1 => {
                     let marker = self.pick(&[
                         "authorization:",
@@ -701,6 +775,12 @@ mod tests {
                 }
                 2 => format!("https://{secret}:{secret2}@{other}/path"),
                 3 => format!("https://{other}/path?{secret}={secret2}"),
+                4 => format!("https://{secret}@{other},https://{secret2}@{other2}/x?{secret3}=1"),
+                5 => format!("https://{other}/path,https://{secret}:{secret2}@{other2}"),
+                6 => {
+                    let marker = self.pick(&["token=", "PASSWORD=", "Authorization:"]);
+                    format!("https://{other},https://{secret}:{marker}{secret2}@{other2}/path")
+                }
                 _ => other,
             }
         }
@@ -708,7 +788,15 @@ mod tests {
             let mut line = self.pick(&["", "fatal: ", "remote: "]).to_owned();
             for piece in 0..=self.below(5) {
                 if piece > 0 {
-                    line.push_str(self.pick(&[" ", "\t", "\r", " \r", "\r "]));
+                    // A query runs to the word's end and takes a marker glued
+                    // to it along, which leaves that marker's next word shown
+                    // (`?token=x shown`, as ever): only whitespace follows one.
+                    let in_query = line
+                        .rsplit(char::is_whitespace)
+                        .next()
+                        .is_some_and(|word| word.contains('?'));
+                    let gaps = [" ", "\t", "\r", " \r", "\r ", ","];
+                    line.push_str(self.pick(&gaps[..gaps.len() - usize::from(in_query)]));
                 }
                 let piece = self.piece();
                 line.push_str(&piece);
