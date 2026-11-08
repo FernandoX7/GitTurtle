@@ -212,6 +212,18 @@ thread_local! {
     /// confirmation on this thread: a test re-points what the capture read.
     static OPEN_CHECKPOINT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
         const { std::cell::RefCell::new(None) };
+    /// Runs in [`GitRepository::verify_at_path`] as it is about to ask Git
+    /// on this thread: a test moves a link back under the check.
+    static VERIFY_CHECKPOINT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Runs in [`resolve_git_entry`] as it is about to open a gitfile, on
+    /// this thread: a test swaps a FIFO in for it.
+    static GITFILE_CHECKPOINT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Fails every [`open_regular_file`] on this thread as a process out of
+    /// file descriptors does: a test reaches the error only this process
+    /// meets, Git's own open succeeding.
+    static OPEN_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// What Git finds at an opened repository's path now
@@ -272,10 +284,46 @@ struct Identity {
     /// `config`, `config.worktree` and `commondir` (a linked worktree's
     /// refs and objects), and a linked worktree's common `config`.
     configs: Vec<PathBuf>,
-    /// Their file identities as last confirmed: unchanged, the work tree has
-    /// not moved; changed, Git is asked once and, the repository the same,
-    /// they are confirmed again.
-    stamps: Mutex<Vec<Option<FileStamp>>>,
+    /// What those files say, as last confirmed: unchanged, the work tree
+    /// and common directory have not moved; changed, Git is asked once
+    /// and, the repository the same, they are confirmed again.
+    confirmed: Mutex<Confirmed>,
+}
+
+/// What [`GitRepository::verify_at_path`] compares against, as last
+/// confirmed.
+#[derive(Debug)]
+struct Confirmed {
+    /// The file identities of [`Identity::configs`].
+    stamps: Vec<Option<FileStamp>>,
+    /// The paths those files store, which their stamps cannot speak for: a
+    /// link on the way re-pointed touches none of the files, so each is
+    /// resolved again at every check. Which paths they are is the files'
+    /// to say, so a check takes them again only where a stamp changed
+    /// ([`Identity::stored_paths`]).
+    stored: Vec<StoredPath>,
+}
+
+/// A path Git keeps in a file and resolves itself ([`Confirmed::stored`]):
+/// a `commondir` file's, the `core.worktree` Git reads.
+#[derive(Debug)]
+struct StoredPath {
+    /// The stored path, joined to the Git directory as Git joins it.
+    path: PathBuf,
+    /// The captured folder it must lead to: the common directory or the
+    /// root, never where it happened to lead when last confirmed, a value
+    /// a link flipped back and forth could restore.
+    leads_to: PathBuf,
+}
+
+impl StoredPath {
+    /// Whether the stored path still leads where it must, by the filesystem
+    /// alone: one path resolution, starting no process.
+    fn holds(&self) -> bool {
+        self.path
+            .canonicalize()
+            .is_ok_and(|now| now == self.leads_to)
+    }
 }
 
 /// A file's identity, as the app's retained repository identity reads it:
@@ -315,19 +363,22 @@ impl FileStamp {
 const LIST_SEPARATOR: &str = if cfg!(windows) { ";" } else { ":" };
 
 impl Identity {
-    fn capture(root: &Path, git_dir: &Path, bare: bool) -> Result<Self> {
+    /// What the repository is, and whether the `.git` entry at its root
+    /// could not be read ([`GitEntry::Unread`]): the open then refuses a
+    /// handle that nothing could confine.
+    fn capture(root: &Path, git_dir: &Path, bare: bool) -> Result<(Self, bool)> {
         let root = root
             .canonicalize()
             .context("Resolve the repository's folder")?;
         let git_dir = git_dir
             .canonicalize()
             .context("Resolve the repository's Git directory")?;
-        let holder = if bare {
-            None
-        } else {
-            git_entry_holder(&root)
-                .filter(|holder| resolve_git_entry(holder).as_ref() == Some(&git_dir))
-                .map(Path::to_path_buf)
+        let entry = (!bare).then(|| git_entry_holder(&root)).flatten();
+        let said = entry.map(read_git_entry);
+        let unread = matches!(said, Some(GitEntry::Unread));
+        let holder = match said {
+            Some(GitEntry::Leads(found)) if found == git_dir => entry.map(Path::to_path_buf),
+            _ => None,
         };
         let enclosing = if bare {
             Some(git_dir.as_path())
@@ -354,12 +405,17 @@ impl Identity {
             git_dir.join("config.worktree"),
             git_dir.join("commondir"),
         ];
-        let common = common_dir(&git_dir).unwrap_or_else(|| git_dir.clone());
+        let common = common_dir(&git_dir)
+            .context("Read the repository's common directory")?
+            .unwrap_or_else(|| git_dir.clone());
         if common != git_dir {
             configs.push(common.join("config"));
         }
-        let stamps = Mutex::new(configs.iter().map(|path| FileStamp::read(path)).collect());
-        Ok(Self {
+        // The stored paths after the stamps, as every check takes them: a
+        // file edited after the stamps is a changed stamp at the next check.
+        let stamps = configs.iter().map(|path| FileStamp::read(path)).collect();
+        let stored = Self::stored_paths(&git_dir, &common, &root, bare)?;
+        let identity = Self {
             root,
             git_dir,
             common,
@@ -367,8 +423,43 @@ impl Identity {
             ceiling,
             confined,
             configs,
-            stamps,
-        })
+            confirmed: Mutex::new(Confirmed { stamps, stored }),
+        };
+        Ok((identity, unread))
+    }
+
+    /// The paths Git reads out of this repository's files and resolves
+    /// itself, with the folder each must lead to: a `commondir` file's and,
+    /// for a work tree, the one `core.worktree` Git reads here
+    /// ([`work_tree_git_reads`]). The files choose them, never where a path
+    /// leads as it is read: a link flipped during a check once dropped its
+    /// `core.worktree` for the handle's life, and a `commondir` leading
+    /// through a link to the repository's own Git directory kept no entry,
+    /// so re-pointing either link went unseen and a write reached the other
+    /// repository. A process is started only for a file that can name a
+    /// work tree.
+    fn stored_paths(
+        git_dir: &Path,
+        common: &Path,
+        root: &Path,
+        bare: bool,
+    ) -> Result<Vec<StoredPath>> {
+        let mut stored = Vec::new();
+        let commondir = stored_common_dir(git_dir)
+            .with_context(|| format!("Read {}", git_dir.join("commondir").display()))?;
+        if let Some(path) = commondir {
+            stored.push(StoredPath {
+                path,
+                leads_to: common.to_owned(),
+            });
+        }
+        if !bare && let Some(value) = work_tree_git_reads(git_dir, common)? {
+            stored.push(StoredPath {
+                path: git_dir.join(value),
+                leads_to: root.to_owned(),
+            });
+        }
+        Ok(stored)
     }
 
     fn config_stamps(&self) -> Vec<Option<FileStamp>> {
@@ -400,21 +491,257 @@ impl Identity {
 
 /// A linked worktree's common Git directory, from its `commondir` file
 /// (relative to `git_dir`), canonical; `None` where there is none.
-fn common_dir(git_dir: &Path) -> Option<PathBuf> {
+fn common_dir(git_dir: &Path) -> std::io::Result<Option<PathBuf>> {
+    Ok(stored_common_dir(git_dir)?.and_then(|path| path.canonicalize().ok()))
+}
+
+/// `path` opened for reading where it is a regular file; `None` where nothing
+/// is there or it is anything else. Opening a FIFO waits for a writer with no
+/// deadline, on the reader thread and at a check that holds the identity's
+/// lock, so the open never waits and the file it opened is the one whose type
+/// decides: a type read before the open left a moment for a swap to a FIFO
+/// to block both. Anything but a regular file is left to Git, whose read has
+/// a deadline. Nothing there includes a path through something that is no
+/// folder, as Git takes one. Any other failure is an error, never "no such
+/// file": a process out of file descriptors once took a stored path for one
+/// that was not there, and the check it ran for kept no guard on it.
+#[cfg(unix)]
+fn open_regular_file(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    use rustix::fs::{FileType, Mode, OFlags, fstat, open};
+    #[cfg(test)]
+    if OPEN_REFUSED.get() {
+        return Err(rustix::io::Errno::MFILE.into());
+    }
+    let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+    let file = match rustix::io::retry_on_intr(|| open(path, flags, Mode::empty())) {
+        Ok(file) => file,
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let regular = FileType::from_raw_mode(fstat(&file)?.st_mode) == FileType::RegularFile;
+    Ok(regular.then(|| file.into()))
+}
+
+/// `path` opened for reading where it is a regular file, as on Unix.
+#[cfg(not(unix))]
+fn open_regular_file(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => std::fs::File::open(path).map(Some),
+        Ok(_) => Ok(None),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// The path a linked worktree's `commondir` file stores, joined to `git_dir`
+/// as Git joins it; `None` where there is none, or it is no regular file
+/// ([`open_regular_file`]).
+fn stored_common_dir(git_dir: &Path) -> std::io::Result<Option<PathBuf>> {
+    let Some(file) = open_regular_file(&git_dir.join("commondir"))? else {
+        return Ok(None);
+    };
     let mut bytes = Vec::new();
-    std::fs::File::open(git_dir.join("commondir"))
-        .ok()?
-        .take(64 * 1024)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    file.take(64 * 1024).read_to_end(&mut bytes)?;
     let end = bytes
         .iter()
         .rposition(|byte| *byte != b'\n' && *byte != b'\r')
         .map_or(0, |last| last + 1);
-    git_dir
-        .join(path_from_bytes(&bytes[..end]))
-        .canonicalize()
-        .ok()
+    Ok(Some(git_dir.join(path_from_bytes(&bytes[..end]))))
+}
+
+/// Whether the configuration `file` can hold a `core.worktree`: it names the
+/// word in any case (a key is matched case-insensitively), or it is too
+/// large to say. A missing file holds none, one that is no regular file
+/// ([`open_regular_file`]) is left to Git, and one that cannot be opened is
+/// an error. A key name never spans a line continuation, so the word is
+/// whole.
+fn may_name_a_work_tree(file: &Path) -> std::io::Result<bool> {
+    const LIMIT: u64 = 1024 * 1024;
+    let Some(file) = open_regular_file(file)? else {
+        return Ok(false);
+    };
+    let mut bytes = Vec::new();
+    Ok(match file.take(LIMIT + 1).read_to_end(&mut bytes) {
+        Ok(_) => {
+            bytes.len() as u64 > LIMIT
+                || bytes
+                    .windows(b"worktree".len())
+                    .any(|word| word.eq_ignore_ascii_case(b"worktree"))
+        }
+        Err(_) => true,
+    })
+}
+
+/// The `core.worktree` Git reads for the Git directory `git_dir`, as it reads
+/// one when it sets up a repository (`check_repository_format_gently`). Under
+/// `extensions.worktreeConfig`, in the common `config`, the Git directory's
+/// own `config.worktree` is read and its value wins over the common
+/// `config`'s. Otherwise the common `config`'s is read, unless a `commondir`
+/// file exists: a linked worktree does not take its main worktree's. A
+/// common `config` with no `core.repositoryformatversion`, or one Git reads
+/// as -1, defines nothing, as Git clears what it read from one; a guard on a
+/// value Git ignores once asked Git at every check.
+fn work_tree_git_reads(git_dir: &Path, common: &Path) -> Result<Option<PathBuf>> {
+    let file = common.join("config");
+    let shared = WorkTreeSettings::read(git_dir, &file)?;
+    if !shared.has_format_version(git_dir, &file)? {
+        return Ok(None);
+    }
+    if shared.reads_per_worktree(git_dir, &file)? {
+        let own = WorkTreeSettings::read(git_dir, &git_dir.join("config.worktree"))?;
+        return Ok(own.value.or(shared.value));
+    }
+    // By the entry, as Git tests for the file: reading it can wait.
+    let has_common = std::fs::symlink_metadata(git_dir.join("commondir")).is_ok();
+    Ok(shared.value.filter(|_| !has_common))
+}
+
+/// What a configuration file says of the work tree, by Git's own parser and
+/// with no includes, as Git reads it when it sets up a repository.
+#[derive(Default)]
+struct WorkTreeSettings {
+    /// Its `core.worktree`, the last where it sets several, as Git takes it.
+    value: Option<PathBuf>,
+    /// Its `extensions.worktreeConfig` as it spells it, the last where it
+    /// sets several, with no value at all as `Some(None)`.
+    per_worktree: Option<Option<Vec<u8>>>,
+    /// Its `core.repositoryformatversion` as it spells it, the last where
+    /// it sets several, with no value at all as `Some(None)`.
+    version: Option<Option<Vec<u8>>>,
+}
+
+impl WorkTreeSettings {
+    /// What `file` says: nothing where it cannot name either setting
+    /// ([`may_name_a_work_tree`]), starting no process, or is not one Git
+    /// can read, so it is not one Git read them from either. One process
+    /// reads a file's settings.
+    fn read(git_dir: &Path, file: &Path) -> Result<Self> {
+        let mut settings = Self::default();
+        if !may_name_a_work_tree(file).with_context(|| format!("Read {}", file.display()))? {
+            return Ok(settings);
+        }
+        let mut command = git_command(GitTarget::unconfined(git_dir));
+        command
+            .args(["config", "--null", "--file"])
+            .arg(file)
+            .args([
+                "--get-regexp",
+                r"^(core\.repositoryformatversion|core\.worktree|extensions\.worktreeconfig)$",
+            ]);
+        let output = bounded_output(command, GIT_TIMEOUT)?;
+        if !output.status.success() {
+            return Ok(settings);
+        }
+        // Each entry is its key, then a line feed and its value if it has
+        // one. The last of several is the one Git goes by.
+        for entry in output.stdout.split(|byte| *byte == 0) {
+            let (key, value) = match entry.iter().position(|byte| *byte == b'\n') {
+                Some(end) => (&entry[..end], Some(&entry[end + 1..])),
+                None => (entry, None),
+            };
+            match key {
+                b"core.worktree" => {
+                    settings.value = value.filter(|value| !value.is_empty()).map(path_from_bytes);
+                }
+                b"core.repositoryformatversion" => {
+                    settings.version = Some(value.map(<[u8]>::to_vec));
+                }
+                b"extensions.worktreeconfig" => {
+                    settings.per_worktree = Some(value.map(<[u8]>::to_vec));
+                }
+                _ => {}
+            }
+        }
+        Ok(settings)
+    }
+
+    /// Whether its `extensions.worktreeConfig` is on, read from `file` by
+    /// Git where only Git can say ([`git_boolean`]).
+    fn reads_per_worktree(&self, git_dir: &Path, file: &Path) -> Result<bool> {
+        match &self.per_worktree {
+            None => Ok(false),
+            Some(value) => match git_boolean(value.as_deref()) {
+                Some(on) => Ok(on),
+                None => {
+                    Ok(
+                        config_by_git(git_dir, file, "--type=bool", "extensions.worktreeconfig")?
+                            == b"true",
+                    )
+                }
+            },
+        }
+    }
+
+    /// Whether Git goes by this `config`'s settings: it clears them where
+    /// the format version is missing or reads as -1. An unsigned string of
+    /// digits stands; any other spelling, a sign, a prefix or a unit, Git
+    /// reads ([`config_by_git`]), as `-0x1` is -1 and `-1k` is not.
+    fn has_format_version(&self, git_dir: &Path, file: &Path) -> Result<bool> {
+        match &self.version {
+            None => Ok(false),
+            Some(Some(value)) if !value.is_empty() && value.iter().all(u8::is_ascii_digit) => {
+                Ok(true)
+            }
+            Some(_) => {
+                Ok(
+                    config_by_git(git_dir, file, "--type=int", "core.repositoryformatversion")?
+                        != b"-1",
+                )
+            }
+        }
+    }
+}
+
+/// A configuration boolean Git spells plainly, as Git reads it: no value at
+/// all is true and an empty one false, `true`, `yes`, `on`, `false`, `no` and
+/// `off` go by their word in any case, and a string of decimal digits is true
+/// unless every digit is zero (one Git refuses to read, as `08`, it refuses
+/// the repository for too, so that answer is never used). `None` for anything
+/// else, a sign, a prefix or a unit, which only Git can say
+/// ([`config_by_git`]): which of those it takes, and as what, is its C
+/// library's, and `0b0`, zero to a C23 `strtoimax`, once read here as true
+/// put the guard on a file Git did not read.
+fn git_boolean(value: Option<&[u8]>) -> Option<bool> {
+    let Some(value) = value else {
+        return Some(true);
+    };
+    let is = |word: &str| value.eq_ignore_ascii_case(word.as_bytes());
+    if is("true") || is("yes") || is("on") {
+        return Some(true);
+    }
+    if value.is_empty() || is("false") || is("no") || is("off") {
+        return Some(false);
+    }
+    value
+        .iter()
+        .all(u8::is_ascii_digit)
+        .then(|| value.iter().any(|digit| *digit != b'0'))
+}
+
+/// The last `key` in `file` as the parser Git itself reads it with gives it
+/// (`kind`, `--type=bool` or `--type=int`), for a spelling only Git can say.
+/// An error where Git refuses the value: the paths are then not taken again,
+/// what was confirmed stays, and the next check asks once more.
+fn config_by_git(git_dir: &Path, file: &Path, kind: &str, key: &str) -> Result<Vec<u8>> {
+    let mut command = git_command(GitTarget::unconfined(git_dir));
+    command
+        .args(["config", "--file"])
+        .arg(file)
+        .args([kind, "--get", key]);
+    let output = bounded_output(command, GIT_TIMEOUT)?;
+    ensure!(
+        output.status.success(),
+        "Git could not read {key} in {}.",
+        file.display()
+    );
+    Ok(trim_line(&output.stdout).to_vec())
 }
 
 /// The nearest folder at or above `root` with a `.git` entry, where Git
@@ -424,30 +751,70 @@ fn git_entry_holder(root: &Path) -> Option<&Path> {
         .find(|folder| std::fs::symlink_metadata(folder.join(".git")).is_ok())
 }
 
-/// The Git directory the `.git` entry in `holder` leads to, canonical: the
-/// directory itself, or a gitfile's `gitdir:` path, relative to `holder`.
-fn resolve_git_entry(holder: &Path) -> Option<PathBuf> {
+/// What a folder's `.git` entry says ([`read_git_entry`]).
+enum GitEntry {
+    /// It leads to this Git directory, canonical.
+    Leads(PathBuf),
+    /// A gitfile that could not be read or followed, or something no `.git`
+    /// can be, as a FIFO swapped in for one.
+    Unread,
+    /// Nothing to say: it is gone, or a link that leads nowhere.
+    Unknown,
+}
+
+/// What the `.git` entry in `holder` says: the directory itself, or a
+/// gitfile's `gitdir:` path, relative to `holder`. A gitfile that is no
+/// regular file as it is opened, swapped for a FIFO, is unread
+/// ([`open_regular_file`]): every check opens it.
+fn read_git_entry(holder: &Path) -> GitEntry {
     let entry = holder.join(".git");
-    if !std::fs::symlink_metadata(&entry).ok()?.is_file() {
-        return entry.canonicalize().ok();
+    let Ok(metadata) = std::fs::symlink_metadata(&entry) else {
+        return GitEntry::Unknown;
+    };
+    let kind = metadata.file_type();
+    if kind.is_dir() || kind.is_symlink() {
+        return entry
+            .canonicalize()
+            .map_or(GitEntry::Unknown, GitEntry::Leads);
     }
+    if !kind.is_file() {
+        return GitEntry::Unread;
+    }
+    #[cfg(test)]
+    GITFILE_CHECKPOINT.with_borrow_mut(|hook| {
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
+    read_gitfile(&entry, holder).map_or(GitEntry::Unread, GitEntry::Leads)
+}
+
+/// The Git directory the `.git` entry in `holder` leads to, canonical, where
+/// it can be said ([`read_git_entry`]).
+fn resolve_git_entry(holder: &Path) -> Option<PathBuf> {
+    match read_git_entry(holder) {
+        GitEntry::Leads(found) => Some(found),
+        GitEntry::Unread | GitEntry::Unknown => None,
+    }
+}
+
+/// The Git directory the gitfile `entry` in `holder` names, canonical.
+fn read_gitfile(entry: &Path, holder: &Path) -> Option<PathBuf> {
     let mut bytes = Vec::new();
-    std::fs::File::open(&entry)
-        .ok()?
+    open_regular_file(entry)
+        .ok()??
         .take(64 * 1024)
         .read_to_end(&mut bytes)
         .ok()?;
     let target = bytes.strip_prefix(b"gitdir: ")?;
-    // Git strips only trailing line ends: a path ending in a space is
-    // another folder, and one holding a NUL is not compared at all.
+    // Git strips only trailing line ends, so a path ending in a space is
+    // another folder, then reads the rest as a C string: what follows a NUL
+    // is not part of the path.
     let end = target
         .iter()
         .rposition(|byte| *byte != b'\n' && *byte != b'\r')
         .map_or(0, |last| last + 1);
-    let target = &target[..end];
-    if target.contains(&0) {
-        return None;
-    }
+    let target = target[..end].split(|byte| *byte == 0).next()?;
     holder.join(path_from_bytes(target)).canonicalize().ok()
 }
 
@@ -606,11 +973,9 @@ impl GitRepository {
             reported.root.is_absolute() && reported.git_dir.is_absolute(),
             "Git returned a non-absolute repository path"
         );
-        let identity = Arc::new(Identity::capture(
-            &reported.root,
-            &reported.git_dir,
-            reported.bare,
-        )?);
+        let (identity, gitfile_unread) =
+            Identity::capture(&reported.root, &reported.git_dir, reported.bare)?;
+        let identity = Arc::new(identity);
         let repository = Self {
             path: reported.root.clone(),
             bare: reported.bare,
@@ -630,6 +995,16 @@ impl GitRepository {
             }
         });
         let found = match repository.found_at_path()? {
+            // Git read the gitfile the capture could not, swapped under it:
+            // captured so, the handle had no ceiling and asked Git at every
+            // check for its whole life.
+            FoundAtPath::Same if gitfile_unread => {
+                return Err(ChangedWhileOpening {
+                    found: Some(repository.path.clone()),
+                    path: repository.path,
+                }
+                .into());
+            }
             FoundAtPath::Same => return Ok(repository),
             FoundAtPath::Other(found) => Some(found),
             FoundAtPath::None => None,
@@ -783,7 +1158,12 @@ impl GitRepository {
     ///
     /// A configuration edit also asks Git, once (`core.worktree` re-pointed
     /// after open moves the work tree with no `.git` entry changed): the
-    /// repository the same, the edited files are confirmed again.
+    /// repository the same, the edited files are confirmed again. So does a
+    /// path those files store no longer leading where it must, a link on
+    /// the way to the common directory or the work tree re-pointed; the
+    /// paths stay as they were while no file changed, whatever Git answers.
+    /// Paths that cannot be read after a file changed are an error, what
+    /// was confirmed stays, and the next check asks again.
     pub fn verify_at_path(&self) -> Result<FoundAtPath> {
         if !(self.identity.confined && self.identity.holds(&self.path, self.bare)) {
             return self.found_at_path();
@@ -791,15 +1171,35 @@ impl GitRepository {
         let stamps = self.identity.config_stamps();
         let mut confirmed = self
             .identity
-            .stamps
+            .confirmed
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *confirmed == stamps {
+        let changed = confirmed.stamps != stamps;
+        if !changed && confirmed.stored.iter().all(StoredPath::holds) {
             return Ok(FoundAtPath::Same);
         }
+        let identity = &self.identity;
+        let stored = changed
+            .then(|| {
+                Identity::stored_paths(
+                    &identity.git_dir,
+                    &identity.common,
+                    &identity.root,
+                    self.bare,
+                )
+            })
+            .transpose()?;
+        #[cfg(test)]
+        VERIFY_CHECKPOINT.with_borrow_mut(|hook| {
+            if let Some(hook) = hook {
+                hook();
+            }
+        });
         let found = self.found_at_path()?;
-        if found == FoundAtPath::Same {
-            *confirmed = stamps;
+        if found == FoundAtPath::Same
+            && let Some(stored) = stored
+        {
+            *confirmed = Confirmed { stamps, stored };
         }
         Ok(found)
     }
@@ -2035,6 +2435,728 @@ mod tests {
         let opened = GitRepository::open(folder);
         OPEN_CHECKPOINT.with_borrow_mut(|hook| *hook = None);
         opened
+    }
+
+    /// The check of `repository`, with `change` run as it is about to ask
+    /// Git.
+    #[cfg(unix)]
+    fn verify_changed_part_way(
+        repository: &GitRepository,
+        change: impl FnMut() + 'static,
+    ) -> Result<FoundAtPath> {
+        VERIFY_CHECKPOINT.with_borrow_mut(|hook| *hook = Some(Box::new(change)));
+        let found = repository.verify_at_path();
+        VERIFY_CHECKPOINT.with_borrow_mut(|hook| *hook = None);
+        found
+    }
+
+    /// Points the existing link `link` at `target`.
+    #[cfg(unix)]
+    fn re_point(link: &Path, target: &Path) {
+        std::fs::remove_file(link).unwrap();
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    /// A folder `name` in `base` with a repository and one commit.
+    #[cfg(unix)]
+    fn committed_repository(base: &Path, name: &str) -> PathBuf {
+        let root = base.join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "--quiet"]);
+        git(&root, &["commit", "--quiet", "--allow-empty", "-m", name]);
+        root
+    }
+
+    /// A worktree of `main` at `path`, on its own branch `name`.
+    #[cfg(unix)]
+    fn add_worktree(main: &Path, name: &str, path: &Path) {
+        git(
+            main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                name,
+                path.to_str().unwrap(),
+            ],
+        );
+    }
+
+    /// Where the entries the check keeps must lead, and the stored paths.
+    #[cfg(unix)]
+    fn guards(repository: &GitRepository) -> Vec<(PathBuf, PathBuf)> {
+        repository
+            .identity
+            .confirmed
+            .lock()
+            .unwrap()
+            .stored
+            .iter()
+            .map(|stored| (stored.leads_to.clone(), stored.path.clone()))
+            .collect()
+    }
+
+    /// The guard on a `core.worktree` reached through a link is chosen by
+    /// the file Git reads, never by where the link leads as it is chosen,
+    /// and left alone while no stamped file changed: a flip during a check
+    /// that went to Git once dropped it for the handle's life, and the next
+    /// re-point staged the other tree. Whether or not the configuration
+    /// changed during the flip, the write is refused before Git starts.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_flipped_during_a_check_keeps_the_work_tree_guard() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let root = committed_repository(&base, "root");
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("foreign.txt"), "foreign\n").unwrap();
+        let link = base.join("tree-link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        git(&root, &["config", "core.worktree", link.to_str().unwrap()]);
+        let repository = GitRepository::open(&root).unwrap();
+        assert_eq!(repository.verify_at_path().unwrap(), FoundAtPath::Same);
+
+        for stamp_changed in [false, true] {
+            re_point(&link, &elsewhere);
+            if stamp_changed {
+                git(&root, &["config", "gitturtle.marker", "1"]);
+            }
+            let (back, target) = (link.clone(), root.clone());
+            let found = verify_changed_part_way(&repository, move || re_point(&back, &target));
+            assert_eq!(found.unwrap(), FoundAtPath::Same, "stamp {stamp_changed}");
+
+            re_point(&link, &elsewhere);
+            let error = repository.execute(&WriteCommand::StageAll).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("Git was not started"),
+                "stamp {stamp_changed}: {error:#}"
+            );
+            re_point(&link, &root);
+            assert_eq!(repository.verify_at_path().unwrap(), FoundAtPath::Same);
+        }
+    }
+
+    /// The check keeps the paths Git reads for this repository and no
+    /// others, as Git 2.56 reads them: `config.worktree` over the common
+    /// `config` under `extensions.worktreeConfig`; otherwise the common
+    /// `config`, but never where a `commondir` file exists, which itself
+    /// always gets an entry. A value Git does not read is no guard, wherever
+    /// it leads; one it reads is, wherever it leads now.
+    #[cfg(unix)]
+    #[test]
+    fn the_check_guards_the_paths_git_reads() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let elsewhere = elsewhere.to_str().unwrap();
+        let worktree_file = |value: &str| format!("[core]\n\tworktree = {value}\n");
+
+        let plain = committed_repository(&base, "plain");
+        let opened = GitRepository::open(&plain).unwrap();
+        assert_eq!(guards(&opened), [], "nothing stored");
+
+        let by_link = committed_repository(&base, "by-link");
+        let link = base.join("by-link-tree");
+        std::os::unix::fs::symlink(&by_link, &link).unwrap();
+        git(
+            &by_link,
+            &["config", "core.worktree", link.to_str().unwrap()],
+        );
+        let opened = GitRepository::open(&by_link).unwrap();
+        assert_eq!(guards(&opened), [(by_link.clone(), link.clone())]);
+
+        let unread = committed_repository(&base, "unread");
+        let file = unread.join(".git/config.worktree");
+        std::fs::write(&file, worktree_file(elsewhere)).unwrap();
+        let opened = GitRepository::open(&unread).unwrap();
+        assert_eq!(opened.path(), unread, "no extension: Git ignores the file");
+        assert_eq!(guards(&opened), []);
+
+        let main = committed_repository(&base, "main");
+        let linked = base.join("linked");
+        add_worktree(&main, "linked", &linked);
+        git(
+            &main,
+            &["config", "core.worktree", linked.to_str().unwrap()],
+        );
+        let opened = GitRepository::open(&linked).unwrap();
+        let private = opened.git_dir().to_owned();
+        let common = main.join(".git");
+        let common_entry = (common.clone(), private.join("../.."));
+        assert_eq!(
+            guards(&opened),
+            std::slice::from_ref(&common_entry),
+            "the main worktree's value is not a linked worktree's"
+        );
+
+        let per_worktree = committed_repository(&base, "per-worktree");
+        let second = base.join("per-worktree-linked");
+        add_worktree(&per_worktree, "second", &second);
+        git(
+            &per_worktree,
+            &["config", "extensions.worktreeConfig", "true"],
+        );
+        let opened = GitRepository::open(&second).unwrap();
+        let private = opened.git_dir().to_owned();
+        let tree_link = base.join("second-tree");
+        std::os::unix::fs::symlink(&second, &tree_link).unwrap();
+        std::fs::write(
+            private.join("config.worktree"),
+            worktree_file(tree_link.to_str().unwrap()),
+        )
+        .unwrap();
+        let opened = GitRepository::open(&second).unwrap();
+        assert_eq!(
+            guards(&opened),
+            [
+                (per_worktree.join(".git"), private.join("../..")),
+                (second.clone(), tree_link.clone()),
+            ]
+        );
+
+        let own = committed_repository(&base, "own");
+        let own_git = own.join(".git");
+        let own_link = base.join("own-link");
+        std::os::unix::fs::symlink(&own_git, &own_link).unwrap();
+        std::fs::write(
+            own_git.join("commondir"),
+            format!("{}\n", own_link.display()),
+        )
+        .unwrap();
+        git(&own, &["config", "core.worktree", elsewhere]);
+        let opened = GitRepository::open(&own).unwrap();
+        assert_eq!(
+            opened.path(),
+            own,
+            "a commondir file: Git ignores the value"
+        );
+        assert_eq!(guards(&opened), [(own_git.clone(), own_link.clone())]);
+
+        let both = committed_repository(&base, "both");
+        git(&both, &["config", "extensions.worktreeConfig", "true"]);
+        git(&both, &["config", "core.worktree", elsewhere]);
+        let both_link = base.join("both-tree");
+        std::os::unix::fs::symlink(&both, &both_link).unwrap();
+        std::fs::write(
+            both.join(".git/config.worktree"),
+            worktree_file(both_link.to_str().unwrap()),
+        )
+        .unwrap();
+        let opened = GitRepository::open(&both).unwrap();
+        assert_eq!(
+            guards(&opened),
+            [(both.clone(), both_link.clone())],
+            "config.worktree wins"
+        );
+    }
+
+    /// A common `config` with no `core.repositoryformatversion` defines
+    /// nothing: Git clears what it read from one, so it goes by neither its
+    /// `core.worktree` nor the `config.worktree` its extension would name.
+    /// No guard is kept on a value Git ignores, which asked Git at every
+    /// check. The version in place, Git goes by the value, and a re-point of
+    /// the link it reads is refused before Git starts.
+    #[cfg(unix)]
+    #[test]
+    fn a_config_with_no_format_version_names_no_work_tree() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let common_settings = "\tfilemode = true\n\tbare = false\n";
+        let layout = |name: &str, settings: String, own: Option<&str>| {
+            let root = committed_repository(&base, name);
+            for folder in ["sub1", "sub2"] {
+                std::fs::create_dir(root.join(folder)).unwrap();
+            }
+            std::fs::write(
+                root.join(".git/config"),
+                format!("[core]\n{common_settings}{settings}"),
+            )
+            .unwrap();
+            if let Some(own) = own {
+                std::fs::write(root.join(".git/config.worktree"), own).unwrap();
+            }
+            root
+        };
+        let layouts = [
+            ("relative", "\tworktree = ../sub1\n".to_owned(), None),
+            (
+                "absolute",
+                format!("\tworktree = {}\n", elsewhere.display()),
+                None,
+            ),
+            (
+                "extension",
+                "\tworktree = ../sub1\n[extensions]\n\tworktreeConfig = true\n".to_owned(),
+                Some("[core]\n\tworktree = ../sub2\n"),
+            ),
+        ];
+        for (name, settings, own) in layouts {
+            let root = layout(name, settings, own);
+            let opened = GitRepository::open(&root).unwrap();
+            assert_eq!(opened.path(), root, "{name}");
+            assert_eq!(guards(&opened), [], "{name}");
+            for _ in 0..3 {
+                let found = verify_changed_part_way(&opened, || panic!("the check asked Git"));
+                assert_eq!(found.unwrap(), FoundAtPath::Same, "{name}");
+            }
+        }
+
+        let root = committed_repository(&base, "versioned");
+        let link = base.join("versioned-tree");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let settings = format!(
+            "\trepositoryformatversion = 0\n\tworktree = {}\n",
+            link.display()
+        );
+        std::fs::write(
+            root.join(".git/config"),
+            format!("[core]\n{common_settings}{settings}"),
+        )
+        .unwrap();
+        let opened = GitRepository::open(&root).unwrap();
+        assert_eq!(guards(&opened), [(root.clone(), link.clone())]);
+        re_point(&link, &elsewhere);
+        let error = opened.execute(&WriteCommand::StageAll).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("Git was not started"),
+            "{error:#}"
+        );
+    }
+
+    /// `core.repositoryformatversion` as Git goes by it, real Git's answer
+    /// for each spelling on whatever C library it was built with: a version
+    /// of -1 is none, so Git ignores `core.worktree`, and a guard on that
+    /// value once asked Git at every check. The last of several counts.
+    #[cfg(unix)]
+    #[test]
+    fn a_format_version_reads_as_git_goes_by_it() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let line = |value: &str| format!("\trepositoryformatversion = {value}\n");
+        let cases = [
+            ("-1", line("-1")),
+            ("-01", line("-01")),
+            ("-0x1", line("-0x1")),
+            ("-0b1", line("-0b1")),
+            ("-2", line("-2")),
+            ("-1k", line("-1k")),
+            ("-0", line("-0")),
+            ("0x0", line("0x0")),
+            ("0", line("0")),
+            ("1", line("1")),
+            ("absent", String::new()),
+            ("0 then -1", format!("{}{}", line("0"), line("-1"))),
+            ("-1 then 0", format!("{}{}", line("-1"), line("0"))),
+        ];
+        for (index, (name, version)) in cases.into_iter().enumerate() {
+            let root = committed_repository(&base, &format!("repository-{index}"));
+            let tree = root.join("sub1");
+            std::fs::create_dir(&tree).unwrap();
+            let git_dir = root.join(".git");
+            std::fs::write(
+                git_dir.join("config"),
+                format!("[core]\n{version}\tbare = false\n\tworktree = ../sub1\n"),
+            )
+            .unwrap();
+            let by_git = Command::new("git")
+                .arg("-C")
+                .arg(&tree)
+                .args(["rev-parse", "--show-toplevel"])
+                .output()
+                .unwrap();
+            let by_git = by_git
+                .status
+                .success()
+                .then(|| trim_line(&by_git.stdout) == tree.as_os_str().as_encoded_bytes());
+            let ours = work_tree_git_reads(&git_dir, &git_dir)
+                .map(|value| value.is_some())
+                .ok();
+            assert_eq!(ours, by_git, "{name}");
+        }
+    }
+
+    /// `extensions.worktreeConfig` reads as real Git reads it, one value of
+    /// each form, on whatever C library this Git was built with: refused
+    /// where Git refuses it. A spelling only Git can read goes to Git, and
+    /// the last of several values is the one that counts.
+    #[test]
+    fn a_configuration_boolean_reads_as_git_reads_it() {
+        let fixture = tempfile::tempdir().unwrap();
+        let file = fixture.path().join("config");
+        let values = [
+            None,
+            Some(""),
+            Some("true"),
+            Some("TRUE"),
+            Some("yes"),
+            Some("on"),
+            Some("false"),
+            Some("FALSE"),
+            Some("no"),
+            Some("off"),
+            Some("0"),
+            Some("00"),
+            Some("1"),
+            Some("2"),
+            Some("-1"),
+            Some("0x0"),
+            Some("0x1"),
+            Some("0x10"),
+            Some("0xa"),
+            Some("0k"),
+            Some("1k"),
+            Some("0b0"),
+            Some("0B0"),
+            Some("0b00"),
+            Some("-0b0"),
+            Some("0b0k"),
+            Some("maybe"),
+        ];
+        let line = |value: Option<&str>| match value {
+            Some(value) => format!("\tworktreeConfig = {value}\n"),
+            None => "\tworktreeConfig\n".to_owned(),
+        };
+        for value in values {
+            for lines in [line(value), format!("{}{}", line(Some("0x1")), line(value))] {
+                std::fs::write(&file, format!("[extensions]\n{lines}")).unwrap();
+                let by_git = Command::new("git")
+                    .args(["config", "--file"])
+                    .arg(&file)
+                    .args(["--type=bool", "--get", "extensions.worktreeconfig"])
+                    .output()
+                    .unwrap();
+                let by_git = by_git
+                    .status
+                    .success()
+                    .then(|| String::from_utf8_lossy(&by_git.stdout).trim() == "true");
+                let ours = WorkTreeSettings::read(fixture.path(), &file)
+                    .and_then(|settings| settings.reads_per_worktree(fixture.path(), &file))
+                    .ok();
+                assert_eq!(ours, by_git, "{lines:?}");
+            }
+        }
+    }
+
+    /// `work` on a thread of its own, its answer arriving on the channel:
+    /// a read blocked opening a FIFO never answers, so a test can fail
+    /// past a limit rather than hang.
+    #[cfg(unix)]
+    fn answering(work: impl FnOnce() -> bool + Send + 'static) -> std::sync::mpsc::Receiver<bool> {
+        let (answer, answered) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = answer.send(work());
+        });
+        answered
+    }
+
+    #[cfg(unix)]
+    fn make_fifo(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        assert!(Command::new("mkfifo").arg(path).status().unwrap().success());
+    }
+
+    /// Lets go a reader waiting in `open` on the FIFO at `path`: a writer's
+    /// open, which never waits itself.
+    #[cfg(unix)]
+    fn release_fifo(path: &Path) {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+            .open(path);
+    }
+
+    /// A FIFO at a file the identity reads never blocks it: its open waits
+    /// for a writer with no deadline, on the one reader thread and at a
+    /// check holding the identity's lock, where one at `config.worktree`
+    /// hung an open and one at `commondir` a check for as long as it stayed.
+    /// Only a regular file is opened; anything else is Git's to read, under
+    /// its deadline (`commondir`, and `config.worktree` under its extension,
+    /// are ones Git reads, so those checks take it; with no extension
+    /// neither reads that file).
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_a_git_directory_never_blocks_the_identity() {
+        const LIMIT: Duration = Duration::from_secs(40);
+        let fixture = tempfile::tempdir().unwrap();
+        let init = |name: &str| {
+            let root = fixture.path().join(name);
+            std::fs::create_dir(&root).unwrap();
+            git(&root, &["init", "--quiet"]);
+            git(&root, &["commit", "--quiet", "--allow-empty", "-m", name]);
+            root.canonicalize().unwrap()
+        };
+        let linked = |main: &Path, name: &str| {
+            let path = fixture.path().join(name);
+            git(
+                main,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    name,
+                    path.to_str().unwrap(),
+                ],
+            );
+            path.canonicalize().unwrap()
+        };
+
+        // Every Git command and open before the first FIFO: this test's
+        // own `git` has no deadline, and `worktree add` reads the
+        // `commondir` of the worktrees already there.
+        let config_at_open = init("config-at-open");
+        let config_after_open = init("config-after-open");
+        let per_worktree = init("per-worktree");
+        git(
+            &per_worktree,
+            &["config", "extensions.worktreeConfig", "true"],
+        );
+        let main = init("main");
+        let common_at_open = linked(&main, "common-at-open");
+        let common_after_open = linked(&main, "common-after-open");
+        let config_repository = GitRepository::open(&config_after_open).unwrap();
+        let per_worktree_repository = GitRepository::open(&per_worktree).unwrap();
+        let common_repository = GitRepository::open(&common_after_open).unwrap();
+        let private = GitRepository::open(&common_at_open)
+            .unwrap()
+            .git_dir()
+            .to_owned();
+        let fifos = [
+            config_at_open.join(".git/config.worktree"),
+            config_after_open.join(".git/config.worktree"),
+            per_worktree.join(".git/config.worktree"),
+            private.join("commondir"),
+            common_repository.git_dir().join("commondir"),
+        ];
+        for fifo in &fifos {
+            make_fifo(fifo);
+        }
+
+        let fifo = fifos[0].clone();
+        let answers = [
+            (
+                "reading a FIFO at config.worktree",
+                answering(move || matches!(may_name_a_work_tree(&fifo), Ok(false))),
+            ),
+            (
+                "reading a FIFO at commondir",
+                answering(move || matches!(stored_common_dir(&private), Ok(None))),
+            ),
+            (
+                "an open with a FIFO at config.worktree",
+                answering(move || GitRepository::open(&config_at_open).is_ok()),
+            ),
+            (
+                "a check with a FIFO at config.worktree",
+                answering(move || {
+                    config_repository
+                        .verify_at_path()
+                        .is_ok_and(|found| found == FoundAtPath::Same)
+                }),
+            ),
+            (
+                "a check with a FIFO at a config.worktree Git reads",
+                answering(move || per_worktree_repository.verify_at_path().is_err()),
+            ),
+            (
+                "an open with a FIFO at commondir",
+                answering(move || GitRepository::open(&common_at_open).is_err()),
+            ),
+            (
+                "a check with a FIFO at commondir",
+                answering(move || common_repository.verify_at_path().is_err()),
+            ),
+        ];
+
+        let deadline = std::time::Instant::now() + LIMIT;
+        let (mut blocked, mut wrong) = (Vec::new(), Vec::new());
+        for (what, answer) in &answers {
+            match answer.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            {
+                Ok(true) => {}
+                Ok(false) => wrong.push(*what),
+                Err(_) => blocked.push(*what),
+            }
+        }
+        // Past the limit, whatever still waits is let go before the test
+        // fails, so a regression ends here and holds no thread or process.
+        if !blocked.is_empty() {
+            for _ in 0..20 {
+                for fifo in &fifos {
+                    release_fifo(fifo);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        assert!(blocked.is_empty(), "blocked past {LIMIT:?}: {blocked:?}");
+        assert!(wrong.is_empty(), "the wrong answer: {wrong:?}");
+    }
+
+    /// A file the identity reads that cannot be opened is no file that is
+    /// not there: only nothing at the path, or no regular file, reads as no
+    /// entry. Failing as a process out of file descriptors does, the check
+    /// that follows a configuration edit errs and keeps what it confirmed,
+    /// where it once stored no guard on the `commondir` and Git, whose own
+    /// open succeeded, confirmed that. The next check asks again.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_cannot_be_opened_is_no_file_that_is_not_there() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        assert!(matches!(open_regular_file(&base.join("gone")), Ok(None)));
+        let plain = base.join("plain");
+        std::fs::write(&plain, "").unwrap();
+        assert!(matches!(open_regular_file(&plain.join("under")), Ok(None)));
+        let looped = base.join("looped");
+        std::os::unix::fs::symlink(&looped, &looped).unwrap();
+        assert!(open_regular_file(&looped).is_err());
+
+        // A `.git` directory, so the failing open is the stored path's:
+        // a gitfile's would send the check to Git before it got there.
+        let own = committed_repository(&base, "own");
+        let link = base.join("own-link");
+        std::os::unix::fs::symlink(own.join(".git"), &link).unwrap();
+        std::fs::write(own.join(".git/commondir"), format!("{}\n", link.display())).unwrap();
+        let opened = GitRepository::open(&own).unwrap();
+        let confirmed = guards(&opened);
+        assert_eq!(confirmed.len(), 1, "the commondir");
+
+        git(&own, &["config", "gitturtle.marker", "1"]);
+        OPEN_REFUSED.set(true);
+        let found = opened.verify_at_path();
+        OPEN_REFUSED.set(false);
+        let error = format!("{:#}", found.unwrap_err());
+        assert!(error.contains("commondir"), "names the file: {error}");
+        assert_eq!(guards(&opened), confirmed);
+
+        assert_eq!(opened.verify_at_path().unwrap(), FoundAtPath::Same);
+        assert_eq!(guards(&opened), confirmed);
+    }
+
+    /// A gitfile Git accepts is read as Git reads it, as a C string that
+    /// ends at its first NUL: read whole it was no gitfile, and the handle
+    /// had no ceiling and asked Git at every check for its whole life.
+    #[cfg(unix)]
+    #[test]
+    fn a_gitfile_with_a_nul_opens_confined() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let main = committed_repository(&base, "main");
+        let linked = base.join("linked");
+        add_worktree(&main, "linked", &linked);
+        let private = GitRepository::open(&linked).unwrap().git_dir().to_owned();
+        let mut gitfile = format!("gitdir: {}", private.display()).into_bytes();
+        gitfile.extend_from_slice(b"\0trailing junk");
+        std::fs::write(linked.join(".git"), gitfile).unwrap();
+
+        let opened = GitRepository::open(&linked).unwrap();
+        assert_eq!(opened.git_dir(), private);
+        assert!(opened.identity.confined);
+        assert!(opened.identity.holds(opened.path(), false));
+        for _ in 0..3 {
+            let found = verify_changed_part_way(&opened, || panic!("the check asked Git"));
+            assert_eq!(found.unwrap(), FoundAtPath::Same);
+        }
+    }
+
+    /// A gitfile that cannot be read as the repository is captured refuses
+    /// the open, though Git, asked a moment later, finds the repository:
+    /// captured so, the handle could not be confined for its whole life.
+    /// Opened again with the gitfile in place, it is confined. A FIFO at
+    /// `.git` is as unread as one met at the open. Past the limit, whatever
+    /// still waits is let go before the test fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_gitfile_unreadable_at_capture_refuses_the_open() {
+        const LIMIT: Duration = Duration::from_secs(40);
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let main = committed_repository(&base, "main");
+        let linked = base.join("linked");
+        add_worktree(&main, "linked", &linked);
+        let entry = linked.join(".git");
+        let gitfile = std::fs::read(&entry).unwrap();
+        let fifo = base.join("fifo");
+        make_fifo(&fifo);
+
+        let (root, swapped, to, aside, back) = (
+            linked.clone(),
+            fifo.clone(),
+            entry.clone(),
+            fifo.clone(),
+            entry.clone(),
+        );
+        let answer = answering(move || {
+            GITFILE_CHECKPOINT.with_borrow_mut(|hook| {
+                *hook = Some(Box::new(move || {
+                    let _ = std::fs::rename(&swapped, &to);
+                }));
+            });
+            let opened = open_changed_part_way(&root, move || {
+                std::fs::rename(&back, &aside).unwrap();
+                std::fs::write(&back, &gitfile).unwrap();
+            });
+            GITFILE_CHECKPOINT.with_borrow_mut(|hook| *hook = None);
+            opened.is_err_and(|error| error.is::<ChangedWhileOpening>())
+        });
+        let answered = answer.recv_timeout(LIMIT);
+        if answered.is_err() {
+            for _ in 0..20 {
+                release_fifo(&entry);
+                release_fifo(&fifo);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        assert_eq!(answered, Ok(true), "blocked past {LIMIT:?}, or opened it");
+
+        let opened = GitRepository::open(&linked).unwrap();
+        assert!(opened.identity.confined);
+
+        std::fs::rename(&fifo, base.join("at-git-next")).unwrap();
+        let holder = base.join("holder");
+        std::fs::create_dir(&holder).unwrap();
+        std::fs::rename(base.join("at-git-next"), holder.join(".git")).unwrap();
+        assert!(matches!(read_git_entry(&holder), GitEntry::Unread));
+    }
+
+    /// A gitfile swapped for a FIFO between the look at its type and its
+    /// open is no gitfile: the check opens it every time, on the one reader
+    /// thread, and that exchange once held a check for as long as the FIFO
+    /// stayed. Past the limit, whatever still waits is let go before the
+    /// test fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_gitfile_swapped_for_a_fifo_never_blocks_its_reading() {
+        const LIMIT: Duration = Duration::from_secs(40);
+        let fixture = tempfile::tempdir().unwrap();
+        let holder = fixture.path().join("holder");
+        std::fs::create_dir(&holder).unwrap();
+        let entry = holder.join(".git");
+        std::fs::write(&entry, "gitdir: elsewhere\n").unwrap();
+        let fifo = fixture.path().join("fifo");
+        make_fifo(&fifo);
+
+        let (from, to) = (fifo, entry.clone());
+        let answer = answering(move || {
+            GITFILE_CHECKPOINT.with_borrow_mut(|hook| {
+                *hook = Some(Box::new(move || std::fs::rename(&from, &to).unwrap()));
+            });
+            resolve_git_entry(&holder).is_none()
+        });
+        let answered = answer.recv_timeout(LIMIT);
+        if answered.is_err() {
+            for _ in 0..20 {
+                release_fifo(&entry);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        assert_eq!(answered, Ok(true), "blocked past {LIMIT:?}, or read it");
     }
 
     /// An open stamps the files that can move the work tree or the common

@@ -1466,3 +1466,206 @@ fn a_linked_worktree_whose_commondir_is_re_pointed_is_refused() {
     assert!(error.contains("Git was not started"), "{error}");
     assert_eq!(other.git(&["diff", "--cached", "--name-only"]), "");
 }
+
+/// Points the existing link `link` at `target`.
+#[cfg(unix)]
+fn re_point(link: &Path, target: &Path) {
+    fs::remove_file(link).unwrap();
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+/// A plain repository whose `commondir` reaches its own Git directory
+/// through a link has no second directory, so nothing but the file says it
+/// leads anywhere: re-pointing the link gives it another repository's refs
+/// and objects, so the check refuses before Git starts. Kept out of the
+/// guard because the two directories are one, a real commit once moved the
+/// other repository's HEAD. Its link back as it was, the write runs.
+#[cfg(unix)]
+#[test]
+fn a_commondir_through_a_link_to_its_own_git_directory_re_pointed_is_refused() {
+    let f = Fixture::new();
+    f.write("file.txt", "base\n");
+    f.commit("base");
+    let own = f.root.join(".git").canonicalize().unwrap();
+    let link = f.temp.path().join("own-link");
+    std::os::unix::fs::symlink(&own, &link).unwrap();
+    fs::write(own.join("commondir"), format!("{}\n", link.display())).unwrap();
+    let repo = f.repo();
+    assert_eq!(repo.common_dir(), own);
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+
+    let other = Fixture::new();
+    other.write("other.txt", "other\n");
+    other.commit("other");
+    let other_git = other.repo().git_dir().to_owned();
+    let other_head = other.git(&["rev-parse", "HEAD"]);
+    re_point(&link, &other_git);
+    f.write("file.txt", "changed\n");
+    for command in [
+        WriteCommand::StageAll,
+        WriteCommand::Commit {
+            message: "lands where".into(),
+        },
+    ] {
+        let error = format!("{:#}", repo.execute(&command).unwrap_err());
+        assert!(error.contains("Git was not started"), "{error}");
+    }
+    assert_eq!(other.git(&["rev-parse", "HEAD"]), other_head);
+    assert_eq!(other.git(&["diff", "--cached", "--name-only"]), "");
+
+    re_point(&link, &own);
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+    repo.execute(&WriteCommand::StageAll).unwrap();
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "file.txt");
+}
+
+/// A linked worktree whose `commondir` reaches the main Git directory
+/// through a link: re-pointing the link gives it another repository's refs
+/// and objects with none of the files the check stamps changed, so the
+/// check resolves the stored path again and refuses before Git starts. Its
+/// link back as it was, the check holds again and the write runs.
+#[cfg(unix)]
+#[test]
+fn a_commondir_through_a_link_re_pointed_after_open_is_refused() {
+    let f = Fixture::new();
+    f.write("file.txt", "base\n");
+    f.commit("base");
+    let linked = f.temp.path().join("linked");
+    f.git(&[
+        "worktree",
+        "add",
+        "--quiet",
+        "-b",
+        "linked",
+        linked.to_str().unwrap(),
+    ]);
+    let private = GitRepository::open(&linked).unwrap().git_dir().to_owned();
+    let main_git = f.root.join(".git").canonicalize().unwrap();
+    let link = f.temp.path().join("common-link");
+    std::os::unix::fs::symlink(&main_git, &link).unwrap();
+    fs::write(private.join("commondir"), format!("{}\n", link.display())).unwrap();
+    let repo = GitRepository::open(&linked).unwrap();
+    assert_eq!(repo.common_dir(), main_git);
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+
+    let other = Fixture::new();
+    other.write("other.txt", "other\n");
+    other.commit("other");
+    let other_git = other.repo().git_dir().to_owned();
+    re_point(&link, &other_git);
+    fs::write(linked.join("file.txt"), "changed\n").unwrap();
+    let error = format!("{:#}", repo.execute(&WriteCommand::StageAll).unwrap_err());
+    assert!(error.contains("Git was not started"), "{error}");
+    assert_eq!(other.git(&["diff", "--cached", "--name-only"]), "");
+    assert!(
+        matches!(
+            repo.verify_at_path().unwrap(),
+            FoundAtPath::Other(found) if found.canonicalize().unwrap() == other_git
+        ),
+        "the other repository's common directory is named"
+    );
+
+    re_point(&link, &main_git);
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+    repo.execute(&WriteCommand::StageAll).unwrap();
+    assert_eq!(
+        git(&linked, &["diff", "--cached", "--name-only"]),
+        "file.txt"
+    );
+}
+
+/// `extensions.worktreeConfig` spelled so that only Git can read it: `0b0` is
+/// zero to a C23 `strtoimax`, so Git goes by the shared `core.worktree`,
+/// through a link, and never reads `config.worktree`. Read here as true, the
+/// guard lay on `config.worktree`, which still led to the root, so a re-point
+/// of the link Git really reads passed with no process started and Stage all
+/// staged the other tree's files. Refused before Git starts now. Where the C
+/// library takes no binary, Git refuses the value and this layout cannot be
+/// made.
+#[cfg(unix)]
+#[test]
+fn a_flag_only_git_can_read_guards_the_work_tree_git_reads() {
+    let f = Fixture::new();
+    f.write("seed.txt", "base\n");
+    f.commit("base");
+    let spelling = f.temp.path().join("spelling");
+    fs::write(&spelling, "[x]\n\tk = 0b0\n").unwrap();
+    let read = Command::new("git")
+        .args(["config", "--file"])
+        .arg(&spelling)
+        .args(["--type=bool", "--get", "x.k"])
+        .output()
+        .unwrap();
+    if !read.status.success() {
+        return;
+    }
+    assert_eq!(String::from_utf8_lossy(&read.stdout).trim(), "false");
+
+    let root = f.root.canonicalize().unwrap();
+    f.write("sub1/file.txt", "tree\n");
+    f.write("sub3/foreign.txt", "foreign\n");
+    let tree = root.join("sub1");
+    let link = f.temp.path().join("tree-link");
+    std::os::unix::fs::symlink(&tree, &link).unwrap();
+    f.git(&["config", "core.repositoryformatversion", "1"]);
+    f.git(&["config", "extensions.worktreeConfig", "0b0"]);
+    f.git(&["config", "core.worktree", link.to_str().unwrap()]);
+    fs::write(
+        root.join(".git/config.worktree"),
+        format!("[core]\n\tworktree = {}\n", tree.display()),
+    )
+    .unwrap();
+    let repo = GitRepository::open(&tree).unwrap();
+    assert_eq!(repo.path(), tree);
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+
+    let index = fs::read(root.join(".git/index")).unwrap();
+    re_point(&link, &root.join("sub3"));
+    let error = format!("{:#}", repo.execute(&WriteCommand::StageAll).unwrap_err());
+    assert!(
+        error.contains("The repository changed") && error.contains("Git was not started"),
+        "{error}"
+    );
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+
+    re_point(&link, &tree);
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+    repo.execute(&WriteCommand::StageAll).unwrap();
+}
+
+/// `core.worktree` reaching the work tree through a link: re-pointing the
+/// link moves the work tree with no configuration file touched and no
+/// `.git` entry changed, so the check resolves the stored path again and
+/// refuses before Git starts, leaving the index alone. Its link back as it
+/// was, the check holds again and the write runs.
+#[cfg(unix)]
+#[test]
+fn a_core_worktree_through_a_link_re_pointed_after_open_is_refused() {
+    let f = Fixture::new();
+    f.write("file.txt", "base\n");
+    f.commit("base");
+    let root = f.root.canonicalize().unwrap();
+    let link = f.temp.path().join("tree-link");
+    std::os::unix::fs::symlink(&root, &link).unwrap();
+    f.git(&["config", "core.worktree", link.to_str().unwrap()]);
+    let repo = f.repo();
+    assert_eq!(repo.path(), root);
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+
+    let elsewhere = f.temp.path().join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    fs::write(elsewhere.join("foreign.txt"), "foreign\n").unwrap();
+    f.write("file.txt", "changed\n");
+    re_point(&link, &elsewhere);
+    let error = format!("{:#}", repo.execute(&WriteCommand::StageAll).unwrap_err());
+    assert!(
+        error.contains("The repository changed") && error.contains("Git was not started"),
+        "{error}"
+    );
+    assert!(f.git(&["diff", "--cached", "--name-only"]).is_empty());
+
+    re_point(&link, &root);
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
+    repo.execute(&WriteCommand::StageAll).unwrap();
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "file.txt");
+}
