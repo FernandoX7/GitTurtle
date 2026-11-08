@@ -35,6 +35,79 @@ pub(crate) struct WorkingInspectorLayout {
     /// (`GitTurtle::render_working_body`): the title, the description,
     /// Retry, Set your commit identity and Commit.
     scrolled_stops: Option<[f32; 5]>,
+    /// The focus handles of the controls in the file list's rows, and where
+    /// the one holding focus lies ([`RowControls`]).
+    row_controls: RowControls,
+}
+
+/// The focus handles of the controls in the file list's rows, a file's
+/// Stage or Unstage and a section heading's Stage all or Unstage all, each
+/// the same in every frame that draws its row, and where the one holding
+/// focus lies in the frame being painted, which the floor's fades stop
+/// short of (`floor_fades`). Keyed by the kit inside each Button, a
+/// control's handle was out of the list's reach, so the floor's fades lay
+/// over a focused Stage's ring at the floor's edge. A handle whose row the
+/// last frame did not draw is given up, unless it holds focus, so focus on
+/// a control scrolled out of the list stays on it and shows again with its
+/// row, as a revealing container keeps its controls' handles
+/// (`FocusReveal::focus`).
+#[derive(Clone, Default)]
+pub(crate) struct RowControls(Rc<RefCell<RowControlsState>>);
+
+#[derive(Default)]
+struct RowControlsState {
+    /// Each control's handle by its row's id, and whether the frame being
+    /// drawn has drawn its row.
+    handles: std::collections::HashMap<ElementId, (FocusHandle, bool)>,
+    /// The bounds of the control holding focus, as its row was prepainted in
+    /// the frame being drawn; none where no row drawn holds it.
+    focused: Option<Bounds<Pixels>>,
+}
+
+impl RowControls {
+    /// For the list's render, in each frame before its rows are drawn: gives
+    /// up the handles of the controls the last frame did not draw, but one
+    /// holding focus, and forgets where the focused one lay.
+    fn begin(&self, window: &Window) {
+        let mut state = self.0.borrow_mut();
+        state
+            .handles
+            .retain(|_, (focus, drawn)| std::mem::take(drawn) || focus.is_focused(window));
+        state.focused = None;
+    }
+
+    /// The handle of the control in the row `row`, which a Button takes
+    /// through `track_focus`.
+    fn focus(&self, row: ElementId, cx: &App) -> FocusHandle {
+        let mut state = self.0.borrow_mut();
+        let (focus, drawn) = state
+            .handles
+            .entry(row)
+            .or_insert_with(|| (cx.focus_handle(), false));
+        *drawn = true;
+        focus.clone()
+    }
+
+    /// For a row's `on_children_prepainted`, whose last child is its control
+    /// tracking `focus`: records where that control lies while it holds
+    /// focus.
+    fn record(
+        &self,
+        focus: FocusHandle,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        let this = self.clone();
+        move |bounds, window, _| {
+            if let Some(control) = bounds.last().filter(|_| focus.is_focused(window)) {
+                this.0.borrow_mut().focused = Some(*control);
+            }
+        }
+    }
+
+    /// Where the control holding focus lies in the frame being painted, if
+    /// the list drew it.
+    fn focused(&self) -> Option<Bounds<Pixels>> {
+        self.0.borrow().focused
+    }
 }
 
 /// Whether the list/composer body, `height` tall, takes the short form, with
@@ -562,8 +635,14 @@ fn working_no_match_room(width: Pixels, window: &Window) -> Pixels {
 /// nothing to say they were there. Read as the frame paints, after the list
 /// has laid out and clamped its offset, it follows a scroll, a resize or
 /// rows that arrive in the frame that draws them; drawn over the rows and
-/// inside the list's edge, it catches no pointer and lies over no ring.
-fn floor_fades(scroll: UniformListScrollHandle) -> impl IntoElement {
+/// inside the list's edge, it catches no pointer and lies over neither the
+/// list's ring nor a row control's: a fade whose band reaches the ring of
+/// the row control holding focus (`controls`), a file's Stage or a
+/// heading's Stage all at the floor's edge, ends where that ring begins, as
+/// the shared cue's do (`tags::fade_reach`), and returns whole in the frame
+/// focus leaves. The foot's fade once lay 3 px over a focused Unstage's
+/// ring at 18 pt in a 640 × 680 window.
+fn floor_fades(scroll: UniformListScrollHandle, controls: RowControls) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |_, _, window, cx| {
@@ -574,6 +653,10 @@ fn floor_fades(scroll: UniformListScrollHandle) -> impl IntoElement {
                 return;
             }
             let fade = appearance::ui_size(crate::tags::EDGE_FADE).min(list.size.height / 4.);
+            let ring = controls
+                .focused()
+                .map(|control| control.dilate(appearance::button_ring_room(cx)));
+            let (top_fade, bottom_fade) = crate::tags::fade_reach(list, fade, ring);
             // Half a pixel either way is an end, as for the shared cue.
             let slack = px(0.5);
             let scrolled = -scroll.offset().y;
@@ -585,14 +668,14 @@ fn floor_fades(scroll: UniformListScrollHandle) -> impl IntoElement {
                     linear_color_stop(surface, 1.),
                 )
             };
-            if scrolled > slack {
-                let top = Bounds::new(list.origin, size(list.size.width, fade));
+            if scrolled > slack && top_fade > Pixels::ZERO {
+                let top = Bounds::new(list.origin, size(list.size.width, top_fade));
                 window.paint_quad(fill(top, band(0.)));
             }
-            if scrolled < reach - slack {
+            if scrolled < reach - slack && bottom_fade > Pixels::ZERO {
                 let bottom = Bounds::new(
-                    point(list.left(), list.bottom() - fade),
-                    size(list.size.width, fade),
+                    point(list.left(), list.bottom() - bottom_fade),
+                    size(list.size.width, bottom_fade),
                 );
                 window.paint_quad(fill(bottom, band(180.)));
             }
@@ -719,8 +802,40 @@ impl WorkingForms {
     /// scroll cue's gutter the room the track takes beyond it, so the row's
     /// content and its controls' rings end where the track begins.
     fn row_end(&self, window: &Window) -> Pixels {
-        window.rem_size() * 0.75 + self.trailing
+        row_end(
+            self.trailing,
+            window.rem_size() * 0.75,
+            window.scale_factor(),
+        )
     }
+}
+
+/// What the body's rows keep at their right beyond their `px_3`, `inset`,
+/// while the body keeps the scroll cue's `gutter`, at `scale` device pixels
+/// to the pixel ([`WorkingForms::trailing`]): the gutter less the inset as
+/// the layout draws it, the composer's rows taking this room on their box
+/// and their `px_3`, which the layout rounds to a device pixel, inside it.
+/// The total is what is rounded up, so neither rounding brings a row's
+/// content or a control's ring into the track: rounded alone, the room
+/// with the composer's rounded inset fell short of the gutter, as at 13 pt
+/// (9.25 px and 9.75), where the title's ring lay half a pixel over the
+/// track, and at fractional scales such as 14 pt at 175 %.
+pub(super) fn trailing_room(gutter: Pixels, inset: Pixels, scale: f32) -> Pixels {
+    if gutter <= Pixels::ZERO {
+        return Pixels::ZERO;
+    }
+    let drawn = (inset * scale).floor() / scale;
+    ((gutter - drawn) * scale).ceil().max(Pixels::ZERO) / scale
+}
+
+/// A row's whole inset at its right in the body, its `px_3`, `inset`, with
+/// the `trailing` room beside the scroll cue's gutter, rounded up as a whole
+/// to `scale`'s device pixels ([`trailing_room`]); just the inset otherwise.
+pub(super) fn row_end(trailing: Pixels, inset: Pixels, scale: f32) -> Pixels {
+    if trailing <= Pixels::ZERO {
+        return inset;
+    }
+    ((inset + trailing) * scale).ceil() / scale
 }
 
 /// The filter's, the title's and the description's placeholders, of which
@@ -3502,6 +3617,7 @@ impl GitTurtle {
                 list_size: previous_list.map(|size| size.item),
                 inspector: (viewport - px(200.)).max(px(160.)),
                 scrolled_stops: None,
+                row_controls: RowControls::default(),
             })
         });
         self.working_layout.set(Some(layout.clone()));
@@ -3574,13 +3690,7 @@ impl GitTurtle {
         } else {
             Pixels::ZERO
         };
-        // On the device pixel at or past it, so the rounding of the
-        // composer's two insets never brings its rows past the track's ring
-        // room: at 13 pt, 9.25 px and its 9.75 px `px_3` drew the title's
-        // ring half a pixel over the track.
-        let device = window.scale_factor();
-        let trailing =
-            ((gutter - window.rem_size() * 0.75).max(Pixels::ZERO) * device).ceil() / device;
+        let trailing = trailing_room(gutter, window.rem_size() * 0.75, window.scale_factor());
         let body_width = fitted_width - trailing;
         let title_length = self.title_length(window, cx);
         let forms = self.working_forms(fitted_width, body_width, short, title_length, window, cx);
@@ -3784,6 +3894,11 @@ impl GitTurtle {
             .as_ref()
             .map(|flight| (flight.position, flight.slot.clone()));
         let row_height = px(self.settings.density.file_row_height());
+        // The rows' controls take their handles from the layout, which keeps
+        // where the focused one lies for the floor's fades.
+        let controls = layout.read(cx).row_controls.clone();
+        controls.begin(window);
+        let row_controls = controls.clone();
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
@@ -3799,7 +3914,7 @@ impl GitTurtle {
                             {
                                 slot.heading(i);
                             }
-                            this.render_working_row(i, forms, window, cx)
+                            this.render_working_row(i, forms, &row_controls, window, cx)
                         }
                     })
                     .collect::<Vec<_>>()
@@ -3808,7 +3923,7 @@ impl GitTurtle {
         .size_full()
         .track_scroll(&self.working_scroll);
         let travelling = flight.map(|flight| {
-            let row = self.render_working_row(flight.position, forms, window, cx);
+            let row = self.render_working_row(flight.position, forms, &controls, window, cx);
             crate::motion::TravellingRow::new(flight, row)
         });
         let refresh = button("refresh-working", "", "refresh", false)
@@ -4385,9 +4500,10 @@ impl GitTurtle {
             // in them, and a fade at each edge its rows continue past, since
             // the body's track beside it is the only scrollbar there.
             .when(scrolls, |el| {
-                el.flex_none()
-                    .h(px(floor))
-                    .child(floor_fades(self.working_scroll.clone()))
+                el.flex_none().h(px(floor)).child(floor_fades(
+                    self.working_scroll.clone(),
+                    layout.read(cx).row_controls.clone(),
+                ))
             });
         // Scrolling, the body shows the app's scroll cue: its track in the
         // gutter at its right while what it holds overflows, otherwise the
@@ -4396,7 +4512,9 @@ impl GitTurtle {
         // frame's layout keeps the gutter otherwise than the frame assumed,
         // in either form, so a body that has stopped scrolling gives the
         // gutter back in the next frame.
-        let cue = crate::tags::ScrollCue::revealing(reveal, Pixels::ZERO);
+        // Its track lies over the rows, and the list's ring, so it takes no
+        // fill (`ScrollCue::over_rows`).
+        let cue = crate::tags::ScrollCue::revealing(reveal, Pixels::ZERO).over_rows();
         let observe = reveal.observe();
         let body = div()
             .on_children_prepainted(cue.observe(move |bounds, window, cx| {
@@ -4989,6 +5107,7 @@ impl GitTurtle {
         &self,
         position: usize,
         forms: WorkingForms,
+        controls: &RowControls,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -5098,13 +5217,18 @@ impl GitTurtle {
                     )
                 }
                 .when_some(named, |control, named| control.accessibility_label(named));
+                let focus = controls.focus(selector.into(), cx);
+                let control = control.track_focus(&focus);
                 let part = move |part: &'static str| -> String {
                     format!(
                         "{}-heading-{part}",
                         if staged { "staged" } else { "unstaged" }
                     )
                 };
+                // Its control is its last child, whose ring the floor's fades
+                // stop short of while it holds focus.
                 div()
+                    .on_children_prepainted(controls.record(focus))
                     .debug_selector(move || format!("working-row-{position}"))
                     .w_full()
                     .h(px(self.settings.density.file_row_height()))
@@ -5247,8 +5371,18 @@ impl GitTurtle {
                 } else {
                     format!("{path_detail} · {status_label}")
                 };
+                // Its Stage or Unstage, where it draws one, is its last child,
+                // whose ring the floor's fades stop short of while it holds
+                // focus.
+                let row_id = self.working_row_key(index, area);
+                let stage_focus = forms
+                    .file_action
+                    .then(|| controls.focus(row_id.clone(), cx));
                 div()
-                    .id(self.working_row_key(index, area))
+                    .when_some(stage_focus.clone(), |row, focus| {
+                        row.on_children_prepainted(controls.record(focus))
+                    })
+                    .id(row_id)
                     .role(Role::ListBoxOption)
                     .aria_label(format!(
                         "{} · {} · {}",
@@ -5385,7 +5519,7 @@ impl GitTurtle {
                                 .child(status_label),
                         )
                     })
-                    .when(forms.file_action, |row| {
+                    .when_some(stage_focus, |row, focus| {
                         // Icon-only, it reads its confirmation in its tooltip
                         // once the Stage or Unstage that moved its file here
                         // succeeded, and keeps its name.
@@ -5401,6 +5535,7 @@ impl GitTurtle {
                                 stage_label.clone(),
                                 cx,
                             )
+                            .track_focus(&focus)
                             .debug_selector(move || format!("working-stage-{position}"))
                             .accessibility_label(stage_label)
                             .map(|control| {

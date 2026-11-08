@@ -29051,10 +29051,8 @@ pub(crate) mod tests {
                 if tile.is_some() && glyph.is_some() {
                     failures.push(format!("{at}: {name:?} draws its tile and its glyph"));
                 }
-                if (text == 13 && width == 461.) || width > 1000. {
-                    if tile.is_none() {
-                        failures.push(format!("{at}: {name:?} draws no tile"));
-                    }
+                if ((text == 13 && width == 461.) || width > 1000.) && tile.is_none() {
+                    failures.push(format!("{at}: {name:?} draws no tile"));
                 }
                 if let Some(status) = tile.or(glyph)
                     && (status.right() > shown.left() || status.left() < pane.left())
@@ -33322,6 +33320,296 @@ pub(crate) mod tests {
             "no fade along the foot of {list:?} at its end"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A fade at the file list's floor never lies over the ring of the row
+    /// control holding focus: at 18 pt in a 640 × 680 window, at rest and
+    /// scrolled to its end, Tab from the list onto each control its rows
+    /// draw, a file's Stage or Unstage and a heading's Stage all or Unstage
+    /// all, and no fade the floor paints meets the focused control's ring,
+    /// where the whole fade at the edge it lies at would reach it, the foot's
+    /// at rest and the top's at the end; with focus back on the list the
+    /// fades are whole again. The foot's fade once lay 3 px over alpha.txt's
+    /// focused Unstage's ring there.
+    #[gpui::test]
+    async fn the_working_lists_floor_fades_stop_short_of_a_focused_controls_ring(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(640.), px(680.)));
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+            "the list and the composer scroll together"
+        );
+        let handle = app.read_with(cx, |app, _| {
+            app.working_scroll.0.borrow().base_handle.clone()
+        });
+        assert!(
+            handle.max_offset().y > px(0.),
+            "rows lie below the floor {:?}",
+            handle.bounds()
+        );
+        // The fades painted over the list: each band as wide as it, in the
+        // panel, clear inward, toward its top (0°) or its bottom (180°).
+        let fades = |cx: &mut VisualTestContext| -> Vec<Bounds<Pixels>> {
+            let list = handle.bounds();
+            cx.update(|window, cx| {
+                let surface: Hsla = rgb(palette(cx).panel).into();
+                let toward = |angle: f32| {
+                    linear_gradient(
+                        angle,
+                        linear_color_stop(surface.opacity(0.), 0.),
+                        linear_color_stop(surface, 1.),
+                    )
+                };
+                let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.5);
+                let scale = window.scale_factor();
+                let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == toward(0.) || quad.background == toward(180.))
+                    .map(|quad| {
+                        Bounds::from_corners(
+                            point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                            point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                        )
+                    })
+                    .filter(|band| {
+                        near(band.left(), list.left()) && near(band.right(), list.right())
+                    })
+                    .collect()
+            })
+        };
+        let height =
+            appearance::ui_size(crate::tags::EDGE_FADE).min(handle.bounds().size.height / 4.);
+        let whole = |bands: &[Bounds<Pixels>]| {
+            !bands.is_empty()
+                && bands
+                    .iter()
+                    .all(|band| (band.size.height - height).abs() < px(0.5))
+        };
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let last = app.read_with(cx, |app, _| app.working_rows.len() - 1);
+        let mut failures = Vec::new();
+        for end in [false, true] {
+            let at = if end { "at its end" } else { "at rest" };
+            if end {
+                app.update(cx, |app, _| {
+                    app.working_scroll
+                        .scroll_to_item(last, ScrollStrategy::Bottom)
+                });
+                draw(cx);
+            }
+            assert!(whole(&fades(cx)), "the floor's fades {at}: {:?}", fades(cx));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    window.focus(&app.file_focus, cx);
+                    app.focus_ring.mark(window);
+                })
+            });
+            draw(cx);
+            let (mut controls, mut reached) = (0, 0);
+            for step in 1..=16 {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                if !cx.update(|window, cx| app.read(cx).working_control_focused(window, cx)) {
+                    break;
+                }
+                controls += 1;
+                let list = handle.bounds();
+                let pane = cx.debug_bounds("working-pane").expect("the list");
+                // The focused control's ring, the one accent outline inside
+                // the list's edge.
+                let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                    .into_iter()
+                    .map(|outline| outline.bounds)
+                    .filter(|ring| {
+                        ring.intersects(&list) && ring.size.width < pane.size.width - px(1.)
+                    })
+                    .collect();
+                let [ring] = rings[..] else {
+                    failures.push(format!(
+                        "{at}, Tab {step}: one control's ring in {list:?}, not {rings:?}"
+                    ));
+                    continue;
+                };
+                // Where the floor's fade at its edge would lie whole.
+                let band = if end {
+                    Bounds::new(list.origin, size(list.size.width, height))
+                } else {
+                    Bounds::new(
+                        point(list.left(), list.bottom() - height),
+                        size(list.size.width, height),
+                    )
+                };
+                if ring.intersects(&band) {
+                    reached += 1;
+                }
+                for fade in fades(cx) {
+                    let over = fade.intersect(&ring);
+                    if over.size.width > px(0.) && over.size.height > px(0.) {
+                        failures.push(format!(
+                            "{at}, Tab {step}: the fade {fade:?} over the ring {ring:?}"
+                        ));
+                    }
+                }
+            }
+            assert!(
+                controls > 1,
+                "{at}: Tab reaches the rows' controls: {controls}"
+            );
+            assert!(
+                reached > 0,
+                "{at}: a focused control's ring lies where the whole fade would"
+            );
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    window.focus(&app.file_focus, cx);
+                    app.focus_ring.mark(window);
+                })
+            });
+            draw(cx);
+            assert!(
+                whole(&fades(cx)),
+                "{at}: the fades whole once focus leaves: {:?}",
+                fades(cx)
+            );
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The short Working body's track lies over the list's rows and its
+    /// focus ring, so it paints no fill and no edge there: at 13 and 18 pt in
+    /// a 461 × 490 window, with the list focused from the keyboard, nothing
+    /// painted after the list's ring lies over its right side, the thumb
+    /// lying 3 px inside it, and no quad fills the track. The kit's track
+    /// was filled with the canvas, painted after the list, which took the
+    /// ring's right side, the selected row's end and the composer's divider
+    /// for the track's height.
+    #[gpui::test]
+    async fn the_working_bodys_track_paints_nothing_over_the_list(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    window.focus(&app.file_focus, cx);
+                    app.focus_ring.mark(window);
+                })
+            });
+            draw(cx);
+            let at = format!("{text} pt at 461 × 490");
+            assert!(
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+                "{at}: the body scrolls"
+            );
+            let body = cx.debug_bounds("working-body").expect("the body");
+            let pane = cx.debug_bounds("working-pane").expect("the list");
+            let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+            let ring = crate::focus_ring::painted_outlines(cx, accent)
+                .into_iter()
+                .find(|outline| {
+                    (outline.bounds.right() - pane.right()).abs() < px(0.5)
+                        && (outline.bounds.top() - pane.top()).abs() < px(0.5)
+                })
+                .unwrap_or_else(|| panic!("{at}: the list's ring on {pane:?}"));
+            assert!(ring.whole, "{at}: the list's ring {ring:?} whole");
+            let side = Bounds::from_corners(
+                point(ring.bounds.right() - ring.width, ring.bounds.top()),
+                ring.bounds.bottom_right(),
+            );
+            let track = Bounds::from_corners(
+                point(body.right() - Scrollbar::width(), body.top()),
+                body.bottom_right(),
+            );
+            let over: Vec<_> = cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| !quad.background.is_transparent())
+                    .map(|quad| {
+                        let bounds = Bounds::from_corners(
+                            point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                            point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                        );
+                        (bounds, quad.order)
+                    })
+                    .filter(|(bounds, order)| {
+                        let covers = bounds.intersect(&side);
+                        let fills = (bounds.left() - track.left()).abs() < px(0.5)
+                            && (bounds.size.width - track.size.width).abs() < px(0.5)
+                            && bounds.size.height >= track.size.height - px(0.5);
+                        fills
+                            || (*order > ring.order
+                                && covers.size.width > px(0.)
+                                && covers.size.height > px(0.))
+                    })
+                    .collect()
+            });
+            assert!(
+                over.is_empty(),
+                "{at}: painted over the list's ring {side:?}: {over:?}"
+            );
+            let thumb = crate::tags::tests::painted_thumb(cx, track).expect("a thumb");
+            assert!(
+                side.left() - thumb.right() >= px(3.) - px(0.01),
+                "{at}: the thumb {thumb:?} 3 px inside the ring {side:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Beside the short body's scroll cue the rows keep their content and
+    /// their controls' rings out of the track at every interface size and at
+    /// fractional scales: the composer's trailing room with its `px_3` as
+    /// the layout draws it, at least that inset's floor on a device pixel,
+    /// and a list row's whole trailing inset each reach the gutter, on a
+    /// device pixel; without the gutter a row keeps its `px_3` alone. Rounded
+    /// up alone, the composer's room fell short of the gutter at 14 pt at
+    /// 175 %.
+    #[test]
+    fn rows_beside_the_scroll_cue_keep_the_gutter_at_every_scale() {
+        use crate::workspace::{row_end, trailing_room};
+        let gutter = crate::tags::ScrollCue::gutter();
+        let mut failures = Vec::new();
+        for scale in [1., 1.25, 1.5, 1.75, 2., 2.25, 3.] {
+            let device = |value: Pixels| f32::from(value) * scale;
+            let on_pixel = |value: Pixels| (device(value) - device(value).round()).abs() < 1e-3;
+            for text in 13..=18 {
+                let inset = px(text as f32 * 0.75);
+                let at = format!("{text} pt at {}%", scale * 100.);
+                let trailing = trailing_room(gutter, inset, scale);
+                let drawn = px(device(inset).floor() / scale);
+                if !on_pixel(trailing) || device(trailing + drawn) < device(gutter) - 1e-3 {
+                    failures.push(format!("{at}: the composer's {trailing:?} and {drawn:?}"));
+                }
+                let end = row_end(trailing, inset, scale);
+                if !on_pixel(end) || device(end) < device(gutter) - 1e-3 {
+                    failures.push(format!("{at}: a list row's {end:?}"));
+                }
+                if trailing_room(Pixels::ZERO, inset, scale) != Pixels::ZERO
+                    || row_end(Pixels::ZERO, inset, scale) != inset
+                {
+                    failures.push(format!("{at}: room kept without the gutter"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     /// At 18 pt in a 461 × 490 window the Working inspector is 156.5 px wide

@@ -474,6 +474,8 @@ pub(crate) struct ScrollCue {
     /// What scrolls the list's focused control into view, whose ring the
     /// fades stop short of.
     reveal: Option<FocusReveal>,
+    /// The track takes no fill and no edge ([`ScrollCue::over_rows`]).
+    clear_track: bool,
 }
 
 /// The shortest track a scrollbar's thumb moves along: the kit's shortest
@@ -507,7 +509,20 @@ impl ScrollCue {
             cued: cues(&rows),
             rows,
             reveal: None,
+            clear_track: false,
         }
+    }
+
+    /// The cue for a list whose rows, and the edge that draws its focus
+    /// ring, run beneath its track, as the Working inspector's short body's
+    /// do: the track takes no fill and no edge, so only its thumb lies over
+    /// them. The kit fills a track with the theme's `scrollbar` colour, the
+    /// canvas, which painted over that ring's right side, the selected row's
+    /// end and the composer's divider for the track's whole height, as
+    /// `shortcuts.rs` sets its own track's fill.
+    pub(crate) fn over_rows(mut self) -> Self {
+        self.clear_track = true;
+        self
     }
 
     /// [`Self::new`] for a list whose controls `reveal` scrolls into view:
@@ -559,6 +574,7 @@ impl ScrollCue {
         let gutter = Self::gutter();
         let room = self.rows.room;
         let (kept, scrollbar) = self.cued;
+        let clear_track = self.clear_track;
         let cue = div()
             .flex()
             .flex_col()
@@ -593,11 +609,19 @@ impl ScrollCue {
                         // meet, only by it, where a painted thumb shows only
                         // what is painted.
                         crate::in_frame::probed(
-                            div().debug_selector(move || id.into()).size_full().child(
-                                Scrollbar::vertical(&rows)
+                            div().debug_selector(move || id.into()).size_full().child({
+                                let bar = Scrollbar::vertical(&rows)
                                     .id(id)
-                                    .mode(ScrollbarMode::Always),
-                            ),
+                                    .mode(ScrollbarMode::Always);
+                                if clear_track {
+                                    let clear = gpui_kit::transparent_black();
+                                    bar.styles(|styles| {
+                                        styles.track(|track| track.bg(clear).border_color(clear))
+                                    })
+                                } else {
+                                    bar
+                                }
+                            }),
                             "scrollbar",
                         )
                         .into_any_element()
@@ -696,7 +720,7 @@ fn edge_fades(rows: RowColumn, reveal: Option<FocusReveal>) -> impl IntoElement 
 /// ring, begins, where its band reaches the ring, and is none where the
 /// ring reaches the list's edge. Its band keeps its gradient, clear inward,
 /// over the height left, so no hard edge lies across the list.
-fn fade_reach(
+pub(crate) fn fade_reach(
     list: Bounds<Pixels>,
     fade: Pixels,
     ring: Option<Bounds<Pixels>>,
