@@ -124,6 +124,61 @@ fn content_room(window: &Window, cx: &App) -> Pixels {
         - appearance::ui_size(28.)
 }
 
+/// A series row's height, its rule beneath it included, on the window's
+/// device pixels, as layout snaps the row: the list's height and its scroll
+/// are whole rows of it, and a row unsnapped at 18 pt, about 94.15 px, drew
+/// 94 px, so six of them left a pixel of a seventh in the list.
+fn series_row_height(window: &Window) -> Pixels {
+    window.pixel_snap(appearance::ui_size(68.))
+}
+
+/// How many whole rows the series list shows for `rows` in `window`: as
+/// many as the content's room ([`content_room`]) holds inside the list's
+/// 1 px border once the rest of the body keeps its room, at least one and
+/// at most six, and none past the series' own rows, though a list with none
+/// keeps one row's height for the state that says why. The list is that
+/// many rows tall and scrolls by whole rows ([`SeriesBrowser::keep_row_whole`]),
+/// so every row it draws is whole (DESIGN.md, "Content stays whole"): the
+/// rest of the room as its height, at 13 pt in a 461 × 490 window it cut its
+/// second row 13.5 px down.
+fn rows_shown(rows: usize, window: &Window, cx: &App) -> usize {
+    let room = content_room(window, cx) - appearance::ui_size(210.) - px(2.);
+    let fit = (f32::from(room) / f32::from(series_row_height(window))).floor();
+    // Never past the series' rows, nor below one where there are none:
+    // `clamp(fit, 1, 0)` panics.
+    (fit.max(0.) as usize).clamp(1, rows.clamp(1, 6))
+}
+
+/// Scrolls `scroll` the least that shows `bounds`, drawn in this frame,
+/// whole with `margin` above and below it, once the frame has painted,
+/// unless something has scrolled it since.
+fn reveal_whole(
+    scroll: &ScrollHandle,
+    bounds: Bounds<Pixels>,
+    margin: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let view = scroll.bounds();
+    let delta = if bounds.bottom() + margin > view.bottom() {
+        view.bottom() - (bounds.bottom() + margin)
+    } else if bounds.top() - margin < view.top() {
+        view.top() - (bounds.top() - margin)
+    } else {
+        return;
+    };
+    let scroll = scroll.clone();
+    let previous = scroll.offset();
+    window.defer(cx, move |window, _| {
+        if scroll.offset() != previous {
+            return;
+        }
+        let y = (previous.y + delta).clamp(-scroll.max_offset().y, px(0.));
+        scroll.set_offset(point(previous.x, y));
+        window.refresh();
+    });
+}
+
 /// The series list's key context, where Return is the list's own
 /// (`interactive_rebase::init`): it inspects the selected commit's files
 /// rather than taking the review dialog's default action, which closed the
@@ -158,6 +213,10 @@ const CHOOSE_FILE: &str = "Select a file to inspect its captured commit bytes.";
 /// Why the text modes wait for a preview with no patch or source, as an
 /// image's or a document's.
 const NO_TEXT: &str = "This file's preview has no patch or source.";
+
+/// Why Diagrams waits for a preview whose text has Mermaid diagrams, where
+/// the preview has none.
+const NO_DIAGRAMS: &str = "This file has no Mermaid diagrams.";
 
 /// The text modes' names, by mode, and the keys their tooltips are drawn
 /// under ([`refusing`]).
@@ -329,6 +388,12 @@ pub(crate) struct SeriesBrowser {
     /// whether a chosen file's read there lies below the body's view
     /// ([`Self::preview_read_hidden`]).
     preview_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// Why the chosen file's preview could not be read, which the
+    /// preview's box says, as the text modes do.
+    preview_error: Option<String>,
+    /// The last answer beneath an open control in the preview that the body
+    /// was scrolled to as it landed ([`Self::opener`]).
+    line_revealed: std::rc::Rc<std::cell::Cell<Option<usize>>>,
     network_pending: bool,
     error: Option<String>,
     remote: Entity<InputState>,
@@ -390,6 +455,8 @@ impl SeriesBrowser {
             pending: false,
             empty_height: Default::default(),
             preview_bounds: Default::default(),
+            preview_error: None,
+            line_revealed: Default::default(),
             network_pending: false,
             error: None,
             remote: cx.new(|cx| {
@@ -465,16 +532,32 @@ impl SeriesBrowser {
         self.decoration = None;
         self.patch = None;
         self.selected_file = None;
+        self.preview_error = None;
     }
     /// Opens captured bytes for this showing's open controls through the
-    /// window's `GitTurtle`, whose keyboard focus ring it draws.
+    /// window's `GitTurtle`, whose keyboard focus ring it draws. A line
+    /// saying why a click opened nothing that lands outside the body's view,
+    /// as beneath a control a person scrolled to the view's foot, is
+    /// revealed whole by the body's least scroll, with its ring's room, and
+    /// focus stays on the control: the line once answered below the fold,
+    /// so the click seemed to do nothing.
     fn opener(&self, cx: &App) -> crate::system_preview::Opener {
         let ring = self
             .owner
             .upgrade()
             .map(|owner| owner.read(cx).focus_ring.clone())
             .unwrap_or_default();
-        crate::system_preview::Opener::new(self.owner.clone(), self.showing).ringed_by(ring)
+        let (body, room) = (self.body.scroll().clone(), appearance::button_ring_room(cx));
+        let revealed = self.line_revealed.clone();
+        crate::system_preview::Opener::new(self.owner.clone(), self.showing)
+            .ringed_by(ring)
+            .on_line(move |answer, line, window, cx| {
+                // As each click's line lands, never again once a person
+                // scrolls away from it.
+                if revealed.replace(Some(answer)) != Some(answer) {
+                    reveal_whole(&body, line, room, window, cx);
+                }
+            })
     }
     /// CPU bytes the open preview retains: its prepared content, which includes the patch
     /// presentation, with the same reserve for native editors as a repository tab, plus the
@@ -570,13 +653,37 @@ impl SeriesBrowser {
     /// whatever the preview shows, so the preview beneath them keeps its
     /// place as a file is chosen and its preview read, and wait for a
     /// preview with text, as the stash browser's do.
+    /// A preview that is a notice, as one past the text preview's limits or
+    /// a binary file's, gives the notice's own words, and a failed read the
+    /// read's error: both once said the file had no patch or source.
     fn modes_refusal(&self) -> Option<SharedString> {
         match self.content.as_deref() {
             Some(Content::Text { .. }) => None,
+            Some(Content::Notice(notice)) => Some(notice.clone().into()),
             Some(_) => Some(NO_TEXT.into()),
             None if self.reading_preview() => Some(READING_PREVIEW.into()),
-            None if self.selected_file.is_some() => Some(NO_TEXT.into()),
-            None => Some(CHOOSE_FILE.into()),
+            None => match &self.preview_error {
+                Some(error) => Some(error.clone().into()),
+                None if self.selected_file.is_some() => Some(NO_TEXT.into()),
+                None => Some(CHOOSE_FILE.into()),
+            },
+        }
+    }
+    /// Why Diagrams refuses a press, if it does: it stays in the modes' row
+    /// for every preview, as the other modes do, and waits for text with
+    /// Mermaid diagrams, saying so where a preview has none; with no preview
+    /// it gives the row's own reason ([`Self::modes_refusal`]). Left out of
+    /// the row unless the text had diagrams, its return wrapped the row at
+    /// 18 pt in a 461 × 490 window and moved the preview's box.
+    fn diagrams_refusal(&self) -> Option<SharedString> {
+        match self.content.as_deref() {
+            Some(Content::Text {
+                diagrams: Some(_), ..
+            }) => None,
+            Some(Content::Text { .. } | Content::Images { .. } | Content::Rich(_)) => {
+                Some(NO_DIAGRAMS.into())
+            }
+            _ => self.modes_refusal(),
         }
     }
     /// Why Edit local commits… refuses a press, and whether it looks it:
@@ -675,8 +782,29 @@ impl SeriesBrowser {
         }
         self.selected = row;
         self.focus.focus(window, cx);
-        self.rows_scroll.scroll_to_item(row, ScrollStrategy::Center);
+        self.keep_row_whole(row, window, cx);
         cx.notify();
+    }
+    /// Scrolls the series list the least that shows `row` whole, to a row's
+    /// edge, so each row the list draws is whole ([`rows_shown`]): from a
+    /// row's edge, the selected row's top or foot meets the list's; from
+    /// between rows, as a wheel leaves it, the nearest row's edge that keeps
+    /// the row whole. Centred, a two-row list showed half rows above and
+    /// below the selection.
+    fn keep_row_whole(&self, row: usize, window: &Window, cx: &App) {
+        let rows = self.review.as_ref().map_or(0, |review| review.rows.len());
+        let shown = rows_shown(rows, window, cx);
+        let height = f32::from(series_row_height(window));
+        let scroll = self.rows_scroll.0.borrow().base_handle.clone();
+        let offset = scroll.offset();
+        let top = (-f32::from(offset.y) / height).round() * height;
+        // The least and most offsets that show the row whole, each at a
+        // row's edge, and the list's reach.
+        let least = row.saturating_sub(shown - 1) as f32 * height;
+        let most = row as f32 * height;
+        let reach = rows.saturating_sub(shown) as f32 * height;
+        let top = top.clamp(least, most).clamp(0., reach);
+        scroll.set_offset(point(offset.x, px(-top)));
     }
     fn inspect(&mut self, original: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(review) = &self.review else {
@@ -787,8 +915,15 @@ impl SeriesBrowser {
                         this.content = Some(content);
                         this.prepare_editor(window, cx);
                     }
-                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
-                    _ => this.error = Some("File preview was interrupted. Select it again.".into()),
+                    // Said in the preview's box, where the preview would
+                    // draw: said at the body's end, below the box that
+                    // still asked for a file to be chosen, it lay out of
+                    // view in a short window.
+                    Ok(Err(error)) => this.preview_error = Some(format!("{error:#}")),
+                    _ => {
+                        this.preview_error =
+                            Some("File preview was interrupted. Select it again.".into())
+                    }
                 }
                 cx.notify();
             });
@@ -1076,9 +1211,16 @@ impl SeriesBrowser {
         }
     }
     /// What the preview's box says with nothing to preview, as a designed
-    /// empty state in the box (DESIGN.md, "Empty and edge states"): that the
-    /// commit changed no files, or which to choose.
+    /// empty state in the box (DESIGN.md, "Empty and edge states"): why the
+    /// chosen file's preview could not be read, that the commit changed no
+    /// files, or which to choose. A failed read said "Select a file…" here
+    /// with its file chosen, its error drawn below the box at the body's
+    /// end.
     fn preview_prompt(&self, cx: &App) -> AnyElement {
+        if let Some(error) = &self.preview_error {
+            return crate::empty_state::EmptyState::new("series-preview-failed", error.clone())
+                .pane(cx);
+        }
         let line = if self.files.is_empty() && !self.pending {
             NO_FILES
         } else {
@@ -1086,7 +1228,7 @@ impl SeriesBrowser {
         };
         crate::empty_state::EmptyState::new("series-preview-empty", line).pane(cx)
     }
-    fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn row(&self, index: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(review) = &self.review else {
             return div().into_any_element();
         };
@@ -1126,6 +1268,7 @@ impl SeriesBrowser {
         });
         div()
             .id(("series-row", index))
+            .debug_selector(move || format!("series-row-{index}"))
             .role(Role::ListBoxOption)
             .aria_selected(selected)
             .when(selected, |row| row.aria_active_descendant())
@@ -1137,7 +1280,7 @@ impl SeriesBrowser {
             ))
             .w_full()
             .min_w_0()
-            .h(appearance::ui_size(68.))
+            .h(series_row_height(window))
             .px_3()
             .py_2()
             .flex()
@@ -1260,9 +1403,15 @@ impl Render for SeriesBrowser {
             .is_some_and(|owner| owner.read(cx).focus_ring.shows(&self.focus));
         let series = cx.entity().downgrade();
         let row_count = self.review.as_ref().map_or(0, |review| review.rows.len());
-        let row_height = appearance::ui_size(68.);
-        let list_height = (row_height * row_count.clamp(1, 6) as f32 + px(2.))
-            .min((content_room(window, cx) - appearance::ui_size(210.)).max(row_height + px(2.)));
+        // Whole rows inside the list's 1 px border, and while they overflow
+        // it the scrollbar every scrolling list cues the rest with: a list
+        // cut at the rest of the body's room ended mid-row with nothing to
+        // say more lay below.
+        let row_height = series_row_height(window);
+        let list_height = row_height * rows_shown(row_count, window, cx) as f32 + px(2.);
+        let rows_cue =
+            crate::tags::ScrollCue::new(&self.rows_scroll.0.borrow().base_handle, Pixels::ZERO);
+        let gutter = crate::tags::ScrollCue::gutter();
         let selected = self
             .review
             .as_ref()
@@ -1278,6 +1427,7 @@ impl Render for SeriesBrowser {
         // description and each action the missing series refuses.
         let empty = (row_count == 0).then(|| self.empty_reason());
         let modes_refused = self.modes_refusal();
+        let diagrams_refused = self.diagrams_refusal();
         let [
             messages_refused,
             original_refused,
@@ -1305,7 +1455,7 @@ impl Render for SeriesBrowser {
                 // its wrapped lines need: the load's error, drawn at the
                 // body's end in a scrolling box the body shrank to nothing
                 // once it scrolled, left an empty list with no text.
-                .child(div().flex().flex_col().flex_shrink_0().on_children_prepainted(self.body.control(self.focus.clone(), room)).child(crate::native_accessibility::clips_children(div().id("series-focus-list").debug_selector(|| "series-focus-list".into()).w_full().min_w_0().map(|list| if empty.is_some() { list.min_h(list_height) } else { list.h(list_height) }).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).key_context(SERIES_CONTEXT).role(if empty.is_some() { Role::Group } else { Role::ListBox }).aria_label("Original and rewritten commits").aria_description(empty.as_ref().map_or_else(|| SERIES_KEYS.into(), |empty| empty.description.clone()))
+                .child(div().flex().flex_col().flex_shrink_0().on_children_prepainted(self.body.control(self.focus.clone(), room)).child(div().when(row_count > 0, |list| list.on_children_prepainted(rows_cue.observe(|_, _, _| {}))).id("series-focus-list").debug_selector(|| "series-focus-list".into()).w_full().min_w_0().map(|list| if empty.is_some() { list.min_h(list_height) } else { list.h(list_height) }).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).key_context(SERIES_CONTEXT).role(if empty.is_some() { Role::Group } else { Role::ListBox }).aria_label("Original and rewritten commits").aria_description(empty.as_ref().map_or_else(|| SERIES_KEYS.into(), |empty| empty.description.clone()))
                     // Return inspects as it goes down, never on a held key's
                     // repeats, as the dialog's own Enter acts. A key on Edit
                     // local commits… inside it is that Button's own.
@@ -1336,8 +1486,13 @@ impl Render for SeriesBrowser {
                                         state.child(line.block(cx))
                                     })))
                         }
-                        None => list.child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll)),
-                    }))))
+                        // The rows reach into the gutter the cue keeps
+                        // beside them while they overflow, as the stash
+                        // browser's saved files do, so the track runs along
+                        // their scroll's right edge and covers no row.
+                        None => list.flex().flex_col().child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, window, cx| range.map(|index| this.row(index, window, cx)).collect::<Vec<_>>())).flex_1().min_h_0().mr(-gutter).pr(gutter).track_scroll(&self.rows_scroll)),
+                    })
+                    .map(|list| if row_count == 0 { crate::native_accessibility::clips_children(list).into_any_element() } else { rows_cue.list(list, "rewrite-series-scrollbar").into_any_element() })))
                 .child(crate::edge_row(window).on_children_prepainted(action_row(self.pending, self.body.controls(vec![Some(messages.clone()), Some(original.clone()), Some(rewritten.clone()), Some(reload.clone())], room)))
                     .child(refusing(crate::edge_button("inspect-series-messages", "Review messages").track_focus(&messages).debug_selector(|| "inspect-series-messages".into()).on_click(cx.listener(|this, _, window, cx| this.inspect_messages(window, cx))), "inspect-series-messages", messages_refused))
                     .child(refusing(crate::edge_button("inspect-original-commit", "Inspect original files").track_focus(&original).debug_selector(|| "inspect-original-commit".into()).on_click(cx.listener(|this, _, window, cx| this.inspect(true, window, cx))), "inspect-original-commit", original_refused))
@@ -1384,14 +1539,13 @@ impl Render for SeriesBrowser {
                         .when(reading, |row| row.child(div().debug_selector(|| "series-file-reading".into()).flex_shrink_0().pr_2().text_size(appearance::ui_text(11.)).text_color(rgb(palette(cx).muted)).child(READING_ROW)))
                         .into_any_element()
                 }).collect::<Vec<_>>())).size_full().p(room).track_scroll(&self.files_scroll)) })))
-                // The text modes keep their row before a file is chosen,
-                // while its preview is read and for text, waiting for a
-                // preview with text, so a text preview keeps its place and
-                // size as its read comes and goes; a landed image or
-                // document takes the row's room back, as at 13 pt in a
-                // 461 × 490 window the line a document's failed open says
-                // why on needs it.
-                .when(self.messages.is_none() && self.content.as_deref().is_none_or(|content| matches!(content, Content::Text { .. })), |element| element.child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.body.controls(modes.iter().cloned().map(Some).collect(), room)).children(TEXT_MODES.into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, (label, key))| refusing(button(("series-text-mode", mode), label, "", self.text_mode == mode && modes_refused.is_none()).debug_selector(move || key.into()).track_focus(&modes[mode]).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); })), key, modes_refused.clone())))))
+                // The text modes keep their row for every preview, waiting
+                // for one with text and saying why, so the preview below
+                // keeps its place and size as its read comes and goes and
+                // from one file to the next: the row left as an image or
+                // document landed and came back with the next choice,
+                // moving the preview 34.5 px each way.
+                .when(self.messages.is_none(), |element| element.child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.body.controls(modes.iter().cloned().map(Some).collect(), room)).children(TEXT_MODES.into_iter().enumerate().map(|(mode, (label, key))| { let refused = if mode == 3 { diagrams_refused.clone() } else { modes_refused.clone() }; refusing(button(("series-text-mode", mode), label, "", self.text_mode == mode && refused.is_none()).debug_selector(move || key.into()).track_focus(&modes[mode]).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); })), key, refused) }))))
                 // Built for the box's width in the frame it is drawn
                 // (`in_frame`), so the open controls take the form that
                 // width leaves them in the first frame after a resize.
@@ -1985,11 +2139,14 @@ mod tests {
 
     /// An inspected commit's document, in the series review's file box, which
     /// keeps 100 px, says why a click on Open in default app opened nothing on
-    /// one whole line beneath its header's controls, its whole answer in the
-    /// line's tooltip, and the page beneath gives way below its minimum for
-    /// it: in a 461 × 490 window the room beneath the header held no line
-    /// above that minimum, so the line drew none and the click changed
-    /// nothing on screen.
+    /// one whole line beneath its header's controls, inside the box and the
+    /// body's view, its whole answer in the line's tooltip, and the page
+    /// beneath gives way below its minimum for it, at 13 and 18 pt in a
+    /// 461 × 490 window: the room beneath the header held no line above that
+    /// minimum, so the line drew none and the click changed nothing on
+    /// screen. With the text modes' row kept above every preview, the line
+    /// lay 25.5 px below the view at 13 pt while the body stopped at the
+    /// window less 250 px, short of the room the dialog's cap leaves it.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn an_inspected_document_says_why_on_one_whole_line(cx: &mut gpui_kit::TestAppContext) {
@@ -2009,56 +2166,190 @@ mod tests {
         let head = std::fs::read_to_string(repo.path().join(".git/refs/heads/main")).unwrap();
         let files = repo.changes_with_renames(head.trim(), 0).unwrap();
         let (app, cx) = window(cx, &repo);
-        cx.simulate_resize(size(px(461.), px(490.)));
-        draw(cx);
-        let browser = cx.update(|window, cx| {
-            let repo = app
-                .read(cx)
-                .repository
-                .clone()
-                .expect("the window's repository");
-            let browser = cx.new(|cx| {
-                SeriesBrowser::new(
-                    app.downgrade(),
-                    repo,
-                    "origin".into(),
-                    "main".into(),
-                    window,
-                    cx,
-                )
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        for text in [13, 18] {
+            let at = format!("the series review at {text} pt in 461 × 490");
+            size_to(&app, cx, text, 461., 490.);
+            let browser = cx.update(|window, cx| {
+                let repo = app
+                    .read(cx)
+                    .repository
+                    .clone()
+                    .expect("the window's repository");
+                let browser = cx.new(|cx| {
+                    SeriesBrowser::new(
+                        app.downgrade(),
+                        repo,
+                        "origin".into(),
+                        "main".into(),
+                        window,
+                        cx,
+                    )
+                });
+                open_series_dialog(browser.clone(), window, cx);
+                browser
             });
-            open_series_dialog(browser.clone(), window, cx);
-            browser
-        });
-        // The rewritten commit's files, as Inspect rewritten files lists
-        // them, and its document chosen.
-        cx.update(|window, cx| {
-            browser.update(cx, |browser, cx| {
-                browser.inspecting = true;
-                browser.inspect_label = "Rewritten".into();
-                browser.files = files;
-                browser.file(0, window, cx);
-            })
-        });
-        for _ in 0..400 {
-            cx.executor()
-                .advance_clock(std::time::Duration::from_millis(50));
-            draw(cx);
-            if cx.debug_bounds("system-preview-1").is_some() {
-                break;
+            // The rewritten commit's files, as Inspect rewritten files lists
+            // them, and its document chosen.
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.inspecting = true;
+                    browser.inspect_label = "Rewritten".into();
+                    browser.files = files.clone();
+                    browser.file(0, window, cx);
+                })
+            });
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                draw(cx);
+                if cx.debug_bounds("system-preview-1").is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            // Where the document's controls lie below the body's view, a
+            // person scrolls the body to them before pressing one.
+            let body = cx.debug_bounds("rewrite-review-body").expect("the body");
+            let control = crate::tags::tests::rendered(cx, "system-preview-1");
+            if !lies_in(control, body) {
+                crate::tags::tests::scroll_down(
+                    cx,
+                    body.origin + point(px(4.), px(4.)),
+                    gpui::ScrollDelta::Pixels(point(px(0.), -body.size.height)),
+                );
+            }
+            crate::system_preview::tests::a_failed_open_answers_on_one_line(
+                cx,
+                &at,
+                [
+                    "system-preview-1",
+                    "system-preview-1/note",
+                    "rich-sides/body",
+                ],
+                &["series-file-preview", "rewrite-review-body"],
+            );
+            cx.update(|window, cx| window.close_dialog(cx));
+            draw(cx);
         }
-        crate::system_preview::tests::a_failed_open_answers_on_one_line(
-            cx,
-            "the series review at 13 pt in 461 × 490",
-            [
-                "system-preview-1",
-                "system-preview-1/note",
-                "rich-sides/body",
-            ],
-            &["series-file-preview", "rewrite-review-body"],
-        );
+    }
+
+    /// A click on an inspected document's Open in default app whose control
+    /// a person scrolled to the body's foot, so only the controls' row of
+    /// the preview shows, answers where it is seen: the line saying why
+    /// nothing opened, which lands below the view, is revealed whole by the
+    /// body's least scroll, with its ring's room, and focus stays on the
+    /// control, at 18 pt in a 461 × 490 window, where the preview lies below
+    /// the view as the inspector opens. The line's bounds reached only
+    /// tests, and it answered out of sight.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_failed_open_at_the_bodys_foot_is_revealed(cx: &mut gpui_kit::TestAppContext) {
+        use crate::system_preview::tests::{queue, seen_as_svg};
+        use crate::tags::tests::{draw, git, rendered, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let document = repo.path().join("document.pdf");
+        for (text, message) in [("first", "Add a document"), ("second", "Rewrite it")] {
+            std::fs::write(&document, pdf(text)).unwrap();
+            git(repo.path(), &["add", "document.pdf"]);
+            git(repo.path(), &["commit", "--quiet", "-m", message]);
+        }
+        // A fresh repository keeps its branch as a loose reference.
+        let head = std::fs::read_to_string(repo.path().join(".git/refs/heads/main")).unwrap();
+        let files = repo.changes_with_renames(head.trim(), 0).unwrap();
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        {
+            let text = 18;
+            let at = format!("the series review at {text} pt in 461 × 490");
+            size_to(&app, cx, text, 461., 490.);
+            let browser = cx.update(|window, cx| {
+                let repo = app
+                    .read(cx)
+                    .repository
+                    .clone()
+                    .expect("the window's repository");
+                let browser = cx.new(|cx| {
+                    SeriesBrowser::new(
+                        app.downgrade(),
+                        repo,
+                        "origin".into(),
+                        "main".into(),
+                        window,
+                        cx,
+                    )
+                });
+                open_series_dialog(browser.clone(), window, cx);
+                browser
+            });
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.inspecting = true;
+                    browser.inspect_label = "Rewritten".into();
+                    browser.files = files.clone();
+                    browser.file(0, window, cx);
+                })
+            });
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                draw(cx);
+                if cx.debug_bounds("system-preview-1").is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            // The body scrolled until the controls' row, with its ring's
+            // room, ends at the view's foot.
+            let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+            let scroll = browser.read_with(cx, |browser, _| browser.body.scroll().clone());
+            let control = rendered(cx, "system-preview-1");
+            let body = rendered(cx, "rewrite-review-body");
+            let offset = scroll.offset().y - (control.bottom() + room - body.bottom());
+            assert!(
+                offset <= px(0.) && -offset <= scroll.max_offset().y,
+                "{at}: the body can scroll the control {control:?} to its foot {body:?}"
+            );
+            scroll.set_offset(point(px(0.), offset));
+            draw(cx);
+            let (control, body) = (
+                rendered(cx, "system-preview-1"),
+                rendered(cx, "rewrite-review-body"),
+            );
+            assert!(
+                (control.bottom() + room - body.bottom()).abs() < px(0.5),
+                "{at}: the control {control:?} ends the body's view {body:?}"
+            );
+            queue(Err(seen_as_svg("a PDF document")));
+            cx.simulate_click(control.center(), Modifiers::none());
+            let pressed = cx.update(|window, cx| window.focused(cx));
+            cx.run_until_parked();
+            draw(cx);
+            let line = rendered(cx, "system-preview-1/note");
+            let body = rendered(cx, "rewrite-review-body");
+            assert!(
+                line.top() >= body.top() + room - px(0.5)
+                    && line.bottom() + room <= body.bottom() + px(0.5),
+                "{at}: the line {line:?} lies whole in the body's view {body:?}, with its \
+                 ring's room"
+            );
+            let control = rendered(cx, "system-preview-1");
+            assert!(
+                lies_in(control, body),
+                "{at}: the control {control:?} stays in the body's view {body:?}"
+            );
+            assert_eq!(
+                cx.update(|window, cx| window.focused(cx)),
+                pressed,
+                "{at}: focus stays where the press put it"
+            );
+            cx.update(|window, cx| window.close_dialog(cx));
+            draw(cx);
+        }
     }
 
     /// A model the series review shows, an inspected commit's 3D file,
@@ -3523,7 +3814,11 @@ mod tests {
                 )
             });
             for inspecting in [false, true] {
-                let state = if inspecting { "inspecting" } else { "the series" };
+                let state = if inspecting {
+                    "inspecting"
+                } else {
+                    "the series"
+                };
                 cx.update(|_, cx| {
                     browser.update(cx, |browser, cx| {
                         browser.inspecting = inspecting;
@@ -3577,6 +3872,414 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A review of `rows` commit pairs that name no commit, opened in
+    /// `app`'s window, its read landed, with focus on its series.
+    fn listed_review(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        rows: usize,
+    ) -> Entity<SeriesBrowser> {
+        let browser = cx.update(|window, cx| {
+            let repo = app
+                .read(cx)
+                .repository
+                .clone()
+                .expect("the window's repository");
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(
+                    app.downgrade(),
+                    repo,
+                    "origin".into(),
+                    "main".into(),
+                    window,
+                    cx,
+                )
+            });
+            open_series_dialog(browser.clone(), window, cx);
+            browser
+        });
+        lands(&browser, cx);
+        let row = gitturtle_core::SeriesRow {
+            original: None,
+            rewritten: None,
+            change: gitturtle_core::SeriesChange::Changed,
+            reordered: false,
+            ambiguous: false,
+        };
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.review = Some(Arc::new(RewriteReview {
+                    root: browser.repo.path().to_owned(),
+                    branch: "main".into(),
+                    base: String::new(),
+                    original_head: String::new(),
+                    rewritten_head: String::new(),
+                    original: Vec::new(),
+                    rewritten: Vec::new(),
+                    rows: vec![row; rows],
+                }));
+                browser.selected = 0;
+                browser.focus.focus(window, cx);
+                cx.notify();
+            })
+        });
+        crate::tags::tests::draw(cx);
+        browser
+    }
+
+    /// The series list is as tall as the whole rows the content's room
+    /// holds, inside its 1 px border, at least one, and scrolls by whole
+    /// rows, its scrollbar cueing the rest: with eight pairs at 13 and 18 pt
+    /// in a 461 × 490 window and in a 1,480 × 800 one, every row it draws
+    /// lies whole inside it as Down selects each row in turn and Up each one
+    /// back. Cut at the rest of the body's room, at 13 pt in the 461 × 490
+    /// window it showed one 70 px row and 13.5 px of the next, and centred
+    /// the selection between half rows.
+    #[gpui::test]
+    async fn the_series_list_shows_whole_rows(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, rendered, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let rows = 8;
+        let browser = listed_review(&app, cx, rows);
+        let slack = px(0.05);
+        for (text, width, height) in [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 1480., 800.),
+            (18, 1480., 800.),
+        ] {
+            let at = format!("{text} pt in {width} × {height}");
+            size_to(&app, cx, text, width, height);
+            // From the top, as the review opens.
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.select(0, window, cx);
+                    browser
+                        .rows_scroll
+                        .0
+                        .borrow()
+                        .base_handle
+                        .set_offset(point(px(0.), px(0.)));
+                })
+            });
+            draw(cx);
+            let row = cx.update(|window, _| series_row_height(window));
+            let list = rendered(cx, "series-focus-list");
+            let shown = (list.size.height - px(2.)) / row;
+            assert!(
+                shown >= 1. && (shown - shown.round()).abs() * f32::from(row) < 0.05,
+                "{at}: the list {list:?} holds whole rows of {row:?} inside its border"
+            );
+            assert!(
+                (shown.round() as usize) < rows,
+                "{at}: the list shows {shown} of its {rows} rows, which overflow it"
+            );
+            assert!(
+                cx.debug_bounds("rewrite-series-scrollbar").is_some(),
+                "{at}: the list's scrollbar cues the rows past its foot"
+            );
+            let inside = Bounds::from_corners(
+                list.origin + point(px(1.), px(1.)),
+                list.bottom_right() - point(px(1.), px(1.)),
+            );
+            let mut walk = vec!["down"; rows - 1];
+            walk.extend(vec!["up"; rows - 1]);
+            for (step, key) in walk.into_iter().enumerate() {
+                cx.simulate_keystrokes(key);
+                draw(cx);
+                let selected = browser.read_with(cx, |browser, _| browser.selected);
+                let drawn: Vec<_> = (0..rows)
+                    .filter_map(|index| {
+                        let selector: &'static str = format!("series-row-{index}").leak();
+                        cx.debug_bounds(selector).map(|bounds| (index, bounds))
+                    })
+                    .filter(|(_, bounds)| bounds.intersects(&inside))
+                    .collect();
+                assert!(
+                    drawn.iter().any(|(index, _)| *index == selected),
+                    "{at}: after {key} (step {step}) the selected row {selected} is drawn"
+                );
+                for (index, bounds) in drawn {
+                    assert!(
+                        bounds.top() >= inside.top() - slack
+                            && bounds.bottom() <= inside.bottom() + slack,
+                        "{at}: after {key} (step {step}) row {index} {bounds:?} lies whole \
+                         in the list {inside:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The text modes keep their row for every preview, Diagrams among
+    /// them, refused with their reason where it has no text or no Mermaid
+    /// diagrams, so the preview's box keeps its place and size before a file
+    /// is chosen and as an image's, a text file's, the image's again,
+    /// another image's, a Mermaid file's, a document's and a notice's
+    /// previews are chosen and land, at 13 and 18 pt in a 461 × 490 half
+    /// tile and in a 1,480 × 800 window: the row left as an image landed and
+    /// came back with the next choice, moving the preview 34.5 px each way,
+    /// and Diagrams, there only for text with diagrams, wrapped the row at
+    /// 18 pt in the half tile. A notice's modes give its own words.
+    #[gpui::test]
+    async fn the_preview_keeps_its_box_between_images_and_text(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let png = crate::system_preview::tests::png;
+        for (round, message) in [("first", "Add files"), ("second", "Change them")] {
+            std::fs::write(repo.path().join("a.png"), png(Some(round.as_bytes()))).unwrap();
+            std::fs::write(
+                repo.path().join("b.png"),
+                png(Some(format!("{round} b").as_bytes())),
+            )
+            .unwrap();
+            std::fs::write(repo.path().join("notes.txt"), format!("{round}\n")).unwrap();
+            std::fs::write(
+                repo.path().join("diagram.mmd"),
+                format!("flowchart LR\n  A[{round}] --> B\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                repo.path().join("document.pdf"),
+                format!("%PDF-1.4\n% {round}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"),
+            )
+            .unwrap();
+            // Past the text preview's line limit, which a notice says.
+            std::fs::write(
+                repo.path().join("long.txt"),
+                format!("{round}\n").repeat(gitturtle_core::MAX_DIFF_LINES + 1),
+            )
+            .unwrap();
+            git(repo.path(), &["add", "."]);
+            git(repo.path(), &["commit", "--quiet", "-m", message]);
+        }
+        // A fresh repository keeps its branch as a loose reference.
+        let head = std::fs::read_to_string(repo.path().join(".git/refs/heads/main")).unwrap();
+        let files = repo.changes_with_renames(head.trim(), 0).unwrap();
+        let index = |path: &str| {
+            files
+                .iter()
+                .position(|file| file.path() == std::path::Path::new(path))
+                .unwrap_or_else(|| panic!("{path} changed"))
+        };
+        let (image, other, text_file) = (index("a.png"), index("b.png"), index("notes.txt"));
+        let (mermaid, document, long) = (
+            index("diagram.mmd"),
+            index("document.pdf"),
+            index("long.txt"),
+        );
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let browser = cx.update(|window, cx| {
+            let repo = app
+                .read(cx)
+                .repository
+                .clone()
+                .expect("the window's repository");
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(
+                    app.downgrade(),
+                    repo,
+                    "origin".into(),
+                    "main".into(),
+                    window,
+                    cx,
+                )
+            });
+            open_series_dialog(browser.clone(), window, cx);
+            browser
+        });
+        let frame = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+        };
+        let preview = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("series-file-preview")
+                .expect("the preview's box is drawn")
+        };
+        for (text, width, height) in [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 1480., 800.),
+            (18, 1480., 800.),
+        ] {
+            let at = format!("{text} pt in {width} × {height}");
+            size_to(&app, cx, text, width, height);
+            cx.update(|_, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.inspecting = true;
+                    browser.inspect_label = "Rewritten".into();
+                    browser.files = files.clone();
+                    browser.clear_content();
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            let kept = preview(cx);
+            for (name, chosen, kind) in [
+                ("an image", image, "images"),
+                ("a text file", text_file, "text"),
+                ("the image again", image, "images"),
+                ("another image", other, "images"),
+                ("a Mermaid file", mermaid, "diagrams"),
+                ("a document", document, "document"),
+                ("a notice", long, "notice"),
+            ] {
+                let is_text = kind == "text" || kind == "diagrams";
+                cx.update(|window, cx| {
+                    browser.update(cx, |browser, cx| browser.file(chosen, window, cx))
+                });
+                frame(cx);
+                assert_eq!(preview(cx), kept, "{at}: choosing {name} moves nothing");
+                browser.read_with(cx, |browser, _| browser.worker.wait_idle());
+                draw(cx);
+                let (landed, notice) =
+                    browser.read_with(cx, |browser, _| match browser.content.as_deref() {
+                        Some(Content::Text {
+                            diagrams: Some(_), ..
+                        }) => (Some("diagrams"), None),
+                        Some(Content::Text { .. }) => (Some("text"), None),
+                        Some(Content::Images { .. }) => (Some("images"), None),
+                        Some(Content::Rich(_)) => (Some("document"), None),
+                        Some(Content::Notice(notice)) => (Some("notice"), Some(notice.clone())),
+                        _ => (None, None),
+                    });
+                assert_eq!(landed, Some(kind), "{at}: {name}'s preview lands");
+                assert_eq!(preview(cx), kept, "{at}: {name}'s landing moves nothing");
+                let mode = |index: usize| {
+                    crate::native_accessibility::written::get(&format!("series-text-mode-{index}"))
+                        .unwrap_or_else(|| panic!("{at}: mode {index} is drawn for {name}"))
+                        .node
+                };
+                let patch = mode(0);
+                assert_eq!(
+                    patch.is_disabled(),
+                    !is_text,
+                    "{at}: Patch waits for a preview with text, for {name}"
+                );
+                if !is_text {
+                    assert_eq!(
+                        patch.description(),
+                        Some(notice.as_deref().unwrap_or(NO_TEXT)),
+                        "{at}: Patch says why it waits, for {name}"
+                    );
+                }
+                let diagrams = mode(3);
+                assert_eq!(
+                    diagrams.is_disabled(),
+                    kind != "diagrams",
+                    "{at}: Diagrams waits for text with diagrams, for {name}"
+                );
+                if kind != "diagrams" {
+                    assert_eq!(
+                        diagrams.description(),
+                        Some(notice.as_deref().unwrap_or(NO_DIAGRAMS)),
+                        "{at}: Diagrams says why it waits, for {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A chosen file whose preview cannot be read, a link whose object is
+    /// gone, says why
+    /// in the preview's box, where the preview would draw, as a designed
+    /// empty state, and the text modes give the read's error as their
+    /// reason: the box went on asking for a file to be chosen with its file
+    /// chosen, the error drawn below it at the body's end, and the modes said
+    /// the file had no patch or source.
+    #[gpui::test]
+    async fn a_failed_preview_read_says_why_in_its_box(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, git, rendered, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "notes\n").unwrap();
+        git(repo.path(), &["add", "notes.txt"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add notes"]);
+        // A fresh repository keeps its branch as a loose reference.
+        let head = std::fs::read_to_string(repo.path().join(".git/refs/heads/main")).unwrap();
+        let mut files = repo.changes_with_renames(head.trim(), 0).unwrap();
+        // A stored link, which the preview never renders, whose object is
+        // gone: its read fails, where a missing regular file's side says so
+        // in a preview of its own.
+        files[0].new_mode = "120000".into();
+        files[0].new_oid = Some("0123456789abcdef0123456789abcdef01234567".into());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let browser = cx.update(|window, cx| {
+            let repo = app
+                .read(cx)
+                .repository
+                .clone()
+                .expect("the window's repository");
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(
+                    app.downgrade(),
+                    repo,
+                    "origin".into(),
+                    "main".into(),
+                    window,
+                    cx,
+                )
+            });
+            open_series_dialog(browser.clone(), window, cx);
+            browser
+        });
+        lands(&browser, cx);
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.inspecting = true;
+                browser.inspect_label = "Rewritten".into();
+                browser.files = files.clone();
+                browser.file(0, window, cx);
+            })
+        });
+        browser.read_with(cx, |browser, _| browser.worker.wait_idle());
+        draw(cx);
+        let error = browser
+            .read_with(cx, |browser, _| browser.preview_error.clone())
+            .expect("the preview's read fails");
+        assert_eq!(
+            crate::empty_state::shown("series-preview-failed").as_deref(),
+            Some(error.as_str()),
+            "the preview's box says why its read failed"
+        );
+        let (said, kept) = (
+            rendered(cx, "series-preview-failed"),
+            rendered(cx, "series-file-preview"),
+        );
+        assert!(
+            lies_in(said, kept),
+            "the failure {said:?} is said in the preview's box {kept:?}"
+        );
+        assert!(
+            cx.debug_bounds("series-preview-empty").is_none(),
+            "the box no longer asks for a file to be chosen"
+        );
+        assert!(
+            cx.debug_bounds("series-review-error").is_none(),
+            "the failure is not said again at the body's end"
+        );
+        for mode in [0, 1, 2, 3] {
+            let node =
+                crate::native_accessibility::written::get(&format!("series-text-mode-{mode}"))
+                    .unwrap_or_else(|| panic!("mode {mode} is drawn"))
+                    .node;
+            assert!(node.is_disabled(), "mode {mode} waits for a preview");
+            assert_eq!(
+                node.description(),
+                Some(error.as_str()),
+                "mode {mode} gives the read's error as its reason"
+            );
         }
     }
 

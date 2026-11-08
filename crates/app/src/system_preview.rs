@@ -368,7 +368,16 @@ pub(crate) struct Opener {
     /// The window's keyboard focus ring, which a comparison that draws its
     /// own focus asks ([`Self::ringed_by`]).
     ring: crate::focus_ring::FocusRing,
+    /// Told where each line beneath one of its controls is drawn
+    /// ([`Self::on_line`]).
+    line: Option<LineDrawn>,
 }
+
+/// What an opener's owner is told as each frame prepaints a line beneath
+/// one of its controls: the line's answer, the same in every frame that
+/// draws one click's answer and another for the next click's, and where
+/// the line lies in the window.
+type LineDrawn = std::rc::Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App)>;
 
 impl Opener {
     pub(crate) fn new(owner: WeakEntity<GitTurtle>, showing: Showing) -> Self {
@@ -377,7 +386,23 @@ impl Opener {
             showing,
             reveal: None,
             ring: Default::default(),
+            line: None,
         }
+    }
+
+    /// The opener of a comparison whose owner learns where each line
+    /// beneath one of its controls is drawn, as each frame prepaints it:
+    /// `drawn` is given the line's answer, the same for every frame that
+    /// draws one click's answer, and the line's bounds in the window. The
+    /// rewrite review scrolls its body to a line that lands below its view;
+    /// where the bounds reached only tests, a click whose control lay at
+    /// the view's foot answered out of sight.
+    pub(crate) fn on_line(
+        mut self,
+        drawn: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.line = Some(std::rc::Rc::new(drawn));
+        self
     }
 
     /// The opener of a comparison drawn in the window whose keyboard focus
@@ -560,6 +585,8 @@ pub(crate) struct Answer {
     failed: bool,
     text: SharedString,
     brief: SharedString,
+    /// Its opener's owner, told where the line is drawn ([`Opener::on_line`]).
+    drawn: Option<LineDrawn>,
 }
 
 impl Answer {
@@ -582,9 +609,14 @@ impl Answer {
         } else {
             palette(cx).muted
         };
+        let id = self.id;
         div()
-            .id(("open-note", self.id))
+            .id(("open-note", id))
             .debug_selector(move || key.clone())
+            .when_some(self.drawn.clone(), |line, drawn| {
+                use gpui_kit::base::ElementExt as _;
+                line.on_prepaint(move |bounds, window, cx| drawn(id, bounds, window, cx))
+            })
             .map(|line| {
                 if self.failed {
                     line.alert(self.text.clone())
@@ -787,6 +819,7 @@ impl Target {
             failed: note.failed,
             text: note.text.clone(),
             brief: note.brief.clone(),
+            drawn: self.opener.line.clone(),
         })
     }
 
@@ -1820,6 +1853,7 @@ pub(crate) mod tests {
                 failed: true,
                 text: "Could not open After.".into(),
                 brief: NOT_OPENED.into(),
+                drawn: None,
             };
             let end = HeaderEnd {
                 inset: window.rem_size() * 0.5,
