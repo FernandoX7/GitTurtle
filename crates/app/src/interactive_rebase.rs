@@ -712,7 +712,9 @@ impl GitTurtle {
                     });
                     window.refresh();
                 }
-                Err(error) => this.operation_error = Some(format!("{error:#}")),
+                Err(error) => {
+                    this.operation_error = Some(crate::views::OperationFailure::of(&error))
+                }
             },
             window,
             cx,

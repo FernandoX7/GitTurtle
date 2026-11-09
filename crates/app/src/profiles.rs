@@ -727,7 +727,7 @@ impl GitTurtle {
                         this.profiles.prepared = Some(definition.clone());
                         this.confirm_git_write(format!("Apply {} profile", definition.label), explanation, "Apply profile", WriteCommand::ApplyProfile(Arc::new(plan)), window, cx);
                     }
-                    Err(error) => this.operation_error = Some(format!("{error:#}")),
+                    Err(error) => this.operation_error = Some(crate::views::OperationFailure::of(&error)),
                 }
                 cx.notify();
             });
@@ -824,7 +824,8 @@ impl GitTurtle {
                                 cx.notify();
                             });
                         } else {
-                            this.operation_error = Some(format!("Profile persistence: {error}"));
+                            this.operation_error =
+                                Some(format!("Profile persistence: {error}").into());
                             if let Some(form) = &form {
                                 let _ = form.update(cx, |form, cx| {
                                     form.pending = false;

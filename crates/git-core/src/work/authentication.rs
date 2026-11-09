@@ -214,7 +214,7 @@ pub fn run_controlled<T>(
     if control.is_cancelled() {
         bail!("Git operation cancelled before starting. It was not retried.");
     }
-    operation().map_err(|error| anyhow::anyhow!("{}", control.redact(&format!("{error:#}"))))
+    operation().map_err(|error| crate::redacted_failure(&error, |text| control.redact(text)))
 }
 
 pub(super) fn configure_environment(command: &mut Command) {
@@ -1798,6 +1798,119 @@ mod tests {
         control.cancel();
         assert!(helper.join().unwrap().is_err());
         drop(server);
+    }
+
+    /// `command` run as a controlled operation's own failing step, off the
+    /// operation's thread, where nothing knows what the operation answered
+    /// until `run_controlled` does: its redaction is the one that names it.
+    #[cfg(unix)]
+    fn controlled_failure(control: OperationControl, command: Command) -> anyhow::Error {
+        run_controlled(control, move || -> Result<()> {
+            thread::spawn(move || {
+                super::super::checked_write_output(command, None, Duration::from_secs(10)).map(drop)
+            })
+            .join()
+            .unwrap()
+        })
+        .expect_err("the fake command fails")
+    }
+
+    /// A control that has answered `secret`.
+    #[cfg(unix)]
+    fn answered(secret: &str) -> OperationControl {
+        let control = OperationControl::default();
+        control
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .secrets
+            .push(secret.to_owned());
+        control
+    }
+
+    /// A controlled write's failure stays typed, its line whole for the
+    /// banner: `run_controlled` once flattened it to its report, so no write
+    /// carried a line and an SSH refusal read "Git operation failed:
+    /// Permission denied (publickey).", its `fatal:` line lost. Report and
+    /// line are each redacted with what the operation answered, and a failure
+    /// with no line stays a report.
+    #[cfg(unix)]
+    #[test]
+    fn a_controlled_failure_keeps_its_line_and_hides_what_its_report_hides() {
+        for (case, stderr, line) in [
+            (
+                "the SSH shape",
+                "Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n",
+                "fatal: Could not read from remote repository.",
+            ),
+            (
+                "a rejected push",
+                "To /x\n ! [rejected]        main -> main (non-fast-forward)\nerror: failed to push some refs to '/x'\nhint: Updates were rejected\n",
+                "error: failed to push some refs to '/x'",
+            ),
+            (
+                "a credential URL",
+                "hint: first\nfatal: unable to access 'https://user:url-s3cret@example.invalid/x.git/': 403\n",
+                "fatal: unable to access 'https://[redacted]@example.invalid/x.git/': 403",
+            ),
+            (
+                "an answered secret",
+                "hint: first\nfatal: the server refused answered-s3cret\n",
+                "fatal: the server refused [redacted]",
+            ),
+        ] {
+            let mut command = Command::new("sh");
+            command
+                .args(["-c", "printf %s \"$0\" >&2; exit 1"])
+                .arg(stderr);
+            let error = controlled_failure(answered("answered-s3cret"), command);
+            let report = format!("{error:#}");
+            assert_eq!(
+                crate::failure_summary(&error).as_deref(),
+                Some(line),
+                "{case}: {report}"
+            );
+            for hidden in ["answered-s3cret", "url-s3cret"] {
+                assert!(!report.contains(hidden), "{case}: {report}");
+            }
+        }
+        let untyped = run_controlled(answered("answered-s3cret"), || -> Result<()> {
+            bail!("Original-series save failed: answered-s3cret")
+        })
+        .expect_err("the operation fails");
+        assert_eq!(
+            format!("{untyped:#}"),
+            "Original-series save failed: [redacted]"
+        );
+        assert_eq!(crate::failure_summary(&untyped), None);
+    }
+
+    /// Git's words for a folder with no repository stay typed through
+    /// `run_controlled`, the failure's line as hidden as any other's.
+    #[cfg(unix)]
+    #[test]
+    fn a_controlled_failure_stays_not_a_repository() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "printf 'fatal: not a git repository: /tmp/answered-s3cret\\n' >&2; exit 128",
+        ]);
+        let error = controlled_failure(answered("answered-s3cret"), command);
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.is::<crate::NotARepository>()),
+            "{error:#}"
+        );
+        assert_eq!(
+            crate::failure_summary(&error).as_deref(),
+            Some("fatal: not a git repository: /tmp/[redacted]"),
+        );
+        assert!(
+            !format!("{error:#}").contains("answered-s3cret"),
+            "{error:#}"
+        );
     }
 
     #[cfg(unix)]

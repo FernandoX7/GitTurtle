@@ -480,7 +480,7 @@ struct GitTurtle {
     busy_look: workspace::BusyLook,
     operation_repository: Option<PathBuf>,
     operation_outcomes: operations::RepositoryOutcomes,
-    operation_error: Option<String>,
+    operation_error: Option<views::OperationFailure>,
     /// Refusals reported in the window's error
     /// (`GitTurtle::refuse_while_paused`). Each draws the error's line as a
     /// fresh node, which assistive technology announces as it is added, so

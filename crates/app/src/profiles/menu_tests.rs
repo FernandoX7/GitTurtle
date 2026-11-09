@@ -346,7 +346,7 @@ async fn a_failed_save_is_said_once_by_the_form_that_shows_it(cx: &mut TestAppCo
         .read_with(cx, |form, _| form.error.clone())
         .expect("the save fails");
     assert_eq!(
-        app.read_with(cx, |app, _| app.operation_error.clone()),
+        app.read_with(cx, |app, _| app.operation_error_text()),
         None,
         "the window's error says nothing more"
     );

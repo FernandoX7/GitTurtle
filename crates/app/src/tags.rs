@@ -879,7 +879,9 @@ impl GitTurtle {
                     filter.focus(window, cx);
                     window.refresh();
                 }
-                Err(error) => this.operation_error = Some(format!("{error:#}")),
+                Err(error) => {
+                    this.operation_error = Some(crate::views::OperationFailure::of(&error))
+                }
             },
             window,
             cx,
@@ -932,7 +934,9 @@ impl GitTurtle {
             move |repo| Ok((repo.tag_details(&tag)?, repo.remote_configs()?)),
             |result, this, window, cx| match result {
                 Ok((details, remotes)) => this.show_tag_details(details, remotes, window, cx),
-                Err(error) => this.operation_error = Some(format!("{error:#}")),
+                Err(error) => {
+                    this.operation_error = Some(crate::views::OperationFailure::of(&error))
+                }
             },
             window,
             cx,

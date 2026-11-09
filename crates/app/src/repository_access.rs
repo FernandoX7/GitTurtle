@@ -118,6 +118,7 @@ mod tests {
     fn a_folder_with_no_repository_is_told_apart_by_its_type() {
         let error = anyhow::Error::from(gitturtle_core::NotARepository(
             "Git rev-parse failed: b)".into(),
+            None,
         ))
         .context("Opening repository");
         assert_eq!(classify(&error), Failure::NotRepository);

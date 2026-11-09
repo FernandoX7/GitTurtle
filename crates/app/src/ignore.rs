@@ -114,7 +114,7 @@ impl GitTurtle {
                 match result {
                     Ok(()) => this.show_ignore_form(path, window, cx),
                     Err(error) => {
-                        this.operation_error = Some(format!("{error:#}"));
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error));
                         // A fresh node, heard again however often it refuses.
                         this.error_refusals = this.error_refusals.wrapping_add(1);
                     }
@@ -669,7 +669,7 @@ pub(crate) mod tests {
             assert_eq!(
                 app.read_with(cx, |app, _| (
                     app.operation_busy,
-                    app.operation_error.clone()
+                    app.operation_error_text()
                 )),
                 (None, Some(NO_LONGER_UNTRACKED.to_owned())),
                 "{press}: the window's error says why"
@@ -736,7 +736,7 @@ pub(crate) mod tests {
         assert_eq!(
             app.read_with(cx, |app, _| (
                 app.operation_busy,
-                app.operation_error.clone()
+                app.operation_error_text()
             )),
             (None, Some(NO_LONGER_UNTRACKED.to_owned())),
             "the write refuses the file staged since its review, as Preview rule does"

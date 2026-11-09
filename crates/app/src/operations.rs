@@ -99,14 +99,14 @@ pub(super) struct RepositoryOutcomes {
 
 pub(super) struct OpeningOutcomes {
     repository: Option<PathBuf>,
-    error: Option<String>,
+    error: Option<crate::views::OperationFailure>,
     notice: Option<String>,
 }
 
 impl RepositoryOutcomes {
     pub(super) fn begin_open(
         &self,
-        error: &Option<String>,
+        error: &Option<crate::views::OperationFailure>,
         notice: &Option<String>,
     ) -> OpeningOutcomes {
         OpeningOutcomes {
@@ -123,7 +123,7 @@ impl RepositoryOutcomes {
         &mut self,
         repository: &Path,
         opening: OpeningOutcomes,
-        error: &mut Option<String>,
+        error: &mut Option<crate::views::OperationFailure>,
         notice: &mut Option<String>,
     ) {
         if opening.repository.as_deref() != Some(repository) {

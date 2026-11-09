@@ -70,7 +70,9 @@ impl GitTurtle {
                     Ok(plan) => {
                         this.confirm_discard(repository, plan, generation, window, cx);
                     }
-                    Err(error) => this.operation_error = Some(format!("{error:#}")),
+                    Err(error) => {
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error))
+                    }
                 }
                 cx.notify();
             });

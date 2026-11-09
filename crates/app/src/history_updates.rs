@@ -74,32 +74,45 @@ impl State {
     }
     /// A quiet read could not resolve the scope; the displayed history stays.
     /// One vanished scope is reported once: after its report is dismissed,
-    /// later quiet refreshes and accepted writes leave it dismissed.
+    /// later quiet refreshes and accepted writes leave it dismissed. The
+    /// banner says `summary`, the line the failure carries, where it has one
+    /// (`worker::QuietHistory::Retained`), in the same sentence as the whole
+    /// `error`, which stays behind Details….
     pub fn report_scope_error(
         &mut self,
         error: &str,
+        summary: Option<&str>,
         vanished: Option<&worker::VanishedScope>,
-        operation_error: &mut Option<String>,
+        operation_error: &mut Option<crate::views::OperationFailure>,
     ) {
         if vanished.is_some() && vanished == self.reported_vanished.as_ref() {
             return;
         }
         self.scope_unavailable();
-        let message = format!(
-            "History scope changed: {error}. The displayed history is retained; choose a current branch to browse its history."
-        );
-        if operation_error.is_none() || operation_error.as_ref() == self.scope_error.as_ref() {
-            *operation_error = Some(message.clone());
+        let sentence = |what: &str| {
+            format!(
+                "History scope changed: {what}. The displayed history is retained; choose a current branch to browse its history."
+            )
+        };
+        let message = sentence(error);
+        if operation_error.is_none() || operation_error.as_deref() == self.scope_error.as_deref() {
+            *operation_error = Some(crate::views::OperationFailure::summarized(
+                message.clone(),
+                summary.map(sentence),
+            ));
             self.scope_error = Some(message);
             self.reported_vanished = vanished.cloned();
         }
     }
     /// A snapshot resolved its scope (or replaced it): a later disappearance
     /// is a new change and is reported again.
-    pub fn clear_scope_error(&mut self, operation_error: &mut Option<String>) {
+    pub fn clear_scope_error(
+        &mut self,
+        operation_error: &mut Option<crate::views::OperationFailure>,
+    ) {
         self.reported_vanished = None;
         if let Some(previous) = self.scope_error.take()
-            && operation_error.as_ref() == Some(&previous)
+            && operation_error.as_deref() == Some(previous.as_str())
         {
             *operation_error = None;
         }
@@ -857,10 +870,10 @@ mod tests {
         state.scope_unavailable();
         assert_eq!(state.pending, Some(Update::Changed));
         let mut error = None;
-        state.report_scope_error("branch missing", None, &mut error);
+        state.report_scope_error("branch missing", None, None, &mut error);
         state.clear_scope_error(&mut error);
         assert!(error.is_none());
-        state.report_scope_error("branch missing", None, &mut error);
+        state.report_scope_error("branch missing", None, None, &mut error);
         error = Some("unrelated commit failure".into());
         state.clear_scope_error(&mut error);
         assert_eq!(error.as_deref(), Some("unrelated commit failure"));

@@ -862,11 +862,10 @@ impl GitTurtle {
                 match result {
                     Ok(prepared) => this.show_prepared_branch_action(prepared, window, cx),
                     Err(error) => {
-                        let message = format!("{error:#}");
                         if let Some(on_failure) = on_failure {
-                            on_failure(message, window, cx);
+                            on_failure(format!("{error:#}"), window, cx);
                         } else {
-                            this.operation_error = Some(message);
+                            this.operation_error = Some(crate::views::OperationFailure::of(&error));
                         }
                     }
                 }

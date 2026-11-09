@@ -936,7 +936,7 @@ struct WarmTab {
     working_scroll: UniformListScrollHandle,
     working_selection: working_selection::Selection,
     operation_notice: Option<String>,
-    operation_error: Option<String>,
+    operation_error: Option<crate::views::OperationFailure>,
     /// The places a comparison restored with the tab waited to restore as
     /// the tab was left (`State::document_restore`), which its return
     /// restores ([`GitTurtle::resume_tab_documents`]).
@@ -2709,12 +2709,12 @@ impl GitTurtle {
     }
     pub(super) fn tab_operation_error(&self, path: &Path) -> Option<String> {
         if self.path.as_deref() == Some(path) {
-            return self.operation_error.clone();
+            return self.operation_error.as_deref().map(str::to_owned);
         }
         self.repository_tabs
             .find(path)
             .and_then(|index| self.repository_tabs.tabs[index].warm.as_ref())
-            .and_then(|warm| warm.operation_error.clone())
+            .and_then(|warm| warm.operation_error.as_deref().map(str::to_owned))
     }
     pub(super) fn register_completed_repository(
         &mut self,
@@ -2761,7 +2761,7 @@ impl GitTurtle {
         &mut self,
         path: &Path,
         notice: Option<String>,
-        error: Option<String>,
+        error: Option<crate::views::OperationFailure>,
         cx: &mut Context<Self>,
     ) {
         if self.path.as_deref() == Some(path) {
@@ -4408,10 +4408,7 @@ mod tests {
         app.read_with(cx, |app, _| app.operations.drain());
         crate::views::tests::settle(&app, cx).await;
         assert_not_a_repository(&app, cx, &root, "Refresh in Changes");
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
         // The failed Open shows History; Changes again, and Refresh there.
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
         app.read_with(cx, |app, _| app.operations.drain());
@@ -4444,10 +4441,7 @@ mod tests {
         app.read_with(cx, |app, _| app.operations.drain());
         crate::views::tests::settle(&app, cx).await;
         crate::views::tests::hold_quiet_reads_for_test(&app, cx);
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
         std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
         cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
         for after in ["a quiet read", "a quiet read of the marked tab"] {
@@ -4455,7 +4449,7 @@ mod tests {
             crate::views::tests::settle(&app, cx).await;
             assert_not_a_repository(&app, cx, &root, after);
             assert_eq!(
-                app.read_with(cx, |app, _| app.operation_error.clone()),
+                app.read_with(cx, |app, _| app.operation_error_text()),
                 None,
                 "{after}: nothing beside it"
             );

@@ -2353,6 +2353,9 @@ fn no_repository_found(stderr: &[u8]) -> bool {
 pub struct NotARepository(
     /// The failure's message as it is shown, as "Git rev-parse failed: …".
     pub String,
+    /// The line of it that says what went wrong, where Git wrote one
+    /// ([`GitFailure`]).
+    pub Option<String>,
 );
 
 impl std::fmt::Display for NotARepository {
@@ -2379,10 +2382,112 @@ impl std::error::Error for NotARepository {}
 /// carriage return such a read left the tab unmarked and showed a cut
 /// message.
 fn git_failure(stderr: &[u8], message: String) -> anyhow::Error {
+    git_failure_summarized(stderr, git_failure_line(stderr, b""), message)
+}
+
+/// [`git_failure`] whose banner line is `summary`: core's own headline, or
+/// [`git_failure_line`] of the streams `message` reports. With none, the
+/// failure carries no summary and the app shows the report's first line.
+fn git_failure_summarized(
+    stderr: &[u8],
+    summary: Option<String>,
+    message: String,
+) -> anyhow::Error {
     if no_repository_found(stderr) {
-        NotARepository(message).into()
+        NotARepository(message, summary).into()
+    } else if let Some(summary) = summary {
+        GitFailure {
+            report: message,
+            summary,
+        }
+        .into()
     } else {
         anyhow::Error::msg(message)
+    }
+}
+
+/// The first line of Git's redacted `stderr`, and then `stdout`, that starts
+/// `fatal:` or `error:`, as a terminal leaves it. Read here, while the two
+/// streams are apart: in a report core's words open the first line, so no
+/// line of Git's first output ever starts one, and a banner reading the
+/// report could only pick the second marker. Always redacted, so the banner
+/// shows nothing a report hid. That is stricter than a report built with
+/// [`reported`], which is read as a terminal leaves it but not redacted: its
+/// commands, local reads and `git config --file` edits, run no network,
+/// helpers or hooks and so have no credential source (decided 2026-11-09).
+/// A caller passes only the streams its report embeds.
+fn git_failure_line(stderr: &[u8], stdout: &[u8]) -> Option<String> {
+    [stderr, stdout].into_iter().find_map(|stream| {
+        reported_redacted(stream, work::redact_stream)
+            .lines()
+            .find(|line| line.starts_with("fatal:") || line.starts_with("error:"))
+            .map(str::to_owned)
+    })
+}
+
+/// A failed Git command's whole report with the one line that says what went
+/// wrong, built where core still has Git's streams apart and never guessed
+/// from the report's text. The banner draws the summary and the report
+/// stays behind Details…. The failure itself, its message the report, so
+/// what every other surface shows is unchanged.
+#[derive(Debug)]
+pub struct GitFailure {
+    /// The failure's message as it is shown, as "Git operation failed: …".
+    report: String,
+    /// Core's own headline, or Git's first redacted `fatal:` or `error:` line.
+    summary: String,
+}
+
+impl std::fmt::Display for GitFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.report)
+    }
+}
+
+impl std::error::Error for GitFailure {}
+
+/// The line `error` carries for a compact banner, or `None` where it carries
+/// none and the report's first non-empty line stands instead. Words of ours
+/// added around the failure lead it, as they lead the report: "The repository
+/// at … is gone: …" keeps its headline.
+pub fn failure_summary(error: &anyhow::Error) -> Option<String> {
+    let mut lead = String::new();
+    for cause in error.chain() {
+        let summary = cause
+            .downcast_ref::<GitFailure>()
+            .map(|failure| failure.summary.as_str())
+            .or_else(|| {
+                cause
+                    .downcast_ref::<NotARepository>()
+                    .and_then(|failure| failure.1.as_deref())
+            });
+        if let Some(summary) = summary {
+            return Some(format!("{lead}{summary}"));
+        }
+        lead.push_str(&format!("{cause}: "));
+    }
+    None
+}
+
+/// `error` as the same failure with its whole report and its line each read
+/// through `redact`: the type a caller tells it apart by ([`NotARepository`])
+/// and the line the banner draws ([`GitFailure`]) outlive a redaction of the
+/// report, which flattened to text left no write a line to show. Both go
+/// through `redact`, so the line shows nothing the report hides, a secret
+/// only `redact` knows included; a line carries the words of ours that lead
+/// it, so a marker among them cuts it as it cuts the report's first line.
+pub(crate) fn redacted_failure(
+    error: &anyhow::Error,
+    redact: impl Fn(&str) -> String,
+) -> anyhow::Error {
+    let report = redact(&format!("{error:#}"));
+    let summary = failure_summary(error).map(|line| redact(&line));
+    if error.chain().any(|cause| cause.is::<NotARepository>()) {
+        NotARepository(report, summary).into()
+    } else if let Some(summary) = summary {
+        GitFailure { report, summary }.into()
+    } else {
+        anyhow::Error::msg(report)
     }
 }
 

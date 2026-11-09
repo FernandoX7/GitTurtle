@@ -489,7 +489,7 @@ impl GitTurtle {
     pub(super) fn save_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.normalize();
         if let Err(error) = self.settings.validate() {
-            self.operation_error = Some(format!("Could not save settings: {error:#}"));
+            self.operation_error = Some(format!("Could not save settings: {error:#}").into());
             cx.notify();
             return;
         }
@@ -522,7 +522,8 @@ impl GitTurtle {
                         this.status = "Settings saved".into();
                     }
                     Err(error) => {
-                        this.operation_error = Some(format!("Could not save settings: {error:#}"));
+                        this.operation_error =
+                            Some(format!("Could not save settings: {error:#}").into());
                     }
                 }
                 // A completed save costs a whole-window frame, so it only asks
@@ -1211,7 +1212,7 @@ impl GitTurtle {
         let mut edited = self.settings.clone();
         edited.default_branch = self.settings_branch.read(cx).value().to_string();
         if let Err(error) = edited.validate() {
-            self.operation_error = Some(format!("Default branch: {error:#}"));
+            self.operation_error = Some(format!("Default branch: {error:#}").into());
             cx.notify();
             return;
         }
@@ -2917,7 +2918,7 @@ impl GitTurtle {
                                         .flex()
                                         .items_center()
                                         .gap_3()
-                                        .child(div().flex_1().min_w_0().child(error.clone()))
+                                        .child(div().flex_1().min_w_0().child(error.to_string()))
                                         .when(error.starts_with("Could not save settings:"), |notice| {
                                             notice.child(Button::new("retry-save-settings").track_focus(&retry).label("Retry save").on_click(cx.listener(|this, _, window, cx| this.save_preferences(window, cx))))
                                         }),
@@ -3018,7 +3019,7 @@ pub(super) struct SettingsPage {
 /// see `GitTurtle::settings_page_key`.
 #[derive(PartialEq)]
 struct PageKey {
-    error: Option<String>,
+    error: Option<crate::views::OperationFailure>,
     busy: bool,
     /// Whether the write has looked busy, which the page's write controls
     /// wait for before they dim (`workspace::BusyLook`).

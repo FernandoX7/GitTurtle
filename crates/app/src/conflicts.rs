@@ -1382,7 +1382,7 @@ impl GitTurtle {
                         let _ = this.update_in(cx, |this, _, cx| {
                             match result {
                                 Ok(path) => { cx.open_with_system(&path); this.operation_notice = Some("Edit and save the file, then refresh to review and stage the resolution.".into()); }
-                                Err(error) => this.operation_error = Some(format!("{error:#}")),
+                                Err(error) => this.operation_error = Some(crate::views::OperationFailure::of(&error)),
                             }
                             cx.notify();
                         });

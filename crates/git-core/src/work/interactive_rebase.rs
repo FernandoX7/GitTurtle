@@ -432,8 +432,9 @@ impl GitRepository {
             return Ok(WriteOutcome { message: "Rebase paused for commit-message review. Choose Continue to edit the message in GitTurtle. The operation can also be aborted or resumed after restarting.".into(), commit_oid: self.status()?.head, up_to_date: false });
         }
         if !result.status.success() {
-            return Err(git_failure(
+            return Err(git_failure_summarized(
                 &result.stderr,
+                git_failure_line(&result.stderr, &result.stdout),
                 format!(
                     "Interactive rebase stopped: {}\n{}\nReview Working Changes and the operation state before choosing Continue or Abort. No retry was attempted.",
                     stderr.trim(),

@@ -467,8 +467,9 @@ impl GitTurtle {
                         this.tab_repository_gone(window, cx);
                     }
                     Ok(Err(error)) => {
-                        this.operation_error
-                            .get_or_insert_with(|| format!("Local refresh: {error:#}"));
+                        this.operation_error.get_or_insert_with(|| {
+                            crate::views::OperationFailure::of_read("Local refresh", &error)
+                        });
                     }
                     Err(_) => {
                         this.automatic.pending.merge(changed);
@@ -560,6 +561,7 @@ impl GitTurtle {
                 Ok(worker::QuietHistory::Retained {
                     metadata,
                     error,
+                    summary,
                     vanished,
                 }) => {
                     self.refs = metadata.refs;
@@ -569,13 +571,15 @@ impl GitTurtle {
                     self.rebuild_navigation(cx);
                     self.history_updates.report_scope_error(
                         &error,
+                        summary.as_deref(),
                         vanished.as_ref(),
                         &mut self.operation_error,
                     );
                 }
                 Err(error) => {
-                    self.operation_error
-                        .get_or_insert_with(|| format!("History scope changed: {error:#}"));
+                    self.operation_error.get_or_insert_with(|| {
+                        crate::views::OperationFailure::of_read("History scope changed", &error)
+                    });
                 }
             }
         }
@@ -603,8 +607,9 @@ impl GitTurtle {
                     }
                 }
                 Err(error) => {
-                    self.operation_error
-                        .get_or_insert_with(|| format!("Updated comparison: {error:#}"));
+                    self.operation_error.get_or_insert_with(|| {
+                        crate::views::OperationFailure::of_read("Updated comparison", &error)
+                    });
                 }
             }
         }
@@ -730,7 +735,7 @@ impl QuietDrawn {
         let mut text = std::collections::hash_map::DefaultHasher::new();
         (
             &app.status,
-            &app.operation_error,
+            app.operation_error.as_deref(),
             &app.operation_notice,
             &app.automatic.watch_warning,
         )

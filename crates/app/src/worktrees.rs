@@ -233,7 +233,7 @@ impl GitTurtle {
                                     .into(),
                             );
                         }
-                        Ok(Err(error)) => this.operation_error = Some(format!("{error:#}")),
+                        Ok(Err(error)) => this.operation_error = Some(crate::views::OperationFailure::of(&error)),
                         Err(_) => this.operation_error = Some(
                             "Editor launcher interrupted; check whether it opened before retrying."
                                 .into(),

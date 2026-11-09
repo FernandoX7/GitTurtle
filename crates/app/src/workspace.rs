@@ -2660,7 +2660,7 @@ impl GitTurtle {
                         let message = format!("{error:#}");
                         this.hub.update(cx, |hub, cx| hub.set_error(Some(message.clone()), cx));
                         if this.path == accepted_path && this.page == accepted_page {
-                            this.operation_error = Some(message);
+                            this.operation_error = Some(views::OperationFailure::of(&error));
                             this.operation_notice = None;
                         } else {
                             // One part: the path and Git's message are the user's and can hold " · ".
@@ -2832,8 +2832,9 @@ impl GitTurtle {
                         if error.is::<worker::RepositoryGone>() {
                             this.tab_repository_gone(window, cx);
                         } else {
-                            this.operation_error
-                                .get_or_insert_with(|| format!("Working tree: {error:#}"));
+                            this.operation_error.get_or_insert_with(|| {
+                                views::OperationFailure::of_read("Working tree", &error)
+                            });
                         }
                     }
                 }
@@ -2879,8 +2880,9 @@ impl GitTurtle {
         self.integration_state = match operation {
             Ok(state) => state,
             Err(error) => {
-                self.operation_error
-                    .get_or_insert_with(|| format!("Operation state: {error:#}"));
+                self.operation_error.get_or_insert_with(|| {
+                    views::OperationFailure::of_read("Operation state", &error)
+                });
                 None
             }
         };
@@ -2947,8 +2949,9 @@ impl GitTurtle {
         let remotes = match remotes {
             Ok(remotes) => remotes,
             Err(error) => {
-                self.operation_error
-                    .get_or_insert_with(|| format!("Remote configuration: {error:#}"));
+                self.operation_error.get_or_insert_with(|| {
+                    views::OperationFailure::of_read("Remote configuration", &error)
+                });
                 Vec::new()
             }
         };
@@ -2975,8 +2978,9 @@ impl GitTurtle {
         self.profile = match profile {
             Ok(profile) => Some(profile),
             Err(error) => {
-                self.operation_error
-                    .get_or_insert_with(|| format!("Git identity: {error:#}"));
+                self.operation_error.get_or_insert_with(|| {
+                    views::OperationFailure::of_read("Git identity", &error)
+                });
                 None
             }
         };
@@ -4167,7 +4171,7 @@ impl GitTurtle {
                         }
                     }
                     Err(error) => {
-                        this.tab_operation_feedback(&path, None, Some(format!("{error:#}")), cx);
+                        this.tab_operation_feedback(&path, None, Some(views::OperationFailure::of(&error)), cx);
                     }
                 }
                 if let Some(profile) = submitted_profile { this.finish_profile_write(&path, profile, succeeded, window, cx); }
@@ -8217,7 +8221,7 @@ mod background_clone_tests {
         app.read_with(cx, |app, _| app.operations.drain());
         settle(&app, cx).await;
         let (status, error) = app.read_with(cx, |app, _| {
-            (app.status.clone(), app.operation_error.clone())
+            (app.status.clone(), app.operation_error_text())
         });
         let head = format!("Repository operation failed in {}: ", destination.display());
         assert!(

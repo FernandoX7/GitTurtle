@@ -177,6 +177,12 @@ fn failed_stash_apply_reports_git_lock_failure_without_claiming_conflicts() {
         diagnostic.starts_with("Stash restoration did not complete. The stash remains saved."),
         "{diagnostic}"
     );
+    // The headline is the banner's line, never Git's later `fatal:` or `error:`.
+    assert_eq!(
+        gitturtle_core::failure_summary(&error).as_deref(),
+        Some("Stash restoration did not complete. The stash remains saved."),
+        "{diagnostic}"
+    );
     assert!(!diagnostic.contains("produced conflicts"));
     assert!(diagnostic.contains("Git stderr:"));
     assert!(

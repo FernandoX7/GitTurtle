@@ -551,6 +551,9 @@ pub enum QuietHistory {
     Retained {
         metadata: Snapshot,
         error: String,
+        /// The line of `error` that says what went wrong, where its failure
+        /// carries one (`gitturtle_core::failure_summary`).
+        summary: Option<String>,
         /// The scope that vanished, when that is why the read failed; the
         /// view reports one vanished scope once.
         vanished: Option<VanishedScope>,
@@ -2044,6 +2047,7 @@ fn execute(
                         Ok(QuietHistory::Retained {
                             metadata,
                             vanished: error.downcast_ref::<VanishedScope>().cloned(),
+                            summary: gitturtle_core::failure_summary(&error),
                             error: format!("{error:#}"),
                         })
                     }
@@ -4189,6 +4193,7 @@ mod image_tests {
             metadata,
             error,
             vanished,
+            ..
         } = refresh.snapshot.unwrap().unwrap()
         else {
             panic!("missing scopes must retain displayed history")

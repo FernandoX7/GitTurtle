@@ -489,12 +489,14 @@ impl GitRepository {
         // redacted and then as a terminal leaves them (`reported_redacted`),
         // as every other write's failure reads them: stash apply runs
         // configured filters, whose output can hold a credential.
-        // The leading sentence is suitable for the compact operation error bar;
+        // The leading sentence is the compact operation error bar's own line;
         // Details retains the full diagnostic content and actual exit status.
-        Err(git_failure(
+        let headline = format!("{summary} {saved}");
+        Err(git_failure_summarized(
             &output.stderr,
+            Some(headline.clone()),
             format!(
-                "{summary} {saved}\n\n{guidance}{local_state}\n\nGit result: {}\n\nGit stdout:\n{}\n\nGit stderr:\n{}",
+                "{headline}\n\n{guidance}{local_state}\n\nGit result: {}\n\nGit stdout:\n{}\n\nGit stderr:\n{}",
                 output.status,
                 reported_redacted(&output.stdout, authentication::redact_current),
                 reported_redacted(&output.stderr, authentication::redact_current),

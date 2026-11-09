@@ -193,10 +193,12 @@ impl GitRepository {
         version.args(["lfs", "version"]);
         let output = bounded_output(version, GIT_TIMEOUT)?;
         if !output.status.success() {
-            return Err(git_failure(
+            const HEADLINE: &str = "Git LFS tooling is unavailable. Install Git LFS 3.8.1 or newer, then review this download again.";
+            return Err(git_failure_summarized(
                 &output.stderr,
+                Some(HEADLINE.into()),
                 format!(
-                    "Git LFS tooling is unavailable. Install Git LFS 3.8.1 or newer, then review this download again. {}",
+                    "{HEADLINE} {}",
                     reported_redacted(&output.stderr, redact_diagnostic)
                 ),
             ));
@@ -214,10 +216,12 @@ impl GitRepository {
             .args(["lfs", "env"]);
         let output = bounded_output(command, GIT_TIMEOUT)?;
         if !output.status.success() {
-            return Err(git_failure(
+            const HEADLINE: &str = "Git LFS tooling is unavailable or its configuration cannot be read. Install Git LFS, then review this download again.";
+            return Err(git_failure_summarized(
                 &output.stderr,
+                Some(HEADLINE.into()),
                 format!(
-                    "Git LFS tooling is unavailable or its configuration cannot be read. Install Git LFS, then review this download again. {}",
+                    "{HEADLINE} {}",
                     reported_redacted(&output.stderr, redact_diagnostic)
                 ),
             ));
@@ -321,9 +325,11 @@ pub(super) fn effective_lfs_config(target: GitTarget<'_>) -> Result<Vec<u8>> {
     config.args(["config", "--null", "--list"]);
     let output = bounded_output(config, GIT_TIMEOUT)?;
     if !output.status.success() {
-        return Err(git_failure(
+        const HEADLINE: &str = "Cannot read the effective Git configuration for LFS.";
+        return Err(git_failure_summarized(
             &output.stderr,
-            "Cannot read the effective Git configuration for LFS.".into(),
+            Some(HEADLINE.into()),
+            HEADLINE.into(),
         ));
     }
     Ok(output.stdout)

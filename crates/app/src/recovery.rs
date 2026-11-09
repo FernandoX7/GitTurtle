@@ -257,7 +257,7 @@ impl GitTurtle {
             match failure {
                 Some(failure) => failure(message, window, cx),
                 None => {
-                    this.operation_error = Some(message);
+                    this.operation_error = Some(message.into());
                     // A fresh node, heard again however often it refuses.
                     this.error_refusals = this.error_refusals.wrapping_add(1);
                 }
@@ -500,14 +500,13 @@ impl GitTurtle {
                         }
                     }
                     Err(error) => {
-                        let message = format!("{error:#}");
                         // Only a read asked for after the refusal can find
                         // its cause gone (`conflicts_ended`).
                         this.recovery.refused_after = asked;
                         if let Some(failure) = failure {
-                            failure(message, window, cx);
+                            failure(format!("{error:#}"), window, cx);
                         } else {
-                            this.operation_error = Some(message);
+                            this.operation_error = Some(crate::views::OperationFailure::of(&error));
                         }
                     }
                 }
@@ -8059,7 +8058,7 @@ mod tests {
             "no review opens once Stashes has closed"
         );
         assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
+            app.read_with(cx, |app, _| app.operation_error_text()),
             None,
             "and nothing is said"
         );
@@ -8366,10 +8365,7 @@ mod tests {
                 && cx.debug_bounds("stash-browser").is_none(),
             "the Restore stash review opens in place of Stashes"
         );
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
         quiet_reads_land(&app, cx);
         assert!(
             app.read_with(cx, |app, _| app.integration_state.is_none()),
@@ -8452,7 +8448,7 @@ mod tests {
                     "{at}: the note is no live region of its own"
                 );
                 assert_eq!(
-                    app.read_with(cx, |app, _| app.operation_error.clone()),
+                    app.read_with(cx, |app, _| app.operation_error_text()),
                     None,
                     "{at}: and nowhere else"
                 );
@@ -8660,7 +8656,7 @@ mod tests {
                         "{at}: the window's alert says that line, not the whole report"
                     );
                     assert_eq!(
-                        app.read_with(cx, |app, _| app.operation_error.clone()),
+                        app.read_with(cx, |app, _| app.operation_error_text()),
                         None,
                         "{at}: Stashes says it, not the window"
                     );
@@ -9821,7 +9817,7 @@ mod tests {
             })
         });
         assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
+            app.read_with(cx, |app, _| app.operation_error_text()),
             Some(PAUSED_REFUSAL.into()),
             "Revert is refused in the window's error"
         );
@@ -9829,7 +9825,7 @@ mod tests {
         quiet_reads_land(&app, cx);
         assert!(!paused(cx), "the read finds the merge ended again");
         assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
+            app.read_with(cx, |app, _| app.operation_error_text()),
             None,
             "the window's refusal ends with the merge"
         );
@@ -9907,7 +9903,7 @@ mod tests {
             });
             frame(cx);
             assert_eq!(
-                app.read_with(cx, |app, _| app.operation_error.clone())
+                app.read_with(cx, |app, _| app.operation_error_text())
                     .as_deref(),
                 Some(said),
                 "{kind:?}: the window's error names it"
@@ -9939,7 +9935,7 @@ mod tests {
             quiet_reads_land(&app, cx);
             crate::views::tests::draw(cx);
             assert_eq!(
-                app.read_with(cx, |app, _| app.operation_error.clone()),
+                app.read_with(cx, |app, _| app.operation_error_text()),
                 None,
                 "{kind:?}: the refusal ends with the pause"
             );
@@ -9974,12 +9970,12 @@ mod tests {
             let refusal = gitturtle_core::paused_recovery_refusal(operation);
             cx.update(|window, cx| {
                 app.update(cx, |app, cx| {
-                    app.operation_error = Some(refusal.to_owned());
+                    app.operation_error = Some(refusal.into());
                     app.integration_ended(window, cx);
                 })
             });
             assert_eq!(
-                app.read_with(cx, |app, _| app.operation_error.clone()),
+                app.read_with(cx, |app, _| app.operation_error_text()),
                 kept.then(|| refusal.to_owned()),
                 "{operation:?}"
             );
@@ -10592,7 +10588,7 @@ mod tests {
         let refusals = |cx: &mut gpui::VisualTestContext| {
             (
                 form.read_with(cx, |form, _| (form.error.clone(), form.pause_ended)),
-                app.read_with(cx, |app, _| app.operation_error.clone()),
+                app.read_with(cx, |app, _| app.operation_error_text()),
             )
         };
         let standing = (

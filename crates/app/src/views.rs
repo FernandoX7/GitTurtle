@@ -8628,6 +8628,102 @@ pub(crate) fn laid_out_text_width(width: Pixels, window: &Window) -> Pixels {
     px((f32::from(width.ceil()) * scale).ceil() / scale)
 }
 
+/// A failure the operation error banner shows: the whole report, which
+/// Details… and the alert keep, with the one line of it the banner draws,
+/// built once where the failure arrives so a frame scans nothing, however
+/// long Git's output makes the report. It reads as its report wherever only
+/// the text matters (`Deref`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OperationFailure {
+    report: String,
+    banner: SharedString,
+}
+
+impl OperationFailure {
+    /// `error` as the banner shows it: the summary core typed onto it where
+    /// it still had Git's streams apart, otherwise the report's first line
+    /// with text ([`From<String>`]). Never read back from the report's text:
+    /// core's words open a report's first line, so no line of Git's first
+    /// output ever starts one, and a banner that searched the report for a
+    /// marker lost what `git fetch nope` says went wrong.
+    pub(crate) fn of(error: &anyhow::Error) -> Self {
+        Self::summarized(format!("{error:#}"), gitturtle_core::failure_summary(error))
+    }
+
+    /// `error`, a read's failure named by `what`: "`what`: …", in its report
+    /// and its line alike.
+    pub(crate) fn of_read(what: &str, error: &anyhow::Error) -> Self {
+        Self::summarized(
+            format!("{what}: {error:#}"),
+            gitturtle_core::failure_summary(error).map(|line| format!("{what}: {line}")),
+        )
+    }
+
+    /// `report`, whose banner line is `summary` where it has one, otherwise
+    /// its first line with text.
+    pub(crate) fn summarized(report: String, summary: Option<String>) -> Self {
+        let banner = banner_line(summary.as_deref().unwrap_or(&report));
+        Self { report, banner }
+    }
+
+    /// The line the banner draws.
+    pub(crate) fn banner(&self) -> SharedString {
+        self.banner.clone()
+    }
+}
+
+/// At most 220 characters of `text`'s first line with text; `text` as it
+/// stands when no line of it has any.
+fn banner_line(text: &str) -> SharedString {
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(text);
+    line.chars().take(220).collect::<String>().into()
+}
+
+impl From<String> for OperationFailure {
+    /// A failure carrying no typed summary: its banner line is the report's
+    /// first line with text.
+    fn from(report: String) -> Self {
+        Self::summarized(report, None)
+    }
+}
+
+impl From<&str> for OperationFailure {
+    fn from(report: &str) -> Self {
+        report.to_owned().into()
+    }
+}
+
+impl std::ops::Deref for OperationFailure {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.report
+    }
+}
+
+impl std::fmt::Display for OperationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.report)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The line the operation error banner drew last.
+    static BANNER_DRAWN: RefCell<Option<SharedString>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+impl GitTurtle {
+    /// The operation error's whole report.
+    pub(crate) fn operation_error_text(&self) -> Option<String> {
+        self.operation_error.as_deref().map(str::to_owned)
+    }
+}
+
 /// One line of `text` as [`line_widths`] lays it out, at `weight`, unrounded.
 pub(crate) fn shaped_width(
     text: &str,
@@ -9843,20 +9939,16 @@ impl Render for GitTurtle {
                                 // accessible text is, and said once: a
                                 // multi-megabyte name and value went to
                                 // assistive technology in every frame.
-                                .alert(native_accessibility::bounded_accessible_text(error))
+                                .alert(native_accessibility::bounded_accessible_text(&**error))
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
                                 .text_size(crate::appearance::ui_text(11.))
-                                .child(
-                                    error
-                                        .lines()
-                                        .next()
-                                        .unwrap_or(error)
-                                        .chars()
-                                        .take(220)
-                                        .collect::<String>(),
-                                ),
+                                .child({
+                                    #[cfg(test)]
+                                    BANNER_DRAWN.with_borrow_mut(|drawn| *drawn = Some(error.banner()));
+                                    error.banner()
+                                }),
                         ))
                         .child(
                             button("operation-error-details", "Details…", "", false).on_click(
@@ -40842,7 +40934,7 @@ pub(crate) mod tests {
         let report = format!("Push failed:\n{}", "€ rejected\n".repeat(100_000));
         cx.update(|_, cx| {
             app.update(cx, |app, cx| {
-                app.operation_error = Some(report.clone());
+                app.operation_error = Some(report.clone().into());
                 cx.notify();
             })
         });
@@ -40874,6 +40966,312 @@ pub(crate) mod tests {
             report.starts_with(kept),
             "the report's start, cut between characters"
         );
+    }
+
+    /// A failure carrying no typed summary shows the report's first line with
+    /// text, cut at 220 characters, whatever that line says: the marker a
+    /// failure's line starts with is read where core has Git's streams apart
+    /// (`gitturtle_core::failure_summary`), never searched for in the report.
+    #[test]
+    fn a_report_with_no_summary_shows_its_first_line() {
+        let long = format!("Push failed: {}", "x".repeat(400));
+        for (case, report, line) in [
+            (
+                "no marker",
+                "\n   \nCould not save settings: disk full\nsecond line\n",
+                "Could not save settings: disk full".to_owned(),
+            ),
+            (
+                "a marker on a later line is not looked for",
+                "Push failed\nerror: on its own line\n",
+                "Push failed".to_owned(),
+            ),
+            (
+                "cut at its 220 characters",
+                long.as_str(),
+                long.chars().take(220).collect::<String>(),
+            ),
+            ("nothing but blank lines", "\n \n", "\n \n".to_owned()),
+        ] {
+            let failure = super::OperationFailure::from(report);
+            assert_eq!(failure.banner().as_ref(), line, "{case}");
+            assert_eq!(&*failure, report, "{case}: its report whole");
+        }
+    }
+
+    /// The banner draws the line a real failure's core typed for it, and the
+    /// report behind Details… and the alert stay whole: `git fetch nope` says
+    /// which remote was wrong, where the banner once picked the second
+    /// marker, "Could not read from remote repository." A context of ours
+    /// leads the line as it leads the report, and a report's next failure
+    /// replaces it.
+    #[gpui::test]
+    async fn the_operation_error_banner_draws_the_failing_line(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let (_fixture, app, cx) = history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(&root, &["remote", "add", "nope", "/nonexistent/nope.git"]);
+        let repository = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
+        let fetch = repository
+            .execute(&gitturtle_core::WriteCommand::Fetch {
+                remote: "nope".into(),
+            })
+            .expect_err("no such remote");
+        let fetch_report = format!("{fetch:#}");
+        assert!(
+            fetch_report.starts_with("Git operation failed: fatal: "),
+            "as core writes it: {fetch_report}"
+        );
+        let contexted = repository
+            .execute(&gitturtle_core::WriteCommand::Fetch {
+                remote: "nope".into(),
+            })
+            .expect_err("no such remote")
+            .context("The fetch did not run");
+        let plain = super::OperationFailure::from("Could not save settings: disk full");
+        for (case, failure, drawn) in [
+            (
+                "a typed summary",
+                super::OperationFailure::of(&fetch),
+                "fatal: '/nonexistent/nope.git' does not appear to be a git repository".to_owned(),
+            ),
+            (
+                "a context of ours leads it",
+                super::OperationFailure::of(&contexted),
+                "The fetch did not run: fatal: '/nonexistent/nope.git' does not appear to be a git repository"
+                    .to_owned(),
+            ),
+            (
+                "no typed summary",
+                plain.clone(),
+                "Could not save settings: disk full".to_owned(),
+            ),
+        ] {
+            let report = failure.to_string();
+            written::forget();
+            app.update(cx, |app, cx| {
+                app.operation_error = Some(failure);
+                cx.notify();
+            });
+            draw(cx);
+            assert!(
+                cx.debug_bounds("operation-error-summary").is_some(),
+                "{case}: the banner is drawn"
+            );
+            assert_eq!(
+                super::BANNER_DRAWN.with_borrow(Clone::clone).as_deref(),
+                Some(drawn.as_str()),
+                "{case}"
+            );
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_error_text()).as_deref(),
+                Some(report.as_str()),
+                "{case}: Details… keeps the whole report"
+            );
+            let mut announced = written::announced_from("operation-error-summary-");
+            let (node, _) = announced.pop().expect("the alert");
+            let name = written::get(&node).expect("the alert's node").node;
+            assert_eq!(
+                name.label(),
+                Some(report.as_str()),
+                "{case}: the alert keeps the whole report"
+            );
+        }
+    }
+
+    /// The banner's line reaches it on a real write: every accepted write
+    /// goes through the operation executor's `run_controlled`, which once
+    /// flattened the failure to its report, so the banner read the report's
+    /// first line: "Git operation failed: Permission denied (publickey)." for
+    /// an SSH refusal, its `fatal:` line lost. Run here as a press runs them
+    /// (`GitTurtle::write`), a rejected push and an SSH refusal draw Git's
+    /// failing line, and Details… keeps the whole report.
+    #[gpui::test]
+    async fn a_failed_write_draws_its_failing_line(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let bare = fixture.path().join("rejecting.git");
+        fixture_git(
+            fixture.path(),
+            &[
+                "clone",
+                "--bare",
+                root.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        fixture_git(
+            &root,
+            &["remote", "add", "rejecting", bare.to_str().unwrap()],
+        );
+        fixture_git(
+            &root,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--amend",
+                "--allow-empty",
+                "-m",
+                "rewritten",
+            ],
+        );
+        fixture_git(
+            &root,
+            &["remote", "add", "guarded", "git@example.invalid:x.git"],
+        );
+        fixture_git(
+            &root,
+            &[
+                "config",
+                "core.sshCommand",
+                "sh -c 'echo \"Permission denied (publickey).\" >&2; exit 255' --",
+            ],
+        );
+        for (case, command, reported, drawn) in [
+            (
+                "a rejected push",
+                gitturtle_core::WriteCommand::Push {
+                    remote: "rejecting".into(),
+                    local_branch: "main".into(),
+                    remote_branch: "main".into(),
+                },
+                "[rejected]",
+                format!("error: failed to push some refs to '{}'", bare.display()),
+            ),
+            (
+                "an SSH refusal",
+                gitturtle_core::WriteCommand::Fetch {
+                    remote: "guarded".into(),
+                },
+                "Permission denied (publickey).",
+                "fatal: Could not read from remote repository.".to_owned(),
+            ),
+        ] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.write(command, "Writing…", window, cx))
+            });
+            wait_until(cx, &app, "the write's failure", |app| {
+                app.operation_busy.is_none() && app.operation_error.is_some()
+            });
+            land_every_reply(&app, cx);
+            draw(cx);
+            assert_eq!(
+                super::BANNER_DRAWN.with_borrow(Clone::clone).as_deref(),
+                Some(drawn.as_str()),
+                "{case}"
+            );
+            let report = app
+                .read_with(cx, |app, _| app.operation_error_text())
+                .expect("the report");
+            assert!(report.contains(reported), "{case}: {report}");
+        }
+        drop(fixture);
+    }
+
+    /// A quiet read that cannot read its scope draws the line its failure
+    /// carries, in the sentence that says the history is retained: flattened
+    /// to a string on the worker, the banner showed core's "Git history read
+    /// failed:" and the first line Git wrote, a `hint:` in a repository with
+    /// a grafts file, and lost what failed and the sentence's end. Only our
+    /// words are asserted, since Git's differ by release and platform. The
+    /// whole report stays behind Details….
+    #[gpui::test]
+    async fn a_retained_scope_read_draws_git_s_failing_line(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let commit = |parent: &str, message: &str| {
+            let output = fixture_git_output(
+                &root,
+                &[
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "commit-tree",
+                    "main^{tree}",
+                    "-p",
+                    parent,
+                    "-m",
+                    message,
+                ],
+            );
+            assert!(output.status.success(), "commit-tree");
+            String::from_utf8(output.stdout)
+                .expect("an object name")
+                .trim()
+                .to_owned()
+        };
+        let parent = commit("main", "parent");
+        let tip = commit(&parent, "tip");
+        fixture_git(&root, &["branch", "departing", &tip]);
+        scope_history(
+            &app,
+            cx,
+            "departing",
+            worker::Scope::Branch {
+                name: "departing".into(),
+                remote: false,
+            },
+        )
+        .await;
+        // The missing object fails the read on any Git; the grafts file opens
+        // its output with a `hint:` where the release prints one.
+        let git_dir = root.join(".git");
+        std::fs::create_dir_all(git_dir.join("info")).expect("the info folder");
+        std::fs::write(git_dir.join("info/grafts"), "").expect("a grafts file");
+        std::fs::remove_file(
+            git_dir
+                .join("objects")
+                .join(&parent[..2])
+                .join(&parent[2..]),
+        )
+        .expect("the parent's loose object");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::CreateBranch {
+                        name: "unrelated".into(),
+                        start_point: None,
+                    },
+                    "Writing…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        wait_until(cx, &app, "the quiet read's report", |app| {
+            app.operation_busy.is_none()
+                && app
+                    .operation_error
+                    .as_deref()
+                    .is_some_and(|error| error.starts_with("History scope changed: "))
+        });
+        draw(cx);
+        const OPENS: &str = "History scope changed: ";
+        const ENDS: &str =
+            ". The displayed history is retained; choose a current branch to browse its history.";
+        let drawn = super::BANNER_DRAWN
+            .with_borrow(Clone::clone)
+            .expect("the banner is drawn");
+        let line = drawn
+            .strip_prefix(OPENS)
+            .and_then(|rest| rest.strip_suffix(ENDS))
+            .unwrap_or_else(|| panic!("our sentence around the line: {drawn}"));
+        assert!(!line.is_empty(), "{drawn}");
+        assert!(!line.starts_with("hint:"), "{drawn}");
+        assert!(!line.contains("Git history read failed"), "{drawn}");
+        let report = app
+            .read_with(cx, |app, _| app.operation_error_text())
+            .expect("the report");
+        assert!(
+            report.starts_with("History scope changed: Git history read failed: "),
+            "{report}"
+        );
+        assert!(report.ends_with(ENDS), "{report}");
+        assert!(report.contains(line), "the line is the report's: {report}");
     }
 
     /// A navigator folder's name counts its branches with their noun, read

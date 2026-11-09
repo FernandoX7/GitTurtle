@@ -1162,10 +1162,7 @@ mod tests {
         settle(&app, cx).await;
         crate::path_filter::filters_land(&app, cx);
         assert_eq!(entries(&app, cx), Some(vec!["draft.txt".to_owned()]));
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
     }
 
     /// An LFS download reloads only the preview it was asked from: Changes
@@ -1827,10 +1824,7 @@ mod tests {
             Some("draft.txt"),
             "the selected row's preview is back"
         );
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
     }
 
     /// The quiet read a Commit's end starts reads the working state, so
@@ -1908,10 +1902,7 @@ mod tests {
         draw(cx);
         assert_eq!(entries(&app, cx), Some(vec!["draft.txt".to_owned()]));
         assert!(cx.debug_bounds("working-reading").is_none());
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
     }
 
     /// A create that opens its repository leaves a working read noted for
@@ -3324,10 +3315,7 @@ mod tests {
             cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
             settle(&app, cx).await;
         }
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
         assert!(
             !stored_recents(3).contains(&opened[2]),
             "nothing has reached the store while the writer is stalled"
@@ -3382,18 +3370,12 @@ mod tests {
 
         let first = opened_in_a_tab("first", &fixture, &app, cx).await;
         let second = opened_in_a_tab("second", &fixture, &app, cx).await;
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
 
         // Still full: refused again, and still nothing to report.
         cx.executor().advance_clock(REFUSED_SAVE_RETRY);
         cx.executor().run_until_parked();
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
 
         drop(held);
         writer_answers(&app, cx);
@@ -3941,10 +3923,7 @@ mod tests {
         drop(held);
         preparation_ends(&app, cx).await;
         quiet_reads_land(&app, cx);
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
         let landed = entries(&app, cx).unwrap_or_default();
         assert!(
             landed.iter().any(|path| path == "later.txt"),

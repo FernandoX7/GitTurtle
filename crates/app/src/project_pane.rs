@@ -494,14 +494,15 @@ impl GitTurtle {
                 }
                 Err(error) => {
                     self.operation_error =
-                        Some(format!("Could not save recent projects: {error:#}"))
+                        Some(format!("Could not save recent projects: {error:#}").into())
                 }
             }
         }
         match outcome {
             Ok(Err(error)) if error.is::<Busy>() => self.ask_again_for_recent_projects(window, cx),
             Ok(Err(error)) => {
-                self.operation_error = Some(format!("Could not save recent projects: {error:#}"))
+                self.operation_error =
+                    Some(format!("Could not save recent projects: {error:#}").into())
             }
             Ok(Ok(())) | Err(_) => {}
         }
@@ -1987,10 +1988,7 @@ mod recent_save_tests {
         let held = a_full_queue(&app, cx);
         let recent = ask_to_remember(&app, &project, cx);
         assert!(recent.listed, "the pane listed it when the save was asked");
-        assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
-            None
-        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
         drop(held);
         writer_answers(&app, cx);
 
@@ -2035,7 +2033,7 @@ mod recent_save_tests {
         ask_to_remember(&app, &fixture.path().join("never-created"), cx);
         writer_answers(&app, cx);
         let error = app
-            .read_with(cx, |app, _| app.operation_error.clone())
+            .read_with(cx, |app, _| app.operation_error_text())
             .expect("the failure is reported");
         assert!(
             error.starts_with("Could not save recent projects:"),
@@ -2056,7 +2054,7 @@ mod recent_save_tests {
         });
         ask_to_remember(&app, fixture.path(), cx);
         let error = app
-            .read_with(cx, |app, _| app.operation_error.clone())
+            .read_with(cx, |app, _| app.operation_error_text())
             .expect("the failure is reported");
         assert!(
             error.starts_with("Could not save recent projects:"),

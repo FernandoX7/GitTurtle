@@ -3424,7 +3424,7 @@ mod tests {
         app.read_with(cx, |app, _| app.preferences_writer.drain());
         cx.executor().run_until_parked();
         assert_eq!(
-            app.read_with(cx, |app, _| app.operation_error.clone()),
+            app.read_with(cx, |app, _| app.operation_error_text()),
             None,
             "Editor asks for no editor"
         );
@@ -3899,7 +3899,7 @@ mod tests {
         // Nothing prepared, nothing asked and nothing reported.
         let quiet = |cx: &mut VisualTestContext| {
             app.read_with(cx, |app, _| {
-                (app.operation_busy, app.operation_error.clone())
+                (app.operation_busy, app.operation_error_text())
             })
         };
         refreshed(&app, cx).await;
@@ -4181,7 +4181,7 @@ mod tests {
             assert_eq!(
                 app.read_with(cx, |app, _| (
                     app.operation_busy,
-                    app.operation_error.clone()
+                    app.operation_error_text()
                 )),
                 (None, Some(crate::recovery::PAUSED_REFUSAL.into())),
                 "{when}, {press}: prepares nothing and says why"
@@ -4698,7 +4698,7 @@ mod tests {
             assert_eq!(
                 app.read_with(cx, |app, _| (
                     app.operation_busy,
-                    app.operation_error.clone()
+                    app.operation_error_text()
                 )),
                 (None, None),
                 "Amend reviews HEAD as it now stands"
@@ -7119,7 +7119,7 @@ mod tests {
         let refusal = gitturtle_core::paused_recovery_refusal(None);
         let error = |cx: &mut VisualTestContext| {
             (
-                app.read_with(cx, |app, _| app.operation_error.clone()),
+                app.read_with(cx, |app, _| app.operation_error_text()),
                 cx.debug_bounds("operation-error-summary").is_some(),
             )
         };
@@ -7127,7 +7127,7 @@ mod tests {
         refreshed(&app, cx).await;
         assert!(app.read_with(cx, |app, _| app.integration_state.is_some()));
         app.update(cx, |app, cx| {
-            app.operation_error = Some(refusal.to_owned());
+            app.operation_error = Some(refusal.into());
             cx.notify();
         });
         next_frame(cx);

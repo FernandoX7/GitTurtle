@@ -1620,8 +1620,9 @@ fn passive_status_command(target: GitTarget<'_>) -> Result<Command> {
     // worktree whose administration directory is gone, this is where status
     // and worktree removal's inspection first find no repository.
     if !(result.status.success() || result.status.code() == Some(1)) {
-        return Err(git_failure(
+        return Err(git_failure_summarized(
             &result.stderr,
+            Some("Unable to inspect configured filters".into()),
             "Unable to inspect configured filters".into(),
         ));
     }
@@ -1795,6 +1796,12 @@ fn configure_network(command: &mut Command, repo: &GitRepository) -> Result<()> 
     Ok(())
 }
 
+/// `value`, a Git stream a failure's summary reads, always redacted, even
+/// where the report embedding it is not (`git_failure_line`).
+pub(crate) fn redact_stream(value: &str) -> String {
+    authentication::redact_current(value)
+}
+
 fn checked_write_output(
     command: Command,
     input: Option<Vec<u8>>,
@@ -1819,14 +1826,16 @@ fn checked_write_output(
         && let Some(headline) =
             diagnostics::pull_refusal_headline(&output.stderr, &output.stdout, fast_forward_pull)
     {
-        return Err(git_failure(
+        return Err(git_failure_summarized(
             &output.stderr,
+            Some(headline.to_owned()),
             format!("{headline}\n\nGit stderr:\n{stderr}\n\nGit stdout:\n{stdout}"),
         ));
     }
     if !output.status.success() {
-        return Err(git_failure(
+        return Err(git_failure_summarized(
             &output.stderr,
+            git_failure_line(&output.stderr, &output.stdout),
             format!(
                 "Git operation failed: {}{}{}",
                 if stderr.trim().is_empty() {
@@ -2293,6 +2302,139 @@ mod tests {
             "no progress before the error: {report:?}"
         );
         assert!(!repo.has_head().unwrap(), "nothing was committed");
+    }
+
+    /// A failed write's report as core writes it, from Git's own streams, and
+    /// the line typed onto it for the banner. Core's words open the report's
+    /// first line, so no line of Git's first output ever starts one, and a
+    /// reading of the report found only the second marker: `git fetch nope`
+    /// lost "'nope' does not appear to be a git repository". A diverged Pull
+    /// keeps core's own headline; a report with no marker carries no summary
+    /// and the app shows its first line; a credential URL stays redacted.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_writes_summary_is_the_line_that_says_what_went_wrong() {
+        const NO_REPOSITORY: &str = "fatal: 'nope' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n";
+        let credential_url = "fatal: unable to access 'https://oauth2:s3cr3t-t0k3n@git.example.invalid/org/repo.git/': The requested URL returned error: 403\n";
+        type Case<'a> = (&'a str, &'a str, &'a str, &'a [&'a str], Option<&'a str>);
+        let cases: &[Case] = &[
+            (
+                "git fetch nope",
+                NO_REPOSITORY,
+                "",
+                &[],
+                Some("fatal: 'nope' does not appear to be a git repository"),
+            ),
+            (
+                "a push of a missing ref, error: then error:",
+                "error: src refspec nope does not match any\nerror: failed to push some refs to 'origin'\n",
+                "",
+                &[],
+                Some("error: src refspec nope does not match any"),
+            ),
+            (
+                "a dirty pull --rebase",
+                "error: cannot pull with rebase: You have unstaged changes.\nerror: Please commit or stash them.\n",
+                "",
+                &[],
+                Some("error: cannot pull with rebase: You have unstaged changes."),
+            ),
+            (
+                "SSH Permission denied then fatal:",
+                "git@host.example.invalid: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\n",
+                "",
+                &[],
+                Some("fatal: Could not read from remote repository."),
+            ),
+            (
+                "an RPC failed line",
+                "error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\n",
+                "",
+                &[],
+                Some("error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500"),
+            ),
+            (
+                "hints before the marker",
+                "hint: Updates were rejected\nhint: pull first\nfatal: the remote hung up\n",
+                "",
+                &[],
+                Some("fatal: the remote hung up"),
+            ),
+            (
+                "the marker in stdout alone",
+                "",
+                "Merge progress\nerror: only stdout says so\n",
+                &[],
+                Some("error: only stdout says so"),
+            ),
+            (
+                "stderr before stdout",
+                "fatal: stderr says so\n",
+                "error: stdout says so\n",
+                &[],
+                Some("fatal: stderr says so"),
+            ),
+            (
+                "the diverged pull's headline",
+                "hint: Diverging branches cannot be fast-forwarded.\nfatal: Not possible to fast-forward, aborting.\n",
+                "",
+                &["pull", "--ff-only"],
+                Some("Branches have diverged; choose Merge or Rebase to continue."),
+            ),
+            ("no marker", "some hook refused\nmore\n", "", &[], None),
+            (
+                "a credential URL stays redacted",
+                credential_url,
+                "",
+                &[],
+                Some(
+                    "fatal: unable to access 'https://[redacted]@git.example.invalid/org/repo.git/': The requested URL returned error: 403",
+                ),
+            ),
+        ];
+        for (case, stderr, stdout, words, expected) in cases {
+            let mut command = Command::new("sh");
+            command
+                .args(["-c", "printf %s \"$0\" >&2; printf %s \"$1\"; exit 1"])
+                .arg(stderr)
+                .arg(stdout)
+                .args(*words);
+            let error = checked_write_output(command, None, WRITE_TIMEOUT)
+                .expect_err("the fake command fails");
+            let report = format!("{error:#}");
+            assert_eq!(
+                failure_summary(&error).as_deref(),
+                *expected,
+                "{case}: {report}"
+            );
+            assert!(!report.contains("s3cr3t-t0k3n"), "{case}: {report}");
+            if let Some(line) = expected {
+                assert!(!line.contains("s3cr3t-t0k3n"), "{case}: {line}");
+                assert!(
+                    !report.contains("oauth2") && !line.contains("oauth2"),
+                    "{case}: {report}"
+                );
+            }
+        }
+        // Words of ours around a typed failure lead its line, as they lead
+        // its report.
+        let contexted = checked_write_output(
+            {
+                let mut command = Command::new("sh");
+                command.args(["-c", "printf 'fatal: disk full\n' >&2; exit 1"]);
+                command
+            },
+            None,
+            WRITE_TIMEOUT,
+        )
+        .expect_err("the fake command fails")
+        .context("The resolution may be saved but not staged; refresh and inspect before retrying");
+        assert_eq!(
+            failure_summary(&contexted).as_deref(),
+            Some(
+                "The resolution may be saved but not staged; refresh and inspect before retrying: fatal: disk full"
+            )
+        );
     }
 
     /// A failure that redacts Git's output redacts each stream before it is

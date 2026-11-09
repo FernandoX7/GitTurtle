@@ -122,7 +122,7 @@ impl GitTurtle {
                             if plan.affected_paths.is_empty() { String::new() } else { format!("\n{}{}", plan.affected_paths.iter().take(8).map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n"), if plan.affected_paths.len() > 8 { "\n…" } else { "" }) });
                         this.confirm_git_write(title, explanation, if rebase { "Rebase branch" } else { "Merge branches" }, WriteCommand::Integration(if rebase { IntegrationCommand::Rebase { plan } } else { IntegrationCommand::Merge { plan } }), window, cx);
                     }
-                    Err(error) => this.operation_error = Some(format!("{error:#}")),
+                    Err(error) => this.operation_error = Some(crate::views::OperationFailure::of(&error)),
                 }
                 cx.notify();
             });
