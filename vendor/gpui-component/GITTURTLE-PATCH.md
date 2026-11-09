@@ -776,9 +776,9 @@ hit-tested against until the window next drew, so a click right after the
 closing key could land on the gone popup: a menu's item took it, or the popup
 swallowed it. `PopupMenu::dismiss` (Escape, Enter on an item, a click on an
 item or outside it), `SelectState::set_open` going closed (Enter on an item,
-Escape, losing focus, a click on the trigger) and the picker's `SwatchGrid`
-observer (every route that closes the picker) now have the window draw before
-its next input. It adds a draw and no key handling: the held-Enter, X11
+Escape, losing focus, a click on the trigger) and the picker's `ClosingWatch`,
+kept while its popover is drawn on either tab (every route that closes the
+picker), now have the window draw before its next input. It adds a draw and no key handling: the held-Enter, X11
 autorepeat and modified-Enter guards around them are unchanged.
 `scripts/vendor-crate-test.sh vendor/gpui-component a_click_after_the_key_that_closes`
 clicks where a dropdown's and a right-click menu's item, a Select's list and
@@ -2574,16 +2574,22 @@ its value alone. Patched, a palette is one stop of the popover's tab order
 (`SwatchGrid`, read only while the picker is open, so a picker opened again
 starts over on its color), with a focus handle per swatch under positional ids
 and only the swatch at its cursor a tab stop. The arrow keys, in the
-`ColorPickerSwatches` context, move focus along a row or to the same column of
-the next, or the last of a shorter one, stopping at the palette's edges, and
+`ColorPickerSwatches` context, move focus along a row or to the swatch above
+or below it, the one at the same share of its row, stopping at the palette's
+edges, and
 preview each color as a hover does; the preview goes back as the picker
 closes. Enter and Space, bound to `NoAction` in that context, reach GPUI's
 keyboard click, so the focused swatch is chosen once as the key comes up,
 however long it is held, only for a press that went down on it. The focused
-swatch draws `Theme::button_focus_ring` in gaps at least the ring's footprint
-wide at every text size (`swatch_gap`). Palette swatches are named by family,
+swatch draws `Theme::button_focus_ring` in gaps a pixel wider than the ring's
+footprint at every text size (`swatch_gap`), so a neighbour close to the
+accent stays set off from it. Palette swatches are named by family,
 shade and value ("Red 500, #EF4444"), the theme's featured colors by name and
-value, and a caller's `featured_colors` by value. The popover's content is built
+value, and a caller's `featured_colors` by value, the value in the digits the
+picker's field and tooltip show and a save writes (gpui-base's `color_hex`).
+Only a color's first swatch is announced as checked (`SwatchGrid::checked`),
+as a radio group has one checked member, though the same color can be drawn
+in the featured row and among the shades. The popover's content is built
 only while the picker is open, so a closed picker builds no swatches and no
 focus handles; `ColorPickerState::sync_pending_value` moved to `render` with
 it. `scripts/vendor-crate-test.sh vendor/gpui-component color_picker::` covers

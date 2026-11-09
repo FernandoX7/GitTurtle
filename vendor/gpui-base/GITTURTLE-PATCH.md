@@ -170,6 +170,18 @@ covered by `cargo test --locked -p gitturtle the_colour_pickers_arrow_keys_walk_
 Remove it when upstream ColorSwatch accepts a caller focus handle or moves
 focus among swatches itself.
 
+The color-value patch modifies `src/color_picker.rs` and `src/lib.rs`. Upstream
+`hex_string` truncated each channel, where the theme editor's saved token
+rounds it, so an arrow to Red 500 was announced `#EF4444` while the picker's
+field showed a step lower, and Enter in that field with no edit saved the lower
+value. `color_hex` (`#RRGGBB`, or `#RRGGBBAA` when translucent) and
+`color_channels` round every channel the same way, alpha included: the saved
+token carries no alpha, so alpha only has to survive formatting and parsing,
+and half alpha reads `80` where upstream read `7F`. The field, a swatch's
+default name and the component picker's names and tooltip all use them.
+`scripts/vendor-crate-test.sh vendor/gpui-base color_picker` covers formatting
+a parsed value giving it back. Remove it when upstream rounds.
+
 The popup-inset patch modifies `src/popup.rs`, `src/positioner.rs` and
 `src/lib.rs`. Upstream keeps every popup inside its window less a margin and
 offers no way to keep one clear of anything else at the window's foot, such

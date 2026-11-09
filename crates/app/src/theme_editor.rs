@@ -4112,9 +4112,8 @@ pub(crate) mod tests {
 
     /// The open picker's swatches, the palette under its featured row, are
     /// one Tab stop and the hex field the other, and the arrow keys walk
-    /// every swatch: Right and Left along a row, Down and Up between rows,
-    /// the same column or the last of a shorter row, stopping at the
-    /// palette's edges. Each swatch has its own focus handle, the swatch
+    /// every swatch: Right and Left along a row, Down and Up to the swatch
+    /// below or above, stopping at the palette's edges. Each swatch has its own focus handle, the swatch
     /// walked to is the one Tab comes back to, and each previews its colour
     /// as hovering it does; Escape closes the picker, chooses nothing and
     /// puts the preview back. Before this, each swatch took a stop of its
@@ -4273,6 +4272,106 @@ pub(crate) mod tests {
         }
     }
 
+    /// The picker's field shows the digits choosing a colour saves, and Enter
+    /// in the field with no edit saves that same value. The field truncated
+    /// each channel where the saved token rounds it, so Enter there saved a
+    /// colour a step below the one chosen, and each further Enter could step
+    /// it down again.
+    #[gpui::test]
+    fn the_pickers_field_shows_and_keeps_what_choosing_saves(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (form, picker, trigger, hex) = first_picker(cx, &app);
+        let kind = TokenKind::ALL[0];
+        let field = |cx: &mut VisualTestContext| {
+            cx.read(|cx| picker.read(cx).hex_input().read(cx).value().to_string())
+        };
+        let token = |cx: &mut VisualTestContext| cx.read(|cx| form.read(cx).draft.get(kind));
+        for (name, row, digits, saved) in [
+            ("Red 500", 2, "#EF4444", 0xEF4444_u32),
+            ("Blue 500", 7, "#3B82F6", 0x3B82F6_u32),
+        ] {
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            press(cx, "enter");
+            press(cx, "tab");
+            for key in ["up", "left"] {
+                for _ in 0..12 {
+                    press(cx, key);
+                }
+            }
+            for _ in 0..row {
+                press(cx, "down");
+            }
+            for _ in 0..5 {
+                press(cx, "right");
+            }
+            assert_eq!(field(cx), digits, "{name}: the field shows its value");
+
+            press(cx, "enter");
+            assert_eq!(token(cx), saved, "{name}: choosing saves its value");
+
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            press(cx, "enter");
+            press(cx, "tab");
+            press(cx, "tab");
+            assert_eq!(focused_stop(cx), hex, "{name}: Tab reaches the field");
+            assert_eq!(field(cx), digits, "{name}: the field shows what was saved");
+            press(cx, "enter");
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{name}: Enter in the field closes the picker"
+            );
+            assert_eq!(
+                token(cx),
+                saved,
+                "{name}: Enter in the field with no edit keeps the value"
+            );
+        }
+    }
+
+    /// The open popover's surface: the smallest quad filled with its colour
+    /// that holds `inside`.
+    fn popover_surface(cx: &mut VisualTestContext, inside: Bounds<Pixels>) -> Bounds<Pixels> {
+        let surface =
+            cx.read(|cx| Background::from(gpui_kit::component::Theme::global(cx).popover));
+        let area =
+            |bounds: &Bounds<Pixels>| f32::from(bounds.size.width) * f32::from(bounds.size.height);
+        painted_quads(cx)
+            .iter()
+            .filter(|quad| {
+                quad.background == surface
+                    && quad.bounds.left() <= inside.left()
+                    && quad.bounds.top() <= inside.top()
+                    && inside.right() <= quad.bounds.right()
+                    && inside.bottom() <= quad.bounds.bottom()
+            })
+            .map(|quad| quad.bounds)
+            .min_by(|a, b| area(a).total_cmp(&area(b)))
+            .expect("the popover's surface")
+    }
+
+    /// The focused swatch's ring as the last frame painted it, whole in the
+    /// popover and with nothing painted over it after it.
+    fn assert_swatch_ringed(cx: &mut VisualTestContext, at: &str) -> Bounds<Pixels> {
+        assert!(kit_ring_whole_in_popover(cx), "{at}: is ringed whole");
+        let (colour, width) = cx.read(|cx| {
+            let theme = gpui_kit::component::Theme::global(cx);
+            let ring = theme.button_focus_ring;
+            (theme.ring.alpha(ring.opacity), ring.width)
+        });
+        let ring = crate::focus_ring::painted_outlines(cx, colour)
+            .into_iter()
+            .find(|outline| outline.width == width)
+            .unwrap_or_else(|| panic!("{at}: draws its ring"));
+        assert_eq!(
+            crate::focus_ring::painted_over(cx, &ring),
+            Vec::new(),
+            "{at}: no neighbour paints over the ring"
+        );
+        ring.bounds
+    }
+
     /// The focused swatch draws the kit's ring, whole, in the gaps around
     /// it, at the smallest text the gaps would narrow at and at the largest,
     /// as the first swatch reached by Tab and the swatch beside it. A focused
@@ -4301,33 +4400,35 @@ pub(crate) mod tests {
             press(cx, "enter");
             press(cx, "tab");
             assert!(in_popover(cx, &trigger), "{at}: Tab enters the swatches");
+            let ring = assert_swatch_ringed(cx, &format!("{at}: the swatch Tab reaches"));
+            // The popover does not scroll, so it must fit between the
+            // window's margin and the status bar.
+            let surface = popover_surface(cx, ring);
             assert!(
-                kit_ring_whole_in_popover(cx),
-                "{at}: the swatch Tab reaches is ringed whole"
+                surface.top() >= gpui_kit::component::POPUP_WINDOW_MARGIN,
+                "{at}: {surface:?} starts inside the window's margin"
+            );
+            assert!(
+                surface.bottom() <= status_bar_top(cx),
+                "{at}: {surface:?} ends above the status bar"
             );
             // Along a row of shades: each gap is laid out to whole pixels
             // on its own, and the swatch to the right paints after the ring.
             press(cx, "down");
             for column in 0..11 {
-                assert!(
-                    kit_ring_whole_in_popover(cx),
-                    "{at}: the swatch in column {column} is ringed whole"
-                );
-                let (colour, width) = cx.read(|cx| {
-                    let theme = gpui_kit::component::Theme::global(cx);
-                    let ring = theme.button_focus_ring;
-                    (theme.ring.alpha(ring.opacity), ring.width)
-                });
-                let ring = crate::focus_ring::painted_outlines(cx, colour)
-                    .into_iter()
-                    .find(|outline| outline.width == width)
-                    .unwrap_or_else(|| panic!("{at}: column {column} draws its ring"));
-                assert_eq!(
-                    crate::focus_ring::painted_over(cx, &ring),
-                    Vec::new(),
-                    "{at}: no neighbour paints over the ring in column {column}"
-                );
+                assert_swatch_ringed(cx, &format!("{at}: column {column}"));
                 press(cx, "right");
+            }
+            // The featured row's last column, then the bottom row, whose
+            // rings lie nearest the popover's padding.
+            press(cx, "up");
+            assert_swatch_ringed(cx, &format!("{at}: the featured row's last column"));
+            for _ in 0..9 {
+                press(cx, "down");
+            }
+            for column in (0..11).rev() {
+                assert_swatch_ringed(cx, &format!("{at}: bottom row, column {column}"));
+                press(cx, "left");
             }
             press(cx, "escape");
             assert!(

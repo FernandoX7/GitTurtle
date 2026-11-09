@@ -90,7 +90,10 @@ pub use checkbox::{
     Checkbox, CheckboxIndicator, CheckboxIndicatorStyles, CheckboxState, CheckboxStyles,
 };
 pub use collapsible::Collapsible;
-pub use color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState, ColorSwatch, HslaSliders};
+pub use color_picker::{
+    ColorPicker, ColorPickerEvent, ColorPickerState, ColorSwatch, HslaSliders, color_channels,
+    color_hex,
+};
 pub use combobox::Combobox;
 pub use component_traits::FocusableExt;
 pub use component_traits::{Disableable, Selectable};

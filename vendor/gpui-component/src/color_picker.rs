@@ -2,11 +2,11 @@ use gpui::{
     Anchor, App, Context, ElementId, Entity, FocusHandle, Focusable, Hsla, InteractiveElement as _,
     IntoElement, KeyBinding, NoAction, ParentElement, Pixels, RenderOnce, Role, SharedString,
     StatefulInteractiveElement as _, StyleRefinement, Styled, Subscription, TextAlign, Window, div,
-    hsla, linear_color_stop, linear_gradient, prelude::FluentBuilder as _,
+    hsla, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
 };
 use rust_i18n::t;
 
-use gpui_base::{ColorPicker as BaseColorPicker, ColorSwatch};
+use gpui_base::{ColorPicker as BaseColorPicker, ColorSwatch, color_channels, color_hex};
 pub use gpui_base::{ColorPickerEvent, ColorPickerState};
 
 use crate::{
@@ -46,12 +46,13 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 /// GitTurtle patch: the gap between swatches, the kit's quarter rem, never
-/// narrower than the focus ring, so a focused swatch's ring lies whole in
-/// the gaps around it at every text size, clear of the neighbours drawn
-/// after it.
+/// narrower than the focus ring and a pixel of surface beyond it, so a
+/// focused swatch's ring lies whole in the gaps around it at every text
+/// size, clear of the neighbours drawn after it and set off from one close
+/// to the accent.
 fn swatch_gap(window: &Window, cx: &App) -> Pixels {
     let ring = cx.theme().button_focus_ring;
-    (window.rem_size() * 0.25).max(ring.width + ring.gap)
+    (window.rem_size() * 0.25).max(ring.width + ring.gap + px(1.))
 }
 
 /// GitTurtle patch: a color the palette draws and the name a screen reader
@@ -66,7 +67,7 @@ impl PaletteColor {
     fn new(label: impl std::fmt::Display, color: Hsla) -> Self {
         Self {
             color,
-            name: format!("{label}, {}", color.to_hex()).into(),
+            name: format!("{label}, {}", color_hex(color)).into(),
         }
     }
 
@@ -74,7 +75,7 @@ impl PaletteColor {
     fn unnamed(color: Hsla) -> Self {
         Self {
             color,
-            name: color.to_hex().into(),
+            name: color_hex(color).into(),
         }
     }
 }
@@ -139,11 +140,41 @@ fn theme_colors(cx: &App) -> Vec<PaletteColor> {
 /// Whether two colors are the same one to the eye: a value kept as RGB comes
 /// back through `Hsla` a rounding away from the palette's own.
 fn same_color(a: Hsla, b: Hsla) -> bool {
-    let channels = |color: Hsla| {
-        let rgb = color.to_rgb();
-        [rgb.r, rgb.g, rgb.b, rgb.a].map(|channel| (channel * 255.) as u32)
-    };
-    channels(a) == channels(b)
+    color_channels(a) == color_channels(b)
+}
+
+/// A swatch's element id, its row and its place along that row, unique
+/// however long a caller's featured row is.
+fn swatch_id(row: usize, ix: usize) -> ElementId {
+    ElementId::NamedInteger("color".into(), ((row as u64) << 32) | ix as u64)
+}
+
+/// GitTurtle patch: watches an open picker, on the palette's tab and the
+/// sliders' alike, for as long as its popover is drawn: the picker closing
+/// by any route, a key's among them, puts the preview back on the committed
+/// color, so one the arrows or a hover left does not outlast the picker, and
+/// has the window draw before its next input
+/// ([`crate::root::draw_after_popup_close`]).
+struct ClosingWatch {
+    _closing: Subscription,
+}
+
+impl ClosingWatch {
+    fn new(state: &Entity<ColorPickerState>, window: &mut Window, cx: &mut App) -> Self {
+        let closing = window.observe(state, cx, |state, window, cx| {
+            if !state.read(cx).is_open() {
+                state.update(cx, |state, cx| state.clear_preview(window, cx));
+                crate::root::draw_after_popup_close(window, cx);
+            }
+        });
+        Self { _closing: closing }
+    }
+}
+
+/// The trigger's tooltip: the picker's value in the digits its field shows
+/// and a save writes.
+fn value_title(value: Option<Hsla>) -> SharedString {
+    value.map(color_hex).unwrap_or_default().into()
 }
 
 /// An arrow key's direction in the palette.
@@ -160,10 +191,12 @@ type Place = (usize, usize);
 
 /// Where `step` moves from `from` in rows of `lengths` swatches, or `None`
 /// past the palette's edge, which keeps the cursor where it is. Up and Down
-/// keep the column, the last of a shorter row where the row ends before it:
-/// the featured row is one swatch longer than the shades under it.
+/// land on the swatch above or below, the one at the same share of its row:
+/// a row's swatches share its width, and the featured row's twelve are
+/// narrower than the eleven shades under them.
 fn step_from(lengths: &[usize], (row, column): Place, step: Step) -> Option<Place> {
-    let to_row = |row: usize| (row, column.min(lengths[row] - 1));
+    let from = lengths[row];
+    let to_row = |to: usize| (to, (2 * column + 1) * lengths[to] / (2 * from));
     match step {
         Step::Left => column.checked_sub(1).map(|column| (row, column)),
         Step::Right => (column + 1 < lengths[row]).then_some((row, column + 1)),
@@ -186,27 +219,19 @@ struct SwatchGrid {
     state: Entity<ColorPickerState>,
     rows: Vec<Vec<(FocusHandle, Hsla)>>,
     cursor: Option<Place>,
-    /// While the palette is drawn, the picker closing by any route, a key's
-    /// among them, puts the preview back on the committed color, so one the
-    /// arrows or a hover left does not outlast the picker, and has the window
-    /// draw before its next input
-    /// ([`crate::root::draw_after_popup_close`]).
-    _closing: Subscription,
+    /// The one swatch announced as checked: a color can be drawn in the
+    /// featured row and among the shades, and a radio group has one checked
+    /// member.
+    checked: Option<Place>,
 }
 
 impl SwatchGrid {
-    fn new(state: Entity<ColorPickerState>, window: &mut Window, cx: &mut App) -> Self {
-        let closing = window.observe(&state, cx, |state, window, cx| {
-            if !state.read(cx).is_open() {
-                state.update(cx, |state, cx| state.clear_preview(window, cx));
-                crate::root::draw_after_popup_close(window, cx);
-            }
-        });
+    fn new(state: Entity<ColorPickerState>) -> Self {
         Self {
             state,
             rows: Vec::new(),
             cursor: None,
-            _closing: closing,
+            checked: None,
         }
     }
 
@@ -231,13 +256,16 @@ impl SwatchGrid {
             }
         }
 
+        let value = self.state.read(cx).value();
+        self.checked = self.place_of(value);
         let kept = self
             .cursor
             .filter(|(row, ix)| self.rows.get(*row).is_some_and(|row| *ix < row.len()));
         self.cursor = self
             .focused(window)
             .or(kept)
-            .or_else(|| self.start(self.state.read(cx).value()));
+            .or(self.checked)
+            .or_else(|| self.places().next().map(|(place, _)| place));
 
         self.rows
             .iter()
@@ -245,19 +273,21 @@ impl SwatchGrid {
             .collect()
     }
 
-    /// The first swatch of `value`, or the palette's first swatch.
-    fn start(&self, value: Option<Hsla>) -> Option<Place> {
-        let places = || {
-            self.rows.iter().enumerate().flat_map(|(row, swatches)| {
-                swatches
-                    .iter()
-                    .enumerate()
-                    .map(move |(ix, swatch)| ((row, ix), swatch.1))
-            })
-        };
-        value
-            .and_then(|value| places().find(|(_, color)| same_color(*color, value)))
-            .or_else(|| places().next())
+    /// Every swatch's place and color, in reading order.
+    fn places(&self) -> impl Iterator<Item = (Place, Hsla)> + '_ {
+        self.rows.iter().enumerate().flat_map(|(row, swatches)| {
+            swatches
+                .iter()
+                .enumerate()
+                .map(move |(ix, swatch)| ((row, ix), swatch.1))
+        })
+    }
+
+    /// The first swatch of `value`, where the palette draws it.
+    fn place_of(&self, value: Option<Hsla>) -> Option<Place> {
+        let value = value?;
+        self.places()
+            .find(|(_, color)| same_color(*color, value))
             .map(|(place, _)| place)
     }
 
@@ -369,16 +399,11 @@ impl ColorPicker {
         id: ElementId,
         item: &PaletteColor,
         focus: &FocusHandle,
-        is_stop: bool,
+        (is_stop, checked): (bool, bool),
         window: &Window,
         cx: &mut App,
     ) -> ColorSwatch {
         let color = item.color;
-        let selected = self
-            .state
-            .read(cx)
-            .value()
-            .is_some_and(|value| same_color(value, color));
         let hover_state = self.state.clone();
         let click_state = self.state.clone();
 
@@ -386,7 +411,7 @@ impl ColorPicker {
             .track_focus(focus)
             .tab_stop(is_stop)
             .accessibility_label(item.name.clone())
-            .selected(selected)
+            .selected(checked)
             .h_5()
             .w_5()
             .bg(color)
@@ -410,6 +435,11 @@ impl ColorPicker {
     }
 
     fn render_colors(&self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        window.use_keyed_state(("color-picker-closing", self.state.entity_id()), cx, {
+            let state = self.state.clone();
+            move |window, cx| ClosingWatch::new(&state, window, cx)
+        });
+
         let active_tab = self.state.read(cx).active_tab();
         let (slider_color, hovered_color) = {
             let state = self.state.read(cx);
@@ -472,10 +502,13 @@ impl ColorPicker {
 
         let grid = window.use_keyed_state(("color-picker-swatches", self.state.entity_id()), cx, {
             let state = self.state.clone();
-            move |window, cx| SwatchGrid::new(state, window, cx)
+            move |_, _| SwatchGrid::new(state)
         });
         let handles = grid.update(cx, |grid, cx| grid.sync(&colors, window, cx));
-        let cursor = grid.read(cx).cursor;
+        let (cursor, checked) = {
+            let grid = grid.read(cx);
+            (grid.cursor, grid.checked)
+        };
         let gap = swatch_gap(window, cx);
 
         let mut rows = colors
@@ -488,8 +521,10 @@ impl ColorPicker {
                     .zip(handles)
                     .enumerate()
                     .map(|(ix, (item, focus))| {
-                        let id = ElementId::NamedInteger("color".into(), (row * 100 + ix) as u64);
-                        self.render_item(id, item, focus, cursor == Some((row, ix)), window, cx)
+                        let id = swatch_id(row, ix);
+                        let place = Some((row, ix));
+                        let (is_stop, is_checked) = (cursor == place, checked == place);
+                        self.render_item(id, item, focus, (is_stop, is_checked), window, cx)
                     })
                     .collect::<Vec<_>>();
                 h_flex().gap(gap).children(swatches)
@@ -746,12 +781,7 @@ impl Styled for ColorPicker {
 impl RenderOnce for ColorPicker {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = self.state.read(cx);
-        let display_title: SharedString = if let Some(value) = state.value() {
-            value.to_hex()
-        } else {
-            "".to_string()
-        }
-        .into();
+        let display_title = value_title(state.value());
 
         let open = state.is_open();
         let value = state.value();
@@ -897,12 +927,166 @@ mod tests {
             );
             assert_eq!(clicks.get(), before + 1, "{at}: the page took the click");
         }
+
+        // On the sliders' tab, the click where the hue slider was: the gone
+        // slider must not take the press.
+        cx.update(|_, cx| state.update(cx, |state, cx| state.set_active_tab(1, cx)));
+        let on_slider = point(picker.left() + px(160.), picker.bottom() + px(78.));
+        for key_up_first in [false, true] {
+            let at = format!("the sliders' tab, key up first: {key_up_first}");
+            cx.simulate_click(picker.center(), Default::default());
+            settle(cx);
+            assert!(
+                state.read_with(cx, |state, _| state.is_open()),
+                "{at}: the click opened it"
+            );
+            let hue = state.read_with(cx, |state, cx| state.sliders().hue().read(cx).value());
+
+            let before = clicks.get();
+            let [press, release] = click(on_slider);
+            let (down, up) = (key("escape", true), key("escape", false));
+            deliver(
+                cx,
+                if key_up_first {
+                    vec![down, up, press, release]
+                } else {
+                    vec![down, press, release, up]
+                },
+            );
+            settle(cx);
+
+            assert!(
+                !state.read_with(cx, |state, _| state.is_open()),
+                "{at}: the key closed it"
+            );
+            assert_eq!(clicks.get(), before + 1, "{at}: the page took the click");
+            assert_eq!(
+                state.read_with(cx, |state, cx| state.sliders().hue().read(cx).value()),
+                hue,
+                "{at}: the gone slider took no press"
+            );
+        }
     }
 
-    /// One step of an arrow key: along the row, or to the same column of
-    /// the row above or below, the last of a shorter one; past the edge of
-    /// the palette the cursor stays, and a row with no swatches is passed
-    /// over.
+    /// GitTurtle patch: Up and Down land on the swatch above or below, the
+    /// one at the same share of its row's width: the twelve featured
+    /// swatches are narrower than the eleven shades under them, so from the
+    /// middle on the matching index is not the swatch directly above. Going
+    /// back returns, from every shade and from every featured swatch but the
+    /// one that shares its shade with the next.
+    #[test]
+    fn up_and_down_land_on_the_swatch_above_or_below() {
+        let lengths = [12, 11, 11];
+        assert_eq!(step_from(&lengths, (1, 5), Step::Up), Some((0, 6)));
+        assert_eq!(step_from(&lengths, (1, 6), Step::Up), Some((0, 7)));
+        assert_eq!(step_from(&lengths, (1, 10), Step::Up), Some((0, 11)));
+        assert_eq!(step_from(&lengths, (0, 0), Step::Down), Some((1, 0)));
+        assert_eq!(step_from(&lengths, (1, 7), Step::Down), Some((2, 7)));
+        for column in 0..11 {
+            let up = step_from(&lengths, (1, column), Step::Up).expect("a row above");
+            assert_eq!(
+                step_from(&lengths, up, Step::Down),
+                Some((1, column)),
+                "Up then Down returns to shade {column}"
+            );
+        }
+        for column in 0..12 {
+            let down = step_from(&lengths, (0, column), Step::Down).expect("a row below");
+            let back = step_from(&lengths, down, Step::Up).expect("a row above");
+            assert!(
+                back == (0, column) || (column == 5 && back == (0, 6)),
+                "Down then Up from featured {column} came back at {back:?}"
+            );
+        }
+    }
+
+    /// GitTurtle patch: a palette color saved as a token comes back through
+    /// RGB still the palette's color, so a picker opened again finds it.
+    #[test]
+    fn a_color_kept_as_rgb_is_still_the_palette_color() {
+        for item in color_palettes().iter().flatten() {
+            let rgb = item.color.to_rgb();
+            let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u32;
+            let kept = (channel(rgb.r) << 16) | (channel(rgb.g) << 8) | channel(rgb.b);
+            let back: Hsla = gpui::rgb(kept).into();
+            assert!(same_color(item.color, back), "{} is lost", item.name);
+        }
+    }
+
+    /// The value choosing a color commits, each channel rounded as the theme
+    /// editor saves it (`hsla_rgb`).
+    fn rounded_hex(color: Hsla) -> String {
+        let rgb = color.to_rgb();
+        let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u32;
+        format!(
+            "#{:02X}{:02X}{:02X}",
+            channel(rgb.r),
+            channel(rgb.g),
+            channel(rgb.b)
+        )
+    }
+
+    /// GitTurtle patch: a color drawn in both the featured row and the
+    /// palette checks only its first swatch, as a radio group has one checked
+    /// member, and a color the palette does not draw checks none, though the
+    /// cursor still starts on the palette's first swatch.
+    #[gpui::test]
+    fn only_the_first_swatch_of_a_color_drawn_twice_is_checked(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let blue = hsla(0.66, 1., 0.5, 1.);
+            let rows = vec![
+                vec![PaletteColor::unnamed(blue)],
+                vec![
+                    PaletteColor::unnamed(hsla(0., 1., 0.5, 1.)),
+                    PaletteColor::unnamed(blue),
+                ],
+            ];
+            let at = |value: Hsla, window: &mut Window, cx: &mut App| {
+                let state = cx.new(|cx| ColorPickerState::new(window, cx).default_value(value));
+                let grid = cx.new(|_| SwatchGrid::new(state));
+                grid.update(cx, |grid, cx| {
+                    grid.sync(&rows, window, cx);
+                });
+                grid
+            };
+            let drawn_twice = at(blue, window, cx);
+            assert_eq!(drawn_twice.read(cx).checked, Some((0, 0)));
+            let absent = at(hsla(0.3, 0.2, 0.7, 1.), window, cx);
+            assert_eq!(absent.read(cx).checked, None);
+            assert_eq!(absent.read(cx).cursor, Some((0, 0)));
+        });
+    }
+
+    /// GitTurtle patch: the gap between swatches leaves a pixel of surface
+    /// beyond the focus ring at every text size, before a neighbour that
+    /// may be close to the accent.
+    #[gpui::test]
+    fn the_swatch_gap_leaves_surface_beyond_the_ring(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let ring = cx.theme().button_focus_ring;
+            let footprint = ring.width + ring.gap;
+            window.set_rem_size(px(11.));
+            assert_eq!(swatch_gap(window, cx), footprint + px(1.));
+            window.set_rem_size(px(40.));
+            assert_eq!(swatch_gap(window, cx), px(10.), "a quarter rem above that");
+        });
+    }
+
+    /// GitTurtle patch: swatch ids do not collide, however many featured
+    /// colors a caller supplies.
+    #[test]
+    fn swatch_ids_are_unique_for_a_long_featured_row() {
+        assert_ne!(swatch_id(0, 100), swatch_id(1, 0));
+        assert_ne!(swatch_id(0, 1), swatch_id(1, 1));
+    }
+
+    /// One step of an arrow key: along the row, or to the swatch above or
+    /// below; past the edge of the palette the cursor stays, and a row with
+    /// no swatches is passed over.
     #[test]
     fn an_arrow_moves_one_swatch_and_stops_at_the_palettes_edge() {
         let lengths = [12, 11, 11];
@@ -936,7 +1120,7 @@ mod tests {
                 .flatten()
                 .inspect(|item| {
                     assert!(
-                        item.name.ends_with(item.color.to_hex().as_str()),
+                        item.name.ends_with(rounded_hex(item.color).as_str()),
                         "{} gives its value",
                         item.name
                     )
@@ -945,6 +1129,11 @@ mod tests {
                 .collect();
             assert_eq!(names.len(), 99);
             assert_eq!(palette[1][0].name.split(',').next(), Some("Red 950"));
+            assert_eq!(palette[1][5].name.as_ref(), "Red 500, #EF4444");
+            assert_eq!(palette[6][5].name.as_ref(), "Blue 500, #3B82F6");
+            assert_eq!(value_title(Some(palette[1][5].color)).as_ref(), "#EF4444");
+            assert_eq!(value_title(Some(palette[6][5].color)).as_ref(), "#3B82F6");
+            assert_eq!(value_title(None).as_ref(), "");
             assert_eq!(palette[1][10].name.split(',').next(), Some("Red 50"));
             names.sort();
             names.dedup();
@@ -957,7 +1146,7 @@ mod tests {
             assert!(featured[11].name.starts_with("Light Magenta, #"));
 
             let caller = PaletteColor::unnamed(hsla(0., 1., 0.5, 1.));
-            assert_eq!(caller.name.as_ref(), hsla(0., 1., 0.5, 1.).to_hex());
+            assert_eq!(caller.name.as_ref(), rounded_hex(hsla(0., 1., 0.5, 1.)));
         });
     }
 
@@ -979,7 +1168,7 @@ mod tests {
 
             let at = |value: Hsla, window: &mut Window, cx: &mut App| {
                 let state = cx.new(|cx| ColorPickerState::new(window, cx).default_value(value));
-                let grid = cx.new(|cx| SwatchGrid::new(state, window, cx));
+                let grid = cx.new(|_| SwatchGrid::new(state));
                 grid.update(cx, |grid, cx| grid.sync(&rows, window, cx));
                 grid
             };
