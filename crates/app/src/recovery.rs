@@ -5388,14 +5388,12 @@ mod tests {
 
     /// A stashed file's name with its committed and its stashed bytes, each
     /// absent where the file is not there ([`stashed_sides`]).
-    #[cfg(target_os = "linux")]
     type StashedFile<'a> = (&'a str, Option<Vec<u8>>, Option<Vec<u8>>);
 
     /// [`stashed`] for `files` that may be absent on either side: one
     /// without first bytes is added to the index after the commit, so the
     /// stash saves it added, and one without second bytes is deleted
     /// from the working tree, so the stash saves it deleted.
-    #[cfg(target_os = "linux")]
     fn stashed_sides<'a>(
         cx: &'a mut gpui_kit::TestAppContext,
         fixture: &std::path::Path,
