@@ -146,8 +146,11 @@ fn text_inset() -> Pixels {
 /// but the Conversations pane once were, their text started 0.75 px past the panel's at 13 pt
 /// and 0.65 px at 18 pt, so the reply composer under the Conversations pane stood apart from it.
 fn bordered_pane<E: Styled>(pane: E) -> E {
-    pane.py_3().px(text_inset() - px(1.))
+    pane.py(PANE_PADDING_Y).px(text_inset() - px(1.))
 }
+/// The padding above and below a bordered pane's content ([`bordered_pane`]), which a reveal's
+/// mark over that content stands inside (`review::RevealMark`).
+const PANE_PADDING_Y: gpui::Rems = rems(0.75);
 /// Moves the body's scroll up by `grew`, the room its top line took more than in the last
 /// frame, before the body places its content, so the content stays where it was drawn, and
 /// the viewport the body's last reveal recorded down by `took`, how much further down the
@@ -11793,13 +11796,22 @@ mod tests {
         let number = rows[0].number;
         let id: ElementId = ("github-pr", number).into();
         let selector: &'static str = Box::leak(format!("github-pr-{number}").into_boxed_str());
+        // The sixth row, below the list's fold at every size until the list scrolls.
+        let later = pull.number + 5;
+        let later_id: ElementId = ("github-pr", later).into();
+        let later_selector: &'static str = Box::leak(format!("github-pr-{later}").into_boxed_str());
         // Long enough to stand the rows below the body's foot at every size.
         let notice = (0..80)
             .map(|line| format!("Line {line} of a notice that makes the body overflow."))
             .collect::<Vec<_>>()
             .join("\n");
         cx.update(|_, cx| panel.update(cx, |panel, _| panel.rows = rows));
-        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let (scroll, list) = panel.read_with(cx, |panel, _| {
+            (
+                panel.review.body_scroll.clone(),
+                panel.review.pull_scroll.clone(),
+            )
+        });
         let room = cx.update(|_, cx| appearance::button_ring_room(cx));
         let frames = |cx: &mut VisualTestContext| {
             for _ in 0..3 {
@@ -11848,50 +11860,123 @@ mod tests {
                 "{at}: the body's foot {body:?} runs through the row {shown:?} as the panel \
                  closes"
             );
-            escape(cx);
-            assert!(
-                !cx.update(|window, cx| window.has_active_dialog(cx)),
-                "{at}: Escape closes the panel"
-            );
-            assert_eq!(
-                panel.read_with(cx, |panel, _| panel.review.held_part.clone()),
-                Some((review::PULL, name.clone())),
-                "{at}: closing holds the row"
-            );
-            review::BODY_FRAMES.set(Some(Vec::new()));
-            crate::copy_feedback::tests::click(cx, "pull-requests");
-            settle_panel(&app, cx).await;
-            frames(cx);
-            let drawn = review::BODY_FRAMES.take().expect("watched");
-            assert!(
-                cx.update(|window, _| focus.is_focused(window)),
-                "{at}: the row takes focus back"
-            );
-            assert!(!drawn.is_empty(), "{at}: the reopened panel drew no frame");
-            for (index, frame) in drawn.iter().enumerate() {
-                let held = frame
-                    .parts
-                    .iter()
-                    .find(|(drawn, _)| *drawn == name)
-                    .map(|(_, bounds)| *bounds)
-                    .unwrap_or_else(|| panic!("{at}: frame {index} draws the row"));
-                assert!(
-                    revealed_whole(held, frame.view, room)
-                        && revealed_whole(held, frame.pulls, room),
-                    "{at}: frame {index} draws the row {held:?} whole in the body {:?} and the \
-                     list {:?}",
-                    frame.view,
-                    frame.pulls
-                );
-            }
+            assert_held_row_reopens_whole((&app, &panel), &focus, &name, room, &at, cx).await;
             cx.update(|_, cx| {
                 panel.update(cx, |panel, cx| {
                     panel.notice = None;
                     cx.notify();
                 })
             });
+
+            // A later row the list's own foot cuts: the list scrolls first, in that frame's
+            // layout, so its title is whole in the list and the body from the first frame.
+            let at = format!("the sixth row at {interface} pt in {width} × {height}");
+            show_surface(
+                (&app, &panel, &pull, &[]),
+                Surface::Pulls,
+                (interface, width, height),
+                cx,
+            )
+            .await;
+            list.set_offset(point(px(0.), px(0.)));
+            frames(cx);
+            let name = panel.read_with(cx, |panel, _| panel.row_parts[5].1.clone());
+            // A row wholly below the fold draws nothing a selector records: bring its top in.
+            let (view, card) = (
+                list.bounds(),
+                list.bounds_for_item(5).expect("the sixth row"),
+            );
+            assert!(
+                card.top() > view.bottom() - px(8.),
+                "{at}: the row {card:?} starts below the list's fold {view:?}"
+            );
+            let y = list.offset().y - (card.top() - view.bottom() + px(8.));
+            list.set_offset(point(px(0.), y));
+            frames(cx);
+            // Its title's middle on the list's foot, and all of the list in the body's view.
+            let view = list.bounds();
+            let title = cx.debug_bounds(later_selector).expect("the row's title");
+            let y = list.offset().y + view.bottom() - title.center().y;
+            list.set_offset(point(px(0.), y));
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let (y, max) = (scroll.offset().y, scroll.max_offset().y);
+            let y = (y + body.top() + room - view.top()).clamp(-max, px(0.));
+            scroll.set_offset(point(px(0.), y));
+            frames(cx);
+            let focus = panel
+                .read_with(cx, |panel, _| panel.review.buttons.kept(later_id.clone()))
+                .expect("the row's title takes focus");
+            cx.update(|window, cx| focus.focus(window, cx));
+            frames(cx);
+            let (body, view) = (
+                cx.debug_bounds("github-panel").expect("the body"),
+                list.bounds(),
+            );
+            let shown = cx.debug_bounds(later_selector).expect("the row's title");
+            assert!(
+                !revealed_whole(shown, view, room)
+                    && shown.top() < view.bottom()
+                    && shown.bottom() > view.bottom()
+                    && shown.top() < body.bottom()
+                    && shown.bottom() > body.top(),
+                "{at}: the list's foot {view:?} runs through the row {shown:?} inside the body \
+                 {body:?} as the panel closes"
+            );
+            assert_held_row_reopens_whole((&app, &panel), &focus, &name, room, &at, cx).await;
+            list.set_offset(point(px(0.), px(0.)));
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Closes the panel with `focus`, the title of the PR row `name`, held inside the body's
+    /// view, reopens it by a click on the header's Pull requests and asserts that every frame
+    /// it paints, the first among them, draws the title whole with `room` clear of the edges of
+    /// the body's view and the PR list's, focus back on the title.
+    async fn assert_held_row_reopens_whole(
+        (app, panel): (&Entity<GitTurtle>, &Entity<Panel>),
+        focus: &FocusHandle,
+        name: &SharedString,
+        room: Pixels,
+        at: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        escape(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "{at}: Escape closes the panel"
+        );
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.review.held_part.clone()),
+            Some((review::PULL, name.clone())),
+            "{at}: closing holds the row"
+        );
+        review::BODY_FRAMES.set(Some(Vec::new()));
+        crate::copy_feedback::tests::click(cx, "pull-requests");
+        settle_panel(app, cx).await;
+        for _ in 0..3 {
+            crate::width_walk::frame(cx);
+        }
+        let drawn = review::BODY_FRAMES.take().expect("watched");
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "{at}: the row takes focus back"
+        );
+        assert!(!drawn.is_empty(), "{at}: the reopened panel drew no frame");
+        for (index, frame) in drawn.iter().enumerate() {
+            let held = frame
+                .parts
+                .iter()
+                .find(|(drawn, _)| drawn == name)
+                .map(|(_, bounds)| *bounds)
+                .unwrap_or_else(|| panic!("{at}: frame {index} draws the row"));
+            assert!(
+                revealed_whole(held, frame.view, room) && revealed_whole(held, frame.pulls, room),
+                "{at}: frame {index} draws the row {held:?} whole in the body {:?} and the list \
+                 {:?}",
+                frame.view,
+                frame.pulls
+            );
+        }
     }
 
     /// With no control held as the panel closed, the shown section's first stop that the reopen
@@ -11976,6 +12061,180 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Cuts `selector`, a form of the body holding `focus`, at the body's foot, or else its
+    /// top, closes the panel, reopens it by a click on the header's Pull requests and asserts
+    /// that every frame it paints, the first among them, draws the form whole with `room` clear
+    /// of the body's edges, focus still on it.
+    async fn assert_held_form_reopens_whole(
+        (app, panel): (&Entity<GitTurtle>, &Entity<Panel>),
+        selector: &'static str,
+        focus: &FocusHandle,
+        room: Pixels,
+        at: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        cx.update(|window, cx| focus.focus(window, cx));
+        frames(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let form = cx.debug_bounds(selector).expect(selector);
+        let (y, max) = (scroll.offset().y, scroll.max_offset().y);
+        let (down, up) = (
+            y + body.bottom() - form.center().y,
+            y - (form.center().y - body.top()),
+        );
+        let target = if down <= px(0.) && down >= -max {
+            down
+        } else {
+            up
+        };
+        assert!(
+            target <= px(0.) && target >= -max,
+            "{at}: the body scrolls from {y:?} to {target:?} within {max:?}"
+        );
+        scroll.set_offset(point(px(0.), target));
+        frames(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let form = cx.debug_bounds(selector).expect(selector);
+        assert!(
+            !revealed_whole(form, body, room)
+                && form.top() < body.bottom()
+                && form.bottom() > body.top(),
+            "{at}: the body {body:?} cuts the form {form:?} as the panel closes"
+        );
+        escape(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "{at}: Escape closes the panel"
+        );
+        assert!(
+            panel.read_with(cx, |panel, _| panel.review.held.is_some()),
+            "{at}: closing holds the form"
+        );
+        review::BODY_FRAMES.set(Some(Vec::new()));
+        crate::copy_feedback::tests::click(cx, "pull-requests");
+        settle_panel(app, cx).await;
+        frames(cx);
+        let drawn = review::BODY_FRAMES.take().expect("watched");
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "{at}: the form takes focus back"
+        );
+        assert!(!drawn.is_empty(), "{at}: the reopened panel drew no frame");
+        for (index, frame) in drawn.iter().enumerate() {
+            let shown = frame
+                .parts
+                .iter()
+                .find(|(drawn, _)| drawn == review::FOCUSED_FORM)
+                .map(|(_, bounds)| *bounds)
+                .unwrap_or_else(|| panic!("{at}: frame {index} draws the form"));
+            assert!(
+                revealed_whole(shown, frame.view, room),
+                "{at}: frame {index} draws the form {shown:?} whole in {:?}",
+                frame.view
+            );
+        }
+    }
+
+    /// A review summary or reply composer that held focus as the panel closed, cut by the
+    /// body's edge, is whole in the first frame the reopened panel paints: neither lies in a
+    /// part of the body, so its mark stood idle while reveals waited, and the form was whole
+    /// only from the frame after the phase ended. The summary at the sweep's sizes
+    /// ([`REVEAL_SIZES`]), a long notice making the body overflow at each, and the reply
+    /// composer, a padded pane, in 461 px windows tall enough to hold it whole, its open
+    /// conversation standing a notice above the body rather than among the content.
+    #[gpui::test]
+    async fn reopening_draws_a_held_form_the_body_cut_whole_in_its_first_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let notice = (0..80)
+            .map(|line| format!("Line {line} of a notice that makes the body overflow."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (interface, width, height) in REVEAL_SIZES {
+            let at = format!("the summary at {interface} pt in {width} × {height}");
+            show_surface(
+                (&app, &panel, &pull, &[]),
+                Surface::Review,
+                (interface, width, height),
+                cx,
+            )
+            .await;
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.notice = Some(notice.clone());
+                    cx.notify();
+                })
+            });
+            settle_panel(&app, cx).await;
+            let (focus, room) = cx.update(|_, cx| {
+                (
+                    panel.read(cx).body.read(cx).focus_handle(cx),
+                    appearance::button_ring_room(cx),
+                )
+            });
+            assert_held_form_reopens_whole(
+                (&app, &panel),
+                "github-review-summary",
+                &focus,
+                room,
+                &at,
+                cx,
+            )
+            .await;
+            escape(cx);
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.notice = None;
+                    cx.notify();
+                })
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+            settle_panel(&app, cx).await;
+        }
+        for (interface, height) in [(13u8, 640.), (18, 900.)] {
+            let at = format!("the reply composer at {interface} pt in 461 × {height}");
+            show_surface(
+                (&app, &panel, &pull, &[]),
+                Surface::Overview,
+                (interface, 461., height),
+                cx,
+            )
+            .await;
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    let target = panel.conversations.threads[0].target.clone();
+                    panel.begin_reply(target, window, cx);
+                })
+            });
+            settle_panel(&app, cx).await;
+            let (focus, room) = cx.update(|window, cx| {
+                (
+                    panel.read(cx).conversations.input.read(cx).focus_handle(cx),
+                    review::reveal_room(window, cx),
+                )
+            });
+            assert_held_form_reopens_whole(
+                (&app, &panel),
+                "github-reply-composer",
+                &focus,
+                room,
+                &at,
+                cx,
+            )
+            .await;
+            cx.update(|_, cx| panel.update(cx, |panel, _| panel.conversations.active = None));
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// With a single page of files both pager buttons are disabled and no stop reveals the
     /// page label, so the Files list's accessible name carries the page reading; a further
     /// page drops it, its pager then a stop that reveals the label. The name is all that
@@ -12029,6 +12288,172 @@ mod tests {
             .debug_bounds("github-files-page")
             .expect("the page label");
         assert!(page.size.width > px(0.), "the page label still draws");
+        // Before a page has loaded, or where reading it failed, there is no page to name.
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.files_next = false;
+                panel.review.files.clear();
+                panel.review.selected_file = None;
+                cx.notify();
+            })
+        });
+        assert_eq!(
+            name(cx).as_deref(),
+            Some("Pull request changed files"),
+            "no page loaded, no page reading"
+        );
+    }
+
+    /// A live drag keeps Send and Keep editing whole in the body's view while either holds
+    /// focus: a comment's confirmation at 13 pt and at 18 pt, where the two stand on two rows,
+    /// as a 461 px window shrinks from 973 to about 490 px tall, every frame of each step. Only the focused region's reveal ran from the
+    /// frame's layout, and the row's part reveals after paint only after a key, so with focus
+    /// placed on either Button the body's foot came to cut them.
+    #[gpui::test]
+    async fn a_live_drag_keeps_send_whole_while_it_or_keep_editing_holds_focus(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        for (interface, id) in [13u8, 18]
+            .into_iter()
+            .flat_map(|size| ["github-confirm-send", "github-edit-submission"].map(|id| (size, id)))
+        {
+            open_confirmation(
+                (&panel, &pull),
+                confirmed_comment(),
+                (interface, 461., 973.),
+                cx,
+            );
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            let focus = panel
+                .read_with(cx, |panel, _| panel.review.buttons.kept(id))
+                .expect(id);
+            cx.update(|window, cx| focus.focus(window, cx));
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            confirm_frames();
+            for step in 1..=8 {
+                let height = 973. - 60. * step as f32;
+                let at = format!("{id} at {interface} pt, {height} px tall");
+                cx.simulate_resize(size(px(461.), px(height)));
+                cx.executor().run_until_parked();
+                crate::width_walk::frame(cx);
+                let frames = confirm_frames();
+                assert!(!frames.is_empty(), "{at}: the confirmation draws");
+                for (index, frame) in frames.iter().enumerate() {
+                    let (actions, body) = (frame.actions, frame.body);
+                    assert!(
+                        actions.top() >= body.top() - px(0.5)
+                            && actions.bottom() <= body.bottom() + px(0.5),
+                        "{at}: frame {index} draws Send and Keep editing {actions:?} whole in \
+                         the body {body:?}"
+                    );
+                }
+                assert!(
+                    cx.update(|window, _| focus.is_focused(window)),
+                    "{at}: focus stays"
+                );
+            }
+            cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+            for _ in 0..2 {
+                crate::width_walk::frame(cx);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A body the person wheeled away from the confirmation stays where it is through a change
+    /// of the view's size alone: with the region focused or, after Tab, Send, at 13 pt in a
+    /// 461 × 490 window, wheeled to its top with the confirmation below its foot, neither a
+    /// resize nor a change of the text size brings the body back. Only a change of focus
+    /// reveals what the person wheeled away from.
+    #[gpui::test]
+    async fn a_body_wheeled_away_from_the_confirmation_stays_through_a_resize(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let (scroll, region) = panel.read_with(cx, |panel, _| {
+            (
+                panel.review.body_scroll.clone(),
+                panel.conversations.confirm_focus.clone(),
+            )
+        });
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        for on_send in [false, true] {
+            for resize in [true, false] {
+                let at = format!(
+                    "{} through {}",
+                    if on_send { "Send" } else { "the region" },
+                    if resize { "a resize" } else { "a text size" }
+                );
+                open_confirmation((&panel, &pull), confirmed_comment(), (13, 461., 490.), cx);
+                frames(cx);
+                assert!(
+                    scroll.offset().y < px(0.),
+                    "{at}: the opening confirmation scrolled the body"
+                );
+                let focus = if on_send {
+                    cx.simulate_keystrokes("tab");
+                    frames(cx);
+                    panel
+                        .read_with(cx, |panel, _| {
+                            panel.review.buttons.kept("github-confirm-send")
+                        })
+                        .expect("Send")
+                } else {
+                    region.clone()
+                };
+                assert!(
+                    cx.update(|window, _| focus.is_focused(window)),
+                    "{at}: focus is where the walk put it"
+                );
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                cx.simulate_event(ScrollWheelEvent {
+                    position: body.origin + point(px(2.), px(2.)),
+                    delta: ScrollDelta::Pixels(point(px(0.), px(5000.))),
+                    modifiers: Modifiers::default(),
+                    touch_phase: TouchPhase::Moved,
+                });
+                frames(cx);
+                assert_eq!(scroll.offset().y, px(0.), "{at}: the wheel reaches the top");
+                let (body, send) = (
+                    cx.debug_bounds("github-panel").expect("the body"),
+                    cx.debug_bounds("github-confirm-send").expect("Send"),
+                );
+                assert!(
+                    send.top() >= body.bottom(),
+                    "{at}: the wheel took Send {send:?} out of the body {body:?}"
+                );
+                if resize {
+                    cx.simulate_resize(size(px(461.), px(540.)));
+                    cx.executor().run_until_parked();
+                } else {
+                    crate::focus_ring::sweep::interface_size(cx, 15);
+                }
+                frames(cx);
+                assert_eq!(
+                    scroll.offset().y,
+                    px(0.),
+                    "{at}: the body stays where the person wheeled it"
+                );
+                assert!(
+                    cx.update(|window, _| focus.is_focused(window)),
+                    "{at}: focus stays"
+                );
+                cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
+                frames(cx);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// An opening confirmation draws Send and Keep editing whole in its first frame at every
@@ -12882,8 +13307,7 @@ mod tests {
     /// 490 window, a long reply's, the first the panel opens, stands the guidance in the region
     /// after the destination in every frame it draws, the first included, lays the region out
     /// at the height it settles at and draws Send and Keep editing whole in the body's view
-    /// once the body has revealed the focused region, in the frame after the first
-    /// ([`assert_confirmation_settled`]).
+    /// in every frame ([`assert_confirmation_settled`]).
     /// Laid out from the last frame's measures, of which a new panel has none, its first frame
     /// stood the guidance below the region, and the next moved it in.
     #[gpui::test]
@@ -12923,8 +13347,7 @@ mod tests {
     /// guidance stands below the region, every frame drawn as the window becomes 461 × 973,
     /// where the guidance wraps onto more lines, the first included, stands the guidance where
     /// it settles, lays the region out at the height it settles at and draws Send and Keep
-    /// editing whole in the body's view from the frame after the first, which the body's
-    /// reveal of what rewrapped above the region follows, the region keeping focus. Laid out
+    /// editing whole in the body's view in every frame, the region keeping focus. Laid out
     /// from the last frame's measures, the first narrow frame left the guidance the room of its
     /// wide lines and laid the region out 612 px tall, where it settles at 573.
     #[gpui::test]
@@ -13095,8 +13518,7 @@ mod tests {
     /// reply's region focused in a window 973 px tall, narrowing by one pixel from the last
     /// width that holds them on one row and widening back, each frame, the first included,
     /// draws what the form leaves for them, keeps the region at the height it settles at, and
-    /// from the frame after the first draws them whole in the body's view
-    /// ([`assert_confirmation_settled`]). The width is found by laying them out, so it holds
+    /// draws them whole in the body's view ([`assert_confirmation_settled`]). The width is found by laying them out, so it holds
     /// for the font a platform draws them in.
     #[gpui::test]
     async fn the_confirmation_settles_across_its_buttons_row_boundary(cx: &mut TestAppContext) {

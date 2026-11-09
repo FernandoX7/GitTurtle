@@ -912,9 +912,11 @@ impl Panel {
     /// region's two lines and the buttons, and otherwise in the region after the destination.
     /// Where it stands and the rest of the confirmation's height are decided before layout in
     /// the frame being drawn, from the panel's width and the interface font ([`ConfirmForm`]),
-    /// so no frame draws the guidance where the next moves it from. A first frame or a resize
-    /// that reflows the confirmation can still leave Send and Keep editing cut or outside the
-    /// body's view until the body's reveal of the focused region lands. Shown whole, the confirmation was the stop, 446 px tall at 18 pt in a 461 × 490 window,
+    /// so no frame draws the guidance where the next moves it from, and the body's reveal of
+    /// what holds focus is decided from that frame's layout too, so a first frame or a resize
+    /// that reflows the confirmation draws Send and Keep editing whole in the body's view
+    /// where the body can hold them. Shown whole, the confirmation was the stop, 446 px tall at
+    /// 18 pt in a 461 × 490 window,
     /// where the body is about 265 px tall, and no reveal could draw its ring whole. The region
     /// draws its ring on the edge of the room it keeps around itself, inside the confirmation's
     /// padding, whose resting border stays as it is, so nothing moves for the ring.
@@ -1213,6 +1215,7 @@ impl Panel {
                 // Two lines where one is too narrow for both, as at 18 pt in a 461 px window,
                 // where Keep editing ran past the body's edge.
                 self.part("confirmation-actions", div(), cx)
+                    .child(self.confirmation_actions_mark(cx))
                     .flex()
                     .flex_wrap()
                     .gap_2()

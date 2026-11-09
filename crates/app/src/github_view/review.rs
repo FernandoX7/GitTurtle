@@ -408,6 +408,9 @@ thread_local! {
     static PART_BOUNDS: std::cell::RefCell<Vec<(SharedString, Bounds<Pixels>)>> =
         Default::default();
 }
+/// The name [`BODY_FRAMES`] gives the focused form a [`Panel::reveal_on_focus`] holds.
+#[cfg(test)]
+pub(super) const FOCUSED_FORM: &str = "focused-form";
 /// A frame of the panel's body ([`BODY_FRAMES`]).
 #[cfg(test)]
 #[derive(Debug)]
@@ -559,6 +562,10 @@ enum LaidOutKind {
     /// The focus a reopen falls to or a confirmation takes, as a reveal after paint decides it
     /// ([`to_reveal`]) and lands it ([`landed_edge`]).
     Reveal,
+    /// [`LaidOutKind::Reveal`] for the outbound confirmation, with whether the last frame showed
+    /// any of it (`ConfirmFit::in_view`): a change of the body's size alone leaves a body the
+    /// person wheeled away from it where it is.
+    Confirmation { shown: bool },
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Reopen {
@@ -654,17 +661,30 @@ impl Reopening {
             kind,
         } = self.laid_out.take()?;
         let mut part = window.layout_bounds(node);
+        let mut list_to = None;
         if kind == LaidOutKind::Row {
-            part = self.reveal_row(part, inset, list, list_blocks, window, cx)?;
+            (part, list_to) = self.reveal_row(part, inset, list, list_blocks, window, cx)?;
         }
         let view = body.bounds();
         let (top, bottom) = (part.top() - inset, part.bottom() + inset);
         let offset = body.offset();
         let edge = match kind {
-            LaidOutKind::Reveal => {
+            LaidOutKind::Reveal | LaidOutKind::Confirmation { .. } => {
                 // As the frame's reveal after paint decides it: only a change of focus or of the
                 // body's size reveals, so a manual scroll stays where it is.
-                to_reveal(body, revealed, None, window, cx)?;
+                let (_, focus) = to_reveal(body, revealed, None, window, cx)?;
+                // The size alone changed and the last frame showed none of the confirmation, so
+                // the person wheeled the body away from it. Recorded, so the reveals after paint
+                // in this frame stand down as well: a resize or a text-size change snapped the
+                // body back to it, 780.5 px at 13 pt in a 461 × 490 window.
+                if kind == (LaidOutKind::Confirmation { shown: false })
+                    && revealed.borrow().focus == focus
+                {
+                    let mut recorded = revealed.borrow_mut();
+                    recorded.viewport = view;
+                    recorded.rem_size = window.rem_size();
+                    return None;
+                }
                 if top >= view.top() && bottom <= view.bottom() {
                     return None;
                 }
@@ -683,6 +703,11 @@ impl Reopening {
             LaidOutKind::Held | LaidOutKind::Row => {
                 if part.bottom() <= view.top() || part.top() >= view.bottom() {
                     return None;
+                }
+                // The row keeps focus, so its list moves only now: a row that gives focus up
+                // to the section's first stop leaves its list where it was.
+                if let Some(to) = list_to {
+                    list.set_offset(to);
                 }
                 let height = view.size.height;
                 if bottom - top > height {
@@ -709,11 +734,12 @@ impl Reopening {
         Some((part + point(Pixels::ZERO, moved), ringed, inset, moved))
     }
     /// Where the held PR row, whose title `part` is laid out before its list has prepainted,
-    /// lies in the body once its list shows it: the list, like the body, scrolls the least that
-    /// shows the title with its ring's room, its rows' lines whole at the list's edges where a
-    /// place allows ([`landed_edge`]), in the frame's layout, before the rows prepaint.
-    /// Returns none where the list's own view shows none of it, so focus goes on as the rest of
-    /// the reopen decides ([`Reopening::settle`]).
+    /// lies in the body once its list shows it, and the offset that takes its list there, if it
+    /// moves: the least that shows the title with its ring's room, its rows' lines whole at the
+    /// list's edges where a place allows ([`landed_edge`]), in the frame's layout, before the
+    /// rows prepaint. Returns none where the list's own view shows none of it, so focus goes on
+    /// as the rest of the reopen decides ([`Reopening::settle`]). The caller moves the list
+    /// once the body's view shows the row too.
     fn reveal_row(
         &self,
         part: Bounds<Pixels>,
@@ -722,7 +748,7 @@ impl Reopening {
         blocks: &Blocks,
         window: &mut Window,
         cx: &App,
-    ) -> Option<Bounds<Pixels>> {
+    ) -> Option<(Bounds<Pixels>, Option<Point<Pixels>>)> {
         let view = window.layout_bounds(self.list_laid_out.take()?);
         let offset = list.offset();
         // Laid out before the list has prepainted, so its own scroll is not in the place.
@@ -731,6 +757,7 @@ impl Reopening {
             return None;
         }
         let (top, bottom) = (row.top() - inset, row.bottom() + inset);
+        let mut to = None;
         if top < view.top() || bottom > view.bottom() {
             let edge = landed_edge(
                 list,
@@ -746,16 +773,26 @@ impl Reopening {
             let y = (offset.y + view.top() - edge).clamp(-list.max_offset().y, Pixels::ZERO);
             let moved = y - offset.y;
             if moved != Pixels::ZERO {
-                list.set_offset(point(offset.x, y));
+                to = Some(point(offset.x, y));
                 row = row + point(Pixels::ZERO, moved);
             }
         }
-        Some(row)
+        Some((row, to))
     }
     /// Records `bounds`, the children of what holds focus, as where focus lies in this frame.
     fn note(&self, bounds: &[Bounds<Pixels>]) {
         if let Some(bounds) = bounds.iter().copied().reduce(|a, b| a.union(&b)) {
             self.focused.set(Some(bounds));
+        }
+    }
+    /// How a [`MarkKind::FirstStop`] whose focus is held reveals in this frame: as the held
+    /// control it is while reveals wait, partly in view or left where it lies, and as the
+    /// reopen's reveal after that.
+    fn stop_kind(&self) -> Option<LaidOutKind> {
+        match self.phase.get() {
+            Reopen::Settled => None,
+            Reopen::Held(_) => Some(LaidOutKind::Held),
+            Reopen::Reveal(_) => Some(LaidOutKind::Reveal),
         }
     }
     /// Whether reveals wait until a frame has found the control focus is back on.
@@ -1840,10 +1877,18 @@ enum MarkKind {
     Row,
     /// The PR list holding such a row, whose layout gives the list's view.
     List,
-    /// What `FocusHandle` focuses while a reopen reveals it, the section's first stop.
+    /// What `FocusHandle` focuses while a reopen shows it: the section's first stop, or a
+    /// form that held focus as the panel closed and lies in no part, as the review summary and
+    /// the composers do ([`Reopening::stop_kind`]).
     FirstStop(FocusHandle),
-    /// The outbound confirmation, while its region holds focus.
-    Confirmation(FocusHandle),
+    /// Part of the outbound confirmation while one of the focus handles holds focus: the
+    /// whole of it for its region, and for Send or Keep editing the row of them, with what the
+    /// last frame found of it ([`LaidOutKind::Confirmation`]).
+    Confirmation(
+        FocusHandle,
+        Option<FocusHandle>,
+        std::rc::Rc<std::cell::Cell<super::conversations::ConfirmFit>>,
+    ),
 }
 /// An element laid over a part of the body, absolutely placed so it takes no room, `pad` in
 /// from its top and bottom edges where the part has padding of its own: it keeps the part's
@@ -1918,11 +1963,16 @@ impl Element for RevealMark {
                 self.reopening.list_laid_out.set(Some(layout));
                 None
             }
-            MarkKind::FirstStop(focus) => (self.reopening.reveals() && focus.is_focused(window))
-                .then_some(LaidOutKind::Reveal),
-            MarkKind::Confirmation(focus) => {
-                (!self.reopening.waits() && focus.is_focused(window)).then_some(LaidOutKind::Reveal)
-            }
+            MarkKind::FirstStop(focus) => focus
+                .is_focused(window)
+                .then(|| self.reopening.stop_kind())
+                .flatten(),
+            MarkKind::Confirmation(focus, other, fit) => (!self.reopening.waits()
+                && (focus.is_focused(window)
+                    || other.as_ref().is_some_and(|other| other.is_focused(window))))
+            .then(|| LaidOutKind::Confirmation {
+                shown: fit.get().in_view,
+            }),
         };
         if let Some(kind) = kind {
             self.reopening.laid_out.set(Some(LaidOut {
@@ -2298,18 +2348,20 @@ fn own(bounds: &mut Vec<Bounds<Pixels>>, owned: &Owned, scroll: &ScrollHandle, i
 }
 
 impl Panel {
-    /// The Files list's accessible name. With a single page of files, both pager buttons
+    /// The Files list's accessible name. With a single page of files loaded, both pager buttons
     /// are disabled and no stop reveals the page label, so the name carries the reading; a
-    /// further page gives the pager a stop of its own.
+    /// further page gives the pager a stop of its own, and before a page has loaded, or where
+    /// reading it failed, there is no page to name.
     fn files_list_name(&self) -> SharedString {
-        if self.review.file_page <= 1 && !self.review.files_next {
+        if self.review.file_page <= 1 && !self.review.files_next && !self.review.files.is_empty() {
             "Pull request changed files, page 1 of 1".into()
         } else {
             "Pull request changed files".into()
         }
     }
-    /// The mark over what the shown section's first stop reveals as a reopen lands on it, as
-    /// tall as what `focus` holds, `room` clear of the body's edges in that frame's own layout
+    /// The mark over what a reopen shows when it lands on `focus`, the shown section's first
+    /// stop or a form that held focus as the panel closed and lies in no part, as tall as what
+    /// `focus` holds, `room` clear of the body's edges in that frame's own layout
     /// ([`Reopening::reveal_laid_out`]), `ringed` where it draws focus as a ring on its own
     /// edge, and inside the padding of a pane it stands in (`padded`).
     pub(super) fn stop_mark(
@@ -2325,7 +2377,7 @@ impl Panel {
             inset: Pixels::ZERO,
             room: Some(room),
             pad: if padded {
-                rems(0.75).into()
+                super::PANE_PADDING_Y.into()
             } else {
                 px(0.).into()
             },
@@ -2342,8 +2394,30 @@ impl Panel {
             edge: Some(focus.clone()),
             inset,
             room: None,
-            pad: rems(0.75).into(),
-            kind: MarkKind::Confirmation(focus.clone()),
+            pad: super::PANE_PADDING_Y.into(),
+            kind: MarkKind::Confirmation(
+                focus.clone(),
+                None,
+                self.conversations.confirm_fit.clone(),
+            ),
+        }
+    }
+    /// The mark over the row of Send and Keep editing, while either holds focus: revealed from
+    /// its frame's own layout with its ring's room, as the row's part reveals it after paint, so
+    /// a live drag with focus on either draws them whole, and a confirmation too tall for the
+    /// body shows them rather than its top ([`Reopening::reveal_laid_out`]).
+    pub(super) fn confirmation_actions_mark(&self, cx: &App) -> RevealMark {
+        RevealMark {
+            reopening: self.review.reopening.clone(),
+            edge: None,
+            inset: appearance::button_ring_room(cx),
+            room: None,
+            pad: px(0.).into(),
+            kind: MarkKind::Confirmation(
+                self.review.buttons.focus("github-confirm-send", cx),
+                Some(self.review.buttons.focus("github-edit-submission", cx)),
+                self.conversations.confirm_fit.clone(),
+            ),
         }
     }
     /// For the `on_children_prepainted` of the element holding a form that `focus` tracks,
@@ -2394,6 +2468,12 @@ impl Panel {
         let blocks = self.review.body_blocks.clone();
         let reopening = self.review.reopening.clone();
         move |bounds, window, cx| {
+            #[cfg(test)]
+            if focus.is_focused(window)
+                && let Some(union) = bounds.iter().copied().reduce(|a, b| a.union(&b))
+            {
+                PART_BOUNDS.with_borrow_mut(|parts| parts.push((FOCUSED_FORM.into(), union)));
+            }
             if focus.contains_focused(window, cx) {
                 reopening.note(&bounds);
                 if reopening.waits() {
