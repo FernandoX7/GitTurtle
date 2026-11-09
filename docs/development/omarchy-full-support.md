@@ -775,8 +775,6 @@ cover current upstream x86-64 Omarchy.
        - (S) "`ScrollCue` late thumb" and "Lists whose bar" have no fade (one fix, `crates/app/src/tags.rs:762`, `:456`).
        - (S) "header's and footer's" cue, "From …" width, "`PanelLeast` reserves" in File history (`crates/app/src/file_history.rs:1095`, `:1170`, `:90`).
        - (S) "Refresh series" shrinks the list; "130 px file box" (`crates/app/src/rewrite_review.rs:614`, `:1666`).
-       - (S) "Restore saved draft moves" 27 px; "no-reader message wraps" (`crates/app/src/conflicts.rs:948`, `:1037`).
-       - (S) "Edit local commits" short frame; "wheel rule" stale reach (`crates/app/src/interactive_rebase.rs:1057`, `:1141`).
        - (S) "`files_fit` reads last frame's top line"; title-and-mode-row height one frame (`crates/app/src/github_view/review.rs:3908`, `:3830`).
        - (S) "180–360 px range" (`crates/app/src/views.rs:8602`); "worktree manager's fixed 11 px" (`crates/app/src/worktrees.rs:38`); "Found by the layout grid", conversation cards (`crates/app/src/layout_grid.rs:424`).
        - (S each, verify) "PR row's held part is `None`"; "Description label" overrun; "scale 1.2 … padding"; "Rewritten-series" moves twice; "Rings under fills"; multi-line Input extra row (`vendor/gpui-base/src/input/base/element.rs:1186`); "History's Changes body is measured a frame late"; "rebase (720 px) and Quick Open (700 px)" past the left edge; "no scroll affordance"; `image_compare.rs:999` snapped width.
