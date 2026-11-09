@@ -108,6 +108,32 @@ impl Document {
             }],
         }
     }
+    /// What this side is called in its heading and accessible names: a side
+    /// that stays its pointer is not Markdown.
+    fn kind(&self) -> &'static str {
+        if self.literal.is_some() {
+            rich_preview::Literal::LfsPointer.format()
+        } else {
+            "Markdown"
+        }
+    }
+    /// The caption over a code block in `language` at source `line`: a
+    /// pointer's stored text is the whole file, not a block at a line of it.
+    fn code_caption(&self, language: &str, line: usize) -> String {
+        if self.literal.is_some() {
+            language.to_owned()
+        } else {
+            format!("{language} · line {line}")
+        }
+    }
+    /// The accessible value of the code block [`Self::code_caption`] heads.
+    fn code_value(&self, language: &str, line: usize, source: &str) -> String {
+        if self.literal.is_some() {
+            format!("{language}.\n{source}")
+        } else {
+            format!("{language} code, source line {line}.\n{source}")
+        }
+    }
     /// A side that is a Git LFS pointer: its exact stored text, under the
     /// words saying why it stays literal, never parsed as Markdown.
     fn lfs_pointer(
@@ -276,6 +302,7 @@ pub fn prepare(
     new: &str,
     file: &FileChange,
     lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
+    stored_pointers: [bool; 2],
     check: impl Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<Comparison>> {
     if ![file.old_path.as_deref(), file.new_path.as_deref()]
@@ -294,6 +321,12 @@ pub fn prepare(
     let old_pointer = old_present && rich_preview::Literal::of(&file.old_mode, old).is_some();
     let new_pointer = new_present && rich_preview::Literal::of(&file.new_mode, new).is_some();
     if !(old_present && !old_pointer) && !(new_present && !new_pointer) {
+        return Ok(None);
+    }
+    // Stored as a pointer on both sides, with one still a pointer in the
+    // text shown: `old` and `new` are the text a local object resolved to,
+    // so what is stored is passed in. With both resolved it is Markdown.
+    if stored_pointers == [true; 2] && (old_pointer || new_pointer) {
         return Ok(None);
     }
     let old_name = file.old_path.as_deref().unwrap_or_else(|| file.path());
@@ -1044,9 +1077,35 @@ impl View {
         }));
         cx.notify();
     }
+    /// Whether the two sides' blocks can scroll together: a side that stays
+    /// its pointer holds no blocks that correspond to the other's.
+    fn linkable(&self) -> bool {
+        self.comparison.old.literal.is_none() && self.comparison.new.literal.is_none()
+    }
+    /// Moves the other side to where the wheel took `side`, where the two
+    /// are linked. A restored bookmark can say linked beside a pointer, with
+    /// no control left to turn it off, so it is checked here as in a jump.
+    fn follow_scroll(&mut self, side: usize, cx: &mut Context<Self>) {
+        // The toolkit event's visible_range describes the position before
+        // this wheel delta. Read its committed offset after the list
+        // releases its mutable scroll-state borrow.
+        if self.linked && self.linkable() {
+            let offset = self.lists[side].logical_scroll_top();
+            let count = if side == 0 {
+                self.comparison.new.blocks.len()
+            } else {
+                self.comparison.old.blocks.len()
+            };
+            self.lists[1 - side].scroll_to(ListOffset {
+                item_ix: offset.item_ix.min(count.saturating_sub(1)),
+                offset_in_item: offset.offset_in_item,
+            });
+            cx.notify();
+        }
+    }
     fn jump(&mut self, side: usize, index: usize) {
         for target in 0..2 {
-            if target == side || self.linked {
+            if target == side || (self.linked && self.linkable()) {
                 let count = if target == 0 {
                     self.comparison.old.blocks.len()
                 } else {
@@ -1070,24 +1129,7 @@ impl View {
                 cx.defer({
                     let owner = owner.clone();
                     move |cx| {
-                        let _ = owner.update(cx, |this, cx| {
-                            // The toolkit event's visible_range describes the position
-                            // before this wheel delta. Read its committed offset after
-                            // the list releases its mutable scroll-state borrow.
-                            if this.linked {
-                                let offset = this.lists[side].logical_scroll_top();
-                                let count = if side == 0 {
-                                    this.comparison.new.blocks.len()
-                                } else {
-                                    this.comparison.old.blocks.len()
-                                };
-                                this.lists[1 - side].scroll_to(ListOffset {
-                                    item_ix: offset.item_ix.min(count.saturating_sub(1)),
-                                    offset_in_item: offset.offset_in_item,
-                                });
-                                cx.notify();
-                            }
-                        });
+                        let _ = owner.update(cx, |this, cx| this.follow_scroll(side, cx));
                     }
                 });
             });
@@ -1222,16 +1264,13 @@ impl View {
             Kind::Code(language, source) => {
                 row = row
                     .role(Role::Label)
-                    .aria_value(format!(
-                        "{language} code, source line {}.\n{source}",
-                        block.line
-                    ))
+                    .aria_value(document.code_value(language, block.line, source))
                     .bg(rgb(colors.panel))
                     .child(
                         div()
                             .text_size(appearance::ui_text(10.))
                             .text_color(rgb(colors.muted))
-                            .child(format!("{language} · line {}", block.line)),
+                            .child(document.code_caption(language, block.line)),
                     )
                     .child(code_block(index, source, cx));
             }
@@ -1572,6 +1611,7 @@ impl Render for View {
                 } else {
                     "After"
                 };
+                let kind = document.kind();
                 let mut header = div()
                     .flex()
                     .flex_wrap()
@@ -1580,9 +1620,12 @@ impl Render for View {
                     .p_2()
                     .border_b_1()
                     .border_color(rgb(colors.border))
-                    .child(format!("{label} · Markdown"))
+                    .child(crate::native_accessibility::text(
+                        SharedString::from(format!("markdown-heading-{side}")),
+                        format!("{label} · {kind}"),
+                    ))
                     .child(button(("markdown-read",side),"Read","",false)
-                        .accessibility_label(format!("Read {label} Markdown. Arrow keys move blocks; Page Up and Page Down move six blocks; Home and End move to the document boundaries."))
+                        .accessibility_label(format!("Read {label} {kind}. Arrow keys move blocks; Page Up and Page Down move six blocks; Home and End move to the document boundaries."))
                         .on_click(cx.listener(move |this,_,window,cx| {this.active_side=side;this.focus.focus(window,cx);cx.notify();})));
                 for (name, last) in [("Top", false), ("End", true)] {
                     header = header.child(
@@ -1609,8 +1652,8 @@ impl Render for View {
                         })),
                     );
                 }
-                if !self.quick {
-                    header = header.child(
+                if !self.quick && self.linkable() {
+                    header = header.child(div().debug_selector(move || format!("markdown-link-scroll-{side}")).child(
                         button(
                             ("markdown-link-scroll", side),
                             if self.linked {
@@ -1630,7 +1673,7 @@ impl Render for View {
                             }
                             cx.notify();
                         })),
-                    );
+                    ));
                 }
                 // In Split, the keys move only the active side, so its list
                 // area under its header takes the keyboard ring on its own
@@ -1686,7 +1729,7 @@ impl Render for View {
                     .id(("markdown-side", side))
                     .role(Role::Document)
                     .aria_label(format!(
-                        "{label} Markdown: {}{}",
+                        "{label} {kind}: {}{}",
                         document.name.display(),
                         if document.present {
                             ""
@@ -1921,7 +1964,7 @@ mod tests {
             status: gitturtle_core::ChangeStatus::Modified,
         };
         let control = gitturtle_core::HistoryCancellation::default();
-        let mut comparison = prepare(source, source, &file, [None; 2], || Ok(()))
+        let mut comparison = prepare(source, source, &file, [None; 2], [false; 2], || Ok(()))
             .unwrap()
             .unwrap();
         capture_assets(
@@ -1941,13 +1984,13 @@ mod tests {
             old: Some(gitturtle_core::PreviewAssetScope::Index),
             new: Some(gitturtle_core::PreviewAssetScope::Worktree),
         };
-        let mut first = prepare(source, source, &file, [None; 2], || Ok(()))
+        let mut first = prepare(source, source, &file, [None; 2], [false; 2], || Ok(()))
             .unwrap()
             .unwrap();
         capture_assets(&mut first, &repo, &file, &origins, &control).unwrap();
         assert_eq!(pixel(&first.new), [0, 255, 0, 255]);
         image_file(&path.join("docs/figure.png"), [255, 255, 0, 255]);
-        let mut next = prepare(source, source, &file, [None; 2], || Ok(()))
+        let mut next = prepare(source, source, &file, [None; 2], [false; 2], || Ok(()))
             .unwrap()
             .unwrap();
         capture_assets(&mut next, &repo, &file, &origins, &control).unwrap();
@@ -2028,7 +2071,7 @@ mod tests {
             status: gitturtle_core::ChangeStatus::Added,
         };
         let control = gitturtle_core::HistoryCancellation::default();
-        let mut comparison = prepare(&source, &source, &file, [None; 2], || Ok(()))
+        let mut comparison = prepare(&source, &source, &file, [None; 2], [false; 2], || Ok(()))
             .unwrap()
             .unwrap();
         DECODED.take();
@@ -2187,7 +2230,7 @@ mod tests {
             status: gitturtle_core::ChangeStatus::Added,
         };
         let control = gitturtle_core::HistoryCancellation::default();
-        let mut comparison = prepare(source, source, &file, [None; 2], || Ok(()))
+        let mut comparison = prepare(source, source, &file, [None; 2], [false; 2], || Ok(()))
             .unwrap()
             .unwrap();
         capture_assets(
@@ -2271,7 +2314,7 @@ mod tests {
             status: gitturtle_core::ChangeStatus::Added,
         };
         let control = gitturtle_core::HistoryCancellation::default();
-        let mut comparison = prepare(source, source, &file, [None; 2], || Ok(()))
+        let mut comparison = prepare(source, source, &file, [None; 2], [false; 2], || Ok(()))
             .unwrap()
             .unwrap();
         let origins = Origins::revisions(None, Some(head));
@@ -2335,7 +2378,7 @@ mod tests {
         let regular = "# Regular side\n";
         let both = markdown_change(true, true);
         let prepared = |old: &str, new: &str, file: &FileChange, failed| {
-            prepare(old, new, file, failed, || Ok(())).unwrap()
+            prepare(old, new, file, failed, [false; 2], || Ok(())).unwrap()
         };
         for (name, old, new, literal_side) in [
             ("the new side a pointer", regular, pointer.as_str(), 1),
@@ -2373,9 +2416,16 @@ mod tests {
         .unwrap();
         assert_eq!(
             literal_parts(&comparison.new).0,
-            "This side's Git LFS object failed verification in the local store; its stored \
-             text is below."
+            "The local copy of this Git LFS object is damaged; its stored text is below."
         );
+        // Stored as a pointer on both sides: none while either is still a
+        // pointer in the text shown, and with both resolved it renders.
+        let stored_both = |old: &str, new: &str| {
+            prepare(old, new, &both, [None; 2], [true; 2], || Ok(())).unwrap()
+        };
+        assert!(stored_both(regular, &pointer).is_none());
+        assert!(stored_both(&pointer, regular).is_none());
+        assert!(stored_both(regular, regular).is_some());
         // Nothing regular to render keeps today's source tabs alone.
         assert!(prepared(&pointer, &pointer, &both, [None; 2]).is_none());
         assert!(prepared("", &pointer, &markdown_change(false, true), [None; 2]).is_none());
@@ -2397,6 +2447,7 @@ mod tests {
             &pointer,
             &markdown_change(true, true),
             [None; 2],
+            [false; 2],
             || Ok(()),
         )
         .unwrap()
@@ -2418,12 +2469,149 @@ mod tests {
         assert_eq!(literal.metadata.source.as_deref(), Some(pointer.as_str()));
         assert!(literal.pages.is_empty());
     }
+    /// A pointer side is headed and named for what it is, where its heading
+    /// and its accessible name once called it Markdown. The regular side
+    /// beside it still is.
+    #[gpui::test]
+    fn a_pointer_side_is_named_for_what_it_is(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        crate::views::tests::init_app(cx);
+        let comparison = Arc::new(
+            prepare(
+                "# Regular side\n",
+                &lfs_pointer(),
+                &markdown_change(true, true),
+                [None; 2],
+                [false; 2],
+                || Ok(()),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        assert_eq!(comparison.old.kind(), "Markdown");
+        assert_eq!(comparison.new.kind(), "Git LFS pointer");
+        written::forget();
+        let (_, cx) = cx.add_window_view(|_, cx| View::new(comparison, false, cx));
+        crate::tags::tests::draw(cx);
+        for (id, heading) in [
+            ("markdown-heading-0", "Before · Markdown"),
+            ("markdown-heading-1", "After · Git LFS pointer"),
+        ] {
+            assert_eq!(
+                written::get(id).map(|line| line.node.value().map(str::to_owned)),
+                Some(Some(heading.to_owned())),
+            );
+        }
+    }
+    /// A pointer's stored text is the whole file, not a block at a line of
+    /// it, so its caption and accessible value carry no source line, as a
+    /// rendered side's code block still does.
+    #[test]
+    fn a_pointer_sides_text_has_no_source_line() {
+        let pointer = lfs_pointer();
+        let comparison = prepare(
+            "# Regular side\n",
+            &pointer,
+            &markdown_change(true, true),
+            [None; 2],
+            [false; 2],
+            || Ok(()),
+        )
+        .unwrap()
+        .unwrap();
+        let literal = &comparison.new;
+        assert_eq!(
+            literal.code_caption("Git LFS pointer", 1),
+            "Git LFS pointer"
+        );
+        assert_eq!(
+            literal.code_value("Git LFS pointer", 1, &pointer),
+            format!("Git LFS pointer.\n{pointer}")
+        );
+        let regular = &comparison.old;
+        assert_eq!(regular.code_caption("rust", 3), "rust · line 3");
+        assert_eq!(
+            regular.code_value("rust", 3, "fn a() {}"),
+            "rust code, source line 3.\nfn a() {}"
+        );
+    }
+    /// Linked blocks ties the two sides' lists together, and a pointer's
+    /// side has nothing to tie to: beside one the control is gone and a
+    /// jump on one side leaves the other where it is, even if the two were
+    /// linked before.
+    #[gpui::test]
+    fn linked_blocks_is_offered_only_between_two_rendered_sides(cx: &mut TestAppContext) {
+        crate::views::tests::init_app(cx);
+        let document = "# One\n\nTwo\n\nThree\n\nFour\n";
+        let file = markdown_change(true, true);
+        let open = |new: &str| {
+            Arc::new(
+                prepare(document, new, &file, [None; 2], [false; 2], || Ok(()))
+                    .unwrap()
+                    .unwrap(),
+            )
+        };
+        let (regular, literal) = (open(document), open(&lfs_pointer()));
+        let (view, regular_cx) = cx.add_window_view(|_, cx| View::new(regular, false, cx));
+        crate::tags::tests::draw(regular_cx);
+        assert!(
+            regular_cx.debug_bounds("markdown-link-scroll-0").is_some(),
+            "two rendered sides can be linked"
+        );
+        let linked_top = |view: &Entity<View>, cx: &mut VisualTestContext| {
+            // Read as the jump asks, before a layout clamps a short list.
+            view.update_in(cx, |view, _, _| {
+                view.linked = true;
+                view.jump(0, 2);
+                view.lists[1].logical_scroll_top().item_ix
+            })
+        };
+        assert_eq!(
+            linked_top(&view, regular_cx),
+            2,
+            "linked sides move together"
+        );
+        // The wheel's own path, as a restored bookmark can reach it.
+        let wheeled_top = |view: &Entity<View>, cx: &mut VisualTestContext| {
+            view.update_in(cx, |view, _, cx| {
+                view.linked = true;
+                for (list, item_ix) in view.lists.iter().zip([2, 0]) {
+                    list.scroll_to(ListOffset {
+                        item_ix,
+                        offset_in_item: px(0.),
+                    });
+                }
+                view.follow_scroll(0, cx);
+                view.lists[1].logical_scroll_top().item_ix
+            })
+        };
+        assert_eq!(wheeled_top(&view, regular_cx), 2, "the wheel moves both");
+        let (view, literal_cx) = cx.add_window_view(|_, cx| View::new(literal, false, cx));
+        crate::tags::tests::draw(literal_cx);
+        assert!(
+            literal_cx.debug_bounds("markdown-link-scroll-0").is_none(),
+            "nothing to link beside a pointer"
+        );
+        assert_eq!(
+            linked_top(&view, literal_cx),
+            0,
+            "a pointer's side stays where it is"
+        );
+        assert_eq!(
+            wheeled_top(&view, literal_cx),
+            0,
+            "the wheel leaves a pointer's side where it is"
+        );
+    }
     /// Rendered draws both sides of a mixed file: the regular side's blocks
-    /// and the pointer's words and literal text, each row laid out.
+    /// and the pointer's words and literal text, each row laid out inside
+    /// the window and each side named for what it is, at the default size
+    /// and at 18 pt in a 461 × 490 window.
     #[gpui::test]
     fn a_mixed_markdown_file_draws_the_regular_side_and_the_literal_pointer(
         cx: &mut TestAppContext,
     ) {
+        use crate::native_accessibility::written;
         crate::views::tests::init_app(cx);
         let comparison = Arc::new(
             prepare(
@@ -2431,24 +2619,51 @@ mod tests {
                 &lfs_pointer(),
                 &markdown_change(true, true),
                 [None; 2],
+                [false; 2],
                 || Ok(()),
             )
             .unwrap()
             .unwrap(),
         );
         let (_, cx) = cx.add_window_view(|_, cx| View::new(comparison, false, cx));
-        crate::tags::tests::draw(cx);
-        for selector in [
-            "markdown-before-block-0",
-            "markdown-before-block-1",
-            "markdown-after-block-0",
-            "markdown-after-block-1",
-        ] {
-            let bounds = cx
-                .debug_bounds(selector)
-                .unwrap_or_else(|| panic!("{selector} is drawn"));
-            assert!(bounds.size.height > px(0.), "{selector}: {bounds:?}");
+        for (text, room) in [(13, None), (18, Some((461., 490.)))] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            if let Some((width, height)) = room {
+                cx.simulate_resize(size(px(width), px(height)));
+            }
+            written::forget();
+            crate::tags::tests::draw(cx);
+            let window = cx.update(|window, _| window.viewport_size());
+            for selector in [
+                "markdown-before-block-0",
+                "markdown-before-block-1",
+                "markdown-after-block-0",
+                "markdown-after-block-1",
+            ] {
+                let bounds = cx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{text} pt: {selector} is drawn"));
+                assert!(
+                    bounds.size.height > px(0.),
+                    "{text} pt: {selector}: {bounds:?}"
+                );
+                assert!(
+                    bounds.right() <= window.width + px(1.),
+                    "{text} pt: {selector} ends inside the window: {bounds:?}"
+                );
+            }
+            for (id, heading) in [
+                ("markdown-heading-0", "Before · Markdown"),
+                ("markdown-heading-1", "After · Git LFS pointer"),
+            ] {
+                assert_eq!(
+                    written::get(id).map(|line| line.node.value().map(str::to_owned)),
+                    Some(Some(heading.to_owned())),
+                    "{text} pt"
+                );
+            }
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
     /// A blank Mermaid fence in a Markdown preview is no diagram: no page
     /// and no error page, where a fence with no text once parsed as an empty

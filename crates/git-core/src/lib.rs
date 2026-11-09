@@ -1741,7 +1741,7 @@ impl GitRepository {
     /// [`Self::local_lfs_object`], keeping what is wrong with this one object
     /// apart from a failure of the repository it is read through: only the
     /// second is still an error, so one side of a comparison can fail alone.
-    pub(crate) fn local_lfs_read(
+    pub fn local_lfs_read(
         &self,
         oid: &str,
         expected_size: u64,
@@ -1765,47 +1765,55 @@ impl GitRepository {
             return Ok(LocalLfsObject::Verified(Vec::new()));
         }
         let storage = self.preview_lfs_storage()?;
-        Ok(
-            match Self::verified_local_lfs(&storage, &oid, expected_size) {
-                Ok(Some(bytes)) => LocalLfsObject::Verified(bytes),
-                Ok(None) => LocalLfsObject::Absent,
-                Err(error) => LocalLfsObject::Failed(LfsObjectFailure::Corrupt, error),
-            },
-        )
+        Ok(Self::verified_local_lfs(&storage, &oid, expected_size))
     }
 
-    /// The object `oid` in the local store `storage`, if it is there, read
-    /// without following links and checked against its size and digest.
-    fn verified_local_lfs(
-        storage: &Path,
-        oid: &str,
-        expected_size: u64,
-    ) -> Result<Option<Vec<u8>>> {
-        let Some(mut file) = open_local_lfs(storage, oid)? else {
-            return Ok(None);
+    /// The object `oid` in the local store `storage`, read without following
+    /// links and checked against its size and digest. Only what the read
+    /// found wrong with the object's own bytes is corrupt: a link the read
+    /// will not follow, or a read the system refused or failed, is the
+    /// store's failure and says nothing about the object.
+    fn verified_local_lfs(storage: &Path, oid: &str, expected_size: u64) -> LocalLfsObject {
+        let unreadable = |error| LocalLfsObject::Failed(LfsObjectFailure::StoreUnreadable, error);
+        let corrupt = |error| LocalLfsObject::Failed(LfsObjectFailure::Corrupt, error);
+        let mut file = match open_local_lfs(storage, oid) {
+            Ok(Some(file)) => file,
+            Ok(None) => return LocalLfsObject::Absent,
+            Err(error) => return unreadable(error),
         };
-        let metadata = file
+        let metadata = match file
             .metadata()
-            .context("Unable to inspect local LFS object")?;
-        ensure!(metadata.is_file(), "Local LFS object is not a regular file");
-        ensure!(
-            metadata.len() == expected_size,
-            "Local LFS object size mismatch: expected {expected_size}, found {}",
-            metadata.len()
-        );
+            .context("Unable to inspect local LFS object")
+        {
+            Ok(metadata) => metadata,
+            Err(error) => return unreadable(error),
+        };
+        if !metadata.is_file() {
+            return corrupt(anyhow::anyhow!("Local LFS object is not a regular file"));
+        }
+        if metadata.len() != expected_size {
+            return corrupt(anyhow::anyhow!(
+                "Local LFS object size mismatch: expected {expected_size}, found {}",
+                metadata.len()
+            ));
+        }
         let mut bytes = Vec::with_capacity(expected_size as usize);
-        (&mut file)
+        if let Err(error) = (&mut file)
             .take(expected_size.saturating_add(1))
-            .read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() as u64 == expected_size,
-            "Local LFS object changed while being read"
-        );
-        ensure!(
-            format!("{:x}", Sha256::digest(&bytes)) == oid,
-            "Local LFS object failed SHA-256 verification"
-        );
-        Ok(Some(bytes))
+            .read_to_end(&mut bytes)
+            .context("Unable to read local LFS object")
+        {
+            return unreadable(error);
+        }
+        if bytes.len() as u64 != expected_size {
+            return corrupt(anyhow::anyhow!("Local LFS object changed while being read"));
+        }
+        if format!("{:x}", Sha256::digest(&bytes)) != oid {
+            return corrupt(anyhow::anyhow!(
+                "Local LFS object failed SHA-256 verification"
+            ));
+        }
+        LocalLfsObject::Verified(bytes)
     }
 
     fn preview_lfs_storage(&self) -> Result<PathBuf> {

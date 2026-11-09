@@ -484,17 +484,20 @@ impl GitTurtle {
                 // The control's id names the side; the mark adds its path.
                 let mark = copy_feedback::Mark::new(("copy-image-source", index), side_path);
                 let copy_mark = mark.clone();
-                copies.push(literal_source_copy(mark, names[index], cx).on_click(
-                    move |_, window, cx| {
-                        copy_feedback::copy(
-                            window,
-                            cx,
-                            Some(copy_mark.clone()),
-                            &format!("{label} source"),
-                            literal.to_string(),
-                        )
-                    },
-                ));
+                let (control, tooltip, copied) = literal_copy_words(side);
+                copies.push(
+                    literal_source_copy(mark, names[index], control, tooltip, cx).on_click(
+                        move |_, window, cx| {
+                            copy_feedback::copy(
+                                window,
+                                cx,
+                                Some(copy_mark.clone()),
+                                &format!("{label} {copied}"),
+                                literal.to_string(),
+                            )
+                        },
+                    ),
+                );
             }
             if let (Some(bytes), Some(offer), false) =
                 (&side.captured, side.system_preview, source && index == 0)
@@ -3050,6 +3053,27 @@ pub(crate) fn wrapped_lines(text: &str, size: Pixels, room: Pixels, window: &Win
         })
 }
 
+/// What a side's copy of its literal text is called, says in its tooltip
+/// and names in its feedback: a pointer's text is the pointer; the label
+/// and the feedback are the words a document's and a model's Copy pointer use.
+pub(crate) fn literal_copy_words(
+    side: &worker::ImageSide,
+) -> (&'static str, &'static str, &'static str) {
+    if side.literal_is_pointer() {
+        (
+            "Copy pointer",
+            "Copy this Git LFS pointer's exact text",
+            "LFS pointer",
+        )
+    } else {
+        (
+            "Copy source",
+            "Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",
+            "source",
+        )
+    }
+}
+
 /// A side's copy of an SVG's literal source in the comparison's row of
 /// captured actions, for the side `heading` heads: drawn and named by
 /// [`crate::system_preview::side_control_name`], "Before: Copy source" and
@@ -3059,11 +3083,17 @@ pub(crate) fn wrapped_lines(text: &str, size: Pixels, room: Pixels, window: &Win
 /// and the words drawn are the words named, which speech input says. It once was
 /// drawn and named "Copy Before source", a second spelling of the side's
 /// prefix kept apart from the one every other side's control takes.
-pub(crate) fn literal_source_copy(mark: copy_feedback::Mark, heading: &str, cx: &App) -> Button {
+pub(crate) fn literal_source_copy(
+    mark: copy_feedback::Mark,
+    heading: &str,
+    label: &str,
+    tooltip: &'static str,
+    cx: &App,
+) -> Button {
     copy_feedback::copy_button(
         mark,
-        crate::system_preview::side_control_name(heading, "Copy source"),
-        "Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",
+        crate::system_preview::side_control_name(heading, label),
+        tooltip,
         cx,
     )
 }

@@ -670,6 +670,8 @@ struct GitTurtle {
     pull_requests_focus: FocusHandle,
     /// Which list draws its keyboard focus ring.
     focus_ring: focus_ring::FocusRing,
+    /// The line Compare's failing Git LFS sides say above the comparison.
+    lfs_failure_line: lfs_download::FailureLine,
     /// The dialog controls whose keys the status bar names.
     dialog_hints: shortcuts::DialogHints,
     /// A press of Pull requests that could not open the panel, which the
@@ -1046,6 +1048,7 @@ impl GitTurtle {
             nav_menu: None,
             pull_requests_focus: cx.focus_handle(),
             focus_ring: focus_ring::FocusRing::default(),
+            lfs_failure_line: lfs_download::FailureLine::new("lfs-preview-failure", cx),
             dialog_hints: shortcuts::DialogHints::default(),
             github_refusal: github_view::OpenRefusal::default(),
             pane: Pane::History,

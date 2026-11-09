@@ -127,8 +127,10 @@ constructs and rendering limits stay visible, with the source view available
 within the existing text-preview limits. A side stored as a Git LFS pointer stays
 literal, and only that side: above its exact stored text, never parsed as Markdown,
 it says why (its object is not in the local store, is over the 32 MiB preview
-limit or failed verification), and the regular side renders. A file with no
-regular side to render has no Rendered view.
+limit or damaged, or the store could not be read), and the regular side renders. A file stored as a
+pointer on both sides has no Rendered view while either side is still a
+pointer, and neither has one with no regular side to render; with both objects
+local it renders as any Markdown file does.
 
 Rendered input is capped at 256 KiB, 16,384 syntax nodes, 64 nesting levels and
 2,048 displayed blocks. Individual text blocks are capped at 16 KiB; tables show

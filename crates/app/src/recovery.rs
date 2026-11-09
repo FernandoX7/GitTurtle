@@ -1746,6 +1746,8 @@ pub(crate) struct StashBrowser {
     loading: Option<&'static str>,
     error: Option<String>,
     preview_error: Option<String>,
+    /// The line a failing Git LFS side says above the saved file's preview.
+    lfs_failure_line: crate::lfs_download::FailureLine,
     restore_index: bool,
     /// What Review restore… asked the core to prepare and the window's
     /// recovery read preparing it, until it answers. Choosing another stash
@@ -2010,6 +2012,7 @@ impl StashBrowser {
             loading: None,
             error: None,
             preview_error: None,
+            lfs_failure_line: crate::lfs_download::FailureLine::new("stash-lfs-failure", cx),
             restore_index: false,
             restoring: None,
             restore_line: None,
@@ -3305,7 +3308,18 @@ impl StashBrowser {
                 .text_color(rgb(p.muted))
                 .into_any_element();
         }
-        match self.content.as_deref() {
+        // Diagrams says it in the failing side's own place.
+        let failure = match self.content.as_deref() {
+            Some(Content::Text {
+                diagrams,
+                lfs_failed,
+                ..
+            }) if self.text_mode != 3 || diagrams.is_none() => {
+                crate::lfs_download::side_failures_line(*lfs_failed, ["Before", "After"])
+            }
+            _ => None,
+        };
+        let body = match self.content.as_deref() {
             Some(Content::Text { diagrams, .. }) if self.text_mode == 3 => {
                 diagrams.as_ref().map_or_else(
                     || {
@@ -3364,7 +3378,22 @@ impl StashBrowser {
             .text_size(crate::appearance::ui_text(12.))
             .text_color(rgb(p.muted))
             .into_any_element(),
-        }
+        };
+        let ring = self
+            .owner
+            .upgrade()
+            .map(|owner| owner.read(cx).focus_ring.clone());
+        crate::lfs_download::above_comparison(
+            &self.lfs_failure_line,
+            self.content
+                .as_ref()
+                .map_or(0, crate::lfs_download::comparison_key),
+            failure,
+            body,
+            ring.as_ref(),
+            window,
+            cx,
+        )
     }
 }
 
@@ -5572,6 +5601,45 @@ mod tests {
             "the automatic read that opened Stashes announces nothing"
         );
         closes_back_to(&opener, cx);
+    }
+
+    /// A saved file reads the same text as Compare, so a side whose Git LFS
+    /// object could not be used says so here too: the read no longer fails
+    /// for it, and only the pointer's text was left to say anything.
+    #[gpui::test]
+    async fn a_failing_lfs_side_says_why_in_stashes(cx: &mut gpui_kit::TestAppContext) {
+        use crate::native_accessibility::written;
+        let fixture = tempfile::tempdir().unwrap();
+        let over_limit = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        written::forget();
+        let (_browser, cx) = stashed_sides(
+            cx,
+            fixture.path(),
+            &[(
+                "notes.txt",
+                Some(over_limit.into_bytes()),
+                Some(b"plain after\n".to_vec()),
+            )],
+            (1000., 680., 13),
+            (0, "stash-lfs-failure"),
+        );
+        assert_eq!(
+            written::get("stash-lfs-failure").map(|line| line.node.value().map(str::to_owned)),
+            Some(Some(
+                "Before: this Git LFS object is over the 32 MiB preview limit, so its pointer is \
+                 shown."
+                    .to_owned()
+            )),
+        );
+        assert!(
+            cx.debug_bounds("stash-lfs-failure")
+                .is_some_and(|line| line.size.height > px(0.)),
+            "the line is drawn"
+        );
     }
 
     /// Stashes opened over `messages` saved in order, the last at the top of

@@ -287,8 +287,8 @@ impl Literal {
                     .into()
             }
             (Self::LfsPointer, Some(failure)) => format!(
-                "This side's {}; its stored text is below.",
-                crate::lfs_download::failure_words(failure)
+                "{}; its stored text is below.",
+                crate::lfs_download::failure_opening(failure)
             ),
             (Self::LfsPointer, None) => {
                 "This side's Git LFS object is not in the local store, and no download was \
@@ -1234,7 +1234,7 @@ mod tests {
     /// never that it is absent, and the regular side still draws.
     #[test]
     fn a_failed_pointer_side_says_what_is_wrong_in_diagrams() {
-        use gitturtle_core::LfsObjectFailure::{Corrupt, TooLarge};
+        use gitturtle_core::LfsObjectFailure::{Corrupt, StoreUnreadable, TooLarge};
         let file = gitturtle_core::FileChange {
             old_path: Some("a.mmd".into()),
             new_path: Some("a.mmd".into()),
@@ -1252,13 +1252,15 @@ mod tests {
         for (failure, says) in [
             (
                 TooLarge,
-                "This side's Git LFS object is over the 32 MiB preview limit; its stored text \
-                 is below.",
+                "This Git LFS object is over the 32 MiB preview limit; its stored text is below.",
             ),
             (
                 Corrupt,
-                "This side's Git LFS object failed verification in the local store; its stored \
-                 text is below.",
+                "The local copy of this Git LFS object is damaged; its stored text is below.",
+            ),
+            (
+                StoreUnreadable,
+                "The local Git LFS store could not be read; its stored text is below.",
             ),
         ] {
             let prepared =

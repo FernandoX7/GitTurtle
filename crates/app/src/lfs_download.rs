@@ -1,4 +1,5 @@
 //! Explicit LFS preview downloads with captured pointer/source review.
+use crate::native_accessibility::DrawnButton;
 use crate::*;
 use gitturtle_core::{LfsDownloadPlan, LfsDownloadTarget, WriteCommand};
 use gpui_kit::{component::WindowExt, prelude::FluentBuilder};
@@ -60,118 +61,340 @@ pub(super) fn preview_targets(
 }
 
 /// What is wrong with a side's Git LFS object, in the words that side says
-/// wherever it stays its pointer.
+/// wherever it stays its pointer: a whole clause, to follow the side's name.
 pub(super) fn failure_words(failure: gitturtle_core::LfsObjectFailure) -> &'static str {
     match failure {
         gitturtle_core::LfsObjectFailure::TooLarge => {
-            "Git LFS object is over the 32 MiB preview limit"
+            "this Git LFS object is over the 32 MiB preview limit"
         }
         gitturtle_core::LfsObjectFailure::Corrupt => {
-            "Git LFS object failed verification in the local store"
+            "the local copy of this Git LFS object is damaged"
+        }
+        gitturtle_core::LfsObjectFailure::StoreUnreadable => {
+            "the local Git LFS store could not be read"
         }
     }
 }
 
+/// [`failure_words`] for two sides that failed alike.
+fn both_failure_words(failure: gitturtle_core::LfsObjectFailure) -> &'static str {
+    match failure {
+        gitturtle_core::LfsObjectFailure::TooLarge => {
+            "both Git LFS objects are over the 32 MiB preview limit"
+        }
+        gitturtle_core::LfsObjectFailure::Corrupt => {
+            "the local copies of both Git LFS objects are damaged"
+        }
+        gitturtle_core::LfsObjectFailure::StoreUnreadable => {
+            "the local Git LFS store could not be read"
+        }
+    }
+}
+
+/// [`failure_words`] opening a sentence, where no side's name comes first.
+pub(super) fn failure_opening(failure: gitturtle_core::LfsObjectFailure) -> String {
+    let words = failure_words(failure);
+    format!("{}{}", words[..1].to_ascii_uppercase(), &words[1..])
+}
+
+/// What a side says in its own place, an image's or a model's: the whole
+/// statement, with nothing about a download, which could not help.
+pub(super) fn failure_sentence(failure: gitturtle_core::LfsObjectFailure) -> String {
+    format!("{}.", failure_opening(failure))
+}
+
+/// What the failing sides of a text comparison say above it, the sides named
+/// `names`, old then new, as one line however many failed; `None` where
+/// neither did.
+pub(super) fn side_failures_line(
+    failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
+    names: [&str; 2],
+) -> Option<String> {
+    let side = |name: &str, failure| {
+        format!(
+            "{name}: {}, so its pointer is shown.",
+            failure_words(failure)
+        )
+    };
+    Some(match failed {
+        [None, None] => return None,
+        [Some(failure), None] => side(names[0], failure),
+        [None, Some(failure)] => side(names[1], failure),
+        [Some(old), Some(new)] if old == new => format!(
+            "{} and {}: {}, so their pointers are shown.",
+            names[0],
+            names[1],
+            both_failure_words(old)
+        ),
+        [Some(old), Some(new)] => format!(
+            "{}: {}. {}: {}.",
+            names[0],
+            failure_words(old),
+            names[1],
+            failure_words(new)
+        ),
+    })
+}
+
+/// The line a comparison's failing sides say above it ([`side_failures_line`]),
+/// which a view keeps from frame to frame: as tall as its words where the
+/// room allows, and where the comparison needs the room it scrolls inside
+/// its own height rather than being cut (DESIGN.md, "Empty and edge states").
+pub(super) struct FailureLine {
+    /// The element its words are written on.
+    id: &'static str,
+    pub(super) scroll: ScrollHandle,
+    pub(super) focus: FocusHandle,
+    /// The comparison last drawn ([`comparison_key`]): another one starts
+    /// from its top, even where it says the same words.
+    shown: std::cell::Cell<usize>,
+}
+
+/// Which comparison `content` is, for as long as it is the one shown.
+pub(super) fn comparison_key(content: &Arc<Content>) -> usize {
+    Arc::as_ptr(content).addr()
+}
+
+impl FailureLine {
+    pub(super) fn new(id: &'static str, cx: &mut App) -> Self {
+        Self {
+            id,
+            scroll: ScrollHandle::new(),
+            focus: cx.focus_handle(),
+            shown: Default::default(),
+        }
+    }
+
+    /// The line saying `sentence` of the comparison `key`. While it
+    /// overflows it is a Tab stop that Up and Down scroll, ringing its own
+    /// edge, as the rewritten-series preview's over-tall failure does.
+    fn render<V: 'static>(
+        &self,
+        key: usize,
+        sentence: String,
+        ring: Option<&crate::focus_ring::FocusRing>,
+        window: &Window,
+        cx: &mut Context<V>,
+    ) -> Div {
+        if self.shown.replace(key) != key {
+            self.scroll.set_offset(point(px(0.), px(0.)));
+        }
+        let id = self.id;
+        let scroll = &self.scroll;
+        let cue = crate::tags::ScrollCue::new(scroll, Pixels::ZERO);
+        let overflows = cue.kept();
+        let focus = &self.focus;
+        let tracked = overflows || focus.is_focused(window);
+        let (warning, accent) = (appearance::labels(cx).warning, palette(cx).accent);
+        let keys = scroll.clone();
+        let edge = ring.and_then(|ring| ring.edge(focus, rgb(accent)));
+        cue.list(
+            div()
+                .on_children_prepainted(cue.observe(|_, _, _| {}))
+                .id(SharedString::from(format!("{id}-region")))
+                .debug_selector(move || format!("{id}-region"))
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(scroll)
+                .when(tracked, |region| {
+                    region
+                        // The handle carries the Tab stop: GPUI ignores the
+                        // `tab_stop` of the div that tracks it.
+                        .track_focus(&focus.clone().tab_stop(overflows))
+                        .role(Role::Group)
+                        .aria_label("Git LFS preview warning")
+                        .on_key_down(cx.listener(move |_, event: &KeyDownEvent, window, cx| {
+                            let down = match event.keystroke.key.as_str() {
+                                "up" => false,
+                                "down" => true,
+                                _ => return,
+                            };
+                            let line = crate::empty_state::block_height(1, false, window);
+                            let at = -keys.offset().y;
+                            let end = keys.max_offset().y.max(Pixels::ZERO);
+                            let to =
+                                (if down { at + line } else { at - line }).clamp(Pixels::ZERO, end);
+                            if to != at {
+                                keys.set_offset(point(keys.offset().x, -to));
+                                cx.notify();
+                            }
+                            cx.stop_propagation();
+                        }))
+                })
+                .child(
+                    label(id, sentence)
+                        .px_3()
+                        .pt_2()
+                        .text_size(appearance::ui_text(12.))
+                        .text_color(rgb(warning)),
+                ),
+            "lfs-failure-line-scrollbar",
+        )
+        .relative()
+        // Outside the scrolled text, so a line that overflows keeps its
+        // distance from a Download row beneath it.
+        .pb_2()
+        .min_h(crate::empty_state::block_height(1, false, window) + appearance::ui_size(16.))
+        .children(edge)
+    }
+}
+
+/// `body` beneath the line [`side_failures_line`] made, if it made one: the
+/// body keeps its rows ([`crate::views::comparison_rows_floor`]) and the line
+/// gives way first.
+pub(super) fn above_comparison<V: 'static>(
+    line: &FailureLine,
+    key: usize,
+    sentence: Option<String>,
+    body: AnyElement,
+    ring: Option<&crate::focus_ring::FocusRing>,
+    window: &Window,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let Some(sentence) = sentence else {
+        return body;
+    };
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(line.render(key, sentence, ring, window, cx))
+        .child(
+            div()
+                .flex_1()
+                .min_h(crate::views::comparison_rows_floor(window))
+                .child(body),
+        )
+        .into_any_element()
+}
+
+/// What a Download row says, beside its buttons or, beside a failing side's
+/// line, in each button's tooltip and accessible description.
+pub(crate) const DOWNLOAD_EXPLANATION: &str = "LFS preview objects require an explicit download.";
+
 impl GitTurtle {
-    /// The sides of the shown text whose Git LFS object could not be used,
-    /// each saying what is wrong with it; a download could not help, so none
-    /// of them offers one.
-    fn lfs_side_failures(&self) -> Vec<(usize, String)> {
-        let Some(Content::Text { lfs_failed, .. }) = self.content.as_deref() else {
+    /// What the failing sides of the shown text say above it, where they say
+    /// it nowhere else: Rendered and Diagrams say it in the side's own place,
+    /// so the line would say it twice and take the comparison's room. A
+    /// download could not help, so none of them offers one.
+    pub(super) fn lfs_failure_sentence(&self) -> Option<String> {
+        let Some(Content::Text {
+            lfs_failed,
+            markdown,
+            diagrams,
+            ..
+        }) = self.content.as_deref()
+        else {
+            return None;
+        };
+        let own_words = (self.text_mode == TextMode::Markdown && markdown.is_some())
+            || (self.text_mode == TextMode::Diagrams && diagrams.is_some());
+        if own_words {
+            return None;
+        }
+        let names = if self.is_quick_source() {
+            ["Source", "Source"]
+        } else {
+            ["Before", "After"]
+        };
+        side_failures_line(*lfs_failed, names)
+    }
+
+    /// The line above the comparison, where the failing sides say it there:
+    /// a child of Compare's own column, which gives way first; a Download
+    /// row beside it keeps its height and the comparison keeps one row.
+    pub(super) fn render_lfs_failure_line(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let sentence = self.lfs_failure_sentence()?;
+        let ring = self.focus_ring.clone();
+        let key = self.content.as_ref().map_or(0, comparison_key);
+        Some(
+            self.lfs_failure_line
+                .render(key, sentence, Some(&ring), window, cx),
+        )
+    }
+
+    fn lfs_download_targets(&self) -> Vec<(usize, LfsDownloadTarget)> {
+        let Some(file) = self.selected_file.and_then(|index| self.files.get(index)) else {
             return Vec::new();
         };
-        lfs_failed
-            .iter()
-            .enumerate()
-            .filter_map(|(side, failure)| {
-                let name = if self.is_quick_source() {
-                    "Source"
-                } else if side == 0 {
-                    "Before"
-                } else {
-                    "After"
-                };
-                let words = failure_words((*failure)?);
-                Some((
-                    side,
-                    format!("{name}: this {words}, so its pointer is shown."),
-                ))
-            })
-            .collect()
+        self.content
+            .as_deref()
+            .map_or_else(Vec::new, |content| preview_targets(content, file))
+    }
+
+    /// Whether the shown file has a side to download: its row keeps its
+    /// height, so the comparison gives way to it rather than cover it.
+    pub(super) fn lfs_download_offered(&self) -> bool {
+        !self.lfs_download_targets().is_empty()
     }
 
     pub(super) fn render_lfs_download_actions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(file) = self.selected_file.and_then(|index| self.files.get(index)) else {
-            return div().into_any_element();
-        };
-        let targets = self
-            .content
-            .as_deref()
-            .map_or_else(Vec::new, |content| preview_targets(content, file));
-        let failures = self.lfs_side_failures();
-        if targets.is_empty() && failures.is_empty() {
+        let targets = self.lfs_download_targets();
+        if targets.is_empty() {
             return div().into_any_element();
         }
-        let warning = rgb(palette(cx).warning);
+        let line_above = self.lfs_failure_sentence().is_some();
         div()
+            .flex_none()
             .px_3()
-            .py_2()
+            // The line above already keeps this row's distance.
+            .when(!line_above, |row| row.pt_2())
+            .pb_2()
             .flex()
-            .flex_col()
-            .gap_1()
-            .children(failures.into_iter().map(|(side, sentence)| {
-                label(
-                    SharedString::from(format!("lfs-preview-failure-{side}")),
-                    sentence,
-                )
-                .text_size(appearance::ui_text(12.))
-                .text_color(warning)
-            }))
-            .when(!targets.is_empty(), |column| {
-                column.child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            label(
-                                "lfs-preview-download-explanation",
-                                "LFS preview objects require an explicit download.",
-                            )
-                            .text_size(appearance::ui_text(12.)),
-                        )
-                        .children(targets.into_iter().map(|(side, target)| {
-                            button(
-                                ("download-lfs-side", side),
-                                if self.is_quick_source() {
-                                    "Download Source LFS…"
-                                } else if side == 0 {
-                                    "Download Before LFS…"
-                                } else {
-                                    "Download After LFS…"
-                                },
-                                "pull",
-                                false,
-                            )
-                            // `open_lfs_download` refuses while a write runs; it looks
-                            // so once the write looks busy (`workspace::BusyLook`).
-                            .map(|download| {
-                                crate::workspace::refusing(
-                                    download,
-                                    || format!("download-lfs-side-{side}"),
-                                    self.operation_busy.is_some(),
-                                    self.operation_shown().is_some(),
-                                )
-                            })
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.open_lfs_download(target.clone(), window, cx)
-                                },
-                            ))
-                        })),
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            // Beside a line the row gives the comparison its height: what
+            // this says moves to each button's tooltip and description.
+            .when(!line_above, |row| {
+                row.child(
+                    label("lfs-preview-download-explanation", DOWNLOAD_EXPLANATION)
+                        .debug_selector(|| "lfs-preview-download-explanation".into())
+                        .text_size(appearance::ui_text(12.)),
                 )
             })
+            .children(targets.into_iter().map(|(side, target)| {
+                div()
+                    .debug_selector(move || format!("download-lfs-side-{side}"))
+                    .child(
+                        button(
+                            ("download-lfs-side", side),
+                            if self.is_quick_source() {
+                                "Download Source…"
+                            } else if side == 0 {
+                                "Download Before…"
+                            } else {
+                                "Download After…"
+                            },
+                            "pull",
+                            false,
+                        )
+                        .when(line_above, |download| {
+                            crate::branch_actions::Described(download)
+                                .aria_description(DOWNLOAD_EXPLANATION)
+                                .0
+                                .tooltip(DOWNLOAD_EXPLANATION)
+                        })
+                        // `open_lfs_download` refuses while a write runs; it looks
+                        // so once the write looks busy (`workspace::BusyLook`).
+                        .map(|download| {
+                            crate::workspace::refusing(
+                                download,
+                                || format!("download-lfs-side-{side}"),
+                                self.operation_busy.is_some(),
+                                self.operation_shown().is_some(),
+                            )
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_lfs_download(target.clone(), window, cx)
+                        }))
+                        .node_recorded(),
+                    )
+            }))
             .into_any_element()
     }
 

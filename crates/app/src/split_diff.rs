@@ -13,6 +13,9 @@ use gpui_kit::{
 };
 use std::{mem::size_of, ops::Range, sync::Arc};
 
+/// The height of the heading over each side's text, at the default size.
+pub(crate) const SIDE_HEADING_HEIGHT: f32 = 30.;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Row {
     pub(crate) old: Option<usize>,
@@ -582,7 +585,7 @@ impl Render for SplitView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .h(crate::appearance::ui_size(30.))
+                    .h(crate::appearance::ui_size(SIDE_HEADING_HEIGHT))
                     .px_3()
                     .flex()
                     .items_center()

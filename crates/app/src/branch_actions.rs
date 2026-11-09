@@ -1370,7 +1370,7 @@ fn dialog_action(
 /// A kit Button lent GPUI's stateful element methods for its accessible
 /// description, which the kit's Button does not offer: its interactivity is
 /// its base Button's, whose node GPUI writes with the description.
-struct Described(Button);
+pub(crate) struct Described(pub(crate) Button);
 
 impl InteractiveElement for Described {
     fn interactivity(&mut self) -> &mut gpui::Interactivity {

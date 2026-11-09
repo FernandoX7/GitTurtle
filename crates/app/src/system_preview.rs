@@ -3705,7 +3705,13 @@ pub(crate) mod tests {
                 .enumerate()
                 .map(|(index, (heading, _))| {
                     let mark = Mark::new(("copy-image-source", index), "image.svg");
-                    crate::image_compare::literal_source_copy(mark, heading, cx)
+                    crate::image_compare::literal_source_copy(
+                        mark,
+                        heading,
+                        "Copy source",
+                        "Copy the literal source bytes",
+                        cx,
+                    )
                 })
                 .collect::<Vec<_>>()
         });

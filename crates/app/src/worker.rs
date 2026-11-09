@@ -197,6 +197,14 @@ pub struct ImageSide {
     pub lfs_pointer: Option<Vec<u8>>,
 }
 
+impl ImageSide {
+    /// Whether its literal source is a Git LFS pointer's text: the one
+    /// literal source kept with no captured bytes to open.
+    pub(crate) fn literal_is_pointer(&self) -> bool {
+        self.literal_source.is_some() && self.captured.is_none()
+    }
+}
+
 pub enum Content {
     Rich(crate::rich_preview::Comparison),
     Conflict(Arc<crate::conflicts::Presentation>),
@@ -1869,7 +1877,7 @@ fn execute(
                 prepared_text(String::new(), String::new(), source)
             };
             lfs.mark(&mut content);
-            attach_mermaid(&mut content, &file, cancellation)?;
+            attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
             attach_markdown_assets(
                 &mut content,
                 &repo,
@@ -2178,7 +2186,7 @@ fn execute(
             };
             lfs.mark(&mut content);
             cancellation.check()?;
-            attach_mermaid(&mut content, &file, cancellation)?;
+            attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
             let origins = match area {
                 gitturtle_core::ChangeArea::Staged => crate::markdown_view::Origins {
                     old: head.map(gitturtle_core::PreviewAssetScope::Revision),
@@ -2254,25 +2262,27 @@ fn execute(
             if let Some(content) = cache.get(&key) {
                 return Ok(Output::Preview(content, start.elapsed()));
             }
-            let mut content = text_content(&repo, &file, cancellation)?;
+            let mut lfs = LfsSides::default();
+            let mut content = text_content(&repo, &file, &mut lfs, cancellation)?;
             attach_markdown_assets(&mut content, &repo, &file, &origins, cancellation)?;
-            let cacheable = match &content {
-                Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
-                Content::Rich(preview) => {
-                    preview.old.error.is_none() && preview.new.error.is_none()
-                }
-                Content::Text {
-                    old, new, markdown, ..
-                } => {
-                    markdown
-                        .as_ref()
-                        .is_none_or(|markdown| markdown.cacheable())
-                        && ![old, new]
-                            .iter()
-                            .any(|source| detect_lfs_pointer(source.as_bytes()).is_some())
-                }
-                _ => true,
-            };
+            let cacheable = !lfs.store_can_change()
+                && match &content {
+                    Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
+                    Content::Rich(preview) => {
+                        preview.old.error.is_none() && preview.new.error.is_none()
+                    }
+                    Content::Text {
+                        old, new, markdown, ..
+                    } => {
+                        markdown
+                            .as_ref()
+                            .is_none_or(|markdown| markdown.cacheable())
+                            && ![old, new]
+                                .iter()
+                                .any(|source| detect_lfs_pointer(source.as_bytes()).is_some())
+                    }
+                    _ => true,
+                };
             cancellation.check()?;
             let content = Arc::new(content);
             if cacheable {
@@ -2619,20 +2629,21 @@ fn captured_model_side(
     let Some(pointer) = detect_lfs_pointer(&bytes) else {
         return crate::rich_preview::Side::prepare(bytes, path, || cancellation.check());
     };
-    let local = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES);
+    let local = repo.local_lfs_read(&pointer.oid, pointer.size, MAX_INPUT_BYTES);
     cancellation.check()?;
-    let absent = matches!(local, Ok(None));
+    let absent = matches!(local, Ok(gitturtle_core::LocalLfsObject::Absent));
     let error = match local {
-        Ok(Some(local)) => {
+        Ok(gitturtle_core::LocalLfsObject::Verified(local)) => {
             return crate::rich_preview::Side::prepare(local, path, || cancellation.check());
         }
-        Ok(None) => format!(
+        Ok(gitturtle_core::LocalLfsObject::Absent) => format!(
             "This model’s LFS object is unavailable in the local store ({}). No download was attempted.",
             crate::counted(pointer.size, "byte", "bytes")
         ),
-        Err(error) => format!(
-            "This model’s local LFS object could not be verified: {error:#}. No download was attempted."
-        ),
+        Ok(gitturtle_core::LocalLfsObject::Failed(failure, _)) => {
+            crate::lfs_download::failure_sentence(failure)
+        }
+        Err(error) => format!("This model’s local LFS object could not be verified: {error:#}."),
     };
     let mut side = crate::rich_preview::Side::unavailable(path, true, Some(error));
     side.lfs_missing = absent;
@@ -2780,9 +2791,22 @@ fn prepared_text(patch: String, old: String, new: String) -> Content {
 struct LfsSides {
     missing: [bool; 2],
     failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
+    /// Which sides are stored as pointers, whatever their objects: what a
+    /// side resolved to no longer shows it.
+    pointers: [bool; 2],
 }
 
 impl LfsSides {
+    /// Whether what these sides say could change under the same pointers: a
+    /// corrupt object or a store that cannot be read can be repaired, so
+    /// neither is kept. Being over the preview limit is the pointer's alone.
+    fn store_can_change(self) -> bool {
+        self.failed
+            .iter()
+            .flatten()
+            .any(|failure| *failure != gitturtle_core::LfsObjectFailure::TooLarge)
+    }
+
     /// Records them on `content`. Text shows each side beside these marks;
     /// a notice, which shows neither side, says what is wrong with any side
     /// that failed, so a binary comparison does not hide it.
@@ -2800,7 +2824,7 @@ impl LfsSides {
                 for (side, failure) in ["Before", "After"].into_iter().zip(self.failed) {
                     if let Some(failure) = failure {
                         let words = crate::lfs_download::failure_words(failure);
-                        message.push_str(&format!("\n\n{side}: this {words}."));
+                        message.push_str(&format!("\n\n{side}: {words}."));
                     }
                 }
             }
@@ -2812,6 +2836,7 @@ impl LfsSides {
 fn attach_mermaid(
     content: &mut Content,
     file: &FileChange,
+    stored_pointers: [bool; 2],
     cancellation: &Cancellation,
 ) -> Result<()> {
     if let Content::Text {
@@ -2824,8 +2849,10 @@ fn attach_mermaid(
         && markdown.is_none()
     {
         *markdown =
-            crate::markdown_view::prepare(old, new, file, *lfs_failed, || cancellation.check())?
-                .map(Arc::new);
+            crate::markdown_view::prepare(old, new, file, *lfs_failed, stored_pointers, || {
+                cancellation.check()
+            })?
+            .map(Arc::new);
     }
     if let Content::Text {
         old,
@@ -2944,9 +2971,12 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
     }
 }
 
+/// The history comparison of `file`. `lfs` receives what the local store said
+/// of each side's Git LFS object, for the caller's decision to keep it.
 fn text_content(
     repo: &GitRepository,
     file: &FileChange,
+    lfs: &mut LfsSides,
     cancellation: &Cancellation,
 ) -> Result<Content> {
     let sources = match repo.text_preview_with_sources(file) {
@@ -2968,17 +2998,11 @@ fn text_content(
     {
         return Ok(content);
     }
-    let mut lfs = LfsSides::default();
-    if let Some(mut content) = resolved_lfs_text_content(
-        repo,
-        file,
-        &sources.old,
-        &sources.new,
-        &mut lfs,
-        cancellation,
-    )? {
+    if let Some(mut content) =
+        resolved_lfs_text_content(repo, file, &sources.old, &sources.new, lfs, cancellation)?
+    {
         lfs.mark(&mut content);
-        attach_mermaid(&mut content, file, cancellation)?;
+        attach_mermaid(&mut content, file, lfs.pointers, cancellation)?;
         return Ok(content);
     }
     let mut content = match sources.preview {
@@ -2995,7 +3019,7 @@ fn text_content(
         )),
     };
     lfs.mark(&mut content);
-    attach_mermaid(&mut content, file, cancellation)?;
+    attach_mermaid(&mut content, file, lfs.pointers, cancellation)?;
     Ok(content)
 }
 
@@ -3015,6 +3039,7 @@ fn resolved_lfs_text_content(
     *lfs = LfsSides {
         missing: resolved.missing,
         failed: resolved.failed,
+        pointers: resolved.pointers,
     };
     let Some(sources) = resolved.text else {
         return Ok(None);
@@ -3060,6 +3085,8 @@ fn working_image_side(
         };
     }
     let mut missing_pointer = None;
+    // The side is left holding its pointer's text, not an image's bytes.
+    let mut stays_pointer = false;
     let mut animation = None;
     let mut preview_notice = None;
     let result = (|| -> Result<(ImagePreview, Arc<RenderImage>, usize)> {
@@ -3069,16 +3096,24 @@ fn working_image_side(
             "Image exceeds the 32 MiB input limit"
         );
         if let Some(pointer) = detect_lfs_pointer(&bytes) {
-            let local = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES)?;
-            if local.is_none() {
-                missing_pointer = Some(bytes.clone());
+            // Before the read, so a read that fails outright leaves it too.
+            stays_pointer = true;
+            match repo.local_lfs_read(&pointer.oid, pointer.size, MAX_INPUT_BYTES)? {
+                gitturtle_core::LocalLfsObject::Verified(local) => {
+                    bytes = local;
+                    stays_pointer = false;
+                }
+                gitturtle_core::LocalLfsObject::Absent => {
+                    missing_pointer = Some(bytes.clone());
+                    return Err(anyhow!(
+                        "Git LFS object is unavailable in the local store · {}. No download was attempted.",
+                        crate::counted(pointer.size, "byte", "bytes")
+                    ));
+                }
+                gitturtle_core::LocalLfsObject::Failed(failure, _) => {
+                    return Err(anyhow!(crate::lfs_download::failure_sentence(failure)));
+                }
             }
-            bytes = local.ok_or_else(|| {
-                anyhow!(
-                    "Git LFS object is unavailable in the local store · {}. No download was attempted.",
-                    crate::counted(pointer.size, "byte", "bytes")
-                )
-            })?;
         }
         cancellation.check()?;
         if gitturtle_preview::animation::is_gif(&bytes) {
@@ -3115,8 +3150,8 @@ fn working_image_side(
     let literal_source = (bytes.len() <= gitturtle_preview::MAX_SVG_BYTES)
         .then(|| std::str::from_utf8(&bytes).ok().map(Arc::<str>::from))
         .flatten();
-    let captured = (bytes.len() <= MAX_INPUT_BYTES && missing_pointer.is_none())
-        .then(|| Arc::<[u8]>::from(bytes));
+    let captured =
+        (bytes.len() <= MAX_INPUT_BYTES && !stays_pointer).then(|| Arc::<[u8]>::from(bytes));
     // A cancelled decision offers nothing; the caller's next check ends the job.
     let system_preview = captured.as_deref().and_then(|bytes| {
         crate::system_preview::offer(bytes, &|| cancellation.check())
@@ -4980,7 +5015,7 @@ mod image_tests {
                 assert!(unavailable.present && unavailable.model.is_none());
                 let error = unavailable.error.as_deref().unwrap();
                 assert!(error.contains(if corrupt {
-                    "SHA-256 verification"
+                    "local copy of this Git LFS object is damaged"
                 } else {
                     "unavailable in the local store"
                 }));
@@ -5488,8 +5523,8 @@ mod image_tests {
     /// limit or failing verification stays its pointer and says which, and
     /// the other side keeps its preview, where either once failed the whole
     /// file. Neither offers a download, which could not help; a side whose
-    /// object is only missing still does. Nothing is cached: the store can
-    /// change under the pointer.
+    /// object is only missing still does. Text that keeps a pointer is never
+    /// cached: the store can change under the pointer.
     #[test]
     fn a_failing_lfs_side_leaves_the_other_sides_preview_and_offers_no_download() {
         use gitturtle_core::LfsObjectFailure::{Corrupt, TooLarge};
@@ -5518,7 +5553,7 @@ mod image_tests {
             33 * 1024 * 1024
         );
         // The right size and the wrong bytes.
-        let corrupt = pointer(b"the true text\n", Some(b"a wrong objec\n"));
+        let corrupt = pointer(b"the true text\n", Some(b"the wrong one\n"));
         let local_body = "the local object\n";
         let local = pointer(local_body.as_bytes(), Some(local_body.as_bytes()));
         let missing = pointer(b"never stored\n", None);
@@ -5687,6 +5722,417 @@ mod image_tests {
         );
     }
 
+    /// A notice saying a side's object is corrupt or its store unreadable is
+    /// not kept in the preview cache, since the store can change under the
+    /// same pointer and a repair has to show; one saying the object is over
+    /// the limit depends only on the pointer, so it may be kept.
+    #[cfg(unix)]
+    #[test]
+    fn a_notice_about_the_local_store_is_read_again_and_one_about_the_pointer_is_kept() {
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let body = b"the true text\n";
+        let oid = format!("{:x}", Sha256::digest(body));
+        let store = fixture.0.join(".git/lfs");
+        let directory = store.join("objects").join(&oid[..2]).join(&oid[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        let object = directory.join(&oid);
+        let stored = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            body.len()
+        );
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let binary = fixture.blob(b"\0binary\n");
+        let notice = |cache: &mut PreviewCache, old: &str| -> String {
+            let file = FileChange {
+                old_path: Some("notes.txt".into()),
+                new_path: Some("notes.txt".into()),
+                old_oid: Some(fixture.blob(old.as_bytes())),
+                new_oid: Some(binary.clone()),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file,
+                },
+                cache,
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("expected a preview")
+            };
+            // Once repaired the side resolves, and whatever the file then
+            // shows carries no notice about its object.
+            match &*content {
+                Content::Notice(message) => message.clone(),
+                _ => String::new(),
+            }
+        };
+
+        // Corrupt: the right size, the wrong bytes.
+        fs::write(&object, b"the wrong one\n").unwrap();
+        let mut cache = PreviewCache::default();
+        let says = notice(&mut cache, &stored);
+        assert!(says.contains("\n\nBefore: "), "{says}");
+        assert!(cache.entries.is_empty(), "a corrupt side is read again");
+        // Repaired, the same pointer no longer says so.
+        fs::write(&object, body).unwrap();
+        let repaired = notice(&mut cache, &stored);
+        assert!(!repaired.contains("Before:"), "{repaired}");
+
+        // A store that cannot be read, repaired the same way.
+        let mut cache = PreviewCache::default();
+        let real = fixture.0.join(".git/lfs-real");
+        fs::rename(&store, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &store).unwrap();
+        let says = notice(&mut cache, &stored);
+        assert!(
+            says.contains("the local Git LFS store could not be read"),
+            "{says}"
+        );
+        assert!(
+            cache.entries.is_empty(),
+            "an unreadable store is read again"
+        );
+        fs::remove_file(&store).unwrap();
+        fs::rename(&real, &store).unwrap();
+        let repaired = notice(&mut cache, &stored);
+        assert!(!repaired.contains("Before:"), "{repaired}");
+
+        // Over the limit is the pointer's own, so it may be kept.
+        let mut cache = PreviewCache::default();
+        let says = notice(&mut cache, &oversize);
+        assert!(says.contains("over the 32 MiB preview limit"), "{says}");
+        assert_eq!(cache.entries.len(), 1, "the pointer alone decides this one");
+    }
+
+    /// Whether a Markdown file is stored as a pointer on both sides is judged
+    /// as stored, not from the text a local object resolved to: with one
+    /// object local the other side was the only pointer left in the text, so
+    /// the file gained a Rendered view it never had. With both objects local
+    /// nothing is left a pointer and it renders as it always did, as does a
+    /// file with a side stored as regular text and an added file whose
+    /// object is local.
+    #[test]
+    fn a_markdown_file_stored_as_two_pointers_renders_only_with_both_objects_local() {
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        // `text`'s pointer, with its object in the local store if `local`.
+        let pointer = |text: &str, local: bool| {
+            let oid = format!("{:x}", Sha256::digest(text));
+            if local {
+                let directory = fixture
+                    .0
+                    .join(".git/lfs/objects")
+                    .join(&oid[..2])
+                    .join(&oid[2..4]);
+                fs::create_dir_all(&directory).unwrap();
+                fs::write(directory.join(&oid), text).unwrap();
+            }
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+                text.len()
+            )
+        };
+        let rendered = |old: Option<&str>, new: &str| {
+            let file = FileChange {
+                old_path: old.map(|_| "README.md".into()),
+                new_path: Some("README.md".into()),
+                old_oid: old.map(|old| fixture.blob(old.as_bytes())),
+                new_oid: Some(fixture.blob(new.as_bytes())),
+                status: if old.is_some() {
+                    ChangeStatus::Modified
+                } else {
+                    ChangeStatus::Added
+                },
+                old_mode: if old.is_some() { "100644" } else { "000000" }.into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("expected a preview")
+            };
+            let Content::Text { markdown, .. } = &*content else {
+                panic!("expected text")
+            };
+            markdown.is_some()
+        };
+        let (before, after) = ("# Before\n", "# After\n");
+        for (name, old, new) in [
+            (
+                "only the old object local",
+                pointer(before, true),
+                pointer("# One\n", false),
+            ),
+            (
+                "only the new object local",
+                pointer("# Two\n", false),
+                pointer(after, true),
+            ),
+            (
+                "neither object local",
+                pointer("# Three\n", false),
+                pointer("# Four\n", false),
+            ),
+        ] {
+            assert!(!rendered(Some(&old), &new), "{name}");
+        }
+        assert!(
+            rendered(None, &pointer(after, true)),
+            "an added file with its object local"
+        );
+        for (name, old, new) in [
+            (
+                "both objects local",
+                pointer(before, true),
+                pointer(after, true),
+            ),
+            (
+                "a regular side beside a local object",
+                before.to_owned(),
+                pointer(after, true),
+            ),
+            (
+                "a regular side beside a missing object",
+                before.to_owned(),
+                pointer("# Five\n", false),
+            ),
+            (
+                "a local object beside a regular side",
+                pointer(before, true),
+                after.to_owned(),
+            ),
+        ] {
+            assert!(rendered(Some(&old), &new), "{name}");
+        }
+    }
+
+    /// An image side that stays its Git LFS pointer, whatever kept its object
+    /// from it, holds a pointer's text and no image, so it offers nothing to
+    /// open and its literal source copies as a pointer. An SVG, whose
+    /// literal source is the image itself, keeps both.
+    #[test]
+    fn an_image_side_that_stays_its_pointer_offers_nothing_to_open() {
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let body = b"the true object\n";
+        let oid = format!("{:x}", Sha256::digest(body));
+        let directory = fixture
+            .0
+            .join(".git/lfs/objects")
+            .join(&oid[..2])
+            .join(&oid[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(&oid), b"a wrong object!\n").unwrap();
+        let corrupt = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            body.len()
+        );
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let missing = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let sides = |path: &str, old: &str, new: &str| {
+            let file = FileChange {
+                old_path: Some(path.into()),
+                new_path: Some(path.into()),
+                old_oid: Some(fixture.blob(old.as_bytes())),
+                new_oid: Some(fixture.blob(new.as_bytes())),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("expected a preview")
+            };
+            content
+        };
+        for (name, old, new) in [
+            ("over the limit and corrupt", &oversize, &corrupt),
+            ("missing and over the limit", &missing, &oversize),
+        ] {
+            let content = sides("picture.png", old, new);
+            let Content::Images {
+                old: before,
+                new: after,
+            } = &*content
+            else {
+                panic!("{name}: expected the image comparison")
+            };
+            for (side, pointer) in [(before, old), (after, new)] {
+                assert_eq!(
+                    side.literal_source.as_deref(),
+                    Some(pointer.as_str()),
+                    "{name}"
+                );
+                assert!(side.captured.is_none(), "{name}: no bytes to hand over");
+                assert!(side.system_preview.is_none(), "{name}: nothing to open");
+                assert!(side.literal_is_pointer(), "{name}: copies as a pointer");
+                assert_eq!(
+                    crate::image_compare::literal_copy_words(side),
+                    (
+                        "Copy pointer",
+                        "Copy this Git LFS pointer's exact text",
+                        "LFS pointer"
+                    ),
+                    "{name}: its tooltip and feedback say so too"
+                );
+            }
+        }
+        const SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"/>";
+        let content = sides("picture.svg", SVG, "<svg/>");
+        let Content::Images { old: svg, .. } = &*content else {
+            panic!("expected the image comparison")
+        };
+        assert!(svg.literal_source.is_some() && svg.captured.is_some());
+        assert!(!svg.literal_is_pointer(), "an SVG's source is its image");
+        assert_eq!(
+            crate::image_compare::literal_copy_words(svg).0,
+            "Copy source"
+        );
+        assert_eq!(crate::image_compare::literal_copy_words(svg).2, "source");
+    }
+
+    /// A failure of the repository itself, as the read of a pointer's object
+    /// meets it, leaves the side its pointer as any other failure does: its
+    /// text is not captured as though it were the image.
+    #[test]
+    fn an_image_side_whose_object_cannot_be_read_at_all_captures_nothing() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        fs::remove_dir_all(fixture.0.join(".git")).unwrap();
+        let side = working_image_side(
+            &repo,
+            pointer.clone().into_bytes(),
+            true,
+            "picture.png",
+            &active(),
+        );
+        assert!(side.message.is_some(), "the read's failure is said");
+        assert!(side.captured.is_none(), "{:?}", side.message);
+        assert!(side.system_preview.is_none(), "nothing to open");
+        assert_eq!(side.literal_source.as_deref(), Some(pointer.as_str()));
+    }
+
+    /// An image's or a model's side whose Git LFS object cannot be used says
+    /// what is wrong in the words every side shares, with no raw error and
+    /// no mention of a download, which could not help.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_image_or_model_side_says_the_shared_words() {
+        use sha2::{Digest, Sha256};
+        const OVER: &str = "This Git LFS object is over the 32 MiB preview limit.";
+        const DAMAGED: &str = "The local copy of this Git LFS object is damaged.";
+        const UNREADABLE: &str = "The local Git LFS store could not be read.";
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let store = fixture.0.join(".git/lfs");
+        let body = b"the true object\n";
+        let oid = format!("{:x}", Sha256::digest(body));
+        let directory = store.join("objects").join(&oid[..2]).join(&oid[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(&oid), b"a wrong object!\n").unwrap();
+        let corrupt = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            body.len()
+        );
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let read = |path: &str, old: &str, new: &str| {
+            let file = FileChange {
+                old_path: Some(path.into()),
+                new_path: Some(path.into()),
+                old_oid: Some(fixture.blob(old.as_bytes())),
+                new_oid: Some(fixture.blob(new.as_bytes())),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("{path}: expected a preview")
+            };
+            content
+        };
+        let image = |old: &str, new: &str| {
+            let content = read("picture.png", old, new);
+            let Content::Images { old, new } = &*content else {
+                panic!("expected the image comparison")
+            };
+            (old.message.clone(), new.message.clone())
+        };
+        let model = |old: &str, new: &str| {
+            let content = read("model.glb", old, new);
+            let Content::Rich(comparison) = &*content else {
+                panic!("expected the model comparison")
+            };
+            (comparison.old.error.clone(), comparison.new.error.clone())
+        };
+        let owned = |words: &str| Some(words.to_owned());
+        let expected = (owned(OVER), owned(DAMAGED));
+        assert_eq!(image(&oversize, &corrupt), expected, "image");
+        assert_eq!(model(&oversize, &corrupt), expected, "model");
+        // A store that cannot be read says so of whichever side it reaches.
+        let real = fixture.0.join(".git/lfs-real");
+        fs::rename(&store, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &store).unwrap();
+        let expected = (owned(OVER), owned(UNREADABLE));
+        assert_eq!(image(&oversize, &corrupt), expected, "image, unreadable");
+        assert_eq!(model(&oversize, &corrupt), expected, "model, unreadable");
+    }
+
     /// Mermaid is attached after the sides are marked, on both the route that
     /// resolves a side and the one that keeps the stored texts, so Diagrams
     /// says what is wrong with a failing side rather than that it is absent.
@@ -5750,7 +6196,7 @@ mod image_tests {
             assert_eq!(
                 diagrams.old.metadata.details,
                 [
-                    "This side's Git LFS object is over the 32 MiB preview limit; its stored text \
+                    "This Git LFS object is over the 32 MiB preview limit; its stored text \
                   is below."
                 ],
                 "{name}"
@@ -5770,6 +6216,7 @@ mod image_tests {
             LfsSides {
                 missing: [false; 2],
                 failed,
+                ..Default::default()
             }
             .mark(&mut content);
             content
@@ -5812,7 +6259,7 @@ mod image_tests {
             (
                 "over the limit",
                 pointer(33 * 1024 * 1024),
-                "This side's Git LFS object is over the 32 MiB preview limit; its stored text \
+                "This Git LFS object is over the 32 MiB preview limit; its stored text \
                  is below.",
                 false,
             ),
@@ -6158,7 +6605,7 @@ mod image_tests {
             let mut content = prepared_text("patch".into(), "old".into(), "new".into());
             LfsSides {
                 missing,
-                failed: [None; 2],
+                ..Default::default()
             }
             .mark(&mut content);
             content

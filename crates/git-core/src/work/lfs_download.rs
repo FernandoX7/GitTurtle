@@ -33,22 +33,26 @@ pub struct LfsDownloadPlan {
 }
 
 /// What is wrong with a Git LFS object a preview cannot use, judged of that
-/// object alone: a failure of the repository it is read through is an error
-/// instead. A download cannot help either, so neither is offered one.
+/// object and the store that holds it: a failure of the repository it is read
+/// through is an error instead. A download cannot help any of them, so none
+/// is offered one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfsObjectFailure {
     /// Its pointer declares more than a preview reads, so the store is not
     /// read at all.
     TooLarge,
-    /// The store holds something that is not the object its pointer names,
-    /// or that cannot be read safely.
+    /// The store holds something that is not the object its pointer names.
     Corrupt,
+    /// The store could not be read at this object, which says nothing about
+    /// the object: a link stands in the store's place, in its layout or in
+    /// the object's place, or the system refused or failed the read.
+    StoreUnreadable,
 }
 
 /// What the local LFS store held for one pointer
 /// ([`GitRepository::local_lfs_read`]).
 #[derive(Debug)]
-pub(crate) enum LocalLfsObject {
+pub enum LocalLfsObject {
     /// The object, matching the pointer's size and digest.
     Verified(Vec<u8>),
     /// None there: a download could still bring it.
@@ -73,6 +77,10 @@ pub struct ResolvedLfsText {
     /// used, and why. Such a side stays its pointer, as a missing one does,
     /// and the other side keeps its preview; none of them is also `missing`.
     pub failed: [Option<LfsObjectFailure>; 2],
+    /// Which sides, old then new, are stored as Git LFS pointers, whatever
+    /// became of their objects: the text in [`Self::text`] no longer shows
+    /// it for a side that resolved.
+    pub pointers: [bool; 2],
 }
 
 impl GitRepository {
@@ -96,6 +104,7 @@ impl GitRepository {
         let mut resolved = [None, None];
         let mut missing = [false; 2];
         let mut failed = [None; 2];
+        let pointers = [old, new].map(|bytes| parse_download_pointer(bytes).is_ok());
         for (index, bytes) in [old, new].into_iter().enumerate() {
             let Ok((oid, size)) = parse_download_pointer(bytes) else {
                 continue;
@@ -111,6 +120,7 @@ impl GitRepository {
                         text: None,
                         missing,
                         failed,
+                        pointers,
                     });
                 }
                 Err(error) => return Err(error),
@@ -120,6 +130,7 @@ impl GitRepository {
             text: None,
             missing,
             failed,
+            pointers,
         };
         if resolved.iter().all(Option::is_none) {
             return Ok(stored);
@@ -136,6 +147,7 @@ impl GitRepository {
             text: Some(TextPreviewWithSources { preview, old, new }),
             missing,
             failed,
+            pointers,
         })
     }
 

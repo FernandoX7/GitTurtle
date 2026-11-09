@@ -3909,6 +3909,33 @@ impl GitTurtle {
         } else {
             empty(self.loading.unwrap_or("No preview"), "")
         };
+        // Beneath a failing Git LFS side's line the comparison keeps its
+        // rows and the line gives way first. Beside a Download row, which
+        // keeps its height and must stay pressable, it keeps one row.
+        let download_offered = self.lfs_download_offered();
+        let lfs_floor = self.lfs_failure_sentence().is_some().then(|| {
+            comparison_floor(
+                if download_offered {
+                    1.
+                } else {
+                    SPLIT_FIND_ROWS
+                },
+                window,
+            )
+        });
+        // Split's room also holds its sides' headings and Compare's footer,
+        // for which a Download row beside the line leaves too little room:
+        // Split then takes no floor and draws what the room still holds.
+        let split_floor = lfs_floor.filter(|_| !download_offered).map(|floor| {
+            let heading = appearance::ui_size(crate::split_diff::SIDE_HEADING_HEIGHT);
+            floor
+                + window.pixel_snap(heading)
+                + if footer.is_some() {
+                    window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT))
+                } else {
+                    px(0.)
+                }
+        });
         div()
             .size_full()
             .min_w_0()
@@ -3916,6 +3943,7 @@ impl GitTurtle {
             .flex_col()
             .bg(rgb(colors.canvas))
             .child(crate::in_frame::probed(toolbar, "compare-toolbar"))
+            .children(self.render_lfs_failure_line(window, cx))
             .child(self.render_lfs_download_actions(cx))
             .when(
                 matches!(self.content.as_deref(), Some(Content::Text { .. }))
@@ -3946,14 +3974,22 @@ impl GitTurtle {
                 match split {
                     // Laid out for the room it shares with the footer in the
                     // frame it is drawn, where the footer gives way to Find.
-                    Some(view) => column.child(
-                        crate::in_frame::in_frame(move |bounds, window, cx| {
+                    Some(view) => {
+                        let room = crate::in_frame::in_frame(move |bounds, window, cx| {
                             split_room(view, edge, reason, muted, footer, bounds, window, cx)
                         })
-                        .named("compare-split-room"),
-                    ),
+                        .named("compare-split-room");
+                        match split_floor {
+                            Some(floor) => column
+                                .child(div().flex_1().min_h(floor).flex().flex_col().child(room)),
+                            None => column.child(room),
+                        }
+                    }
                     None => column
-                        .child(preview_content(content, edge))
+                        .child(
+                            preview_content(content, edge)
+                                .when_some(lfs_floor, |pane, floor| pane.min_h(floor)),
+                        )
                         .children(reason.map(|reason| partial_reason(reason, muted)))
                         .children(footer.map(|footer| footer.element)),
                 }
@@ -3997,6 +4033,19 @@ const CODE_PADDING: Pixels = px(8.);
 /// The fewest whole rows of Split's text Compare's footer leaves in view
 /// beneath an open Find bar before it gives way.
 const SPLIT_FIND_ROWS: f32 = 3.;
+
+/// The height of [`SPLIT_FIND_ROWS`] whole rows of the comparison's text and
+/// its padding: what a comparison keeps beneath a line above it that gives
+/// way first, as a failing Git LFS side's does.
+pub(crate) fn comparison_rows_floor(window: &Window) -> Pixels {
+    comparison_floor(SPLIT_FIND_ROWS, window)
+}
+
+/// The height of `rows` whole rows of the comparison's text and its padding.
+fn comparison_floor(rows: f32, window: &Window) -> Pixels {
+    let line = (appearance::code_text() * CODE_LINE_HEIGHT).round();
+    line * rows + window.pixel_snap(CODE_PADDING) * 2.
+}
 
 #[cfg(test)]
 thread_local! {
@@ -10622,6 +10671,11 @@ pub(crate) mod tests {
             "e".repeat(64),
             33 * 1024 * 1024
         );
+        let oversize_too = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "d".repeat(64),
+            34 * 1024 * 1024
+        );
         let missing = format!(
             "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
             "b".repeat(64)
@@ -10639,11 +10693,20 @@ pub(crate) mod tests {
                 &[
                     ("notes.txt", oversize.as_bytes()),
                     ("doc.txt", corrupt.as_bytes()),
+                    ("two.txt", oversize.as_bytes()),
+                    ("same.txt", oversize.as_bytes()),
+                    ("page.md", corrupt.as_bytes()),
                 ],
             ),
             (
                 "after",
-                &[("notes.txt", missing.as_bytes()), ("doc.txt", after)],
+                &[
+                    ("notes.txt", missing.as_bytes()),
+                    ("doc.txt", after),
+                    ("two.txt", corrupt.as_bytes()),
+                    ("same.txt", oversize_too.as_bytes()),
+                    ("page.md", b"# After\n"),
+                ],
             ),
         ]);
         let (_fixture, app, cx) = history_window_from(cx, &input).await;
@@ -10655,57 +10718,66 @@ pub(crate) mod tests {
             .join(&oid[..2])
             .join(&oid[2..4]);
         std::fs::create_dir_all(&directory).unwrap();
-        std::fs::write(directory.join(&oid), b"a wrong objec\n").unwrap();
-        for (path, failing, sentence, shown, offers) in [
+        std::fs::write(directory.join(&oid), b"the wrong one\n").unwrap();
+        let index = |path: &str, app: &GitTurtle| {
+            app.files
+                .iter()
+                .position(|file| file.path() == std::path::Path::new(path))
+                .expect("the commit changes it")
+        };
+        let read =
+            |id: &str| written::get(id).map(|written| written.node.value().map(str::to_owned));
+        for (path, sentence, shown, offers) in [
             (
                 "notes.txt",
-                0,
                 "Before: this Git LFS object is over the 32 MiB preview limit, so its pointer is \
-                 shown.",
+                 shown."
+                    .to_owned(),
                 (oversize.as_str(), missing.as_str()),
                 true,
             ),
             (
                 "doc.txt",
-                0,
-                "Before: this Git LFS object failed verification in the local store, so its \
-                 pointer is shown.",
+                "Before: the local copy of this Git LFS object is damaged, so its pointer is \
+                 shown."
+                    .to_owned(),
                 (corrupt.as_str(), "plain after\n"),
                 false,
             ),
+            // Two sides that fail are one line, however they fail.
+            (
+                "two.txt",
+                "Before: this Git LFS object is over the 32 MiB preview limit. After: the local \
+                 copy of this Git LFS object is damaged."
+                    .to_owned(),
+                (oversize.as_str(), corrupt.as_str()),
+                false,
+            ),
+            (
+                "same.txt",
+                "Before and After: both Git LFS objects are over the 32 MiB preview limit, so \
+                 their pointers are shown."
+                    .to_owned(),
+                (oversize.as_str(), oversize_too.as_str()),
+                false,
+            ),
         ] {
-            let index = app.read_with(cx, |app, _| {
-                app.files
-                    .iter()
-                    .position(|file| file.path() == std::path::Path::new(path))
-                    .expect("the commit changes it")
-            });
+            let index = app.read_with(cx, |app, _| index(path, app));
             cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
             written::forget();
             settle(&app, cx).await;
-            let read =
-                |id: &str| written::get(id).map(|written| written.node.value().map(str::to_owned));
             assert_eq!(
-                read(&format!("lfs-preview-failure-{failing}")),
-                Some(Some(sentence.to_owned())),
-                "{path}: the failing side says what is wrong"
+                read("lfs-preview-failure"),
+                Some(Some(sentence)),
+                "{path}: the failing sides say what is wrong"
             );
             assert!(
-                cx.debug_bounds(if failing == 0 {
-                    "lfs-preview-failure-0"
-                } else {
-                    "lfs-preview-failure-1"
-                })
-                .is_some_and(|line| line.size.height > px(0.)),
+                cx.debug_bounds("lfs-preview-failure")
+                    .is_some_and(|line| line.size.height > px(0.)),
                 "{path}: its line is drawn"
             );
             assert_eq!(
-                read(&format!("lfs-preview-failure-{}", 1 - failing)),
-                None,
-                "{path}: the other side says nothing"
-            );
-            assert_eq!(
-                read("lfs-preview-download-explanation").is_some(),
+                read("download-lfs-side-0").is_some() || read("download-lfs-side-1").is_some(),
                 offers,
                 "{path}: a download is offered only for a missing object"
             );
@@ -10716,6 +10788,243 @@ pub(crate) mod tests {
                 assert_eq!((old.as_str(), new.as_str()), shown, "{path}");
             });
         }
+
+        // Rendered says it in the failing side's own place, so the line
+        // gives way there, and comes back on the source tabs.
+        let page = app.read_with(cx, |app, _| index("page.md", app));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(page, window, cx)));
+        settle(&app, cx).await;
+        for (mode, shown) in [(TextMode::Markdown, false), (TextMode::Unified, true)] {
+            written::forget();
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.text_mode = mode;
+                    app.ensure_editor(window, cx);
+                    cx.notify();
+                })
+            });
+            settle(&app, cx).await;
+            assert_eq!(
+                read("lfs-preview-failure").is_some(),
+                shown,
+                "the line where the side has no words of its own"
+            );
+        }
+    }
+
+    /// At 18 pt in a 461 × 490 window the sentence for two failing sides
+    /// takes more lines than the window has to spare: the line gives way to
+    /// three whole rows of the comparison and scrolls rather than being cut,
+    /// in Up and Down from the keyboard too, and shows from its top again
+    /// for the next file that fails.
+    #[gpui::test]
+    async fn a_failing_lfs_line_leaves_the_comparison_its_rows_and_scrolls(
+        cx: &mut TestAppContext,
+    ) {
+        use native_accessibility::written;
+        use sha2::{Digest, Sha256};
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let missing = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let body = b"the true text\n";
+        let oid = format!("{:x}", Sha256::digest(body));
+        let corrupt = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            body.len()
+        );
+        let input = file_commits(&[
+            (
+                "before",
+                &[
+                    ("two.txt", oversize.as_bytes()),
+                    ("next.txt", oversize.as_bytes()),
+                    ("notes.txt", oversize.as_bytes()),
+                    ("older.txt", missing.as_bytes()),
+                ],
+            ),
+            (
+                "after",
+                &[
+                    ("two.txt", corrupt.as_bytes()),
+                    ("next.txt", corrupt.as_bytes()),
+                    ("notes.txt", missing.as_bytes()),
+                    ("older.txt", oversize.as_bytes()),
+                ],
+            ),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        let root = app.read_with(cx, |app, _| {
+            app.repository.clone().unwrap().path().to_path_buf()
+        });
+        let directory = root
+            .join(".git/lfs/objects")
+            .join(&oid[..2])
+            .join(&oid[2..4]);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(&oid), b"the wrong one\n").unwrap();
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let select = |path: &'static str, cx: &mut VisualTestContext| {
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+                    .expect("the commit changes it")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+        };
+        select("two.txt", cx);
+        settle(&app, cx).await;
+        let rows = (appearance::code_text() * CODE_LINE_HEIGHT).round() * 3.;
+        for (mode, comparison) in [
+            (TextMode::Unified, "preview-content"),
+            (TextMode::Before, "preview-content"),
+            (TextMode::Split, "split-text-0"),
+        ] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.text_mode = mode;
+                    app.ensure_editor(window, cx);
+                    cx.notify();
+                })
+            });
+            settle(&app, cx).await;
+            let shown = cx
+                .debug_bounds(comparison)
+                .unwrap_or_else(|| panic!("{comparison} is drawn"));
+            assert!(
+                shown.size.height >= rows,
+                "{comparison}: {:?} holds three rows of {rows:?}",
+                shown.size.height
+            );
+            let line = cx
+                .debug_bounds("lfs-preview-failure-region")
+                .expect("the line's region is drawn");
+            assert!(
+                line.bottom() <= shown.top(),
+                "{comparison}: the line, {line:?}, ends above the comparison, {shown:?}"
+            );
+            assert!(
+                app.read_with(cx, |app, _| app.lfs_failure_line.scroll.max_offset().y) > px(0.),
+                "{comparison}: the line scrolls to the rest of its words"
+            );
+            assert!(
+                written::get("lfs-preview-failure")
+                    .and_then(|line| line.node.value().map(str::to_owned))
+                    .is_some_and(|words| words.ends_with("is damaged.")),
+                "{comparison}: every word is there to read"
+            );
+        }
+
+        // Tab reaches it while it overflows, and Up and Down then scroll it.
+        let offset = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| -app.lfs_failure_line.scroll.offset().y)
+        };
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).lfs_failure_line.focus.is_focused(window))
+        };
+        for _ in 0..60 {
+            if focused(cx) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            crate::tags::tests::draw(cx);
+        }
+        assert!(focused(cx), "Tab reaches the line while it overflows");
+        cx.simulate_keystrokes("down");
+        settle(&app, cx).await;
+        assert!(offset(cx) > px(0.), "Down scrolls it");
+
+        // The next file's words start from their top.
+        select("next.txt", cx);
+        settle(&app, cx).await;
+        assert_eq!(offset(cx), px(0.), "the next sentence starts at its top");
+
+        // A side that offers its download keeps that control pressable and
+        // the comparison a whole row: the row's sentence moves to the
+        // button, the line gives way, and the comparison ends in its column.
+        select("notes.txt", cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.text_mode = TextMode::Unified;
+                app.ensure_editor(window, cx);
+                cx.notify();
+            })
+        });
+        settle(&app, cx).await;
+        let button = cx
+            .debug_bounds("download-lfs-side-1")
+            .expect("After offers its download");
+        let comparison = cx
+            .debug_bounds("preview-content")
+            .expect("the comparison is drawn");
+        assert!(
+            button.bottom() <= comparison.top(),
+            "the button, {button:?}, ends above the comparison, {comparison:?}"
+        );
+        let (one_row, three_rows) =
+            cx.update(|window, _| (comparison_floor(1., window), comparison_rows_floor(window)));
+        assert!(
+            comparison.size.height >= one_row && comparison.size.height < three_rows,
+            "the comparison, {comparison:?}, keeps one whole row, {one_row:?}, beside the Download row"
+        );
+        let footer = cx
+            .debug_bounds("compare-footer")
+            .expect("Compare's footer is drawn");
+        assert!(
+            comparison.bottom() <= footer.top(),
+            "the comparison, {comparison:?}, ends above the footer, {footer:?}"
+        );
+        let toolbar = cx
+            .debug_bounds("compare-toolbar")
+            .expect("Compare's toolbar is drawn");
+        assert!(
+            button.right() <= toolbar.right(),
+            "the button, {button:?}, stays inside the pane, {toolbar:?}"
+        );
+        assert!(
+            cx.debug_bounds("lfs-preview-download-explanation")
+                .is_none(),
+            "the row's sentence moved to the button beside a line"
+        );
+        let node = written::get("download-lfs-side-1").expect("the button is exposed");
+        assert_eq!(
+            node.node.description(),
+            Some(crate::lfs_download::DOWNLOAD_EXPLANATION),
+            "the sentence is the button's description"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.text_mode = TextMode::Split;
+                app.ensure_editor(window, cx);
+                cx.notify();
+            })
+        });
+        settle(&app, cx).await;
+        let button = cx
+            .debug_bounds("download-lfs-side-1")
+            .expect("Split keeps the button");
+        assert!(
+            button.right() <= toolbar.right(),
+            "Split's button, {button:?}, stays inside the pane, {toolbar:?}"
+        );
+        // Before's name is the longest the row shows.
+        select("older.txt", cx);
+        settle(&app, cx).await;
+        let button = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Before offers its download");
+        assert!(
+            button.right() <= toolbar.right(),
+            "Before's button, {button:?}, stays inside the pane, {toolbar:?}"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// The `(path, bytes)` files a fixture commit writes.

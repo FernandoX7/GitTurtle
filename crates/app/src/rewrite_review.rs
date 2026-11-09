@@ -431,6 +431,8 @@ pub(crate) struct SeriesBrowser {
     /// Tab stop only while the failure overflows
     /// ([`Self::preview_prompt`]).
     failure_focus: FocusHandle,
+    /// The line a failing Git LFS side says above the file's preview.
+    lfs_failure_line: crate::lfs_download::FailureLine,
     /// The answer of the last line beneath an open control in the preview
     /// that landed, recorded for every line as it lands, in view or not, so
     /// the body scrolls to each click's line once ([`Self::opener`]).
@@ -500,6 +502,7 @@ impl SeriesBrowser {
             preview_error: None,
             failure_scroll: ScrollHandle::new(),
             failure_focus: cx.focus_handle(),
+            lfs_failure_line: crate::lfs_download::FailureLine::new("series-lfs-failure", cx),
             line_revealed: Default::default(),
             network_pending: false,
             error: None,
@@ -1297,7 +1300,14 @@ impl SeriesBrowser {
         }
         // Diagrams is drawn only for text with diagrams ([`Self::drawn_mode`]).
         let mode = self.drawn_mode();
-        match self.content.as_deref() {
+        // Diagrams says it in the failing side's own place.
+        let failure = match self.content.as_deref() {
+            Some(Content::Text { lfs_failed, .. }) if mode != 3 => {
+                crate::lfs_download::side_failures_line(*lfs_failed, ["Before", "After"])
+            }
+            _ => None,
+        };
+        let body = match self.content.as_deref() {
             Some(Content::Text {
                 diagrams: Some(preview),
                 ..
@@ -1365,7 +1375,22 @@ impl SeriesBrowser {
                     .pane(cx)
             }
             _ => self.preview_prompt(height, window, cx),
-        }
+        };
+        let ring = self
+            .owner
+            .upgrade()
+            .map(|owner| owner.read(cx).focus_ring.clone());
+        crate::lfs_download::above_comparison(
+            &self.lfs_failure_line,
+            self.content
+                .as_ref()
+                .map_or(0, crate::lfs_download::comparison_key),
+            failure,
+            body,
+            ring.as_ref(),
+            window,
+            cx,
+        )
     }
     /// What the preview's box says with nothing to preview, as a designed
     /// empty state in the box (DESIGN.md, "Empty and edge states"): why the
@@ -5207,6 +5232,47 @@ mod tests {
             cx.update(|window, cx| window.focused(cx)),
             held,
             "a press on a failure that fits leaves focus where it was"
+        );
+    }
+
+    /// The series' preview reads the same text as Compare, so a side whose
+    /// Git LFS object could not be used says so here too: the read no longer
+    /// fails for it, and only the pointer's text was left to say anything.
+    #[gpui::test]
+    async fn a_failing_lfs_side_says_why_in_the_series_preview(cx: &mut gpui_kit::TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::{git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let over_limit = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        std::fs::write(repo.path().join("notes.txt"), &over_limit).unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Before"]);
+        std::fs::write(repo.path().join("notes.txt"), "plain after\n").unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "--quiet", "-m", "After"]);
+        let files = last_commit_files(&repo);
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let browser = inspecting(&app, cx, &files);
+        written::forget();
+        choose(&browser, cx, file_index(&files, "notes.txt"));
+        assert_eq!(
+            written::get("series-lfs-failure").map(|line| line.node.value().map(str::to_owned)),
+            Some(Some(
+                "Before: this Git LFS object is over the 32 MiB preview limit, so its pointer is \
+                 shown."
+                    .to_owned()
+            )),
+        );
+        assert!(
+            cx.debug_bounds("series-lfs-failure")
+                .is_some_and(|line| line.size.height > px(0.)),
+            "the line is drawn"
         );
     }
 

@@ -71,7 +71,7 @@ On Linux desktops running [Omarchy](https://github.com/omacom/omarchy), **Settin
 
 **Edit local commits…** prepares up to 100 commits from one linear sequence. Reorder with the controls or Option-Up/Down and choose Pick, Reword, Squash, Fixup, or Drop. The reviewed plan pins the branch, base, commits, and clean work state; it warns about known remote-tracking containment. Message pauses, conflicts, Continue, and Abort use native workflows while preserving configured hooks/signing. Merge-preserving plans remain unsupported. See [interactive rebase](interactive-rebase.md) and [conflict blocks](conflict-blocks.md).
 
-A missing LFS preview offers **Download Before LFS…** or **Download After LFS…**. Review the exact file, object, configured source, and size before downloading that one object. GitTurtle verifies size and SHA-256 before displaying it; the action leaves working files and the index unchanged. Resolved LFS text keeps whole-file staging because Git still stores its pointer. See [LFS previews and download limits](lfs-previews.md).
+A missing LFS preview offers **Download Before…** or **Download After…**. Review the exact file, object, configured source, and size before downloading that one object. GitTurtle verifies size and SHA-256 before displaying it; the action leaves working files and the index unchanged. Resolved LFS text keeps whole-file staging because Git still stores its pointer. See [LFS previews and download limits](lfs-previews.md).
 
 ## Browse history, then open a comparison
 
