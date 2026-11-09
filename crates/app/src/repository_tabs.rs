@@ -4162,7 +4162,9 @@ mod tests {
 
         // What it says works.
         cx.update(|window, cx| {
-            app.update(cx, |app, cx| app.open_repository_tab(folder.clone(), window, cx))
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(folder.clone(), window, cx)
+            })
         });
         settle_tab_test(&app, cx).await;
         let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
@@ -4568,7 +4570,9 @@ mod tests {
         crate::views::tests::settle(&app, cx).await;
         assert_not_a_repository(&app, cx, &root, "marked by Refresh");
         let projects = |cx: &mut VisualTestContext| {
-            app.read_with(cx, |app, cx| app.hub.read(cx).shown_error().map(str::to_owned))
+            app.read_with(cx, |app, cx| {
+                app.hub.read(cx).shown_error().map(str::to_owned)
+            })
         };
         assert!(projects(cx).is_some(), "Projects says the same");
         let refresh_in_changes = async |cx: &mut VisualTestContext| {
@@ -4792,7 +4796,11 @@ mod tests {
         let banner = "Local refresh: the read stopped".to_owned();
         assert_eq!(operation_error(&app, cx), Some(banner), "the banner");
         settle_read(&app, cx).await;
-        assert_eq!(operation_error(&app, cx), None, "the next good read clears it");
+        assert_eq!(
+            operation_error(&app, cx),
+            None,
+            "the next good read clears it"
+        );
 
         // A write's failure in the same words stays, whichever read lands.
         let written = "Local refresh: a hook refused the commit".to_owned();
@@ -4802,7 +4810,11 @@ mod tests {
             })
         });
         settle_read(&app, cx).await;
-        assert_eq!(operation_error(&app, cx), Some(written.clone()), "a write's stays");
+        assert_eq!(
+            operation_error(&app, cx),
+            Some(written.clone()),
+            "a write's stays"
+        );
         quiet_read_fails(&app, cx, anyhow::anyhow!("the read stopped"));
         assert_eq!(
             operation_error(&app, cx),
@@ -4810,7 +4822,11 @@ mod tests {
             "a read does not replace a write's failure"
         );
         settle_read(&app, cx).await;
-        assert_eq!(operation_error(&app, cx), Some(written.clone()), "nor clear it");
+        assert_eq!(
+            operation_error(&app, cx),
+            Some(written.clone()),
+            "nor clear it"
+        );
 
         // A write's failure over the read's banner stays too.
         cx.update(|_, cx| app.update(cx, |app, _| app.operation_error = None));
@@ -4882,7 +4898,11 @@ mod tests {
             app.read_with(cx, |app, _| app.operations.drain());
             crate::views::tests::settle(&app, cx).await;
         }
-        assert_eq!(operation_error(&app, cx), None, "its next good read clears it");
+        assert_eq!(
+            operation_error(&app, cx),
+            None,
+            "its next good read clears it"
+        );
     }
 
     /// A folder's permissions taken away until this drops, so a test that

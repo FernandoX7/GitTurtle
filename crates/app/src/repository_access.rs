@@ -205,11 +205,20 @@ mod tests {
                 "{:#}",
                 explain(Path::new("/mnt/share/project"), unchecked(code))
             );
-            assert!(said.starts_with("This repository's folder could not be read"), "{said}");
+            assert!(
+                said.starts_with("This repository's folder could not be read"),
+                "{said}"
+            );
             assert!(said.contains("Could not read /mnt/share/project"), "{said}");
-            assert!(!said.contains("gone") && !said.contains("missing"), "{said}");
+            assert!(
+                !said.contains("gone") && !said.contains("missing"),
+                "{said}"
+            );
             // The Projects page shows these words too, and has no Refresh.
-            assert!(said.contains("Open Repository") && !said.contains("refresh"), "{said}");
+            assert!(
+                said.contains("Open Repository") && !said.contains("refresh"),
+                "{said}"
+            );
         }
         assert_eq!(classify(&unchecked(libc::EACCES)), Failure::Permission);
         assert!(!finds_no_repository(&unchecked(libc::EACCES)));

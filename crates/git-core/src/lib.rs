@@ -1111,7 +1111,11 @@ impl std::fmt::Debug for GitRepository {
 impl GitRepository {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let requested = path.as_ref();
-        ensure!(is_folder(requested)?, "Not a directory: {}", requested.display());
+        ensure!(
+            is_folder(requested)?,
+            "Not a directory: {}",
+            requested.display()
+        );
         // Discovery from the requested folder, unconfined: a folder inside a
         // work tree opens that work tree.
         let reported = Reported::by_git(requested)?;

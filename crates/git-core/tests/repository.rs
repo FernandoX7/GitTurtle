@@ -145,7 +145,10 @@ fn a_denied_repository_folder_could_not_be_checked_by_either_route() {
         assert!(!error.is::<NotARepository>(), "{route}: {error:#}");
         assert!(!finds_no_repository(&error), "{route}: {error:#}");
     }
-    assert_eq!(repo.found_at_path().unwrap(), gitturtle_core::FoundAtPath::Same);
+    assert_eq!(
+        repo.found_at_path().unwrap(),
+        gitturtle_core::FoundAtPath::Same
+    );
 }
 
 /// A folder's permissions taken away until this drops, so a test that takes
@@ -238,7 +241,11 @@ fn a_folder_that_is_not_there_is_found_as_none() {
     let moved = f.temp.path().join("moved");
     fs::rename(&f.root, &moved).unwrap();
     assert_eq!(repo.found_at_path().unwrap(), FoundAtPath::None, "NotFound");
-    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::None, "NotFound");
+    assert_eq!(
+        repo.verify_at_path().unwrap(),
+        FoundAtPath::None,
+        "NotFound"
+    );
     let missing = GitRepository::open(&f.root).unwrap_err();
     assert!(!could_not_check(&missing), "{missing:#}");
     assert!(format!("{missing:#}").starts_with("Not a directory:"));
