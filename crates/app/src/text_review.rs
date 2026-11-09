@@ -108,6 +108,7 @@ pub fn prepare(
         new,
         presentation,
         lfs_missing,
+        lfs_failed,
         ..
     } = content.as_ref()
     else {
@@ -152,6 +153,7 @@ pub fn prepare(
         partial: None,
         partial_unavailable: Some("Review options are active. Partial staging is unavailable: reset to the original diff to select exact Git lines or hunks. Whole-file actions include every change.".into()),
         lfs_missing: *lfs_missing,
+        lfs_failed: *lfs_failed,
     }))
 }
 
@@ -1093,6 +1095,7 @@ mod tests {
             partial: Some(partial),
             partial_unavailable: None,
             lfs_missing: [false; 2],
+            lfs_failed: [None; 2],
         });
         let before_index = fs::read(fixture.path().join(".git/index")).unwrap();
         for options in [
@@ -1143,6 +1146,7 @@ mod tests {
             partial: None,
             partial_unavailable: None,
             lfs_missing: [false; 2],
+            lfs_failed: [None; 2],
         })
     }
     fn patch(content: &Content) -> &str {

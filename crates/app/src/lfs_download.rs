@@ -20,10 +20,15 @@ pub(super) fn preview_targets(
             ..
         } => [(old, lfs_missing[0]), (new, lfs_missing[1])]
             .map(|(bytes, missing)| missing.then(|| bytes.as_bytes().to_vec())),
+        // Only a side whose object is truly absent: a model's unusable local
+        // object, kept as a retryable pointer, has nothing to download either.
         Content::Rich(preview) => [&preview.old, &preview.new].map(|side| {
-            side.captured.as_deref().and_then(|bytes| {
-                gitturtle_preview::detect_lfs_pointer(bytes).map(|_| bytes.to_vec())
-            })
+            side.lfs_missing
+                .then(|| side.captured.as_deref())
+                .flatten()
+                .and_then(|bytes| {
+                    gitturtle_preview::detect_lfs_pointer(bytes).map(|_| bytes.to_vec())
+                })
         }),
         _ => [None, None],
     };
@@ -54,7 +59,47 @@ pub(super) fn preview_targets(
         .collect()
 }
 
+/// What is wrong with a side's Git LFS object, in the words that side says
+/// wherever it stays its pointer.
+pub(super) fn failure_words(failure: gitturtle_core::LfsObjectFailure) -> &'static str {
+    match failure {
+        gitturtle_core::LfsObjectFailure::TooLarge => {
+            "Git LFS object is over the 32 MiB preview limit"
+        }
+        gitturtle_core::LfsObjectFailure::Corrupt => {
+            "Git LFS object failed verification in the local store"
+        }
+    }
+}
+
 impl GitTurtle {
+    /// The sides of the shown text whose Git LFS object could not be used,
+    /// each saying what is wrong with it; a download could not help, so none
+    /// of them offers one.
+    fn lfs_side_failures(&self) -> Vec<(usize, String)> {
+        let Some(Content::Text { lfs_failed, .. }) = self.content.as_deref() else {
+            return Vec::new();
+        };
+        lfs_failed
+            .iter()
+            .enumerate()
+            .filter_map(|(side, failure)| {
+                let name = if self.is_quick_source() {
+                    "Source"
+                } else if side == 0 {
+                    "Before"
+                } else {
+                    "After"
+                };
+                let words = failure_words((*failure)?);
+                Some((
+                    side,
+                    format!("{name}: this {words}, so its pointer is shown."),
+                ))
+            })
+            .collect()
+    }
+
     pub(super) fn render_lfs_download_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(file) = self.selected_file.and_then(|index| self.files.get(index)) else {
             return div().into_any_element();
@@ -63,50 +108,70 @@ impl GitTurtle {
             .content
             .as_deref()
             .map_or_else(Vec::new, |content| preview_targets(content, file));
-        if targets.is_empty() {
+        let failures = self.lfs_side_failures();
+        if targets.is_empty() && failures.is_empty() {
             return div().into_any_element();
         }
+        let warning = rgb(palette(cx).warning);
         div()
             .px_3()
             .py_2()
             .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .child(
+            .flex_col()
+            .gap_1()
+            .children(failures.into_iter().map(|(side, sentence)| {
                 label(
-                    "lfs-preview-download-explanation",
-                    "LFS preview objects require an explicit download.",
+                    SharedString::from(format!("lfs-preview-failure-{side}")),
+                    sentence,
                 )
-                .text_size(appearance::ui_text(12.)),
-            )
-            .children(targets.into_iter().map(|(side, target)| {
-                button(
-                    ("download-lfs-side", side),
-                    if self.is_quick_source() {
-                        "Download Source LFS…"
-                    } else if side == 0 {
-                        "Download Before LFS…"
-                    } else {
-                        "Download After LFS…"
-                    },
-                    "pull",
-                    false,
-                )
-                // `open_lfs_download` refuses while a write runs; it looks
-                // so once the write looks busy (`workspace::BusyLook`).
-                .map(|download| {
-                    crate::workspace::refusing(
-                        download,
-                        || format!("download-lfs-side-{side}"),
-                        self.operation_busy.is_some(),
-                        self.operation_shown().is_some(),
-                    )
-                })
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_lfs_download(target.clone(), window, cx)
-                }))
+                .text_size(appearance::ui_text(12.))
+                .text_color(warning)
             }))
+            .when(!targets.is_empty(), |column| {
+                column.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            label(
+                                "lfs-preview-download-explanation",
+                                "LFS preview objects require an explicit download.",
+                            )
+                            .text_size(appearance::ui_text(12.)),
+                        )
+                        .children(targets.into_iter().map(|(side, target)| {
+                            button(
+                                ("download-lfs-side", side),
+                                if self.is_quick_source() {
+                                    "Download Source LFS…"
+                                } else if side == 0 {
+                                    "Download Before LFS…"
+                                } else {
+                                    "Download After LFS…"
+                                },
+                                "pull",
+                                false,
+                            )
+                            // `open_lfs_download` refuses while a write runs; it looks
+                            // so once the write looks busy (`workspace::BusyLook`).
+                            .map(|download| {
+                                crate::workspace::refusing(
+                                    download,
+                                    || format!("download-lfs-side-{side}"),
+                                    self.operation_busy.is_some(),
+                                    self.operation_shown().is_some(),
+                                )
+                            })
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.open_lfs_download(target.clone(), window, cx)
+                                },
+                            ))
+                        })),
+                )
+            })
             .into_any_element()
     }
 

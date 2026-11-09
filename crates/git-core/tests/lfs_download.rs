@@ -1,6 +1,6 @@
 use gitturtle_core::{
-    ChangeStatus, FileChange, GitRepository, LfsDownloadTarget, OperationControl, TextPreview,
-    WriteCommand, run_controlled,
+    ChangeStatus, FileChange, GitRepository, LfsDownloadTarget, LfsObjectFailure, OperationControl,
+    TextPreview, WriteCommand, run_controlled,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -291,13 +291,90 @@ fn each_lfs_text_side_resolves_on_its_own_and_reads_only_the_local_store() {
     let resolved = resolve(&binary, &new_local).unwrap().text.unwrap();
     assert!(matches!(resolved.preview, TextPreview::Binary));
 
-    // A local object that fails verification is an error, not a missing one.
-    for (name, old, new) in [
-        ("corrupt first", corrupt.as_slice(), missing.as_slice()),
-        ("corrupt second", old_local.as_slice(), corrupt.as_slice()),
-        ("past the limit", oversize.as_slice(), missing.as_slice()),
+    // One side's object failing is that side's alone: it stays its pointer,
+    // is never called missing, and the other side keeps its preview.
+    let (corrupt, oversize, missing_side) =
+        (corrupt.as_slice(), oversize.as_slice(), missing.as_slice());
+    let (old_side, new_side) = (old_local.as_slice(), new_local.as_slice());
+    use LfsObjectFailure::{Corrupt, TooLarge};
+    for (name, old, new, shown, absent, failed) in [
+        (
+            "corrupt first beside a missing object",
+            corrupt,
+            missing_side,
+            None,
+            [false, true],
+            [Some(Corrupt), None],
+        ),
+        (
+            "past the limit first beside a missing object",
+            oversize,
+            missing_side,
+            None,
+            [false, true],
+            [Some(TooLarge), None],
+        ),
+        (
+            "corrupt second beside a local object",
+            old_side,
+            corrupt,
+            Some((before, corrupt)),
+            [false, false],
+            [None, Some(Corrupt)],
+        ),
+        (
+            "corrupt first beside a local object",
+            corrupt,
+            new_side,
+            Some((corrupt, after)),
+            [false, false],
+            [Some(Corrupt), None],
+        ),
+        (
+            "past the limit first beside a local object",
+            oversize,
+            new_side,
+            Some((oversize, after)),
+            [false, false],
+            [Some(TooLarge), None],
+        ),
+        (
+            "corrupt first beside plain text",
+            corrupt,
+            after,
+            None,
+            [false, false],
+            [Some(Corrupt), None],
+        ),
+        (
+            "plain text first beside past the limit",
+            before,
+            oversize,
+            None,
+            [false, false],
+            [None, Some(TooLarge)],
+        ),
+        (
+            "both failing",
+            corrupt,
+            oversize,
+            None,
+            [false, false],
+            [Some(Corrupt), Some(TooLarge)],
+        ),
     ] {
-        assert!(resolve(old, new).is_err(), "{name}");
+        let outcome = resolve(old, new).unwrap_or_else(|error| panic!("{name}: {error:#}"));
+        assert_eq!(outcome.missing, absent, "{name}");
+        assert_eq!(outcome.failed, failed, "{name}");
+        match (outcome.text, shown) {
+            (Some(text), Some((shown_old, shown_new))) => {
+                assert_eq!(text.old, shown_old, "{name}");
+                assert_eq!(text.new, shown_new, "{name}");
+                assert!(matches!(text.preview, TextPreview::Patch(_)), "{name}");
+            }
+            (None, None) => {}
+            (text, shown) => panic!("{name}: resolved {:?}, expected {shown:?}", text.is_some()),
+        }
     }
 
     assert_eq!(listing(), held, "resolving writes nothing to the store");

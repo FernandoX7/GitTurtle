@@ -32,6 +32,31 @@ pub struct LfsDownloadPlan {
     config_token: String,
 }
 
+/// What is wrong with a Git LFS object a preview cannot use, judged of that
+/// object alone: a failure of the repository it is read through is an error
+/// instead. A download cannot help either, so neither is offered one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LfsObjectFailure {
+    /// Its pointer declares more than a preview reads, so the store is not
+    /// read at all.
+    TooLarge,
+    /// The store holds something that is not the object its pointer names,
+    /// or that cannot be read safely.
+    Corrupt,
+}
+
+/// What the local LFS store held for one pointer
+/// ([`GitRepository::local_lfs_read`]).
+#[derive(Debug)]
+pub(crate) enum LocalLfsObject {
+    /// The object, matching the pointer's size and digest.
+    Verified(Vec<u8>),
+    /// None there: a download could still bring it.
+    Absent,
+    /// There or declared, and unusable: why, and in what words.
+    Failed(LfsObjectFailure, anyhow::Error),
+}
+
 /// What the local LFS store held for the two sides of a text comparison.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedLfsText {
@@ -40,21 +65,28 @@ pub struct ResolvedLfsText {
     pub text: Option<TextPreviewWithSources>,
     /// Which sides, old then new, are pointers whose object was found absent
     /// from the local store. `false` means not found absent, not present: a
-    /// side can be no pointer, or its object there but binary, too large or
-    /// failing verification, or past the limit at which the store is not
-    /// read at all. A pointer's text cannot say which.
+    /// side can be no pointer, or its object there but binary or too large
+    /// to set as text, or one of those [`Self::failed`] names. A pointer's
+    /// text cannot say which.
     pub missing: [bool; 2],
+    /// Which sides, old then new, are pointers whose object could not be
+    /// used, and why. Such a side stays its pointer, as a missing one does,
+    /// and the other side keeps its preview; none of them is also `missing`.
+    pub failed: [Option<LfsObjectFailure>; 2],
 }
 
 impl GitRepository {
     /// Resolve each LFS text side on its own, from the local store alone: a
     /// side whose object is there shows it, and a side whose object is
-    /// missing stays its pointer. `text` is `None`, keeping the original
-    /// pointer comparison visible, with no side resolved or with a resolved
-    /// side that has no text to set beside the other's pointer; `missing`
-    /// says which sides are truly absent either way. Resolved content has no
-    /// partial staging semantics because Git's underlying blobs remain
-    /// pointers.
+    /// missing or unusable stays its pointer. `text` is `None`, keeping the
+    /// original pointer comparison visible, with no side resolved or with a
+    /// resolved side that has no text to set beside the other's pointer;
+    /// `missing` and `failed` say which sides are which either way. Resolved
+    /// content has no partial staging semantics because Git's underlying
+    /// blobs remain pointers.
+    ///
+    /// The read stays passive: it opens the local store and runs no process
+    /// that writes, whatever the pointers name.
     pub fn resolved_lfs_text(
         &self,
         file: &FileChange,
@@ -63,19 +95,22 @@ impl GitRepository {
     ) -> Result<ResolvedLfsText> {
         let mut resolved = [None, None];
         let mut missing = [false; 2];
+        let mut failed = [None; 2];
         for (index, bytes) in [old, new].into_iter().enumerate() {
             let Ok((oid, size)) = parse_download_pointer(bytes) else {
                 continue;
             };
-            match self.local_lfs_object(&oid, size, MAX_LFS_PREVIEW_DOWNLOAD as usize) {
-                Ok(Some(local)) => resolved[index] = Some(local),
-                Ok(None) => missing[index] = true,
-                // A failure after a missing side still leaves the two
-                // pointers, as it did when that missing side ended the walk.
-                Err(_) if missing.contains(&true) => {
+            match self.local_lfs_read(&oid, size, MAX_LFS_PREVIEW_DOWNLOAD as usize) {
+                Ok(LocalLfsObject::Verified(local)) => resolved[index] = Some(local),
+                Ok(LocalLfsObject::Absent) => missing[index] = true,
+                Ok(LocalLfsObject::Failed(failure, _)) => failed[index] = Some(failure),
+                // A failure of the repository itself, after a side was
+                // already found out, still leaves the two pointers.
+                Err(_) if missing.contains(&true) || failed.iter().any(Option::is_some) => {
                     return Ok(ResolvedLfsText {
                         text: None,
                         missing,
+                        failed,
                     });
                 }
                 Err(error) => return Err(error),
@@ -84,6 +119,7 @@ impl GitRepository {
         let stored = ResolvedLfsText {
             text: None,
             missing,
+            failed,
         };
         if resolved.iter().all(Option::is_none) {
             return Ok(stored);
@@ -92,12 +128,14 @@ impl GitRepository {
         let old = before.unwrap_or_else(|| old.to_vec());
         let new = after.unwrap_or_else(|| new.to_vec());
         let preview = preview_bytes(file, &old, &new);
-        if missing.contains(&true) && !matches!(preview, TextPreview::Patch(_)) {
+        let a_pointer_stays = missing.contains(&true) || failed.iter().any(Option::is_some);
+        if a_pointer_stays && !matches!(preview, TextPreview::Patch(_)) {
             return Ok(stored);
         }
         Ok(ResolvedLfsText {
             text: Some(TextPreviewWithSources { preview, old, new }),
             missing,
+            failed,
         })
     }
 

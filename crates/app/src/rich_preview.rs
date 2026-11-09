@@ -63,6 +63,9 @@ pub struct Side {
     /// What the side stays as rather than a source of diagrams, if it does:
     /// a literal side captures no bytes, so its text alone cannot say.
     pub(super) literal: Option<Literal>,
+    /// Whether the side is a Git LFS pointer whose object the local store
+    /// does not hold, the only state a download can change.
+    pub(super) lfs_missing: bool,
     selected_page: AtomicUsize,
 }
 
@@ -90,6 +93,7 @@ impl Side {
             error,
             present,
             literal: None,
+            lfs_missing: false,
             selected_page: AtomicUsize::new(0),
         }
     }
@@ -127,6 +131,7 @@ impl Side {
             error: None,
             present: true,
             literal: None,
+            lfs_missing: false,
             selected_page: AtomicUsize::new(0),
         };
         if side.metadata.source.is_none()
@@ -271,16 +276,24 @@ impl Literal {
             Self::LfsPointer => "Git LFS pointer",
         }
     }
-    /// What the side says in the place of diagrams.
-    fn reason(self) -> &'static str {
-        match self {
-            Self::Link => {
+    /// What the side says in the place of diagrams: why it stays literal,
+    /// and for a pointer whose object could not be used, what is wrong with
+    /// that object rather than that it is absent.
+    pub(super) fn reason(self, failure: Option<gitturtle_core::LfsObjectFailure>) -> String {
+        match (self, failure) {
+            (Self::Link, _) => {
                 "This side is stored as a link, which Diagrams never follows; its stored text is \
                  below."
+                    .into()
             }
-            Self::LfsPointer => {
+            (Self::LfsPointer, Some(failure)) => format!(
+                "This side's {}; its stored text is below.",
+                crate::lfs_download::failure_words(failure)
+            ),
+            (Self::LfsPointer, None) => {
                 "This side's Git LFS object is not in the local store, and no download was \
                  attempted; its stored text is below."
+                    .into()
             }
         }
     }
@@ -294,6 +307,7 @@ pub(super) fn prepare_mermaid(
     old: &str,
     new: &str,
     file: &gitturtle_core::FileChange,
+    lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
     check: impl Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<Comparison>> {
     // Symlinks and unresolved LFS pointers remain literal identities, including
@@ -395,14 +409,10 @@ pub(super) fn prepare_mermaid(
                 ));
             }
         } else if present {
-            side.metadata.details.push(
-                literal
-                    .map_or(
-                        "No Mermaid diagrams on this side; literal Source remains available.",
-                        Literal::reason,
-                    )
-                    .into(),
-            );
+            side.metadata.details.push(literal.map_or_else(
+                || "No Mermaid diagrams on this side; literal Source remains available.".into(),
+                |literal| literal.reason(lfs_failed[index]),
+            ));
         }
         sides.push(Arc::new(side));
     }
@@ -1220,6 +1230,47 @@ mod tests {
         assert!(cx.debug_bounds("system-preview-0").is_none());
     }
 
+    /// A pointer whose object could not be used says what is wrong with it,
+    /// never that it is absent, and the regular side still draws.
+    #[test]
+    fn a_failed_pointer_side_says_what_is_wrong_in_diagrams() {
+        use gitturtle_core::LfsObjectFailure::{Corrupt, TooLarge};
+        let file = gitturtle_core::FileChange {
+            old_path: Some("a.mmd".into()),
+            new_path: Some("a.mmd".into()),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Modified,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+        };
+        let diagram = "flowchart LR\n  A --> B\n";
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "a".repeat(64)
+        );
+        for (failure, says) in [
+            (
+                TooLarge,
+                "This side's Git LFS object is over the 32 MiB preview limit; its stored text \
+                 is below.",
+            ),
+            (
+                Corrupt,
+                "This side's Git LFS object failed verification in the local store; its stored \
+                 text is below.",
+            ),
+        ] {
+            let prepared =
+                prepare_mermaid(&pointer, diagram, &file, [Some(failure), None], || Ok(()))
+                    .unwrap()
+                    .expect("the regular side draws");
+            assert_eq!(prepared.old.literal, Some(Literal::LfsPointer));
+            assert_eq!(prepared.old.metadata.details, [says]);
+            assert!(prepared.new.pages[0].render.is_some());
+        }
+    }
+
     /// Only a side that is itself a link or a Git LFS pointer stays literal,
     /// and what it stores never reaches a decoder, even text that would
     /// parse as a diagram: the other side, regular text, draws its own.
@@ -1283,9 +1334,10 @@ mod tests {
                 false,
             ),
         ] {
-            let prepared = prepare_mermaid(old, new, &file(old_mode, new_mode), || Ok(()))
-                .unwrap()
-                .unwrap_or_else(|| panic!("{name}: the regular side draws its diagram"));
+            let prepared =
+                prepare_mermaid(old, new, &file(old_mode, new_mode), [None; 2], || Ok(()))
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{name}: the regular side draws its diagram"));
             let (literal, drawn, stored) = if literal_is_old {
                 (&prepared.old, &prepared.new, old)
             } else {
@@ -1339,7 +1391,7 @@ mod tests {
             ),
         ] {
             assert!(
-                prepare_mermaid(old, new, &file(old_mode, new_mode), || Ok(()))
+                prepare_mermaid(old, new, &file(old_mode, new_mode), [None; 2], || Ok(()))
                     .unwrap()
                     .is_none(),
                 "{name}: no side is left to draw"
@@ -1368,7 +1420,7 @@ mod tests {
             fence("\n"),
             fence("flowchart LR\n  A --> B\n").repeat(4)
         );
-        let prepared = prepare_mermaid("notes.txt", &new, &file, || Ok(()))
+        let prepared = prepare_mermaid("notes.txt", &new, &file, [None; 2], || Ok(()))
             .unwrap()
             .expect("the regular side draws its diagrams");
         assert!(prepared.old.pages.is_empty(), "the link side has no pages");
@@ -1440,7 +1492,7 @@ mod tests {
     fn the_static_mermaid_sentence_is_read_once_across_two_drawn_sides(cx: &mut TestAppContext) {
         let fence = "```mermaid\nflowchart LR\n  A --> B\n```\n\n".repeat(5);
         let file = mermaid_change(Some("a.md"), Some("a.md"));
-        let prepared = prepare_mermaid(&fence, &fence, &file, || Ok(()))
+        let prepared = prepare_mermaid(&fence, &fence, &file, [None; 2], || Ok(()))
             .unwrap()
             .expect("both sides draw");
         assert_eq!(carriers(&prepared), [true, false]);
@@ -1471,9 +1523,10 @@ mod tests {
     #[gpui::test]
     fn a_one_sided_view_reads_the_static_mermaid_sentence(cx: &mut TestAppContext) {
         let file = mermaid_change(None, Some("a.mmd"));
-        let prepared = prepare_mermaid("", "flowchart LR\n  A --> B\n", &file, || Ok(()))
-            .unwrap()
-            .expect("the one side draws");
+        let prepared =
+            prepare_mermaid("", "flowchart LR\n  A --> B\n", &file, [None; 2], || Ok(()))
+                .unwrap()
+                .expect("the one side draws");
         let _cx = drawn(cx, prepared, true);
         let read = native_accessibility::written::get("rich-side-detail-1-0")
             .expect("the side's sentence is written")
@@ -1491,7 +1544,7 @@ mod tests {
         // Past the excerpt's 16 KiB, cut within a two-byte character.
         let old = format!("{fence}{}é tail", "x".repeat(16 * 1024 - fence.len() - 1));
         let file = mermaid_change(Some("a.md"), Some("a.md"));
-        let prepared = prepare_mermaid(&old, &fence, &file, || Ok(()))
+        let prepared = prepare_mermaid(&old, &fence, &file, [None; 2], || Ok(()))
             .unwrap()
             .expect("both sides draw");
         let excerpt = old[..16 * 1024 - 1].to_owned();
@@ -1590,12 +1643,12 @@ mod tests {
                 [true, false],
             ),
         ] {
-            let prepared = prepare_mermaid(old, new, &file, || Ok(()))
+            let prepared = prepare_mermaid(old, new, &file, [None; 2], || Ok(()))
                 .unwrap()
                 .unwrap_or_else(|| panic!("{name}: a side has a document"));
             assert_eq!(carriers(&prepared), says, "{name}");
         }
-        let failed = prepare_mermaid(failing, failing, &both, || Ok(()))
+        let failed = prepare_mermaid(failing, failing, &both, [None; 2], || Ok(()))
             .unwrap()
             .unwrap();
         assert!(

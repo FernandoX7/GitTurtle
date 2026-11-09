@@ -215,6 +215,10 @@ pub enum Content {
         /// text cannot say, since its object can be local and unreadable as
         /// text, and only a missing one is called missing or offered.
         lfs_missing: [bool; 2],
+        /// Which sides, old then new, are Git LFS pointers whose object could
+        /// not be used, and why: each says so in its own words and offers no
+        /// download, which could not help.
+        lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
     },
     Images {
         old: Box<ImageSide>,
@@ -240,6 +244,7 @@ impl Content {
                 partial,
                 partial_unavailable,
                 lfs_missing: _,
+                lfs_failed: _,
             } => {
                 diagrams
                     .as_ref()
@@ -1840,19 +1845,14 @@ fn execute(
             let (mode, bytes) = repo.read_tracked_working_file(&entry)?;
             cancellation.check()?;
             file.new_mode = mode;
-            let mut lfs_missing = [false; 2];
+            let mut lfs = LfsSides::default();
             let mut content = if let Some(content) =
                 supplied_nontext_content(&repo, &file, &[], &bytes, cancellation)?
             {
                 content
-            } else if let Some(content) = resolved_lfs_text_content(
-                &repo,
-                &file,
-                &[],
-                &bytes,
-                &mut lfs_missing,
-                cancellation,
-            )? {
+            } else if let Some(content) =
+                resolved_lfs_text_content(&repo, &file, &[], &bytes, &mut lfs, cancellation)?
+            {
                 content
             } else if bytes.len() > gitturtle_core::MAX_DIFF_BYTES
                 || bytes.iter().filter(|b| **b == b'\n').count() > gitturtle_core::MAX_DIFF_LINES
@@ -1868,7 +1868,7 @@ fn execute(
                 // patch or selected-edit actions are manufactured.
                 prepared_text(String::new(), String::new(), source)
             };
-            mark_lfs_missing(&mut content, lfs_missing);
+            lfs.mark(&mut content);
             attach_mermaid(&mut content, &file, cancellation)?;
             attach_markdown_assets(
                 &mut content,
@@ -2135,7 +2135,7 @@ fn execute(
             let file = preview.file;
             let mut partial_diff = preview.partial;
             let mut unavailable = preview.partial_unavailable;
-            let mut lfs_missing = [false; 2];
+            let mut lfs = LfsSides::default();
             let mut content = if let Some(content) =
                 supplied_nontext_content(&repo, &file, &preview.old, &preview.new, cancellation)?
             {
@@ -2145,7 +2145,7 @@ fn execute(
                 &file,
                 &preview.old,
                 &preview.new,
-                &mut lfs_missing,
+                &mut lfs,
                 cancellation,
             )? {
                 partial_diff = None;
@@ -2176,7 +2176,7 @@ fn execute(
                     )),
                 }
             };
-            mark_lfs_missing(&mut content, lfs_missing);
+            lfs.mark(&mut content);
             cancellation.check()?;
             attach_mermaid(&mut content, &file, cancellation)?;
             let origins = match area {
@@ -2621,6 +2621,7 @@ fn captured_model_side(
     };
     let local = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES);
     cancellation.check()?;
+    let absent = matches!(local, Ok(None));
     let error = match local {
         Ok(Some(local)) => {
             return crate::rich_preview::Side::prepare(local, path, || cancellation.check());
@@ -2634,6 +2635,7 @@ fn captured_model_side(
         ),
     };
     let mut side = crate::rich_preview::Side::unavailable(path, true, Some(error));
+    side.lfs_missing = absent;
     side.metadata = metadata::inspect(&bytes, path);
     side.metadata.format = "Git LFS pointer".into();
     // Keep the captured identity available to Copy and explicit download actions.
@@ -2768,14 +2770,42 @@ fn prepared_text(patch: String, old: String, new: String) -> Content {
         partial: None,
         partial_unavailable: None,
         lfs_missing: [false; 2],
+        lfs_failed: [None; 2],
     }
 }
 
-/// Records on `content`, if it is text, which sides' Git LFS objects the
-/// local store lacks ([`GitRepository::resolved_lfs_text`]).
-fn mark_lfs_missing(content: &mut Content, missing: [bool; 2]) {
-    if let Content::Text { lfs_missing, .. } = content {
-        *lfs_missing = missing;
+/// What the local store said of each side's Git LFS object
+/// ([`GitRepository::resolved_lfs_text`]), old then new.
+#[derive(Clone, Copy, Default)]
+struct LfsSides {
+    missing: [bool; 2],
+    failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
+}
+
+impl LfsSides {
+    /// Records them on `content`. Text shows each side beside these marks;
+    /// a notice, which shows neither side, says what is wrong with any side
+    /// that failed, so a binary comparison does not hide it.
+    fn mark(self, content: &mut Content) {
+        match content {
+            Content::Text {
+                lfs_missing,
+                lfs_failed,
+                ..
+            } => {
+                *lfs_missing = self.missing;
+                *lfs_failed = self.failed;
+            }
+            Content::Notice(message) => {
+                for (side, failure) in ["Before", "After"].into_iter().zip(self.failed) {
+                    if let Some(failure) = failure {
+                        let words = crate::lfs_download::failure_words(failure);
+                        message.push_str(&format!("\n\n{side}: this {words}."));
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -2797,6 +2827,7 @@ fn attach_mermaid(
         new,
         diagrams,
         markdown,
+        lfs_failed,
         ..
     } = content
         && diagrams.is_none()
@@ -2804,8 +2835,10 @@ fn attach_mermaid(
         *diagrams = if let Some(markdown) = markdown {
             markdown.diagrams().map(Arc::new)
         } else {
-            crate::rich_preview::prepare_mermaid(old, new, file, || cancellation.check())?
-                .map(Arc::new)
+            crate::rich_preview::prepare_mermaid(old, new, file, *lfs_failed, || {
+                cancellation.check()
+            })?
+            .map(Arc::new)
         };
     }
     Ok(())
@@ -2843,6 +2876,7 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 diagrams: ad,
                 markdown: am,
                 lfs_missing: aq,
+                lfs_failed: ar,
                 ..
             },
             Content::Text {
@@ -2854,11 +2888,13 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 diagrams: bd,
                 markdown: bm,
                 lfs_missing: bq,
+                lfs_failed: br,
                 ..
             },
         ) => {
             a == b
                 && aq == bq
+                && ar == br
                 && match (am, bm) {
                     (None, None) => true,
                     (Some(a), Some(b)) => a.same_source(b),
@@ -2927,16 +2963,17 @@ fn text_content(
     {
         return Ok(content);
     }
-    let mut lfs_missing = [false; 2];
+    let mut lfs = LfsSides::default();
     if let Some(mut content) = resolved_lfs_text_content(
         repo,
         file,
         &sources.old,
         &sources.new,
-        &mut lfs_missing,
+        &mut lfs,
         cancellation,
     )? {
-        mark_lfs_missing(&mut content, lfs_missing);
+        lfs.mark(&mut content);
+        attach_mermaid(&mut content, file, cancellation)?;
         return Ok(content);
     }
     let mut content = match sources.preview {
@@ -2952,24 +2989,28 @@ fn text_content(
             old_oid.as_deref().unwrap_or("Absent"), new_oid.as_deref().unwrap_or("Absent")
         )),
     };
-    mark_lfs_missing(&mut content, lfs_missing);
+    lfs.mark(&mut content);
     attach_mermaid(&mut content, file, cancellation)?;
     Ok(content)
 }
 
 /// The comparison with the Git LFS objects the local store could show, or
-/// `None` to keep the stored texts. `lfs_missing` receives which sides' objects
-/// are truly absent either way, for the caller to mark on what it shows.
+/// `None` to keep the stored texts. `lfs` receives which sides' objects are
+/// truly absent or unusable either way, for the caller to mark on what it
+/// shows before it attaches Mermaid, which reads those marks.
 fn resolved_lfs_text_content(
     repo: &GitRepository,
     file: &FileChange,
     old: &[u8],
     new: &[u8],
-    lfs_missing: &mut [bool; 2],
+    lfs: &mut LfsSides,
     cancellation: &Cancellation,
 ) -> Result<Option<Content>> {
     let resolved = repo.resolved_lfs_text(file, old, new)?;
-    *lfs_missing = resolved.missing;
+    *lfs = LfsSides {
+        missing: resolved.missing,
+        failed: resolved.failed,
+    };
     let Some(sources) = resolved.text else {
         return Ok(None);
     };
@@ -2985,14 +3026,12 @@ fn resolved_lfs_text_content(
     {
         return Ok(Some(content));
     }
-    let mut content = match sources.preview {
+    Ok(Some(match sources.preview {
         TextPreview::Patch(patch) => prepared_text(patch, String::from_utf8(sources.old)?, String::from_utf8(sources.new)?),
         TextPreview::Binary => Content::Notice("Verified LFS object downloaded. Its content is binary or not UTF-8 and has no text preview.".into()),
         TextPreview::TooLarge { old_bytes, new_bytes } => Content::Notice(format!("Verified LFS content exceeds the text display limit · {old_bytes} → {new_bytes} bytes.")),
         TextPreview::Submodule { .. } => Content::Notice("Submodules do not have an LFS text preview.".into()),
-    };
-    attach_mermaid(&mut content, file, cancellation)?;
-    Ok(Some(content))
+    }))
 }
 
 fn working_image_side(
@@ -3337,6 +3376,7 @@ mod tests {
             partial: None,
             partial_unavailable: None,
             lfs_missing: [false; 2],
+            lfs_failed: [None; 2],
         });
         assert_eq!(content.bytes(), source_bytes + metadata_bytes);
 
@@ -4948,6 +4988,12 @@ mod image_tests {
                     Some(pointers[unavailable_side].as_str())
                 );
                 let targets = crate::lfs_download::preview_targets(&content, &file);
+                if corrupt {
+                    // A download is refused for a local object that fails
+                    // verification, so none is offered.
+                    assert!(targets.is_empty());
+                    continue;
+                }
                 assert_eq!(targets.len(), 1);
                 assert_eq!(targets[0].0, unavailable_side);
                 assert_eq!(targets[0].1.pointer, pointers[unavailable_side].as_bytes());
@@ -5433,6 +5479,310 @@ mod image_tests {
         assert_eq!(new.captured.as_deref(), Some(SVG));
     }
 
+    /// Each side's Git LFS object is judged on its own. One over the preview
+    /// limit or failing verification stays its pointer and says which, and
+    /// the other side keeps its preview, where either once failed the whole
+    /// file. Neither offers a download, which could not help; a side whose
+    /// object is only missing still does. Nothing is cached: the store can
+    /// change under the pointer.
+    #[test]
+    fn a_failing_lfs_side_leaves_the_other_sides_preview_and_offers_no_download() {
+        use gitturtle_core::LfsObjectFailure::{Corrupt, TooLarge};
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        // The pointer to `body`, with `stored` as its object in the local store.
+        let pointer = |body: &[u8], stored: Option<&[u8]>| {
+            let oid = format!("{:x}", Sha256::digest(body));
+            if let Some(stored) = stored {
+                let directory = fixture
+                    .0
+                    .join(".git/lfs/objects")
+                    .join(&oid[..2])
+                    .join(&oid[2..4]);
+                fs::create_dir_all(&directory).unwrap();
+                fs::write(directory.join(&oid), stored).unwrap();
+            }
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+                body.len()
+            )
+        };
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        // The right size and the wrong bytes.
+        let corrupt = pointer(b"the true text\n", Some(b"a wrong objec\n"));
+        let local_body = "the local object\n";
+        let local = pointer(local_body.as_bytes(), Some(local_body.as_bytes()));
+        let missing = pointer(b"never stored\n", None);
+        let plain = "plain text\n";
+        let (oversize, corrupt, local, missing) = (
+            oversize.as_str(),
+            corrupt.as_str(),
+            local.as_str(),
+            missing.as_str(),
+        );
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let modified = |old: &[u8], new: &[u8]| FileChange {
+            old_path: Some("notes.txt".into()),
+            new_path: Some("notes.txt".into()),
+            old_oid: Some(fixture.blob(old)),
+            new_oid: Some(fixture.blob(new)),
+            status: ChangeStatus::Modified,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+        };
+        type Row<'a> = (
+            &'a str,
+            &'a str,
+            &'a str,
+            &'a str,
+            &'a str,
+            [bool; 2],
+            [Option<gitturtle_core::LfsObjectFailure>; 2],
+            &'a [usize],
+        );
+        let rows: [Row<'_>; 7] = [
+            (
+                "over the limit first beside plain text",
+                oversize,
+                plain,
+                oversize,
+                plain,
+                [false, false],
+                [Some(TooLarge), None],
+                &[],
+            ),
+            (
+                "corrupt first beside plain text",
+                corrupt,
+                plain,
+                corrupt,
+                plain,
+                [false, false],
+                [Some(Corrupt), None],
+                &[],
+            ),
+            (
+                "plain text first beside a corrupt object",
+                plain,
+                corrupt,
+                plain,
+                corrupt,
+                [false, false],
+                [None, Some(Corrupt)],
+                &[],
+            ),
+            (
+                "corrupt first beside a local object",
+                corrupt,
+                local,
+                corrupt,
+                local_body,
+                [false, false],
+                [Some(Corrupt), None],
+                &[],
+            ),
+            (
+                "a local object first beside one over the limit",
+                local,
+                oversize,
+                local_body,
+                oversize,
+                [false, false],
+                [None, Some(TooLarge)],
+                &[],
+            ),
+            (
+                "over the limit first beside a missing object",
+                oversize,
+                missing,
+                oversize,
+                missing,
+                [false, true],
+                [Some(TooLarge), None],
+                &[1],
+            ),
+            (
+                "both unusable",
+                corrupt,
+                oversize,
+                corrupt,
+                oversize,
+                [false, false],
+                [Some(Corrupt), Some(TooLarge)],
+                &[],
+            ),
+        ];
+        for (name, old, new, shown_old, shown_new, absent, failed, offered) in rows {
+            let file = modified(old.as_bytes(), new.as_bytes());
+            let mut cache = PreviewCache::default();
+            let output = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file: file.clone(),
+                },
+                &mut cache,
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap_or_else(|error| panic!("{name}: the whole preview failed: {error:#}"));
+            let Output::Preview(content, _) = output else {
+                panic!("{name}: expected a preview")
+            };
+            let Content::Text {
+                old: drawn_old,
+                new: drawn_new,
+                lfs_missing,
+                lfs_failed,
+                ..
+            } = &*content
+            else {
+                panic!("{name}: expected text")
+            };
+            assert_eq!(drawn_old, shown_old, "{name}");
+            assert_eq!(drawn_new, shown_new, "{name}");
+            assert_eq!(*lfs_missing, absent, "{name}");
+            assert_eq!(*lfs_failed, failed, "{name}");
+            assert_eq!(
+                crate::lfs_download::preview_targets(&content, &file)
+                    .iter()
+                    .map(|(side, _)| *side)
+                    .collect::<Vec<_>>(),
+                offered,
+                "{name}: only a missing object offers a download"
+            );
+            assert!(cache.entries.is_empty(), "{name}: a pointer stays uncached");
+        }
+        // With no text to show beside the pointer the file is a notice, which
+        // still says what is wrong with the side that failed.
+        let file = modified(oversize.as_bytes(), b"\0binary\n");
+        let Output::Preview(content, _) = execute(
+            Job::Preview {
+                origins: Default::default(),
+                repo,
+                file,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected a preview")
+        };
+        let Content::Notice(message) = &*content else {
+            panic!("expected the binary comparison's notice")
+        };
+        assert!(
+            message.ends_with("\n\nBefore: this Git LFS object is over the 32 MiB preview limit."),
+            "{message}"
+        );
+    }
+
+    /// Mermaid is attached after the sides are marked, on both the route that
+    /// resolves a side and the one that keeps the stored texts, so Diagrams
+    /// says what is wrong with a failing side rather than that it is absent.
+    #[test]
+    fn a_failing_pointer_beside_mermaid_says_what_is_wrong_in_diagrams() {
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let diagram = "flowchart LR\n  A --> B\n";
+        // A local pointer to the diagram, so that side resolves.
+        let oid = format!("{:x}", Sha256::digest(diagram));
+        let directory = fixture
+            .0
+            .join(".git/lfs/objects")
+            .join(&oid[..2])
+            .join(&oid[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(&oid), diagram).unwrap();
+        let local = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            diagram.len()
+        );
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        for (name, new) in [
+            ("regular text", diagram),
+            ("a resolved object", local.as_str()),
+        ] {
+            let file = FileChange {
+                old_path: Some("flow.mmd".into()),
+                new_path: Some("flow.mmd".into()),
+                old_oid: Some(fixture.blob(oversize.as_bytes())),
+                new_oid: Some(fixture.blob(new.as_bytes())),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("{name}: expected a preview")
+            };
+            let Content::Text {
+                diagrams: Some(diagrams),
+                ..
+            } = &*content
+            else {
+                panic!("{name}: the regular side draws")
+            };
+            assert_eq!(
+                diagrams.old.metadata.details,
+                [
+                    "This side's Git LFS object is over the 32 MiB preview limit; its stored text \
+                  is below."
+                ],
+                "{name}"
+            );
+            assert!(diagrams.new.pages[0].render.is_some(), "{name}");
+        }
+    }
+
+    /// The same stored texts with a side's object failing differently are not
+    /// the same content: what the side says depends on it, and it changes
+    /// without the pointer's text changing.
+    #[test]
+    fn a_change_in_how_an_lfs_side_failed_is_a_content_change() {
+        use gitturtle_core::LfsObjectFailure::{Corrupt, TooLarge};
+        let text = |failed: [Option<gitturtle_core::LfsObjectFailure>; 2]| {
+            let mut content = prepared_text("patch".into(), "old".into(), "new".into());
+            LfsSides {
+                missing: [false; 2],
+                failed,
+            }
+            .mark(&mut content);
+            content
+        };
+        assert!(content_unchanged(
+            &text([Some(Corrupt), None]),
+            &text([Some(Corrupt), None])
+        ));
+        assert!(!content_unchanged(
+            &text([Some(Corrupt), None]),
+            &text([Some(TooLarge), None])
+        ));
+        assert!(!content_unchanged(
+            &text([None, None]),
+            &text([Some(Corrupt), None])
+        ));
+    }
+
     #[test]
     fn lfs_preview_retries_misses_and_caches_verified_content() {
         let fixture = Fixture::new();
@@ -5725,7 +6075,11 @@ mod image_tests {
     fn a_change_in_which_lfs_object_is_missing_is_a_content_change() {
         let text = |missing: [bool; 2]| {
             let mut content = prepared_text("patch".into(), "old".into(), "new".into());
-            mark_lfs_missing(&mut content, missing);
+            LfsSides {
+                missing,
+                failed: [None; 2],
+            }
+            .mark(&mut content);
             content
         };
         assert!(content_unchanged(

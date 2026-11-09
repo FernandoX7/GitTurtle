@@ -10609,6 +10609,115 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// In Compare, a Git LFS side over the preview limit or corrupt says
+    /// which on a line of its own above the comparison and offers no
+    /// download, the other side still shown; a side whose object is only
+    /// missing still offers its download beside that line.
+    #[gpui::test]
+    async fn a_failing_lfs_side_says_why_above_the_comparison(cx: &mut TestAppContext) {
+        use native_accessibility::written;
+        use sha2::{Digest, Sha256};
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let missing = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let body = b"the true text\n";
+        let oid = format!("{:x}", Sha256::digest(body));
+        let corrupt = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            body.len()
+        );
+        let after: &[u8] = b"plain after\n";
+        let input = file_commits(&[
+            (
+                "before",
+                &[
+                    ("notes.txt", oversize.as_bytes()),
+                    ("doc.txt", corrupt.as_bytes()),
+                ],
+            ),
+            (
+                "after",
+                &[("notes.txt", missing.as_bytes()), ("doc.txt", after)],
+            ),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        let root = app.read_with(cx, |app, _| {
+            app.repository.clone().unwrap().path().to_path_buf()
+        });
+        let directory = root
+            .join(".git/lfs/objects")
+            .join(&oid[..2])
+            .join(&oid[2..4]);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(&oid), b"a wrong objec\n").unwrap();
+        for (path, failing, sentence, shown, offers) in [
+            (
+                "notes.txt",
+                0,
+                "Before: this Git LFS object is over the 32 MiB preview limit, so its pointer is \
+                 shown.",
+                (oversize.as_str(), missing.as_str()),
+                true,
+            ),
+            (
+                "doc.txt",
+                0,
+                "Before: this Git LFS object failed verification in the local store, so its \
+                 pointer is shown.",
+                (corrupt.as_str(), "plain after\n"),
+                false,
+            ),
+        ] {
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+                    .expect("the commit changes it")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+            written::forget();
+            settle(&app, cx).await;
+            let read =
+                |id: &str| written::get(id).map(|written| written.node.value().map(str::to_owned));
+            assert_eq!(
+                read(&format!("lfs-preview-failure-{failing}")),
+                Some(Some(sentence.to_owned())),
+                "{path}: the failing side says what is wrong"
+            );
+            assert!(
+                cx.debug_bounds(if failing == 0 {
+                    "lfs-preview-failure-0"
+                } else {
+                    "lfs-preview-failure-1"
+                })
+                .is_some_and(|line| line.size.height > px(0.)),
+                "{path}: its line is drawn"
+            );
+            assert_eq!(
+                read(&format!("lfs-preview-failure-{}", 1 - failing)),
+                None,
+                "{path}: the other side says nothing"
+            );
+            assert_eq!(
+                read("lfs-preview-download-explanation").is_some(),
+                offers,
+                "{path}: a download is offered only for a missing object"
+            );
+            app.read_with(cx, |app, _| {
+                let Some(Content::Text { old, new, .. }) = app.content.as_deref() else {
+                    panic!("{path}: the comparison is shown")
+                };
+                assert_eq!((old.as_str(), new.as_str()), shown, "{path}");
+            });
+        }
+    }
+
     /// The `(path, bytes)` files a fixture commit writes.
     type Files<'a> = &'a [(&'a str, &'a [u8])];
 

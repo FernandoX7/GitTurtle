@@ -1731,21 +1731,57 @@ impl GitRepository {
         expected_size: u64,
         max_bytes: usize,
     ) -> Result<Option<Vec<u8>>> {
+        match self.local_lfs_read(oid, expected_size, max_bytes)? {
+            LocalLfsObject::Verified(bytes) => Ok(Some(bytes)),
+            LocalLfsObject::Absent => Ok(None),
+            LocalLfsObject::Failed(_, error) => Err(error),
+        }
+    }
+
+    /// [`Self::local_lfs_object`], keeping what is wrong with this one object
+    /// apart from a failure of the repository it is read through: only the
+    /// second is still an error, so one side of a comparison can fail alone.
+    pub(crate) fn local_lfs_read(
+        &self,
+        oid: &str,
+        expected_size: u64,
+        max_bytes: usize,
+    ) -> Result<LocalLfsObject> {
         ensure!(
             oid.len() == 64 && oid.bytes().all(|b| b.is_ascii_hexdigit()),
             "Expected an LFS SHA-256 object ID"
         );
         let limit = max_bytes.min(MAX_BLOB_BYTES);
-        ensure!(
-            expected_size <= limit as u64,
-            "LFS object is {expected_size} bytes; preview limit is {limit} bytes"
-        );
+        if expected_size > limit as u64 {
+            return Ok(LocalLfsObject::Failed(
+                LfsObjectFailure::TooLarge,
+                anyhow::anyhow!(
+                    "LFS object is {expected_size} bytes; preview limit is {limit} bytes"
+                ),
+            ));
+        }
         let oid = oid.to_ascii_lowercase();
         if expected_size == 0 && oid == format!("{:x}", Sha256::digest([])) {
-            return Ok(Some(Vec::new()));
+            return Ok(LocalLfsObject::Verified(Vec::new()));
         }
         let storage = self.preview_lfs_storage()?;
-        let Some(mut file) = open_local_lfs(&storage, &oid)? else {
+        Ok(
+            match Self::verified_local_lfs(&storage, &oid, expected_size) {
+                Ok(Some(bytes)) => LocalLfsObject::Verified(bytes),
+                Ok(None) => LocalLfsObject::Absent,
+                Err(error) => LocalLfsObject::Failed(LfsObjectFailure::Corrupt, error),
+            },
+        )
+    }
+
+    /// The object `oid` in the local store `storage`, if it is there, read
+    /// without following links and checked against its size and digest.
+    fn verified_local_lfs(
+        storage: &Path,
+        oid: &str,
+        expected_size: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(mut file) = open_local_lfs(storage, oid)? else {
             return Ok(None);
         };
         let metadata = file

@@ -231,6 +231,7 @@ fn prepared_review_and_cached_paths_release_benchmark() {
         partial: None,
         partial_unavailable: None,
         lfs_missing: [false; 2],
+        lfs_failed: [None; 2],
     });
     let seed = GitRepository::open(fixture).unwrap().status().unwrap();
     let (files, status) = path_fixture(&seed);

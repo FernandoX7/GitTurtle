@@ -5381,6 +5381,7 @@ mod theme_apply_tests {
             partial: None,
             partial_unavailable: None,
             lfs_missing: [false; 2],
+            lfs_failed: [None; 2],
         })
     }
 

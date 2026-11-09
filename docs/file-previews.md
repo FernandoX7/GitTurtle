@@ -8,7 +8,7 @@ History, revision comparisons, Quick Open, and Working Changes share the worker'
 
 Before and After retain separate names, modes, object identities, bytes, errors and presence. Missing is distinct from zero-byte content. A missing historical object never substitutes the current working file. Stored symlinks remain literal source and are never followed. Existing rename, mode, merge-parent and partial staging identities remain unchanged.
 
-Verified local LFS objects use the existing bounded size/SHA-256 check. Missing objects retain their pointer and explicit download workflow; browsing does not download or smudge. Decoded LFS content has no partial staging actions. Neither image pixels, PDF pages/extracted text, rendered Markdown, geometry, metadata nor decoded UTF-16 text are ever used as a Git patch.
+Verified local LFS objects use the existing bounded size/SHA-256 check. Missing objects retain their pointer and explicit download workflow; browsing does not download or smudge. An object over the 32 MiB preview limit, or one that fails verification, keeps its side's pointer, says which and offers no download, and never takes the other side's preview. Decoded LFS content has no partial staging actions. Neither image pixels, PDF pages/extracted text, rendered Markdown, geometry, metadata nor decoded UTF-16 text are ever used as a Git patch.
 
 ## Support matrix
 
