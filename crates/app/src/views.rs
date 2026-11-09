@@ -980,6 +980,7 @@ impl GitTurtle {
             })
             .child(
                 button("rail-open", "", "folder", false)
+                    .debug_selector(|| "rail-open".into())
                     .accessibility_label("Open repository")
                     .tooltip("Open repository")
                     .on_click(cx.listener(|this, _, window, cx| {

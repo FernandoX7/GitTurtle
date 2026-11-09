@@ -14,16 +14,22 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
 };
 
+/// Where a line was drawn, and how far its scrolling body stood then.
+type DrawnLine = (Bounds<Pixels>, Pixels);
+
 /// User intent only. The application executes repository work in the background.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectEvent {
     Open(PathBuf),
+    /// Ask to choose a folder to open: the application decides whether the
+    /// folder picker opens, since the hub cannot see the tab limit.
+    ChooseFolder,
     /// Ask to give this project a client-only name. The hub does not save it;
     /// the application owns the preference writer.
     Rename(PathBuf),
@@ -74,6 +80,18 @@ pub struct ProjectHub {
     /// node, so the same refusal asked for again is announced again, as
     /// `native_accessibility::refusal_line` does.
     errors_shown: usize,
+    /// The feedback line last brought into the body's view, by
+    /// `errors_shown`: each new one is revealed once, as it appears.
+    error_revealed: Rc<Cell<usize>>,
+    /// The feedback line, by `errors_shown`, that stayed out of view so the
+    /// recent row that asked keeps its place: heard politely, not as an
+    /// alert ([`place_feedback`]), and that row's project.
+    error_kept: Rc<RefCell<Option<(usize, PathBuf)>>>,
+    /// Where the feedback line was last drawn, and the body's offset then.
+    error_line: Rc<Cell<Option<DrawnLine>>>,
+    /// Where the recent rows lie, and the one a press is awaiting an answer
+    /// for.
+    recent_rows: Rc<RefCell<RecentRows>>,
     recent_scroll: UniformListScrollHandle,
     /// The page body's scroll, which reveals the form control focus moves
     /// onto.
@@ -133,6 +151,10 @@ impl ProjectHub {
             can_go_back: false,
             error: None,
             errors_shown: 0,
+            error_revealed: Rc::default(),
+            error_kept: Rc::default(),
+            error_line: Rc::default(),
+            recent_rows: Rc::default(),
             recent_scroll: UniformListScrollHandle::new(),
             body: FocusReveal::new(Trigger::AnyFocus),
             action_tabs_focus: cx.focus_handle(),
@@ -280,6 +302,16 @@ impl ProjectHub {
 
     /// The hub sets this before emitting an operation; the owner clears it when finished.
     pub fn set_busy(&mut self, busy: bool, cx: &mut Context<Self>) {
+        if !busy {
+            // The wait is over, however it ended: a later refusal is not the
+            // answer to the row pressed for it. Only `refuse_open` answers
+            // that press, and it keeps it (`set_waiting`).
+            self.recent_rows.borrow_mut().pressed = None;
+        }
+        self.set_waiting(busy, cx);
+    }
+
+    fn set_waiting(&mut self, busy: bool, cx: &mut Context<Self>) {
         self.busy = busy;
         if !busy {
             self.pending_mode = None;
@@ -304,6 +336,22 @@ impl ProjectHub {
         }
     }
 
+    /// What recent row `index` reads in place of its location: the refusal
+    /// of its press, while the feedback line that says it is out of view.
+    /// The press is kept by its project, so a search or a new recent list
+    /// leaves the refusal on that project's row, wherever it now stands, and
+    /// on no row while the project is not listed.
+    fn refusal_on_row(&self, index: usize) -> Option<SharedString> {
+        let kept = self.error_kept.borrow();
+        let (line, project) = kept.as_ref()?;
+        if *line != self.errors_shown || *project != self.filtered[index] {
+            return None;
+        }
+        let error = self.error.as_ref()?;
+        (!feedback_in_view(self.error_line.get()?, self.body.scroll()))
+            .then(|| SharedString::from(error.clone()))
+    }
+
     /// Ends an Open the hub asked for that the window refused before reading
     /// anything, as at the eight-tab limit, saying why in the hub's
     /// feedback line, announced at once as its failures are, and returns
@@ -314,9 +362,29 @@ impl ProjectHub {
         if !(self.busy && self.pending_mode == Some(ProjectMode::Open)) {
             return false;
         }
-        self.set_busy(false, cx);
+        self.set_waiting(false, cx);
         self.set_error(Some(reason.to_owned()), cx);
         true
+    }
+
+    /// The body's scroll, where a test places what the person scrolled to.
+    #[cfg(test)]
+    pub(crate) fn body_scroll(&self) -> ScrollHandle {
+        self.body.scroll().clone()
+    }
+
+    /// Test-only: types `query` into the recent list's search field.
+    #[cfg(test)]
+    pub(crate) fn search_recent(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search.update(cx, |input, cx| {
+            input.set_value(query.to_owned(), window, cx)
+        });
+        self.filter_recent(cx);
     }
 
     /// Test-only: the hub's feedback line, as other modules' tests read it.
@@ -429,11 +497,12 @@ impl ProjectHub {
         if self.unavailable() {
             return;
         }
+        self.recent_rows.borrow_mut().pressed = None;
         self.pending_mode = Some(match &event {
             ProjectEvent::Open(_) => ProjectMode::Open,
             ProjectEvent::Clone { .. } => ProjectMode::Clone,
             ProjectEvent::Create { .. } => ProjectMode::Create,
-            ProjectEvent::Back | ProjectEvent::Rename(_) => return,
+            ProjectEvent::Back | ProjectEvent::ChooseFolder | ProjectEvent::Rename(_) => return,
         });
         self.error = None;
         self.busy = true;
@@ -441,10 +510,16 @@ impl ProjectHub {
         cx.notify();
     }
 
-    fn choose_folder(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn choose_folder(
+        &mut self,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.unavailable() {
             return;
         }
+        self.recent_rows.borrow_mut().pressed = None;
         self.picker_pending = true;
         self.error = None;
         cx.notify();
@@ -535,6 +610,34 @@ impl ProjectHub {
         let palette = crate::appearance::palette(cx);
         let text = self.row_text(index);
         let rename = text.clone();
+        // While its refusal line is out of view, the refused row says why
+        // where the person acted (DESIGN.md, refusals in place), in its own
+        // bounds, the whole text and the location it replaces in its tooltip
+        // and the refusal in its name.
+        let refused = self.refusal_on_row(index);
+        let (location, row_tooltip, row_name) = match &refused {
+            Some(refusal) => (
+                refusal.clone(),
+                SharedString::from(format!("{refusal}\n{}", text.display)),
+                SharedString::from(format!("{}. {refusal}", text.open)),
+            ),
+            None => (
+                text.location.clone(),
+                text.display.clone(),
+                text.open.clone(),
+            ),
+        };
+        #[cfg(test)]
+        LOCATION_DRAWN.with_borrow_mut(|drawn| {
+            drawn.insert(
+                index,
+                (
+                    location.to_string(),
+                    row_tooltip.to_string(),
+                    row_name.to_string(),
+                ),
+            );
+        });
         let row = Button::new(("recent-project", index))
             .debug_selector(move || format!("recent-project-{index}"))
             .ghost()
@@ -543,8 +646,8 @@ impl ProjectHub {
             .px_4()
             .rounded(px(12.))
             .disabled(self.unavailable())
-            .accessibility_label(text.open.clone())
-            .tooltip(text.display.clone())
+            .accessibility_label(row_name)
+            .tooltip(row_tooltip)
             .child(
                 div()
                     .w_full()
@@ -581,17 +684,35 @@ impl ProjectHub {
                             .child(
                                 div()
                                     .text_size(crate::appearance::ui_text(11.))
-                                    .text_color(colors.muted_foreground)
+                                    .map(|line| match &refused {
+                                        // Its hue, moved only as far as the row's
+                                        // own fills need: the removed token read
+                                        // 4.38:1 on Nord's hover fill.
+                                        Some(_) => line.text_color(rgb(palette.small_label(
+                                            palette.removed,
+                                            &palette.control_fills(false, palette.canvas),
+                                        ))),
+                                        None => line.text_color(colors.muted_foreground),
+                                    })
                                     .truncate()
-                                    .child(text.location.clone()),
+                                    .child(location)
+                                    .children(crate::appearance::text_probe(move || {
+                                        format!("recent-project-location-{index}")
+                                    })),
                             ),
                     )
                     .child(hub_icon("chevron", 14., colors.muted_foreground)),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.emit_operation(ProjectEvent::Open(text.path.clone()), cx)
+                this.emit_operation(ProjectEvent::Open(text.path.clone()), cx);
+                if this.busy {
+                    this.recent_rows
+                        .borrow_mut()
+                        .press(index, text.path.clone());
+                }
             }));
-        div()
+        let rows = self.recent_rows.clone();
+        let line = div()
             .id(("recent-project-row", index))
             .w_full()
             .flex()
@@ -614,8 +735,11 @@ impl ProjectHub {
                             cx.emit(ProjectEvent::Rename(rename.path.clone()));
                         }
                     })),
-            )
-            .into_any_element()
+            );
+        gpui_kit::base::ElementExt::on_prepaint(line, move |bounds, _, _| {
+            rows.borrow_mut().drawn(index, bounds)
+        })
+        .into_any_element()
     }
 
     fn render_recent(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -762,6 +886,92 @@ impl ProjectHub {
                 palette.renamed,
             ),
         };
+        // The feedback line stands directly under the action that asked:
+        // Choose a repository… on Open, the form's submit on Clone and Create
+        // (decided 2026-11-08: at the panel's foot, the refusal lay about
+        // 100 px past the view at 18 pt in a 461 × 490 window, and the press
+        // looked dead).
+        let feedback = self.error.as_ref().map(|error| {
+            let revealed = self.error_revealed.clone();
+            let shown = self.errors_shown;
+            let body = self.body.scroll().clone();
+            let (rows, kept, spoken) = (
+                self.recent_rows.clone(),
+                self.error_kept.clone(),
+                SharedString::from(error.clone()),
+            );
+            // Answering a recent row, where the line stands is not known
+            // until this frame's layout, so it is drawn plain for that one
+            // frame and as an alert in the next, unless it stays out of view.
+            let awaiting = rows.borrow().pressed.is_some() && revealed.get() != shown;
+            let quiet = awaiting
+                || self
+                    .error_kept
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(line, _)| *line == shown);
+            let drawn_at = self.error_line.clone();
+            div()
+                .on_children_prepainted(move |bounds, window, cx| {
+                    let Some(line) = bounds.first().copied() else {
+                        return;
+                    };
+                    // Recorded here, where a row refused this line reads
+                    // it: the wide layout draws the rows before it, so a
+                    // resize that moves it left them answering from the last
+                    // frame, and no other input asked for another.
+                    let drawn = (line, body.offset().y);
+                    let last = drawn_at.replace(Some(drawn));
+                    let held = kept
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(kept, _)| *kept == shown);
+                    if held
+                        && last.is_some_and(|last| {
+                            feedback_in_view(last, &body) != feedback_in_view(drawn, &body)
+                        })
+                    {
+                        window.defer(cx, |window, _| window.refresh());
+                    }
+                    if revealed.replace(shown) != shown {
+                        reveal_feedback(
+                            line,
+                            shown,
+                            body.clone(),
+                            rows.clone(),
+                            kept.clone(),
+                            spoken.clone(),
+                            window,
+                            cx,
+                        );
+                    }
+                })
+                .child(
+                    div()
+                        // A fresh node for each error, heard again however
+                        // often the same one is given.
+                        .id(("project-hub-error", self.errors_shown))
+                        .debug_selector(|| "project-hub-error".into())
+                        .when(!quiet, |line| line.alert(error.clone()))
+                        .max_h(px(110.))
+                        .overflow_y_scroll()
+                        .flex_shrink_0()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(colors.danger)
+                        .bg(rgb(palette.removed_background))
+                        .p_3()
+                        .line_height(relative(1.5))
+                        .text_size(crate::appearance::ui_text(12.))
+                        .text_color(colors.danger)
+                        .child(crate::folder_picker::styled_message(error, palette.muted)),
+                )
+        });
+        let (open_feedback, form_feedback) = if self.mode == ProjectMode::Open {
+            (feedback, None)
+        } else {
+            (None, feedback)
+        };
         div()
             .debug_selector(|| "project-hub-action".into())
             .w(px(400.))
@@ -878,6 +1088,7 @@ impl ProjectHub {
                 panel
                     .child(
                         Button::new("hub-open-folder")
+                            .debug_selector(|| "hub-open-folder".into())
                             .primary()
                             .h(crate::appearance::ui_size(40.))
                             .w_full()
@@ -889,10 +1100,12 @@ impl ProjectHub {
                             .icon(Icon::default().path("icons/folder.svg"))
                             .disabled(self.unavailable())
                             .loading(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.choose_folder(true, window, cx)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.recent_rows.borrow_mut().pressed = None;
+                                cx.emit(ProjectEvent::ChooseFolder);
                             })),
                     )
+                    .children(open_feedback)
                     .child(
                         hub_text(
                             "hub-open-recent-hint",
@@ -1094,29 +1307,167 @@ impl ProjectHub {
                             ),
                     )
             })
-            .when_some(self.error.as_ref(), |panel, error| {
-                panel.child(
-                    div()
-                        // A fresh node for each error, heard again however
-                        // often the same one is given.
-                        .id(("project-hub-error", self.errors_shown))
-                        .alert(error.clone())
-                        .max_h(px(110.))
-                        .overflow_y_scroll()
-                        .flex_shrink_0()
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(colors.danger)
-                        .bg(rgb(palette.removed_background))
-                        .p_3()
-                        .line_height(relative(1.5))
-                        .text_size(crate::appearance::ui_text(12.))
-                        .text_color(colors.danger)
-                        .child(crate::folder_picker::styled_message(error, palette.muted)),
-                )
-            })
+            .children(form_feedback)
             .into_any_element()
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What each recent row last read in its location line, its tooltip and
+    /// its accessible name.
+    static LOCATION_DRAWN: RefCell<HashMap<usize, (String, String, String)>> = RefCell::default();
+}
+
+/// What recent row `index` last read in its location line, its tooltip and
+/// its accessible name.
+#[cfg(test)]
+pub(crate) fn location_drawn(index: usize) -> Option<(String, String, String)> {
+    LOCATION_DRAWN.with_borrow(|drawn| drawn.get(&index).cloned())
+}
+
+/// Where the recent rows lay as their list last drew them, and the row a
+/// press is awaiting an answer for.
+#[derive(Default)]
+struct RecentRows {
+    drawn: HashMap<usize, Bounds<Pixels>>,
+    pressed: Option<PressedRow>,
+}
+
+/// A recent row a press asked to open, and where it lay in the last two
+/// frames that drew it: a refusal judges it where the frame that first draws
+/// the refusal puts it, and can hold it where it lay before that frame.
+struct PressedRow {
+    index: usize,
+    /// Its project, which a refusal stays with.
+    path: PathBuf,
+    before: Option<Bounds<Pixels>>,
+    now: Option<Bounds<Pixels>>,
+}
+
+impl RecentRows {
+    fn press(&mut self, index: usize, path: PathBuf) {
+        self.pressed = Some(PressedRow {
+            index,
+            path,
+            before: None,
+            now: self.drawn.get(&index).copied(),
+        });
+    }
+
+    fn drawn(&mut self, index: usize, bounds: Bounds<Pixels>) {
+        self.drawn.insert(index, bounds);
+        if let Some(pressed) = self.pressed.as_mut().filter(|row| row.index == index) {
+            pressed.before = pressed.now.replace(bounds);
+        }
+    }
+
+    /// The pressed row's project and its place before this frame and in
+    /// it, ending the wait.
+    fn take_pressed(&mut self) -> Option<(PathBuf, Bounds<Pixels>, Bounds<Pixels>)> {
+        let pressed = self.pressed.take()?;
+        let (before, now) = pressed.before.zip(pressed.now)?;
+        Some((pressed.path, before, now))
+    }
+}
+
+/// Whether a feedback line drawn at `drawn` lies in the `body`'s view as the
+/// body now stands: a scroll since then carries the line with it.
+fn feedback_in_view((line, at): DrawnLine, body: &ScrollHandle) -> bool {
+    let moved = line + point(px(0.), body.offset().y - at);
+    let view = body.bounds();
+    moved.top() >= view.top() && moved.bottom() <= view.bottom() + px(0.5)
+}
+
+/// Where the body goes for a feedback line first drawn at `line`: how far it
+/// moves, and whether the line is then in view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FeedbackPlace {
+    delta: Pixels,
+    shows_line: bool,
+}
+
+/// The least scroll that shows `line` whole in `view`, where a view too
+/// short for it shows its top. Answering a recent row (`pressed`, its place
+/// before this frame and in it), the body moves only so far as that row stays
+/// in view (DESIGN.md: the least that shows the outcome, only so far as what
+/// the person is on stays): where both cannot be seen, within the `reach` the
+/// body scrolls from `offset`, it keeps its place, undoing what the line's
+/// coming moved the row, and the line stays out of view.
+fn place_feedback(
+    line: Bounds<Pixels>,
+    pressed: Option<(Bounds<Pixels>, Bounds<Pixels>)>,
+    view: Bounds<Pixels>,
+    offset: Pixels,
+    reach: Pixels,
+) -> FeedbackPlace {
+    let Some((before, now)) = pressed else {
+        let (below, above) = (line.bottom() - view.bottom(), view.top() - line.top());
+        let delta = if below <= Pixels::ZERO && above <= Pixels::ZERO {
+            Pixels::ZERO
+        } else if above > Pixels::ZERO || line.size.height >= view.size.height {
+            // Where the view cannot hold it whole, its top stands in view.
+            above
+        } else {
+            -below
+        };
+        return FeedbackPlace {
+            delta,
+            shows_line: true,
+        };
+    };
+    let (top, bottom) = (line.top().min(now.top()), line.bottom().max(now.bottom()));
+    let delta = if bottom - top > view.size.height {
+        None
+    } else if top < view.top() {
+        Some(view.top() - top)
+    } else if bottom > view.bottom() {
+        Some(view.bottom() - bottom)
+    } else {
+        Some(Pixels::ZERO)
+    };
+    let slack = px(0.5);
+    match delta.filter(|delta| offset + *delta <= slack && offset + *delta >= -reach - slack) {
+        Some(delta) => FeedbackPlace {
+            delta,
+            shows_line: true,
+        },
+        None => FeedbackPlace {
+            delta: before.top() - now.top(),
+            shows_line: false,
+        },
+    }
+}
+
+/// Places the body for the feedback line first drawn at `line`, once this
+/// frame has laid out the pressed row as well, and says the line politely
+/// where it stays out of view ([`place_feedback`]). Later frames leave the
+/// scroll to the person.
+#[allow(clippy::too_many_arguments)]
+fn reveal_feedback(
+    line: Bounds<Pixels>,
+    shown: usize,
+    body: ScrollHandle,
+    rows: Rc<RefCell<RecentRows>>,
+    kept: Rc<RefCell<Option<(usize, PathBuf)>>>,
+    spoken: SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.defer(cx, move |window, cx| {
+        let pressed = rows.borrow_mut().take_pressed();
+        let reach = body.max_offset().y;
+        let mut offset = body.offset();
+        let places = pressed.as_ref().map(|(_, before, now)| (*before, *now));
+        let place = place_feedback(line, places, body.bounds(), offset.y, reach);
+        if !place.shows_line {
+            *kept.borrow_mut() = pressed.map(|(project, ..)| (shown, project));
+            crate::copy_feedback::announce(window, cx, spoken);
+        }
+        offset.y = (offset.y + place.delta).clamp(-reach, Pixels::ZERO);
+        body.set_offset(offset);
+        window.refresh();
+    });
 }
 
 impl Render for ProjectHub {
@@ -1191,6 +1542,7 @@ impl Render for ProjectHub {
                     // record unchanged and never snaps the view back.
                     .on_children_prepainted(self.body.observe())
                     .id("project-hub-body")
+                    .debug_selector(|| "project-hub-body".into())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()

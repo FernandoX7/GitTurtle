@@ -2278,6 +2278,9 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.refuse_picker_at_tab_limit(cx) {
+            return;
+        }
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,

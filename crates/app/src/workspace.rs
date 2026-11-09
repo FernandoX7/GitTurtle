@@ -2551,11 +2551,17 @@ impl GitTurtle {
             self.open_rename_project(path.clone(), window, cx);
             return;
         }
+        // Choosing a folder starts nothing, so a running write leaves it
+        // available as it leaves naming a project.
+        if matches!(event, projects::ProjectEvent::ChooseFolder) {
+            self.choose_project_folder(window, cx);
+            return;
+        }
         if self.operation_busy.is_some() {
             return;
         }
         match event {
-            projects::ProjectEvent::Rename(_) => {}
+            projects::ProjectEvent::ChooseFolder | projects::ProjectEvent::Rename(_) => {}
             projects::ProjectEvent::Open(path) => {
                 if self
                     .repository

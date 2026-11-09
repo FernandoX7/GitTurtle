@@ -521,7 +521,8 @@ enum Recapture {
 /// the person asked ([`GitTurtle::set_tab_library`]).
 const LIBRARY_FULL_REFUSAL: &str =
     "Local library holds up to 128 repositories. Remove an entry before adding another.";
-pub(super) const TAB_LIMIT_REFUSAL: &str = "Eight repository tabs are open. Close a tab before opening another; its commit drafts remain saved.";
+pub(super) const TAB_LIMIT_REFUSAL: &str =
+    "Switch to an open tab, or close one to open another; its commit drafts remain saved.";
 impl State {
     /// Whether an Open of `path` is the read an explicit Open of its marked
     /// tab's folder asked for ([`Recapture`]), naming no root or Git
@@ -1754,6 +1755,35 @@ impl GitTurtle {
         self.repository_tabs.refusals = self.repository_tabs.refusals.wrapping_add(1);
         cx.notify();
     }
+    /// At the tab limit, refuses in the tab strip before a folder is asked
+    /// for, in the words the limit refuses a chosen folder with, and returns
+    /// true: every route into [`GitTurtle::choose_repository`] (the Open and
+    /// New Tab shortcuts, the menu, the palette, the strip's + and the
+    /// rail's folder). Asked first, a person chose a folder only to be told
+    /// that no tab could hold it.
+    pub(super) fn refuse_picker_at_tab_limit(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.repository_tabs.tabs.len() < MAX_TABS {
+            return false;
+        }
+        self.refuse_in_tab_strip(TAB_LIMIT_REFUSAL, cx);
+        true
+    }
+    /// The Projects page's own folder picker, or, at the tab limit, the
+    /// limit's refusal in that page's feedback line, where the person
+    /// pressed it, as a recent project's Open is refused
+    /// ([`Self::tab_open_requested`]).
+    pub(super) fn choose_project_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.repository_tabs.tabs.len() < MAX_TABS {
+            self.hub
+                .update(cx, |hub, cx| hub.choose_folder(true, window, cx));
+            return;
+        }
+        // One refusal line at a time: an earlier strip refusal goes.
+        self.repository_tabs.refusal = None;
+        self.hub.update(cx, |hub, cx| {
+            hub.set_error(Some(TAB_LIMIT_REFUSAL.to_owned()), cx)
+        });
+    }
     /// The tab strip's refusal line ([`Self::refuse_in_tab_strip`]) with its
     /// Dismiss, drawn beneath the strip.
     fn render_tab_refusal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1970,6 +2000,11 @@ impl GitTurtle {
             return;
         }
         self.repository_tabs.refusal = None;
+        // Its cause gone with the closed tab, the page's refusal goes too,
+        // as the strip's just did.
+        self.hub.update(cx, |hub, cx| {
+            hub.clear_error_matching(TAB_LIMIT_REFUSAL, cx)
+        });
         let active = self.repository_tabs.active == Some(index);
         if active {
             // The closed tab's read is dropped, and what it was preparing:
@@ -5861,6 +5896,681 @@ mod tests {
                 "added to the library, in Team"
             );
         });
+    }
+
+    /// `app` holding `count` tabs, those past its own in folders under `root`.
+    fn hold_tabs(app: &mut GitTurtle, root: &Path, count: usize) {
+        for held in app.repository_tabs.tabs.len()..count {
+            app.repository_tabs.tabs.push(Tab {
+                path: root.join(format!("held-{held}")),
+                resolved: true,
+                git_dir: None,
+                saved: Bookmark::default(),
+                warm: None,
+                error: None,
+            });
+        }
+    }
+
+    /// At the tab limit no folder is asked for: every route that opens a new
+    /// tab through the folder picker says the limit's refusal at once, where
+    /// the person acted, and one tab short of the limit each still asks.
+    /// Asked first, a person chose a folder only to be told no tab could
+    /// hold it.
+    #[gpui::test]
+    async fn a_new_tab_at_the_limit_is_refused_before_the_picker(cx: &mut TestAppContext) {
+        use crate::command_palette::CommandId;
+        use crate::native_accessibility::written;
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = fixture.path().to_owned();
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        // Compare draws the rail in this width, its folder among its controls.
+        cx.simulate_resize(size(px(1000.), px(980.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        let key = |name: &str| crate::shortcuts::resolve_key(name, cfg!(target_os = "macos"));
+        let (new_tab, open) = (key("primary-t"), key("primary-o"));
+        let focus = app.read_with(cx, |app, _| app.app_focus.clone());
+        cx.update(|window, cx| window.focus(&focus, cx));
+        let click = |cx: &mut VisualTestContext, selector: &'static str| {
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"));
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        };
+        let press_palette = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.run_palette_command(CommandId::Open, window, cx)
+                })
+            })
+        };
+        type Press<'a> = Box<dyn Fn(&mut VisualTestContext) + 'a>;
+        let routes: Vec<(&str, Press)> = vec![
+            (
+                "the New Tab shortcut",
+                Box::new(|cx| cx.simulate_keystrokes(&new_tab)),
+            ),
+            (
+                "the Open shortcut",
+                Box::new(|cx| cx.simulate_keystrokes(&open)),
+            ),
+            (
+                "the menu's action",
+                Box::new(|cx| {
+                    cx.update(|window, cx| window.dispatch_action(Box::new(OpenRepository), cx))
+                }),
+            ),
+            ("the command palette", Box::new(press_palette)),
+            (
+                "the strip's +",
+                Box::new(move |cx| click(cx, "new-repository-tab")),
+            ),
+            (
+                "the rail's folder",
+                Box::new(move |cx| click(cx, "rail-open")),
+            ),
+        ];
+        app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS - 1));
+        draw(cx);
+        for (route, press) in &routes {
+            press(cx);
+            assert!(cx.did_prompt_for_paths(), "{route}: below the limit, asked");
+            cx.simulate_path_prompt_response(|_| None);
+            settle(&app, cx).await;
+            assert_eq!(
+                app.read_with(cx, |app, _| app.repository_tabs.refusal.clone()),
+                None,
+                "{route}: nothing refused below the limit"
+            );
+        }
+        app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS));
+        draw(cx);
+        let mut nodes = Vec::new();
+        for (route, press) in &routes {
+            written::forget();
+            press(cx);
+            assert!(
+                !cx.did_prompt_for_paths(),
+                "{route}: no folder is asked for"
+            );
+            draw(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.repository_tabs.refusal.clone())
+                    .as_deref(),
+                Some(TAB_LIMIT_REFUSAL),
+                "{route}: refused in the limit's own words"
+            );
+            assert!(
+                cx.debug_bounds("repository-tab-refusal").is_some(),
+                "{route}: the strip says so"
+            );
+            let announced = written::announced_from("repository-tab-refusal");
+            assert!(
+                announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+                "{route}: announced at once: {announced:?}"
+            );
+            nodes.push(announced[0].0.clone());
+            app.update(cx, |app, cx| {
+                app.repository_tabs.refusal = None;
+                cx.notify();
+            });
+            draw(cx);
+        }
+        nodes.dedup();
+        assert_eq!(
+            nodes.len(),
+            routes.len(),
+            "each refusal is a fresh node, announced again"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.repository_tabs.tabs.len()),
+            MAX_TABS,
+            "no tab was opened or marked"
+        );
+        // The Projects page's own picker is refused on the page, as a recent
+        // project's Open is, and one tab short of the limit it still asks.
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.show_projects(window, cx);
+                app.refuse_in_tab_strip("An earlier refusal.", cx);
+            })
+        });
+        draw(cx);
+        written::forget();
+        click(cx, "hub-open-folder");
+        cx.run_until_parked();
+        draw(cx);
+        assert!(!cx.did_prompt_for_paths(), "no folder is asked for");
+        hub.read_with(cx, |hub, _| {
+            assert_eq!(
+                hub.shown_error(),
+                Some(TAB_LIMIT_REFUSAL),
+                "the page says why"
+            );
+            assert!(!hub.shown_busy(), "its actions stay available");
+        });
+        let announced = written::announced_from("project-hub-error");
+        assert!(
+            announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+            "announced at once: {announced:?}"
+        );
+        assert!(
+            cx.debug_bounds("repository-tab-refusal").is_none(),
+            "said once, where the person acted"
+        );
+        app.update(cx, |app, _| {
+            app.repository_tabs.tabs.truncate(MAX_TABS - 1);
+        });
+        click(cx, "hub-open-folder");
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_paths(), "below the limit, asked");
+        cx.simulate_path_prompt_response(|_| None);
+        cx.run_until_parked();
+    }
+
+    /// Choose a repository… refused at the limit says so in the place the
+    /// person is looking, directly under the button and inside the visible
+    /// body, in a half tile at 13 and 18 pt and in the full window: drawn at
+    /// the action panel's foot, the refusal lay about 100 px past the view
+    /// at 18 pt in a 461 × 490 window, and the press looked dead.
+    #[gpui::test]
+    async fn a_refusal_under_choose_a_repository_is_in_view(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS));
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+        for (window, interface) in [
+            (size(px(461.), px(490.)), 13),
+            (size(px(461.), px(490.)), 18),
+            (size(px(1480.), px(973.)), 13),
+        ] {
+            sweep::prepare(&app, cx);
+            cx.simulate_resize(window);
+            sweep::interface_size(cx, interface);
+            hub.update(cx, |hub, cx| hub.set_error(None, cx));
+            crate::views::tests::draw(cx);
+            // The worst place the person can have pressed it from: scrolled
+            // only as far as it takes to show the button at the body's foot.
+            let scroll = hub.read_with(cx, |hub, _| hub.body_scroll());
+            scroll.set_offset(point(px(0.), px(0.)));
+            crate::views::tests::draw(cx);
+            let button = cx.debug_bounds("hub-open-folder").expect("the button");
+            let body = cx.debug_bounds("project-hub-body").expect("the body");
+            let past = button.bottom() - body.bottom();
+            if past > Pixels::ZERO {
+                scroll.set_offset(point(px(0.), -past));
+                crate::views::tests::draw(cx);
+            }
+            let button = cx.debug_bounds("hub-open-folder").expect("the button");
+            cx.simulate_click(button.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            crate::views::tests::draw(cx);
+            assert_eq!(
+                hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned))
+                    .as_deref(),
+                Some(TAB_LIMIT_REFUSAL),
+                "{window:?} at {interface} pt: refused"
+            );
+            let button = cx.debug_bounds("hub-open-folder").expect("the button");
+            let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+            let body = cx.debug_bounds("project-hub-body").expect("the body");
+            assert!(
+                line.top() >= button.bottom() && line.top() - button.bottom() <= px(24.),
+                "{window:?} at {interface} pt: directly under the button: {button:?}, {line:?}"
+            );
+            assert!(
+                line.top() >= body.top() && line.bottom() <= body.bottom() + px(0.5),
+                "{window:?} at {interface} pt: inside the visible body: {line:?} in {body:?}"
+            );
+        }
+    }
+
+    /// A ninth tab refused from a recent row leaves that row in view: where
+    /// the row and the feedback line can both be seen the page moves only so
+    /// far as both show, and where they cannot it keeps its place, the row
+    /// where it was, and the refusal is announced politely. Revealing the
+    /// line by itself scrolled the pressed row out of view.
+    #[gpui::test]
+    async fn a_refusal_from_a_recent_row_leaves_that_row_in_view(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::announced;
+        use crate::focus_ring::sweep;
+        use crate::native_accessibility::written;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS));
+        let recents: Vec<_> = (0..3)
+            .map(|index| {
+                crate::views::tests::fixture_repository(
+                    fixture.path().join(format!("recent-{index}")),
+                )
+            })
+            .collect();
+        let paths: Vec<_> = recents.iter().map(|repo| repo.path().to_owned()).collect();
+        let paths_kept = paths.clone();
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        cx.update(|window, cx| {
+            hub.update(cx, |hub, cx| hub.set_recent(paths, cx));
+            app.update(cx, |app, cx| app.show_projects(window, cx));
+        });
+        let scroll = hub.read_with(cx, |hub, _| hub.body_scroll());
+        let body =
+            |cx: &mut VisualTestContext| cx.debug_bounds("project-hub-body").expect("the body");
+        // The row brought to the body's foot, where the line above it lies
+        // furthest from it.
+        let at_foot = |cx: &mut VisualTestContext, row: &'static str| {
+            scroll.set_offset(point(px(0.), px(0.)));
+            crate::views::tests::draw(cx);
+            let past = cx.debug_bounds(row).expect("the row").bottom() - body(cx).bottom();
+            if past > Pixels::ZERO {
+                scroll.set_offset(point(px(0.), -past));
+                crate::views::tests::draw(cx);
+            }
+        };
+        let press = |cx: &mut VisualTestContext, row: &'static str| {
+            let bounds = cx.debug_bounds(row).expect("the row");
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            written::forget();
+            cx.run_until_parked();
+            crate::views::tests::draw(cx);
+            bounds
+        };
+        // Too far from the line for both to be seen: the page keeps its place.
+        sweep::prepare(&app, cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        sweep::interface_size(cx, 18);
+        hub.update(cx, |hub, cx| hub.set_error(None, cx));
+        at_foot(cx, "recent-project-1");
+        let before = press(cx, "recent-project-1");
+        assert_eq!(
+            hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned))
+                .as_deref(),
+            Some(TAB_LIMIT_REFUSAL),
+            "refused"
+        );
+        let row = cx.debug_bounds("recent-project-1").expect("the row");
+        let view = body(cx);
+        assert!(
+            (row.top() - before.top()).abs() <= px(0.5),
+            "the row keeps its place: {row:?}, was {before:?}"
+        );
+        assert!(
+            row.top() >= view.top() && row.bottom() <= view.bottom() + px(0.5),
+            "and stays in view: {row:?} in {view:?}"
+        );
+        let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+        assert!(
+            line.bottom() <= view.top() || line.top() >= view.bottom(),
+            "the line stays out of view: {line:?} in {view:?}"
+        );
+        let (_, words) = announced(cx).expect("announced politely");
+        assert!(words.contains("Switch to an open tab"), "{words}");
+        assert!(
+            written::announced_from("project-hub-error").is_empty(),
+            "and not as an alert"
+        );
+        // The row says why where the person acted, in the removed colour and
+        // its own bounds, the whole text in its tooltip.
+        let (location, tooltip, name) = crate::projects::location_drawn(1).expect("the row");
+        assert_eq!(location, TAB_LIMIT_REFUSAL, "the row reads the refusal");
+        let place = paths_kept[1].display().to_string();
+        assert_eq!(
+            tooltip,
+            format!("{TAB_LIMIT_REFUSAL}\n{place}"),
+            "its tooltip holds it whole, and the location it replaces"
+        );
+        assert!(
+            name.contains(TAB_LIMIT_REFUSAL) && name.contains(&place),
+            "its name carries the refusal: {name}"
+        );
+        let removed = cx.read(|cx| crate::appearance::palette(cx).removed);
+        assert_eq!(
+            crate::appearance::drawn_color("recent-project-location-1"),
+            Some(rgb(removed).into()),
+            "in the removed colour"
+        );
+        assert_eq!(
+            cx.debug_bounds("recent-project-1").expect("the row").size,
+            before.size,
+            "in its own bounds"
+        );
+        // The line brought into view, the row reads its place again.
+        let offset = scroll.offset().y + (view.top() - line.top());
+        scroll.set_offset(point(px(0.), offset.min(px(0.))));
+        crate::views::tests::draw(cx);
+        let (location, tooltip, name) = crate::projects::location_drawn(1).expect("the row");
+        assert_ne!(location, TAB_LIMIT_REFUSAL, "the line in view, its place");
+        assert_eq!(tooltip, place, "and its tooltip");
+        assert!(!name.contains(TAB_LIMIT_REFUSAL), "and its name: {name}");
+        // Close enough for both: the page moves only so far as both show,
+        // and the line is the alert it always is.
+        cx.simulate_resize(size(px(461.), px(860.)));
+        hub.update(cx, |hub, cx| hub.set_error(None, cx));
+        at_foot(cx, "recent-project-0");
+        press(cx, "recent-project-0");
+        let row = cx.debug_bounds("recent-project-0").expect("the row");
+        let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+        let view = body(cx);
+        for (name, part) in [("row", row), ("line", line)] {
+            assert!(
+                part.top() >= view.top() && part.bottom() <= view.bottom() + px(0.5),
+                "the {name} shows: {part:?} in {view:?}"
+            );
+        }
+        let alerts = written::announced_from("project-hub-error");
+        assert!(
+            alerts.len() == 1 && alerts[0].1 == written::Announced::ASSERTIVE,
+            "the line it shows is the alert: {alerts:?}"
+        );
+    }
+
+    /// The Projects page at the tab limit in a `window` at `interface` pt,
+    /// with a recent project for each of `names`, the row `row` brought to
+    /// the body's foot and pressed, which the limit refuses.
+    async fn refused_from_a_row<'a>(
+        cx: &'a mut TestAppContext,
+        names: &[&str],
+        window: Size<Pixels>,
+        interface: u8,
+        row: &'static str,
+    ) -> (
+        tempfile::TempDir,
+        Vec<PathBuf>,
+        Entity<crate::projects::ProjectHub>,
+        &'a mut VisualTestContext,
+    ) {
+        use crate::focus_ring::sweep;
+        use crate::views::tests::draw;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS));
+        let paths: Vec<_> = names
+            .iter()
+            .map(|name| {
+                crate::views::tests::fixture_repository(fixture.path().join(name))
+                    .path()
+                    .to_owned()
+            })
+            .collect();
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        let recents = paths.clone();
+        cx.update(|window, cx| {
+            hub.update(cx, |hub, cx| hub.set_recent(recents, cx));
+            app.update(cx, |app, cx| app.show_projects(window, cx));
+        });
+        sweep::prepare(&app, cx);
+        cx.simulate_resize(window);
+        sweep::interface_size(cx, interface);
+        hub.update(cx, |hub, cx| hub.set_error(None, cx));
+        let scroll = hub.read_with(cx, |hub, _| hub.body_scroll());
+        scroll.set_offset(point(px(0.), px(0.)));
+        draw(cx);
+        let body = cx.debug_bounds("project-hub-body").expect("the body");
+        let past = cx.debug_bounds(row).expect("the row").bottom() - body.bottom();
+        if past > Pixels::ZERO {
+            scroll.set_offset(point(px(0.), -past));
+            draw(cx);
+        }
+        let pressed = cx.debug_bounds(row).expect("the row");
+        cx.simulate_click(pressed.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(
+            hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned))
+                .as_deref(),
+            Some(TAB_LIMIT_REFUSAL),
+            "refused"
+        );
+        (fixture, paths, hub, cx)
+    }
+
+    /// A refusal a recent row holds stays with its project: a search that
+    /// keeps the project lets the refusal follow it to its new row, one that
+    /// hides it shows the refusal on no row, and a new recent list follows
+    /// the same rule. Held by list position, typing in the search put the
+    /// refusal on whichever project came to stand there.
+    #[gpui::test]
+    async fn a_row_s_refusal_follows_its_project_through_a_search(cx: &mut TestAppContext) {
+        let (_fixture, paths, hub, cx) = refused_from_a_row(
+            cx,
+            &["other-first", "pressed-row", "other-second"],
+            size(px(461.), px(490.)),
+            18,
+            "recent-project-1",
+        )
+        .await;
+        let refused = |index: usize| {
+            crate::projects::location_drawn(index).expect("the row").0 == TAB_LIMIT_REFUSAL
+        };
+        assert!(refused(1), "the pressed row reads the refusal");
+        let search = |cx: &mut VisualTestContext, query: &str| {
+            cx.update(|window, cx| hub.update(cx, |hub, cx| hub.search_recent(query, window, cx)));
+            crate::views::tests::draw(cx);
+        };
+        search(cx, "pressed-row");
+        assert!(refused(0), "it follows its project to the first row");
+        search(cx, "other-");
+        assert!(
+            !refused(0) && !refused(1),
+            "hidden, no other project takes it"
+        );
+        search(cx, "");
+        assert!(refused(1), "shown again, its row reads it again");
+        let moved = vec![paths[1].clone(), paths[0].clone(), paths[2].clone()];
+        cx.update(|_, cx| hub.update(cx, |hub, cx| hub.set_recent(moved, cx)));
+        crate::views::tests::draw(cx);
+        assert!(
+            refused(0) && !refused(1),
+            "a new recent list keeps it on the project"
+        );
+    }
+
+    /// The refusal a recent row reads clears the small-label margin on the
+    /// row's own fills, at rest, hovered and pressed, in its removed hue:
+    /// Nord's token read 4.38:1 on the row's hover fill.
+    #[gpui::test]
+    async fn a_row_s_refusal_reads_on_the_row_s_own_fills(cx: &mut TestAppContext) {
+        use crate::appearance::{ThemeChoice, custom::contrast};
+        let (_fixture, _paths, _hub, cx) = refused_from_a_row(
+            cx,
+            &["one", "two", "three"],
+            size(px(461.), px(490.)),
+            18,
+            "recent-project-1",
+        )
+        .await;
+        cx.update(|window, cx| ThemeChoice::Nord.apply(Some(window), cx));
+        crate::views::tests::draw(cx);
+        let palette = cx.read(crate::appearance::palette);
+        let fills = palette.control_fills(false, palette.canvas);
+        let Some(drawn) = crate::appearance::drawn_color("recent-project-location-1") else {
+            panic!("the row reads the refusal");
+        };
+        let drawn = u32::from(gpui_kit::Rgba::from(drawn)) >> 8;
+        for fill in fills {
+            assert!(
+                contrast(drawn, fill) >= 4.75,
+                "{drawn:06x} on {fill:06x}: {:.2}:1",
+                contrast(drawn, fill)
+            );
+        }
+        assert_eq!(
+            drawn,
+            palette.small_label(palette.removed, &fills),
+            "the removed hue, moved only as far as it must"
+        );
+    }
+
+    /// One resize that brings the feedback line into view ends the row's
+    /// refusal in the next frame, with no hover or input: the row reads the
+    /// line's place from the last frame, and in the wide layout it draws
+    /// before the line, so nothing asked for the frame that corrects it.
+    #[gpui::test]
+    async fn one_resize_that_shows_the_line_ends_the_row_s_refusal(cx: &mut TestAppContext) {
+        let (_fixture, _paths, hub, cx) = refused_from_a_row(
+            cx,
+            &["one", "two", "three"],
+            size(px(461.), px(490.)),
+            13,
+            "recent-project-1",
+        )
+        .await;
+        let scroll = hub.read_with(cx, |hub, _| hub.body_scroll());
+        // The line a little above the view: the wide layout's roomier padding
+        // brings it in.
+        let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+        let view = cx.debug_bounds("project-hub-body").expect("the body");
+        scroll.set_offset(point(
+            px(0.),
+            (scroll.offset().y + (view.top() - line.top()) - px(6.)).min(px(0.)),
+        ));
+        crate::views::tests::draw(cx);
+        let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+        let view = cx.debug_bounds("project-hub-body").expect("the body");
+        assert!(
+            line.top() < view.top(),
+            "above the view: {line:?} in {view:?}"
+        );
+        assert_eq!(
+            crate::projects::location_drawn(1).expect("the row").0,
+            TAB_LIMIT_REFUSAL,
+            "out of view, the row reads it"
+        );
+        cx.simulate_resize(size(px(1000.), px(490.)));
+        cx.run_until_parked();
+        let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+        let view = cx.debug_bounds("project-hub-body").expect("the body");
+        assert!(
+            line.top() >= view.top() && line.bottom() <= view.bottom() + px(0.5),
+            "the resize brings it into view: {line:?} in {view:?}"
+        );
+        assert_ne!(
+            crate::projects::location_drawn(1).expect("the row").0,
+            TAB_LIMIT_REFUSAL,
+            "the row reads its place in the frame after the resize"
+        );
+    }
+
+    /// A recent row's press that opened its tab is over: a later refusal at
+    /// Choose a repository… answers Choose, revealed as an alert under that
+    /// button. Taken for the old press's answer, the line stayed below the
+    /// view with a polite announcement.
+    #[gpui::test]
+    async fn a_refusal_at_choose_after_a_row_opened_is_choose_s_own(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        use crate::native_accessibility::written;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS - 1));
+        let recents: Vec<_> = (0..2)
+            .map(|index| {
+                let repo = crate::views::tests::fixture_repository(
+                    fixture.path().join(format!("recent-{index}")),
+                );
+                crate::tags::tests::git(repo.path(), &["commit", "--allow-empty", "-qm", "first"]);
+                repo
+            })
+            .collect();
+        let paths: Vec<_> = recents.iter().map(|repo| repo.path().to_owned()).collect();
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        cx.update(|window, cx| {
+            hub.update(cx, |hub, cx| hub.set_recent(paths, cx));
+            app.update(cx, |app, cx| app.show_projects(window, cx));
+        });
+        sweep::prepare(&app, cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        sweep::interface_size(cx, 18);
+        crate::views::tests::draw(cx);
+        let scroll = hub.read_with(cx, |hub, _| hub.body_scroll());
+        let body =
+            |cx: &mut VisualTestContext| cx.debug_bounds("project-hub-body").expect("the body");
+        let to_foot = |cx: &mut VisualTestContext, selector: &'static str| {
+            scroll.set_offset(point(px(0.), px(0.)));
+            crate::views::tests::draw(cx);
+            let past = cx.debug_bounds(selector).expect("drawn").bottom() - body(cx).bottom();
+            if past > Pixels::ZERO {
+                scroll.set_offset(point(px(0.), -past));
+                crate::views::tests::draw(cx);
+            }
+        };
+        // The eighth tab, opened from the second row.
+        to_foot(cx, "recent-project-1");
+        let row = cx.debug_bounds("recent-project-1").expect("the row");
+        cx.simulate_click(row.center(), gpui::Modifiers::default());
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.tabs.len(), MAX_TABS, "the row opened");
+            assert_eq!(app.page, AppPage::Repository, "and left the page");
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+        crate::views::tests::draw(cx);
+        to_foot(cx, "hub-open-folder");
+        let button = cx.debug_bounds("hub-open-folder").expect("the button");
+        cx.simulate_click(button.center(), gpui::Modifiers::default());
+        written::forget();
+        cx.run_until_parked();
+        crate::views::tests::draw(cx);
+        assert_eq!(
+            hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned))
+                .as_deref(),
+            Some(TAB_LIMIT_REFUSAL),
+            "refused at Choose"
+        );
+        let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+        let view = body(cx);
+        assert!(
+            line.top() >= view.top() && line.bottom() <= view.bottom() + px(0.5),
+            "the line under Choose is in view: {line:?} in {view:?}"
+        );
+        let alerts = written::announced_from("project-hub-error");
+        assert!(
+            alerts.len() == 1 && alerts[0].1 == written::Announced::ASSERTIVE,
+            "and is the alert it always is: {alerts:?}"
+        );
+    }
+
+    /// Closing a tab ends the limit's refusal on the page as well as in the
+    /// strip: its cause is gone with the tab, and the next Choose a
+    /// repository… asks for a folder. Another refusal is left alone.
+    #[gpui::test]
+    async fn closing_a_tab_ends_the_limits_refusal_on_the_page(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS));
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        let close = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    let index = app.repository_tabs.tabs.len() - 1;
+                    app.close_repository_tab(index, window, cx);
+                })
+            });
+            crate::views::tests::draw(cx);
+        };
+        hub.update(cx, |hub, cx| {
+            hub.set_error(Some("Another error".into()), cx)
+        });
+        close(cx);
+        assert_eq!(
+            hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned))
+                .as_deref(),
+            Some("Another error"),
+            "another refusal stays"
+        );
+        hub.update(cx, |hub, cx| {
+            hub.set_error(Some(TAB_LIMIT_REFUSAL.to_owned()), cx)
+        });
+        close(cx);
+        assert_eq!(
+            hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned)),
+            None,
+            "the limit's refusal ends with the tab that caused it"
+        );
     }
 
     /// A ninth tab asked for from the Projects page is refused there,

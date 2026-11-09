@@ -465,7 +465,7 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
     ),
 ];
 
-fn resolve_key(key: &str, macos: bool) -> String {
+pub(super) fn resolve_key(key: &str, macos: bool) -> String {
     key.replace("primary", if macos { "cmd" } else { "ctrl" })
 }
 
