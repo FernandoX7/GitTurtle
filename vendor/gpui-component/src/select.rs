@@ -199,7 +199,7 @@ where
 
                             cx.emit(SelectEvent::Confirm(final_value));
                             cx.notify();
-                            this.set_open(false, cx);
+                            this.set_open(false, window, cx);
                             this.focus(window, cx);
 
                             this.state.selection.clone()
@@ -230,7 +230,7 @@ where
                         list_state.set_selected_index(committed_ix, window, cx);
 
                         _ = weak_cancel.update(cx, |this, cx| {
-                            this.set_open(false, cx);
+                            this.set_open(false, window, cx);
                             this.focus(window, cx);
                         });
                     }
@@ -361,14 +361,14 @@ where
             });
         }
 
-        self.set_open(false, cx);
+        self.set_open(false, window, cx);
         cx.notify();
     }
 
     fn toggle_menu(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
 
-        self.set_open(!self.state.open, cx);
+        self.set_open(!self.state.open, window, cx);
 
         if self.state.open {
             self.state.list.focus_handle(cx).focus(window, cx);
@@ -384,16 +384,23 @@ where
         }
 
         cx.stop_propagation();
-        self.set_open(false, cx);
+        self.set_open(false, window, cx);
         self.focus(window, cx);
         cx.notify();
     }
 
-    fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
+    fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let closing = self.state.open && !open;
         self.state.open = open;
         self.state.deferred_context = open.then(|| GlobalState::register_deferred_popover(cx));
 
         cx.notify();
+        // GitTurtle patch: a press right after the key that closed the
+        // popup acts on what the window draws without it, never on the gone
+        // popup ([`crate::root::draw_after_popup_close`]).
+        if closing {
+            crate::root::draw_after_popup_close(window, cx);
+        }
     }
 
     fn clean(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -775,8 +782,8 @@ where
             })
             .focus_handle(&focus_handle)
             .content_focus_handle(&content_focus_handle)
-            .on_open_change(move |open, _, cx| {
-                open_state.update(cx, |state, cx| state.set_open(open, cx));
+            .on_open_change(move |open, window, cx| {
+                open_state.update(cx, |state, cx| state.set_open(open, window, cx));
             })
             .size_full()
             .child(self.state)
@@ -787,13 +794,113 @@ where
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, TestAppContext};
+    use gpui::{
+        AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+        Render, StatefulInteractiveElement as _, Styled as _, TestAppContext, VisualTestContext,
+        Window, div, point, px,
+    };
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     use crate::{
-        IndexPath,
+        IndexPath, Root,
         searchable_list::{SearchableListDelegate as _, SearchableVec},
         select::{Select, SelectGroup, SelectState},
     };
+
+    /// A page whose clicks are counted, holding a Select.
+    struct Page {
+        state: Entity<SelectState<SearchableVec<&'static str>>>,
+        clicks: Rc<Cell<usize>>,
+    }
+
+    impl Render for Page {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let clicks = self.clicks.clone();
+            div()
+                .id("page")
+                .size_full()
+                .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+                .child(
+                    div()
+                        .debug_selector(|| "select".into())
+                        .w(px(160.))
+                        .h(px(32.))
+                        .child(Select::new(&self.state)),
+                )
+        }
+    }
+
+    /// GitTurtle patch: a click given right after the key that closes a
+    /// Select, before the window's next frame, lands on the page under
+    /// where its list was and never on the gone list, before or after the
+    /// key's release and whichever key closed it: Enter, on an item, or
+    /// Escape.
+    #[gpui::test]
+    fn a_click_after_the_key_that_closes_a_select_lands_on_the_page(cx: &mut TestAppContext) {
+        use crate::root::before_a_frame::{click, deliver, key};
+
+        cx.update(crate::init);
+        let clicks = Rc::new(Cell::new(0));
+        let slot: Rc<RefCell<Option<Entity<SelectState<SearchableVec<&'static str>>>>>> =
+            Rc::default();
+        let (_, cx) = cx.add_window_view({
+            let (clicks, slot) = (clicks.clone(), slot.clone());
+            move |window, cx| {
+                let items = SearchableVec::new(vec!["Rust", "Go", "C++", "Zig", "OCaml"]);
+                let state = cx.new(|cx| SelectState::new(items, None, window, cx));
+                *slot.borrow_mut() = Some(state.clone());
+                let view = cx.new(|_| Page { state, clicks });
+                Root::new(view, window, cx).bordered(false)
+            }
+        });
+        let state = slot.borrow().clone().expect("the select's state");
+        let settle = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        settle(cx);
+        let select = cx.debug_bounds("select").expect("the select");
+
+        for closing in ["escape", "enter"] {
+            for key_up_first in [false, true] {
+                let at = format!(
+                    "closed by {closing}, the click {} its release",
+                    if key_up_first { "after" } else { "before" },
+                );
+                cx.simulate_click(select.center(), Default::default());
+                settle(cx);
+                assert!(
+                    state.read_with(cx, |state, _| state.state.open),
+                    "{at}: the click opened it"
+                );
+                cx.simulate_keystrokes("down");
+                settle(cx);
+
+                let before = clicks.get();
+                let [press, release] = click(point(select.center().x, select.bottom() + px(48.)));
+                let (down, up) = (key(closing, true), key(closing, false));
+                deliver(
+                    cx,
+                    if key_up_first {
+                        vec![down, up, press, release]
+                    } else {
+                        vec![down, press, release, up]
+                    },
+                );
+                settle(cx);
+
+                assert!(
+                    !state.read_with(cx, |state, _| state.state.open),
+                    "{at}: the key closed it"
+                );
+                assert_eq!(clicks.get(), before + 1, "{at}: the page took the click");
+            }
+        }
+    }
 
     #[gpui::test]
     fn an_explicit_accessibility_label_does_not_replace_the_placeholder(cx: &mut TestAppContext) {

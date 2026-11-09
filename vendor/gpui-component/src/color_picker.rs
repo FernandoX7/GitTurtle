@@ -186,9 +186,11 @@ struct SwatchGrid {
     state: Entity<ColorPickerState>,
     rows: Vec<Vec<(FocusHandle, Hsla)>>,
     cursor: Option<Place>,
-    /// While the palette is drawn, the picker closing by any route puts the
-    /// preview back on the committed color, so one the arrows or a hover
-    /// left does not outlast the picker.
+    /// While the palette is drawn, the picker closing by any route, a key's
+    /// among them, puts the preview back on the committed color, so one the
+    /// arrows or a hover left does not outlast the picker, and has the window
+    /// draw before its next input
+    /// ([`crate::root::draw_after_popup_close`]).
     _closing: Subscription,
 }
 
@@ -197,6 +199,7 @@ impl SwatchGrid {
         let closing = window.observe(&state, cx, |state, window, cx| {
             if !state.read(cx).is_open() {
                 state.update(cx, |state, cx| state.clear_preview(window, cx));
+                crate::root::draw_after_popup_close(window, cx);
             }
         });
         Self {
@@ -800,9 +803,101 @@ impl RenderOnce for ColorPicker {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, TestAppContext};
+    use gpui::{AppContext as _, TestAppContext, VisualTestContext, point, px};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     use super::*;
+
+    /// A page whose clicks are counted, holding a picker.
+    struct Page {
+        state: Entity<ColorPickerState>,
+        clicks: Rc<Cell<usize>>,
+    }
+
+    impl gpui::Render for Page {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let clicks = self.clicks.clone();
+            div()
+                .id("page")
+                .size_full()
+                .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+                .child(
+                    div()
+                        .debug_selector(|| "picker".into())
+                        .w(px(40.))
+                        .child(ColorPicker::new(&self.state)),
+                )
+        }
+    }
+
+    /// GitTurtle patch: a click given right after the key that closes a
+    /// picker, before the window's next frame, lands on the page under
+    /// where its popover was and never on the gone popover: Escape, before
+    /// or after its release, or Enter on a swatch, which chooses it as the
+    /// key comes up.
+    #[gpui::test]
+    fn a_click_after_the_key_that_closes_the_picker_lands_on_the_page(cx: &mut TestAppContext) {
+        use crate::root::before_a_frame::{click, deliver, key};
+
+        cx.update(crate::init);
+        let clicks = Rc::new(Cell::new(0));
+        let slot: Rc<RefCell<Option<Entity<ColorPickerState>>>> = Rc::default();
+        let (_, cx) = cx.add_window_view({
+            let (clicks, slot) = (clicks.clone(), slot.clone());
+            move |window, cx| {
+                let state = cx.new(|cx| {
+                    ColorPickerState::new(window, cx).default_value(hsla(0.3, 0.2, 0.7, 1.))
+                });
+                *slot.borrow_mut() = Some(state.clone());
+                let view = cx.new(|_| Page { state, clicks });
+                crate::Root::new(view, window, cx).bordered(false)
+            }
+        });
+        let state = slot.borrow().clone().expect("the picker's state");
+        let settle = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        settle(cx);
+        let picker = cx.debug_bounds("picker").expect("the picker");
+        let inside = point(picker.left() + px(60.), picker.bottom() + px(80.));
+
+        for (closing, key_up_first) in [("escape", false), ("escape", true), ("enter", true)] {
+            let at = format!("{closing}, key up first: {key_up_first}");
+            cx.simulate_click(picker.center(), Default::default());
+            settle(cx);
+            assert!(
+                state.read_with(cx, |state, _| state.is_open()),
+                "{at}: the click opened it"
+            );
+            // Into the swatches, which Enter chooses from.
+            cx.update(|window, cx| window.focus_next(cx));
+            settle(cx);
+
+            let before = clicks.get();
+            let [press, release] = click(inside);
+            let (down, up) = (key(closing, true), key(closing, false));
+            deliver(
+                cx,
+                if key_up_first {
+                    vec![down, up, press, release]
+                } else {
+                    vec![down, press, release, up]
+                },
+            );
+            settle(cx);
+
+            assert!(
+                !state.read_with(cx, |state, _| state.is_open()),
+                "{at}: the key closed it"
+            );
+            assert_eq!(clicks.get(), before + 1, "{at}: the page took the click");
+        }
+    }
 
     /// One step of an arrow key: along the row, or to the same column of
     /// the row above or below, the last of a shorter one; past the edge of

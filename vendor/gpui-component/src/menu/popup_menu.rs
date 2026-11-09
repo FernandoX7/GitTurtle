@@ -1747,6 +1747,9 @@ impl PopupMenu {
         self.kept_cursor = None;
         self.pointer_selection = false;
         cx.emit(DismissEvent);
+        // GitTurtle patch: a press right after the key that closed the menu
+        // acts on what the window draws without it, never on the gone menu.
+        crate::root::draw_after_popup_close(window, cx);
 
         // Focus back to the previous focused handle, unless the item's click
         // handler has already moved focus elsewhere (e.g. opened a dialog and

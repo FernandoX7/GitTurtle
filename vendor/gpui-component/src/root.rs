@@ -124,6 +124,20 @@ fn draw_before_next_input(root: &mut Root, window: &mut Window, cx: &mut App) {
     });
 }
 
+/// GitTurtle patch: has `window` draw again before its next input once a
+/// popup that a key closed has gone: a menu, a [`crate::select::SelectState`]
+/// or a color picker's popover, each of which stayed in the frame presses are
+/// hit-tested against until the window next drew, as a dialog did
+/// ([`draw_before_next_input`]). Deferred, so a close inside an update of
+/// [`Root`] cannot reenter it; a window without a [`Root`] draws nothing.
+pub(crate) fn draw_after_popup_close(window: &mut Window, cx: &mut App) {
+    window.defer(cx, |window, cx| {
+        Root::try_update(window, cx, |root, window, cx| {
+            draw_before_next_input(root, window, cx)
+        });
+    });
+}
+
 impl Root {
     /// Clears window-owned text selection synchronously.
     #[deprecated(note = "use gpui_base::TextSelection::clear instead")]
@@ -651,10 +665,91 @@ impl Render for Root {
     }
 }
 
+/// Test input that arrives before the window's next frame, as a press right
+/// after a key that closed a popup does.
+#[cfg(test)]
+pub(crate) mod before_a_frame {
+    use gpui::{
+        AnyWindowHandle, App, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton,
+        MouseDownEvent, MouseUpEvent, Pixels, PlatformInput, Point, VisualTestContext,
+    };
+
+    /// How many times an event's delivery yields to the effects queued
+    /// before it, so all of them have run first.
+    const EFFECT_ROUNDS: usize = 32;
+
+    /// A press of `key` going down, or coming up.
+    pub(crate) fn key(key: &str, down: bool) -> PlatformInput {
+        let keystroke = Keystroke::parse(key).expect("a keystroke");
+        if down {
+            PlatformInput::KeyDown(KeyDownEvent {
+                keystroke,
+                is_held: false,
+                prefer_character_input: false,
+            })
+        } else {
+            PlatformInput::KeyUp(KeyUpEvent { keystroke })
+        }
+    }
+
+    /// A left click at `at`: its press and its release.
+    pub(crate) fn click(at: Point<Pixels>) -> [PlatformInput; 2] {
+        [
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+        ]
+    }
+
+    /// Delivers `events` as a platform hands over input that arrives before
+    /// the window's next frame: each once every effect the one before it
+    /// queued has run, with no frame drawn between them but those the window
+    /// draws itself. A test window otherwise draws after every event.
+    pub(crate) fn deliver(cx: &mut VisualTestContext, events: Vec<PlatformInput>) {
+        fn next(
+            window: AnyWindowHandle,
+            mut events: std::vec::IntoIter<PlatformInput>,
+            rounds: usize,
+            cx: &mut App,
+        ) {
+            if rounds > 0 {
+                cx.defer(move |cx| next(window, events, rounds - 1, cx));
+                return;
+            }
+            let Some(event) = events.next() else {
+                return;
+            };
+            window
+                .update(cx, |_, window, cx| window.dispatch_event(event, cx))
+                .expect("the window is open");
+            cx.defer(move |cx| next(window, events, EFFECT_ROUNDS, cx));
+        }
+        cx.update(|window, cx| {
+            let handle = window.window_handle();
+            let mut events = events.into_iter();
+            if let Some(first) = events.next() {
+                window.dispatch_event(first, cx);
+            }
+            cx.defer(move |cx| next(handle, events, EFFECT_ROUNDS, cx));
+        });
+        cx.run_until_parked();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{StatefulInteractiveElement as _, TestAppContext, VisualTestContext, px};
 
     struct TestView;
 
@@ -704,6 +799,140 @@ mod tests {
             })
         });
         assert_eq!(drawn.get() - before, 1, "two closes draw once");
+    }
+
+    /// A page whose clicks are counted, holding a dropdown and a right-click
+    /// menu whose items count theirs.
+    struct MenuPage {
+        page: Rc<std::cell::Cell<usize>>,
+        acted: Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Render for MenuPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use crate::{
+                button::Button,
+                menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
+            };
+            let (page, dropdown, context) =
+                (self.page.clone(), self.acted.clone(), self.acted.clone());
+            div()
+                .id("page")
+                .size_full()
+                .on_click(move |_, _, _| page.set(page.get() + 1))
+                .child(
+                    Button::new("dropdown")
+                        .debug_selector(|| "dropdown".into())
+                        .label("Open")
+                        .dropdown_menu(move |menu, _, _| {
+                            let acted = dropdown.clone();
+                            menu.item(
+                                PopupMenuItem::new("Act")
+                                    .on_click(move |_, _, _| acted.set(acted.get() + 1)),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .id("row")
+                        .debug_selector(|| "row".into())
+                        .mt(px(40.))
+                        .w(px(200.))
+                        .h(px(28.))
+                        .context_menu(move |menu, _, _| {
+                            let acted = context.clone();
+                            menu.item(
+                                PopupMenuItem::new("Act")
+                                    .on_click(move |_, _, _| acted.set(acted.get() + 1)),
+                            )
+                        }),
+                )
+        }
+    }
+
+    const ACT: &str = "menu-item: Act · MenuItem";
+
+    fn settle(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    /// GitTurtle patch: a click given right after the key that closes a
+    /// dropdown or a right-click menu, before the window's next frame, lands
+    /// on the page under where the menu was and never on the gone menu,
+    /// before or after the key's release and whichever key closed it.
+    /// GPUI hit-tests a press against the frame the window last drew, and a
+    /// key closing a menu left it in that frame until the next one.
+    #[gpui::test]
+    fn a_click_after_the_key_that_closes_a_menu_lands_on_the_page(cx: &mut TestAppContext) {
+        use super::before_a_frame::{click, deliver, key};
+        use gpui::{Modifiers, MouseButton};
+
+        cx.update(crate::init);
+        let page = Rc::new(std::cell::Cell::new(0));
+        let acted = Rc::new(std::cell::Cell::new(0));
+        let (_, cx) = cx.add_window_view({
+            let (page, acted) = (page.clone(), acted.clone());
+            move |window, cx| {
+                let view = cx.new(|_| MenuPage { page, acted });
+                Root::new(view, window, cx).bordered(false)
+            }
+        });
+        settle(cx);
+        let dropdown = cx.debug_bounds("dropdown").expect("the dropdown").center();
+        let row = cx.debug_bounds("row").expect("the row").center();
+
+        for right_click in [false, true] {
+            for (closing, chosen) in [("escape", 0), ("enter", 1)] {
+                for key_up_first in [false, true] {
+                    let at = format!(
+                        "{} closed by {closing}, the click {} its release",
+                        if right_click {
+                            "a right-click menu"
+                        } else {
+                            "a dropdown"
+                        },
+                        if key_up_first { "after" } else { "before" },
+                    );
+                    if right_click {
+                        cx.simulate_mouse_down(row, MouseButton::Right, Modifiers::default());
+                        cx.simulate_mouse_up(row, MouseButton::Right, Modifiers::default());
+                    } else {
+                        cx.simulate_click(dropdown, Modifiers::default());
+                    }
+                    settle(cx);
+                    let item = cx
+                        .debug_bounds(ACT)
+                        .unwrap_or_else(|| panic!("{at}: the menu opened"))
+                        .center();
+                    // The keyboard's cursor, which Enter acts on.
+                    cx.simulate_keystrokes("down");
+                    settle(cx);
+
+                    let (page_before, acted_before) = (page.get(), acted.get());
+                    let [press, release] = click(item);
+                    let (down, up) = (key(closing, true), key(closing, false));
+                    deliver(
+                        cx,
+                        if key_up_first {
+                            vec![down, up, press, release]
+                        } else {
+                            vec![down, press, release, up]
+                        },
+                    );
+                    settle(cx);
+
+                    assert!(cx.debug_bounds(ACT).is_none(), "{at}: the menu closed");
+                    assert_eq!(page.get(), page_before + 1, "{at}: the page took the click");
+                    assert_eq!(
+                        acted.get(),
+                        acted_before + chosen,
+                        "{at}: the gone item took no click"
+                    );
+                }
+            }
+        }
     }
 
     #[gpui::test]

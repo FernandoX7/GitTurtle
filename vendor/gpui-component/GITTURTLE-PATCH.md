@@ -766,6 +766,25 @@ calls them. Remove it when upstream takes a closed modal out of the
 window's input as it closes, or hit-tests a press against a frame drawn
 since, and those tests pass without it.
 
+The popup-close-draw patch extends it to `src/menu/popup_menu.rs`,
+`src/select.rs` and `src/color_picker.rs`, through
+`root::draw_after_popup_close`, which defers once and then takes
+`draw_before_next_input`'s one draw (deferred, so a close inside an update of
+`Root` cannot reenter it). A dropdown, a right-click menu or a Select that a
+key closed, and a color picker's popover, stayed in the frame presses are
+hit-tested against until the window next drew, so a click right after the
+closing key could land on the gone popup: a menu's item took it, or the popup
+swallowed it. `PopupMenu::dismiss` (Escape, Enter on an item, a click on an
+item or outside it), `SelectState::set_open` going closed (Enter on an item,
+Escape, losing focus, a click on the trigger) and the picker's `SwatchGrid`
+observer (every route that closes the picker) now have the window draw before
+its next input. It adds a draw and no key handling: the held-Enter, X11
+autorepeat and modified-Enter guards around them are unchanged.
+`scripts/vendor-crate-test.sh vendor/gpui-component a_click_after_the_key_that_closes`
+clicks where a dropdown's and a right-click menu's item, a Select's list and
+a picker's popover were, before and after the closing key comes up. Remove it
+with the dialog-close-draw patch.
+
 The secondary-edge patch modifies `src/theme/mod.rs` and
 `src/button/button.rs`. Upstream draws a bordered secondary Button's edge in
 the shared `border` at rest and sets it from `border` again in its hovered,
