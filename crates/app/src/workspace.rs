@@ -2041,16 +2041,21 @@ impl GitTurtle {
         let gap = metrics.gap;
         // Every row's `px_3`, the inspector's one leading inset.
         let room = width - window.rem_size() * 0.75 * 2.;
-        let hint = if self.working_paths.staged_count == 0 {
-            UNSTAGED_HINT
-        } else {
-            STAGED_HINT
-        };
         let size = crate::appearance::ui_text(10.);
         gap + metrics.label
             + gap
             + gap
-            + metrics.small * wrapped_lines(hint, size, room, window) as f32
+            + metrics.small * wrapped_lines(self.description_hint(), size, room, window) as f32
+    }
+
+    /// The hint below the commit's Description, which is also that field's
+    /// accessible description.
+    fn description_hint(&self) -> &'static str {
+        if self.working_paths.staged_count == 0 {
+            UNSTAGED_HINT
+        } else {
+            STAGED_HINT
+        }
     }
 
     /// The counts the Staged and Unstaged headings show, the first row and
@@ -5569,6 +5574,9 @@ impl GitTurtle {
                                                                 .aria_label(
                                                                     "Commit description, optional",
                                                                 )
+                                                                .aria_description(
+                                                                    self.description_hint(),
+                                                                )
                                                                 .h(px(field))
                                                                 .text_size(
                                                                     crate::appearance::ui_text(12.),
@@ -5578,8 +5586,12 @@ impl GitTurtle {
                                                             "commit-description".into()
                                                         }),
                                                     )
-                                                    .child(
+                                                    // The field's accessible description reads this
+                                                    // with the field, so its own line stays out of the
+                                                    // tree: walking past it does not read it again.
+                                                    .child(native_accessibility::hidden_from_assistive_technology(
                                                         div()
+                                                            .id("commit-description-hint")
                                                             .debug_selector(|| {
                                                                 "commit-description-hint".into()
                                                             })
@@ -5593,13 +5605,10 @@ impl GitTurtle {
                                                             // Shrinking below its one line, it wraps as `description_section`
                                                             // predicts rather than running past the column at 18 pt.
                                                             .child(div().flex_1().min_w_0().child(
-                                                                if staged == 0 {
-                                                                    UNSTAGED_HINT
-                                                                } else {
-                                                                    STAGED_HINT
-                                                                },
+                                                                self.description_hint(),
                                                             )),
-                                                    ),
+                                                        true,
+                                                    )),
                                             )
                                         })
                                         .when_some(self.draft_save_error.as_ref(), |el, error| {

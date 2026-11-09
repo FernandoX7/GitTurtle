@@ -27428,6 +27428,48 @@ pub(crate) mod tests {
         (fixture, app, cx)
     }
 
+    /// The hint below the commit's Description is the field's accessible
+    /// description, so a screen reader reads it with the field, and it
+    /// follows what the hint says as the staged count changes. The hint
+    /// stays drawn, and its own node is hidden, so walking past it does not
+    /// read the same words again. The kit gained the description for this;
+    /// the field had none and the hint reached no assistive technology.
+    #[gpui::test]
+    async fn the_commit_description_hint_is_read_with_its_field(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = working_window(cx).await;
+        let message = app.read_with(cx, |app, _| app.commit_message.clone());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let node = input_node(cx, &message);
+        assert_eq!(node.label(), Some("Commit description, optional"));
+        assert_eq!(
+            node.description(),
+            Some("Only staged changes will be committed")
+        );
+        assert!(
+            cx.debug_bounds("commit-description-hint").is_some(),
+            "the hint stays drawn"
+        );
+        let hint = crate::native_accessibility::written::get("commit-description-hint")
+            .expect("the hint's node");
+        assert!(hint.node.is_hidden(), "{hint:?}");
+
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--quiet"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_paths.staged_count),
+            0
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            input_node(cx, &message).description(),
+            Some("Stage files to include in your commit"),
+            "it says what the hint says now"
+        );
+    }
+
     /// The bounds of the painted quad whose border is `color` and that
     /// matches `bounds`, if any.
     fn bordered_quad(
