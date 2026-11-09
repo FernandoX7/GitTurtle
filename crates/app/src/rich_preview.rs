@@ -541,21 +541,29 @@ pub(super) fn render_comparison<T: 'static>(
             .py_2()
             .border_r_1()
             .border_color(rgb(colors.border))
+            // The side's name and what it holds are each read as static
+            // text, as the rest of the side is: drawn as plain text, neither
+            // reached an assistive technology.
             .child(
-                div()
-                    .debug_selector(move || format!("rich-side-heading-{index}"))
-                    .min_h(appearance::ui_size(28.))
-                    .flex()
-                    .items_center()
-                    .text_size(appearance::ui_text(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(label),
+                native_accessibility::text(
+                    SharedString::from(format!("rich-side-heading-{index}")),
+                    label,
+                )
+                .min_h(appearance::ui_size(28.))
+                .flex()
+                .items_center()
+                .text_size(appearance::ui_text(12.))
+                .font_weight(FontWeight::SEMIBOLD),
             )
-            .child(format_caption(
-                "rich-side-format",
-                index,
-                side.metadata.format.clone().into(),
-                colors.muted,
+            .child(native_accessibility::static_text(
+                format_caption(
+                    "rich-side-format",
+                    index,
+                    side.metadata.format.clone().into(),
+                    colors.muted,
+                )
+                .id(SharedString::from(format!("rich-side-caption-{index}"))),
+                side.metadata.format.clone(),
             ));
         let mut answer = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
@@ -620,17 +628,23 @@ pub(super) fn render_comparison<T: 'static>(
                     })),
                 );
             }
-            header = header.child(div().text_size(appearance::ui_text(11.)).child(format!(
-                "{} {} / {}{}",
-                side.page_kind,
-                selected + 1,
-                side.page_count,
-                if side.pages.len() < side.page_count {
-                    format!(" · first {} available", side.pages.len())
-                } else {
-                    String::new()
-                }
-            )));
+            header = header.child(
+                native_accessibility::text(
+                    SharedString::from(format!("rich-side-position-{index}")),
+                    format!(
+                        "{} {} / {}{}",
+                        side.page_kind,
+                        selected + 1,
+                        side.page_count,
+                        if side.pages.len() < side.page_count {
+                            format!(" · first {} available", side.pages.len())
+                        } else {
+                            String::new()
+                        }
+                    ),
+                )
+                .text_size(appearance::ui_text(11.)),
+            );
         }
         let mut body = div()
             .id(("rich-side-scroll", index))
@@ -657,9 +671,11 @@ pub(super) fn render_comparison<T: 'static>(
         if let Some(page) = side.pages.get(selected) {
             if let Some(caption) = &page.caption {
                 body = body.child(
-                    div()
-                        .text_size(appearance::ui_text(12.))
-                        .child(caption.clone()),
+                    native_accessibility::text(
+                        SharedString::from(format!("rich-page-caption-{index}")),
+                        caption.clone(),
+                    )
+                    .text_size(appearance::ui_text(12.)),
                 );
             }
             if let Some(render) = &page.render {
@@ -759,11 +775,23 @@ pub(super) fn render_comparison<T: 'static>(
             while !source.is_char_boundary(end) {
                 end -= 1;
             }
-            body = body.child(decoded_source(&source[..end], cx));
+            // Whole: an accessible value carries as much as this excerpt
+            // holds, and the one shared string serves both.
+            let excerpt = native_accessibility::bounded_accessible_text(&source[..end]);
+            body = body.child(native_accessibility::static_text(
+                decoded_source(excerpt.clone(), cx)
+                    .id(SharedString::from(format!("rich-side-excerpt-{index}"))),
+                excerpt,
+            ));
             if end < source.len() {
-                body = body.child(div().text_color(rgb(colors.muted)).child(
-                    "Excerpt limited to 16 KiB; Copy source includes the complete available text.",
-                ));
+                body = body.child(
+                    native_accessibility::text(
+                        SharedString::from(format!("rich-side-excerpt-limit-{index}")),
+                        "Excerpt limited to 16 KiB; Copy source includes the complete available \
+                         text.",
+                    )
+                    .text_color(rgb(colors.muted)),
+                );
             }
         }
         (
@@ -811,11 +839,11 @@ pub(super) fn render_comparison<T: 'static>(
         .into_any_element()
 }
 
-fn decoded_source(excerpt: &str, cx: &App) -> Div {
+fn decoded_source(excerpt: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .code_font(cx)
         .text_size(appearance::code_text())
-        .child(excerpt.to_owned())
+        .child(excerpt.into())
 }
 
 impl GitTurtle {
@@ -1451,6 +1479,52 @@ mod tests {
             .expect("the side's sentence is written")
             .node;
         assert_eq!(read.value(), Some(STATIC_MERMAID));
+    }
+
+    /// Every line a side draws as text is its own label, read by its value:
+    /// the side's name, what it holds, which diagram is shown, that
+    /// diagram's caption, the literal excerpt and the line saying it was cut.
+    /// Drawn as plain text they reached no assistive technology.
+    #[gpui::test]
+    fn each_line_of_a_rich_side_is_read_as_its_own_text(cx: &mut TestAppContext) {
+        let fence = "```mermaid\nflowchart LR\n  A --> B\n```\n\n".repeat(5);
+        // Past the excerpt's 16 KiB, cut within a two-byte character.
+        let old = format!("{fence}{}é tail", "x".repeat(16 * 1024 - fence.len() - 1));
+        let file = mermaid_change(Some("a.md"), Some("a.md"));
+        let prepared = prepare_mermaid(&old, &fence, &file, || Ok(()))
+            .unwrap()
+            .expect("both sides draw");
+        let excerpt = old[..16 * 1024 - 1].to_owned();
+        let cx = drawn(cx, prepared, false);
+        for (id, text) in [
+            ("rich-side-heading-0", "Before"),
+            ("rich-side-heading-1", "After"),
+            ("rich-side-caption-0", "Mermaid diagrams"),
+            ("rich-side-caption-1", "Mermaid diagrams"),
+            ("rich-side-position-0", "Diagram 1 / 5 · first 4 available"),
+            ("rich-page-caption-0", "Diagram 1 · source line 2"),
+            ("rich-page-caption-1", "Diagram 1 · source line 2"),
+            ("rich-side-excerpt-0", excerpt.as_str()),
+            ("rich-side-excerpt-1", fence.as_str()),
+            (
+                "rich-side-excerpt-limit-0",
+                "Excerpt limited to 16 KiB; Copy source includes the complete available text.",
+            ),
+        ] {
+            let node = native_accessibility::written::get(id)
+                .unwrap_or_else(|| panic!("{id} is written"))
+                .node;
+            assert_eq!(node.role(), Role::Label, "{id} is static text");
+            assert_eq!(node.value(), Some(text), "{id} reads its own line");
+        }
+        assert!(
+            native_accessibility::written::get("rich-side-excerpt-limit-1").is_none(),
+            "a whole excerpt says nothing of a cut"
+        );
+        // The selectors the sides' layout tests find stay on these lines.
+        for selector in ["rich-side-heading-0", "rich-side-format-0/Mermaid diagrams"] {
+            assert!(cx.debug_bounds(selector).is_some(), "{selector} is drawn");
+        }
     }
 
     /// The sentence stays with whichever side is the first to draw, and a
