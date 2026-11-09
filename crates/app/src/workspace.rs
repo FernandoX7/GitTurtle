@@ -3619,38 +3619,29 @@ impl GitTurtle {
     /// heading's control held it before the selection moved there
     /// (`was_on_stop`): the roving stop moves with the selection, so the
     /// ring and Enter stay on the row the person is on, as the Reflog's
-    /// entries take focus from the arrow keys. Where the rows draw no
-    /// control focus returns to the list, the row's own stop: a heading's
-    /// control the arrow's scroll took out of view is not drawn either.
+    /// entries take focus from the arrow keys. Where that row's control is
+    /// no stop (`working_row_stops`), as where the rows draw none or it is
+    /// landing from a flight, focus returns to the list, the row's own stop:
+    /// a heading's control the arrow's scroll took out of view is not drawn
+    /// either.
     pub(super) fn follow_selection_with_row_stop(
         &self,
         was_on_stop: bool,
-        (index, area, position): (usize, ChangeArea, usize),
+        position: usize,
         window: &mut Window,
         cx: &mut App,
     ) {
         if !was_on_stop {
             return;
         }
-        if !self
-            .working_row_controls(cx)
-            .is_some_and(|controls| controls.file_action())
+        match self
+            .working_row_stops(cx)
+            .iter()
+            .find(|stop| stop.position == position)
         {
-            window.focus(&self.file_focus, cx);
-            return;
+            Some(stop) => self.focus_row_stop(stop, window, cx),
+            None => window.focus(&self.file_focus, cx),
         }
-        let Some(entry) = self
-            .shown_working_status()
-            .and_then(|status| status.entries.get(index))
-        else {
-            return;
-        };
-        let stop = RowStop {
-            id: self.working_row_key(index, area),
-            row: RowControl::File(entry.path.clone(), area),
-            position,
-        };
-        self.focus_row_stop(&stop, window, cx);
     }
 
     pub(super) fn move_working_selection(
@@ -3701,7 +3692,7 @@ impl GitTurtle {
         self.choose_working_selection(index, area, false, false, window, cx);
         self.working_scroll
             .scroll_to_item(position, ScrollStrategy::Center);
-        self.follow_selection_with_row_stop(on_stop, (index, area, position), window, cx);
+        self.follow_selection_with_row_stop(on_stop, position, window, cx);
     }
 
     /// One file row's Stage, or Unstage where `staged`, from its control or,

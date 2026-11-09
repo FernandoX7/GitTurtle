@@ -827,6 +827,64 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// The row landing from a flight draws an empty slot, so its control is
+    /// left out of the list's stops: selected, Tab from the list passes over
+    /// it to the first heading; reached by an arrow from another row's
+    /// control, focus returns to the list rather than rest on the control no
+    /// frame draws.
+    #[gpui::test]
+    async fn a_row_landing_from_a_flight_takes_no_stop(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working(cx, false).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        draw(cx);
+        // [Staged 2, alpha, beta, Unstaged 1, notes]: staged, notes.txt
+        // travels to row 3 on a clock that stands still from here on.
+        toggle(&app, cx, 4).await;
+        draw(cx);
+        assert_eq!(flying(&app, cx), Some(3));
+        let select = |position: usize, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    let workspace::WorkingRow::File(index, area) = app.working_rows[position]
+                    else {
+                        panic!("row {position} is a file's");
+                    };
+                    app.choose_working_selection(index, area, false, false, window, cx);
+                    window.focus(&app.file_focus, cx);
+                    app.focus_ring.mark(window);
+                })
+            });
+            cx.executor().run_until_parked();
+            draw(cx);
+        };
+        select(3, cx);
+        assert_eq!(flying(&app, cx), Some(3), "the row still travels");
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            crate::views::tests::working_stop(&app, cx),
+            "unstage-all",
+            "Tab from the list passes over the landing row's control"
+        );
+        select(2, cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            crate::views::tests::working_stop(&app, cx),
+            "working-stage-2",
+            "beta.txt's Unstage is a stop"
+        );
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(flying(&app, cx), Some(3), "the row still travels");
+        assert_eq!(
+            crate::views::tests::working_stop(&app, cx),
+            "the list",
+            "an arrow reaching the landing row leaves focus on the list"
+        );
+    }
+
     /// Stages epsilon from its row's Stage, so that its copy starts to
     /// travel from where its row stood, over delta's, which took its place
     /// under the pointer that pressed it; the clock stands still. Returns

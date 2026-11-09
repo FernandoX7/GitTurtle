@@ -773,7 +773,7 @@ impl GitTurtle {
         {
             self.working_scroll
                 .scroll_to_item(position, ScrollStrategy::Nearest);
-            self.follow_selection_with_row_stop(on_stop, (index, area, position), window, cx);
+            self.follow_selection_with_row_stop(on_stop, position, window, cx);
         }
     }
     pub(super) fn working_scroll_anchor(&self, window: &Window) -> Option<ScrollAnchor> {

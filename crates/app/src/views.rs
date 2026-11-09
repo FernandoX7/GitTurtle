@@ -33572,7 +33572,7 @@ pub(crate) mod tests {
 
     /// What holds focus in Working Changes' Tab order: the list, the title,
     /// a row control by its selector, or something else.
-    fn working_stop(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> String {
+    pub(crate) fn working_stop(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> String {
         cx.update(|window, cx| {
             let app = app.read(cx);
             if app.file_focus.is_focused(window) {
