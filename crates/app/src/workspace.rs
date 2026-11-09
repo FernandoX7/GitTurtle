@@ -2789,10 +2789,27 @@ impl GitTurtle {
         let path = repo.path().to_owned();
         self.status_task = None;
         let requested = self.request_status_read();
+        // Marked already, a read that fails says what an Open would say
+        // now, so the mark can state the current reason (`tab_mark_restated`).
+        let marked = self
+            .shown_tab_unavailable()
+            .then(|| {
+                self.repository_tabs
+                    .reopen_root(&path, self.scope.as_ref().map(|scope| &scope.1))
+            })
+            .flatten();
         let response =
             self.operations
                 .submit_read_once(&mut self.status_reads, path.clone(), move || {
-                    worker::WorkingState::read(&repo)
+                    worker::WorkingState::read(&repo).map_err(|error| match &marked {
+                        Some((root, git_dir)) => worker::with_current_mark_reason(
+                            error,
+                            repo.path(),
+                            root,
+                            git_dir.as_ref(),
+                        ),
+                        None => error,
+                    })
                 });
         self.status_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| {
@@ -2825,23 +2842,7 @@ impl GitTurtle {
                             this.file_paths.reset();
                             this.selected_file = None;
                         }
-                        // Changes' Refresh is a passive reopen too: its
-                        // repository gone from its root, the tab is read as
-                        // History's Refresh reads it, whose failed Open marks
-                        // it and says why, never as the work tree enclosing
-                        // it. A tab marked already says why in its mark and
-                        // the preview, and the read adds nothing beside it,
-                        // as a quiet read adds nothing: with no repository
-                        // found there, those say the reasons any folder that
-                        // is not one gets, and this once said "is gone"
-                        // beside them.
-                        if error.is::<worker::RepositoryGone>() {
-                            this.tab_repository_gone(window, cx);
-                        } else {
-                            this.operation_error.get_or_insert_with(|| {
-                                views::OperationFailure::of_read("Working tree", &error)
-                            });
-                        }
+                        this.working_read_failed(error, window, cx);
                     }
                 }
                 this.try_automatic_refresh(window, cx);
@@ -2849,6 +2850,39 @@ impl GitTurtle {
             });
         }));
         cx.notify();
+    }
+
+    /// What a failed working read says. Changes' Refresh is a passive reopen
+    /// too: its repository gone from its root, the tab is read as History's
+    /// Refresh reads it, whose failed Open marks it and says why, never as
+    /// the work tree enclosing it. A tab marked already says why in its mark
+    /// and the preview, and the read adds nothing beside it, as a quiet read
+    /// adds nothing: with no repository found there, those say the reasons
+    /// any folder that is not one gets, and this once said "is gone" beside
+    /// them. Where the read found a reason of its own, the mark takes it in
+    /// those same words, and where the mark has gone meanwhile the read's
+    /// own failure says what it did.
+    pub(super) fn working_read_failed(
+        &mut self,
+        error: anyhow::Error,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let error = match error.downcast::<worker::MarkedReadFailed>() {
+            Ok(failed) => {
+                if self.tab_mark_restated(failed.reason, cx) {
+                    return;
+                }
+                failed.read
+            }
+            Err(error) => error,
+        };
+        if error.is::<worker::RepositoryGone>() {
+            self.tab_repository_gone(window, cx);
+        } else {
+            self.operation_error
+                .get_or_insert_with(|| views::OperationFailure::of_read("Working tree", &error));
+        }
     }
 
     /// Numbers a working-state read as it is asked for, the explicit read

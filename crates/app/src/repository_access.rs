@@ -88,7 +88,7 @@ pub(super) fn explain(path: &Path, error: anyhow::Error) -> anyhow::Error {
             }
         }
         Failure::Unreadable => {
-            "This repository's folder could not be read, so whether it is still there is not known. Check that its volume or network share is available and readable, then refresh."
+            "This repository's folder could not be read, so whether it is still there is not known. Check that its volume or network share is available and readable. When the folder can be read again, choose it with Open Repository."
         }
         Failure::Other => {
             "The local repository could not be opened. Review the diagnostic and choose its current folder with Open Repository."
@@ -198,8 +198,7 @@ mod tests {
                 io::Error::from_raw_os_error(code),
             )
         };
-        // EIO and ETIMEDOUT.
-        for code in [5, 110] {
+        for code in [libc::EIO, libc::ETIMEDOUT] {
             assert_eq!(classify(&unchecked(code)), Failure::Unreadable, "{code}");
             assert!(!finds_no_repository(&unchecked(code)), "{code}");
             let said = format!(
@@ -209,9 +208,11 @@ mod tests {
             assert!(said.starts_with("This repository's folder could not be read"), "{said}");
             assert!(said.contains("Could not read /mnt/share/project"), "{said}");
             assert!(!said.contains("gone") && !said.contains("missing"), "{said}");
+            // The Projects page shows these words too, and has no Refresh.
+            assert!(said.contains("Open Repository") && !said.contains("refresh"), "{said}");
         }
-        assert_eq!(classify(&unchecked(13)), Failure::Permission);
-        assert!(!finds_no_repository(&unchecked(13)));
+        assert_eq!(classify(&unchecked(libc::EACCES)), Failure::Permission);
+        assert!(!finds_no_repository(&unchecked(libc::EACCES)));
     }
 
     /// Nothing at the path stays the plain error it was, read as missing,
@@ -224,6 +225,27 @@ mod tests {
         );
         assert!(!gitturtle_core::could_not_check(&error), "{error:#}");
         assert_eq!(classify(&error), Failure::Missing);
+    }
+
+    /// The words say only what holds wherever they show: a new or cold tab
+    /// lands on Projects with no repository, where nothing reads again.
+    #[test]
+    fn a_folder_that_could_not_be_checked_promises_no_later_read() {
+        let said = format!(
+            "{:#}",
+            explain(
+                Path::new("/mnt/share/project"),
+                gitturtle_core::CouldNotCheck::unless_absent(
+                    Path::new("/mnt/share/project"),
+                    io::Error::from_raw_os_error(libc::EIO),
+                ),
+            )
+        );
+        assert!(
+            said.contains("When the folder can be read again, choose it with Open Repository."),
+            "{said}"
+        );
+        assert!(!said.contains("next active"), "{said}");
     }
 
     #[test]

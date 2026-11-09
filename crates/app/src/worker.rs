@@ -1441,6 +1441,49 @@ fn nothing_found_is_gone(repo: &GitRepository, error: anyhow::Error) -> anyhow::
     }
 }
 
+/// A marked tab's Changes read that failed, with why its repository cannot
+/// be opened now, in an Open's own words ([`with_current_mark_reason`]). The
+/// read's own failure stays whole, for a mark gone by the time it lands.
+#[derive(Debug)]
+pub(crate) struct MarkedReadFailed {
+    pub(crate) reason: String,
+    pub(crate) read: anyhow::Error,
+}
+
+impl std::fmt::Display for MarkedReadFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.read)
+    }
+}
+
+impl std::error::Error for MarkedReadFailed {}
+
+/// A marked tab's failed Changes read, with the reason its Open would give
+/// now ([`MarkedReadFailed`]): the reasons only an Open can give
+/// (`repository_access::explain`), by the same passive reopen of the tab's
+/// captured root, which keeps nothing it opens and can never open another
+/// repository there. No reason for a folder that could not be checked, or
+/// one the reopen found after all: the mark then stays as it is. Runs on
+/// the read's own thread, only once that read failed.
+pub(crate) fn with_current_mark_reason(
+    error: anyhow::Error,
+    path: &Path,
+    root: &Path,
+    git_dir: Option<&GitDirectories>,
+) -> anyhow::Error {
+    if gitturtle_core::could_not_check(&error) {
+        return error;
+    }
+    match RepositorySession::default().open(path, Some(root), git_dir) {
+        Err(reopen) if !gitturtle_core::could_not_check(&reopen) => MarkedReadFailed {
+            reason: format!("{:#}", worded_open_failure(path, reopen)),
+            read: error,
+        }
+        .into(),
+        _ => error,
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// Runs at each checkpoint of a quiet read's working read on this

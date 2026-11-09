@@ -1900,6 +1900,33 @@ impl GitTurtle {
         }
         true
     }
+    /// Gives the shown tab's mark the reason its repository cannot be opened
+    /// now, as a Changes read that failed found it
+    /// (`worker::MarkedReadFailed`), the window with it and the Projects
+    /// page where it says the old one, and returns whether there was a mark
+    /// to restate. Only the words change: the tab keeps its root and Git
+    /// directory, and no other repository is opened or accepted in it. An
+    /// explicit Refresh there once kept the mark's old reason after Git
+    /// started finding another repository.
+    pub(super) fn tab_mark_restated(&mut self, reason: String, cx: &mut Context<Self>) -> bool {
+        let Some(previous) = self
+            .repository_tabs
+            .active
+            .and_then(|index| self.repository_tabs.tabs.get_mut(index))
+            .and_then(|tab| {
+                tab.error
+                    .as_mut()
+                    .map(|error| std::mem::replace(error, reason.clone()))
+            })
+        else {
+            return false;
+        };
+        self.error = Some(reason.clone());
+        self.hub.update(cx, |hub, cx| {
+            hub.replace_error_matching(&previous, reason, cx)
+        });
+        true
+    }
     /// A read of the shown tab's repository found it gone from its root
     /// (`worker::RepositoryGone`): Git finds another repository there, the
     /// work tree enclosing it once its `.git` went, or none. The tab is read
@@ -4454,6 +4481,104 @@ mod tests {
             assert!(app.mode == WorkspaceMode::Working, "{after}: in Changes");
             assert_eq!(app.operation_error, None, "{after}: nothing beside it");
             assert!(app.work_status.is_none(), "{after}: no status");
+        });
+    }
+
+    /// A marked tab's explicit Refresh in Changes states the reason that is
+    /// true now: marked with no repository found, once a work tree comes to
+    /// enclose its folder the mark names what Git now finds, in the words an
+    /// Open would use, and the window and Projects with it. The tab stays
+    /// on its own repository and in Changes, and opens nothing else. Where
+    /// nothing is found again, the mark goes back to those reasons. It once
+    /// kept the mark's old reason.
+    #[gpui::test]
+    async fn refresh_in_changes_states_the_marked_tab_s_current_reason(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        assert_not_a_repository(&app, cx, &root, "marked by Refresh");
+        let projects = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, cx| app.hub.read(cx).shown_error().map(str::to_owned))
+        };
+        assert!(projects(cx).is_some(), "Projects says the same");
+        let refresh_in_changes = async |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+            app.read_with(cx, |app, _| app.operations.drain());
+            crate::views::tests::settle(&app, cx).await;
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+            app.read_with(cx, |app, _| app.operations.drain());
+            crate::views::tests::settle(&app, cx).await;
+        };
+        // Git starts finding another repository at the tab's folder. The
+        // window's error follows the mark, whatever it said by then.
+        let enclosing = enclosing_work_tree(fixture.path());
+        cx.update(|_, cx| app.update(cx, |app, _| app.error = None));
+        refresh_in_changes(cx).await;
+        let after = "Refresh once Git finds another repository";
+        assert_gone(&app, cx, 0, &root, &enclosing, after);
+        app.read_with(cx, |app, _| {
+            let shown = &app.repository_tabs.tabs[0];
+            assert_eq!(shown.error, app.error, "{after}: the mark's reason");
+            assert!(app.mode == WorkspaceMode::Working, "{after}: in Changes");
+            assert_eq!(app.operation_error, None, "{after}: nothing beside it");
+            assert_eq!(
+                app.repository.as_ref().map(|repo| repo.path().to_owned()),
+                Some(root.clone()),
+                "{after}: its own repository, no other"
+            );
+        });
+        assert_eq!(
+            projects(cx),
+            app.read_with(cx, |app, _| app.error.clone()),
+            "{after}: Projects says the same"
+        );
+
+        // And back: nothing found again, the reasons a folder gets.
+        std::fs::remove_dir_all(fixture.path().join(".git")).unwrap();
+        refresh_in_changes(cx).await;
+        assert_not_a_repository(&app, cx, &root, "Refresh once nothing is found again");
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Working, "in Changes");
+            assert_eq!(app.operation_error, None, "nothing beside it");
+        });
+    }
+
+    /// A read that found a reason for a tab's mark lands to find the mark
+    /// gone, a quiet read having cleared it meanwhile: the read's own
+    /// failure still says what it did, and marks nothing. Lost with the
+    /// mark, nothing said why Changes had emptied.
+    #[gpui::test]
+    async fn a_marked_read_s_failure_says_what_it_did_once_the_mark_has_gone(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _root) = settled_history_window(cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.working_read_failed(
+                    worker::MarkedReadFailed {
+                        reason: "the reason an Open gives".into(),
+                        read: anyhow::anyhow!("the status read failed"),
+                    }
+                    .into(),
+                    window,
+                    cx,
+                )
+            })
+        });
+        assert_eq!(
+            operation_error(&app, cx),
+            Some("Working tree: the status read failed".into())
+        );
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.tabs[0].error.is_none(), "no mark made");
+            assert_eq!(app.error, None, "no reason shown");
         });
     }
 

@@ -352,6 +352,23 @@ impl ProjectHub {
             .then(|| SharedString::from(error.clone()))
     }
 
+    /// Replaces the feedback line where it still says `previous`, the
+    /// opening error a tab's mark has since restated
+    /// (`GitTurtle::tab_mark_restated`), as a line of its own. The same
+    /// words are no new line: Refresh pressed again with nothing changed
+    /// gives it no fresh node, alert or reveal, and a recent row's refusal
+    /// kept by that line still matches.
+    pub fn replace_error_matching(
+        &mut self,
+        previous: &str,
+        error: String,
+        cx: &mut Context<Self>,
+    ) {
+        if previous != error && self.error.as_deref() == Some(previous) {
+            self.set_error(Some(error), cx);
+        }
+    }
+
     /// Ends an Open the hub asked for that the window refused before reading
     /// anything, as at the eight-tab limit, saying why in the hub's
     /// feedback line, announced at once as its failures are, and returns
@@ -3143,6 +3160,45 @@ mod tests {
             validate_destination(&parent, "child").unwrap(),
             parent.join("child")
         );
+    }
+
+    /// A mark restated in the same words is no new line: the feedback line
+    /// keeps its node, so it is not announced or revealed again and a recent
+    /// row's refusal kept by that line still matches. A new reason is a
+    /// line of its own.
+    #[gpui::test]
+    fn an_unchanged_restatement_leaves_the_feedback_line_alone(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let captured = Rc::new(RefCell::new(None));
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let hub =
+                cx.new(|cx| ProjectHub::new(Vec::new(), HashMap::new(), "main".into(), window, cx));
+            *captured.borrow_mut() = Some(hub.clone());
+            gpui_kit::component::Root::new(hub, window, cx)
+        });
+        let hub = observed.borrow_mut().take().unwrap();
+        let line = |cx: &mut VisualTestContext| {
+            hub.read_with(cx, |hub, _| (hub.errors_shown, hub.error.clone()))
+        };
+        let replace = |previous: &'static str, error: &'static str, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                hub.update(cx, |hub, cx| {
+                    hub.replace_error_matching(previous, error.into(), cx)
+                })
+            });
+        };
+        cx.update(|_, cx| hub.update(cx, |hub, cx| hub.set_error(Some("the reason".into()), cx)));
+        let shown = line(cx);
+        assert_eq!(shown.1.as_deref(), Some("the reason"));
+
+        replace("the reason", "the reason", cx);
+        assert_eq!(line(cx), shown, "the same words are no new line");
+
+        replace("the reason", "a new reason", cx);
+        let new = line(cx);
+        assert_eq!(new.0, shown.0.wrapping_add(1), "a line of its own");
+        assert_eq!(new.1.as_deref(), Some("a new reason"));
     }
 }
 
