@@ -340,8 +340,7 @@ impl GitTurtle {
     pub(super) fn changes_label(&self) -> String {
         #[cfg(test)]
         CHROME_LABELS_FORMATTED.with(|formatted| formatted.set(formatted.get() + 1));
-        self.work_status
-            .as_ref()
+        self.header_status()
             .map(|status| {
                 if status.entries.is_empty() {
                     "Changes".into()
@@ -542,8 +541,7 @@ impl GitTurtle {
             .with(|kept| *kept.borrow_mut() = Some((shown.clone(), SharedString::default())));
         let history = self.mode != WorkspaceMode::Working;
         let count = self
-            .work_status
-            .as_ref()
+            .header_status()
             .map_or(0, |status| status.entries.len());
         div()
             .debug_selector(|| "repository-header".into())
@@ -3737,15 +3735,25 @@ impl GitTurtle {
             empty("Preview unavailable", error)
         } else if file.is_none()
             && self.mode == WorkspaceMode::Working
+            && self.shown_tab_unavailable()
+        {
+            // A marked tab's status is the last one read, beside the list's
+            // "Changes unavailable": the preview says the mark and its way
+            // back rather than "Working tree clean" or "Choose a file".
+            empty(
+                crate::branch_actions::UNAVAILABLE_REASON,
+                crate::branch_actions::UNAVAILABLE_WAY_BACK,
+            )
+        } else if file.is_none()
+            && self.mode == WorkspaceMode::Working
             && self.loading.is_none()
             && self
-                .work_status
-                .as_ref()
+                .header_status()
                 .is_some_and(|status| status.entries.is_empty())
         {
             EmptyState::new(
                 "working-preview-clean",
-                empty_state::working_clean_line(self.work_status.as_deref(), true),
+                empty_state::working_clean_line(self.header_status(), true),
             )
             .pane(cx)
         } else if file.is_none() {
@@ -4671,8 +4679,11 @@ struct ChromeLabels {
 struct ChromeInputs<'a> {
     /// The working status, once read: the count `changes_label` reads, the
     /// branch, HEAD and upstream the branch, its compact label and the
-    /// edge read, the counts and the operation in progress.
+    /// edge read, the counts and the operation in progress. None on a marked
+    /// tab, as `GitTurtle::header_status` reads it.
     status: Option<StatusInputs<'a>>,
+    /// Whether the shown tab is marked, whose branch reads as the mark does.
+    unavailable: bool,
     /// Whether a remote is configured, which decides the edge with them
     /// (`RepositoryEdge::of`).
     remotes: bool,
@@ -4740,6 +4751,7 @@ impl ChromeInputs<'_> {
                 behind: status.behind,
                 operation: status.operation.as_ref().map(text),
             }),
+            unavailable: self.unavailable,
             remotes: self.remotes,
             profile: self.profile.owned(),
             repository: self.repository.as_ref().map(named),
@@ -5897,7 +5909,8 @@ impl GitTurtle {
     fn chrome_inputs(&self) -> ChromeInputs<'_> {
         let names = &self.project_names;
         ChromeInputs {
-            status: self.work_status.as_deref().map(|status| StatusInputs {
+            unavailable: self.shown_tab_unavailable(),
+            status: self.header_status().map(|status| StatusInputs {
                 entries: status.entries.len(),
                 branch: status.branch.as_deref().map(Cow::Borrowed),
                 head: status.head.as_deref().map(Cow::Borrowed),
@@ -5920,11 +5933,15 @@ impl GitTurtle {
     fn chrome_text(&self) -> ChromeText {
         #[cfg(test)]
         CHROME_TEXT_BUILT.with(|built| built.set(built.get() + 1));
-        let status = self.work_status.as_ref();
+        let status = self.header_status();
         let edge = self.repository_edge();
-        let branch = status
-            .and_then(|status| status.branch.clone())
-            .unwrap_or("Detached HEAD".into());
+        let branch = if self.shown_tab_unavailable() {
+            crate::branch_actions::UNAVAILABLE.into()
+        } else {
+            status
+                .and_then(|status| status.branch.clone())
+                .unwrap_or("Detached HEAD".into())
+        };
         let changes = self.changes_label();
         let (heading, heading_tooltip) = self.heading_text();
         ChromeText {
@@ -6562,8 +6579,7 @@ impl GitTurtle {
         if !compact
             || self.repository_edge().is_some()
             || self
-                .work_status
-                .as_ref()
+                .header_status()
                 .is_none_or(|status| status.upstream.is_none())
         {
             return words;
@@ -6625,7 +6641,7 @@ impl GitTurtle {
                 .min(snap(px(280.))),
             action,
         )];
-        if let Some(status) = &self.work_status {
+        if let Some(status) = self.header_status() {
             let inset = snap(rem * 0.5) * 2.;
             items.push(if self.repository_edge().is_some() {
                 // The edge's line and its action after it, the action below

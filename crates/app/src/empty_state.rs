@@ -642,10 +642,10 @@ impl RepositoryEdge {
 }
 
 impl GitTurtle {
-    /// The repository's edge for the Git action bar, once its status is read.
+    /// The repository's edge for the Git action bar, once its status is read
+    /// and while its tab is not marked (`header_status`).
     pub(crate) fn repository_edge(&self) -> Option<RepositoryEdge> {
-        self.work_status
-            .as_ref()
+        self.header_status()
             .and_then(|status| RepositoryEdge::of(status, &self.remotes))
     }
 

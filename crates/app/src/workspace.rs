@@ -1785,22 +1785,21 @@ impl GitTurtle {
         // character and ellipsis, a truncated line keeping the characters
         // that fit strictly before its ellipsis, as `scope_name_min_width`
         // measures a cut scope name.
-        let (mut heading_icon, mut heading_badge) = (true, true);
+        // A marked tab's composer has no staged count to show.
+        let branch = self.composer_branch();
+        let (mut heading_icon, mut heading_badge) = (true, branch.is_some());
         if short {
-            let branch = self
-                .work_status
-                .as_ref()
-                .and_then(|s| s.branch.as_deref())
-                .unwrap_or("detached HEAD");
-            let heading = format!("Commit to {branch}");
+            let heading = composer_heading(branch);
             let heading_min = cached_text_width(&HEADING_MIN, &heading, window, || {
                 let size = ui_text(13.);
                 let whole = shaped_width(&heading, size, FontWeight::SEMIBOLD, window).ceil();
-                branch.chars().next().map_or(whole, |first| {
-                    let cut = format!("Commit to {first}…");
-                    (shaped_width(&cut, size, FontWeight::SEMIBOLD, window).floor() + px(1.))
-                        .min(whole)
-                })
+                branch
+                    .and_then(|branch| branch.chars().next())
+                    .map_or(whole, |first| {
+                        let cut = format!("Commit to {first}…");
+                        (shaped_width(&cut, size, FontWeight::SEMIBOLD, window).floor() + px(1.))
+                            .min(whole)
+                    })
             });
             let text = format!("{} staged", self.working_paths.staged_count);
             let badge = rem * 0.375 * 2.
@@ -1809,7 +1808,7 @@ impl GitTurtle {
                 });
             if sum(&[px(16.), heading_min, badge], gap) > body_room {
                 heading_icon = false;
-                heading_badge = sum(&[heading_min, badge], gap) <= body_room;
+                heading_badge &= sum(&[heading_min, badge], gap) <= body_room;
             }
         }
 
@@ -1879,6 +1878,18 @@ impl GitTurtle {
         )
     }
 
+    /// The branch the composer commits to, as the header reads it: the one
+    /// checked out, or "detached HEAD". None where the shown tab is marked,
+    /// whose branch would be the one from the last read
+    /// ([`GitTurtle::header_status`]).
+    fn composer_branch(&self) -> Option<&str> {
+        (!self.shown_tab_unavailable()).then(|| {
+            self.header_status()
+                .and_then(|status| status.branch.as_deref())
+                .unwrap_or("detached HEAD")
+        })
+    }
+
     /// The commit action's label: what it commits, or why it cannot. It
     /// reads "Working…" only once a write looks busy (`BusyLook`), as the
     /// action dims only then: it read so the moment any write started, a
@@ -1887,6 +1898,9 @@ impl GitTurtle {
         let staged = self.working_paths.staged_count;
         if self.operation_shown().is_some() {
             "Working…".to_owned()
+        } else if self.shown_tab_unavailable() {
+            // Whatever is read or kept is from before the mark.
+            "Changes unavailable".to_owned()
         } else if self.work_status.is_none()
             || self.working_filter_waiting()
             || self.working_paths.error.is_some()
@@ -4469,9 +4483,13 @@ impl GitTurtle {
             }
         }
         let staged = self.working_paths.staged_count;
+        // A marked tab's rows, counts and badge are those of the last status
+        // read, while the header says "Changes": it lists none and says
+        // "Changes unavailable", as before any status is read.
+        let marked = self.shown_tab_unavailable();
         // Of the status the shown rows index, as their counts are.
-        let total = self
-            .shown_working_status()
+        let total = (self.shown_working_status())
+            .filter(|_| !marked)
             .map_or(0, |status| status.entries.len());
         let conflicted = self.working_paths.conflicted;
         let identity_ready = self
@@ -4486,7 +4504,8 @@ impl GitTurtle {
         // A result is on screen: the status's own rows, or, while a newer
         // status's are prepared, the rows kept from before, which keep the
         // layout they had.
-        let shown = self.work_status.is_some()
+        let shown = !marked
+            && self.work_status.is_some()
             && !self.working_filter_waiting()
             && self.working_paths.error.is_none();
         // The commit waits for the rows it counts to be the status's own.
@@ -4499,7 +4518,7 @@ impl GitTurtle {
                     empty_state::working_clean_line(self.work_status.as_deref(), false),
                 )
                 .pane(cx)
-            } else if self.working_read_pending() {
+            } else if !marked && self.working_read_pending() {
                 // Its read may wait for a running write
                 // (`Self::refresh_worktree`).
                 EmptyState::new("working-reading", "Reading the working tree…").pane(cx)
@@ -4776,8 +4795,9 @@ impl GitTurtle {
                         )
                     })
                     // The count leaves with its label: alone it would repeat
-                    // the Changes tab or toggle's count above it.
-                    .when(forms.header_label, |el| {
+                    // the Changes tab or toggle's count above it. A marked
+                    // tab has none, as the Changes tab has none.
+                    .when(forms.header_label && !marked, |el| {
                         el.child(
                             div()
                                 .debug_selector(|| "working-header-count".into())
@@ -5234,11 +5254,7 @@ impl GitTurtle {
             }
         }
         let (gap, padding) = (metrics.gap, metrics.padding);
-        let branch = self
-            .work_status
-            .as_ref()
-            .and_then(|s| s.branch.as_deref())
-            .unwrap_or("detached HEAD");
+        let branch = self.composer_branch();
         let summary_length = title_length;
         #[cfg(test)]
         let (composer_probe, rows_probe) = (
@@ -5368,18 +5384,25 @@ impl GitTurtle {
                                             .text_size(crate::appearance::ui_text(13.))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .tooltip({
-                                                // Without its badge the heading names the count.
-                                                let tooltip = if forms.heading_badge {
-                                                    format!("Commit to {branch}")
+                                                // Without its badge the heading names the count,
+                                                // which a marked tab has none of.
+                                                let heading = composer_heading(branch);
+                                                let tooltip = if forms.heading_badge || branch.is_none() {
+                                                    heading
                                                 } else {
-                                                    format!("Commit to {branch} · {staged} staged")
+                                                    format!("{heading} · {staged} staged")
                                                 };
+                                                #[cfg(test)]
+                                                crate::views::note_control_tooltip(
+                                                    &"commit-composer-heading".into(),
+                                                    &tooltip,
+                                                );
                                                 move |window, cx| {
                                                     Tooltip::new(tooltip.clone()).build(window, cx)
                                                 }
                                             })
                                             .child(if short {
-                                                format!("Commit to {branch}")
+                                                composer_heading(branch)
                                             } else {
                                                 "Create a commit".into()
                                             }),
@@ -5447,9 +5470,12 @@ impl GitTurtle {
                                                     .text_size(crate::appearance::ui_text(11.))
                                                     .text_color(rgb(p.muted))
                                                     .child(icon("branch", 13., p.muted))
-                                                    .child(
-                                                        div().truncate().child(branch.to_owned()),
-                                                    ),
+                                                    // A marked tab's, in the picker's word.
+                                                    .child(div().truncate().child(
+                                                        branch
+                                                            .unwrap_or(crate::branch_actions::UNAVAILABLE)
+                                                            .to_owned(),
+                                                    )),
                                             )
                                         })
                                         // The title's label, field and any note,
@@ -5773,7 +5799,10 @@ impl GitTurtle {
                                             )
                                         });
                                     let label = self.commit_action_label(cx);
-                                    let detail = format!("Commit staged changes to {branch}");
+                                    let detail = branch.map_or_else(
+                                        || crate::branch_actions::UNAVAILABLE_REASON.to_owned(),
+                                        |branch| format!("Commit staged changes to {branch}"),
+                                    );
                                     // While only the rows being prepared refuse it,
                                     // its name and tooltip say why once it dims
                                     // (`rows_wait`); a label that says why it
@@ -6684,7 +6713,8 @@ impl GitTurtle {
         // A write in flight leaves the actions inert at once (`write_from`,
         // `run_edge_action`) and dimmed once its spell looks busy.
         let looks_busy = self.operation_shown().is_some();
-        let detached = self.work_status.as_ref().is_none_or(|s| s.branch.is_none());
+        let detached = self.header_status().is_none_or(|s| s.branch.is_none());
+        let marked = self.shown_tab_unavailable();
         // Where the compact bar has no room for the edge's line, it draws
         // the line's glyph, and a detached HEAD's picker says the line's
         // word, the line leaving, so the bar draws one commit glyph.
@@ -6705,7 +6735,7 @@ impl GitTurtle {
                     )
                     .clone()
             });
-            let branch = (self.work_status.as_ref())
+            let branch = (self.header_status())
                 .and_then(|status| status.branch.as_deref())
                 .unwrap_or("Detached HEAD");
             let (remote, remote_branch) = (&*inputs.remote, &*inputs.remote_branch);
@@ -6751,7 +6781,7 @@ impl GitTurtle {
                     }))
             });
         // A line that leaves for the picker is not built at all.
-        let shown = self.work_status.as_ref().filter(|_| !line_left);
+        let shown = self.header_status().filter(|_| !line_left);
         let sync_state = shown.and_then(|status| {
             if let Some(edge) = edge {
                 let caption = edge_form.caption && !compact;
@@ -6860,7 +6890,9 @@ impl GitTurtle {
             .zip(&text.actions)
             .zip(marks)
             .map(|(((id, label), action), mark)| {
-                let missing = !remote_set || (id != "fetch" && (!remote_branch_set || detached));
+                // A marked tab's repository is not the one Targets name.
+                let missing =
+                    marked || !remote_set || (id != "fetch" && (!remote_branch_set || detached));
                 let unavailable = looks_busy || missing;
                 // Each reads its confirmation where it was touched once Git
                 // reports success, for the target it acted on: labelled in its
@@ -7044,6 +7076,8 @@ impl GitTurtle {
             .border_color(rgb(p.border))
             .child(row)
             .when(self.git_actions_open, |el| {
+                #[cfg(test)]
+                TARGETS_DESTINATION.set(Some(text.destination.clone()));
                 el.child(
                     div()
                         .px_4()
@@ -7235,7 +7269,7 @@ impl GitTurtle {
             .find(|configured| configured.name == *remote)
             .map(|configured| Cow::Borrowed(configured.push_url.as_str()));
         GitActionsInputs {
-            status: self.work_status.as_deref().map(|status| SyncInputs {
+            status: self.header_status().map(|status| SyncInputs {
                 branch: status.branch.as_deref().map(Cow::Borrowed),
                 head: status.head.is_some(),
                 detached: (status.head.as_deref())
@@ -7251,6 +7285,7 @@ impl GitTurtle {
             remote,
             push_url,
             busy: self.operation_shown(),
+            unavailable: self.shown_tab_unavailable(),
         }
     }
 }
@@ -7283,6 +7318,9 @@ struct GitActionsInputs<'a> {
     /// The running write's label once its spell looks busy, which Fetch,
     /// Pull and Push say in place of their own tooltips.
     busy: Option<&'static str>,
+    /// Whether the shown tab is marked, which Fetch, Pull and Push refuse
+    /// for, saying the mark ahead of any remote or branch from before.
+    unavailable: bool,
 }
 
 /// The parts of the working status the action bar's text shows
@@ -7320,6 +7358,7 @@ impl GitActionsInputs<'_> {
             remote_branch: text(&self.remote_branch),
             push_url: self.push_url.as_ref().map(text),
             busy: self.busy,
+            unavailable: self.unavailable,
         }
     }
 }
@@ -7423,6 +7462,11 @@ impl GitActionsText {
             [("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")].map(|(id, label)| {
                 let tooltip: SharedString = if let Some(busy) = inputs.busy {
                     busy.into()
+                } else if inputs.unavailable {
+                    // The mark's word, as the branch picker says it: the
+                    // status is absent, which read as a detached HEAD, and
+                    // Fetch named the remote from before.
+                    crate::branch_actions::UNAVAILABLE_REASON.into()
                 } else if inputs.push_url.is_none() {
                     "No configured remote selected · Check Targets".into()
                 } else if id != "fetch" && detached {
@@ -7446,10 +7490,19 @@ impl GitActionsText {
         Self {
             operation: (status.and_then(|status| status.operation.as_deref()))
                 .map(|operation| format!("{operation} in progress").into()),
-            destination: inputs.push_url.as_deref().map_or_else(
-                || "No remote configured · branch and commit actions are available locally".into(),
-                |url| format!("Push to {target} · {}", display_remote_url(url)).into(),
-            ),
+            // A marked tab's remote and branch are those from before, which
+            // the line once named as where Push goes.
+            destination: if inputs.unavailable {
+                crate::branch_actions::UNAVAILABLE_REASON.into()
+            } else {
+                inputs.push_url.as_deref().map_or_else(
+                    || {
+                        "No remote configured · branch and commit actions are available locally"
+                            .into()
+                    },
+                    |url| format!("Push to {target} · {}", display_remote_url(url)).into(),
+                )
+            },
             edge,
             sync,
             actions,
@@ -7472,6 +7525,19 @@ thread_local! {
     /// How many times the Git action bar's text was built
     /// ([`GitActionsText::build`]), for a test.
     static GIT_ACTIONS_TEXT_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The line Targets last drew under its fields, for a test to read back.
+    pub(crate) static TARGETS_DESTINATION: std::cell::RefCell<Option<SharedString>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The composer's heading where it names its branch
+/// (`GitTurtle::composer_branch`): "Commit to" that branch, or, on a marked
+/// tab, the mark's reason as the branch picker says it.
+fn composer_heading(branch: Option<&str>) -> String {
+    branch.map_or_else(
+        || crate::branch_actions::UNAVAILABLE_REASON.to_owned(),
+        |branch| format!("Commit to {branch}"),
+    )
 }
 
 /// `input`'s text without the whitespace around it, borrowed from its rope
@@ -7959,6 +8025,87 @@ mod tests {
     };
     use core::prelude::v1::test;
     use gitturtle_core::ChangeArea;
+    use gpui_kit::gpui;
+
+    /// Where the tab is marked, the banner beneath the Git action bar offers
+    /// nothing from before: a merge stopped on a conflict, read before the
+    /// mark, draws no "Merge in progress" with Complete merge and Abort, and
+    /// branches the status from before found diverged draw no Merge… and
+    /// Rebase…. The banner read the operation and the status kept beside
+    /// the mark, so a marked tab offered to continue, abort or integrate
+    /// what it could no longer read.
+    #[gpui::test]
+    async fn a_marked_tab_s_banner_offers_nothing_from_before(cx: &mut gpui::TestAppContext) {
+        use crate::views::tests::{draw, fixture_git, fixture_git_output, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let diverge = |app: &mut crate::GitTurtle| {
+            let status = std::sync::Arc::make_mut(app.work_status.as_mut().expect("read"));
+            (status.ahead, status.behind) = (1, 2);
+            status.upstream = Some("origin/main".into());
+        };
+        app.update(cx, |app, cx| {
+            diverge(app);
+            cx.notify();
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("merge-upstream").is_some(), "diverged");
+        for (key, value) in [
+            ("user.name", "Fixture"),
+            ("user.email", "fixture@example.invalid"),
+            ("commit.gpgsign", "false"),
+        ] {
+            fixture_git(&root, &["config", key, value]);
+        }
+        let branch = fixture_git_output(&root, &["branch", "--show-current"]);
+        let branch = String::from_utf8_lossy(&branch.stdout).trim().to_owned();
+        fixture_git(&root, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(root.join("conflict.txt"), "side\n").unwrap();
+        fixture_git(&root, &["add", "conflict.txt"]);
+        fixture_git(&root, &["commit", "-q", "-m", "Side"]);
+        fixture_git(&root, &["checkout", "-q", &branch]);
+        std::fs::write(root.join("conflict.txt"), "main\n").unwrap();
+        fixture_git(&root, &["add", "conflict.txt"]);
+        fixture_git(&root, &["commit", "-q", "-m", "Main"]);
+        let merge = fixture_git_output(&root, &["merge", "side"]);
+        assert!(!merge.status.success(), "the merge stops on its conflict");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.integration_state.is_some()));
+        assert!(cx.debug_bounds("operation-banner").is_some(), "the merge");
+
+        std::fs::rename(root.join(".git"), fixture.path().join("git-away")).unwrap();
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&crate::Refresh, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.shown_tab_unavailable()));
+        assert!(
+            app.read_with(cx, |app, _| app.integration_state.is_some()),
+            "the merge read before the mark is kept beside it"
+        );
+        for id in ["operation-banner", "merge-upstream", "rebase-upstream"] {
+            assert!(cx.debug_bounds(id).is_none(), "the merge kept: {id}");
+        }
+        app.update(cx, |app, cx| {
+            app.integration_state = None;
+            if app.work_status.is_none() {
+                app.work_status = Some(Default::default());
+            }
+            diverge(app);
+            cx.notify();
+        });
+        draw(cx);
+        for id in ["operation-banner", "merge-upstream", "rebase-upstream"] {
+            assert!(cx.debug_bounds(id).is_none(), "diverged before: {id}");
+        }
+    }
 
     /// A placeholder too wide for its field is cut between whole grapheme
     /// clusters: a letter with its combining marks, a ZWJ emoji sequence or

@@ -11,6 +11,15 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 
 pub(crate) const PREPARING: &str = "Preparing branch action…";
+/// What the branch picker reads on a marked tab, in the mark's own word.
+pub(crate) const UNAVAILABLE: &str = "Unavailable";
+/// Why the branch picker, Fetch, Pull and Push refuse on a marked tab.
+pub(crate) const UNAVAILABLE_REASON: &str = "Repository unavailable";
+/// The way back from a marked tab, which the branch picker's tooltip names
+/// after [`UNAVAILABLE_REASON`], in the words the mark's reason gives it
+/// (`worker::RepositoryGone`, `repository_access::explain`).
+pub(crate) const UNAVAILABLE_WAY_BACK: &str =
+    "Refresh, or choose a repository with Open Repository";
 const CHOICE_LIMIT: usize = 40;
 type PreparationFailure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTurtle>)>;
 
@@ -54,6 +63,9 @@ pub(crate) struct PickerItem {
 /// checked out and HEAD has a commit, and no other edge changes its text.
 #[derive(PartialEq)]
 struct PickerInputs<'a> {
+    /// Whether the shown tab is marked, where the picker says so in place of
+    /// a branch from before (`GitTurtle::header_status`).
+    unavailable: bool,
     /// The branch checked out, if any.
     branch: Option<Cow<'a, str>>,
     /// HEAD's commit where no branch is checked out.
@@ -69,6 +81,7 @@ impl PickerInputs<'_> {
     fn owned(&self) -> PickerInputs<'static> {
         let text = |text: &Cow<str>| Cow::Owned(String::from(&**text));
         PickerInputs {
+            unavailable: self.unavailable,
             branch: self.branch.as_ref().map(text),
             detached: self.detached.as_ref().map(text),
             done: self.done,
@@ -109,6 +122,17 @@ impl PickerText {
     fn build(inputs: &PickerInputs) -> Self {
         #[cfg(test)]
         PICKER_TEXTS_BUILT.with(|built| built.set(built.get() + 1));
+        if inputs.unavailable {
+            let label = SharedString::from(UNAVAILABLE);
+            let tooltip =
+                SharedString::from(format!("{UNAVAILABLE_REASON} · {UNAVAILABLE_WAY_BACK}"));
+            return Self {
+                labels: [label.clone(), label.clone(), label],
+                name: "Current branch unavailable".into(),
+                narrow_tooltip: tooltip.clone(),
+                tooltip,
+            };
+        }
         let branch: SharedString =
             String::from(inputs.branch.as_deref().unwrap_or("Detached HEAD")).into();
         // Detached, HEAD is a commit, and the picker says which, as
@@ -311,8 +335,10 @@ impl GitTurtle {
         most: Option<Pixels>,
         cx: &mut Context<Self>,
     ) -> Button {
-        let status = self.work_status.as_deref();
+        let status = self.header_status();
+        let unavailable = self.shown_tab_unavailable();
         let inputs = PickerInputs {
+            unavailable,
             branch: status
                 .and_then(|status| status.branch.as_deref())
                 .map(Cow::Borrowed),
@@ -320,7 +346,9 @@ impl GitTurtle {
                 .filter(|status| status.branch.is_none())
                 .and_then(|status| status.head.as_deref())
                 .map(Cow::Borrowed),
-            done: self.picker_confirmation(cx),
+            done: (!unavailable)
+                .then(|| self.picker_confirmation(cx))
+                .flatten(),
         };
         let form = match (compact, narrow) {
             (false, _) => PickerForm::Full,
@@ -371,13 +399,14 @@ impl GitTurtle {
             // Its menu opens until a write looks busy, offering none of the
             // items the write refuses; only then does the picker look
             // unavailable (`workspace::BusyLook`). It dimmed the moment any
-            // write started, a quick Stage's too.
+            // write started, a quick Stage's too. A marked tab has no
+            // branches to offer: its list would be the ones from before.
             .map(|picker| {
                 workspace::refusing(
                     picker,
                     || "current-branch".into(),
                     false,
-                    self.operation_shown().is_some(),
+                    unavailable || self.operation_shown().is_some(),
                 )
             })
             .accessibility_label(name)

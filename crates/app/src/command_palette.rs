@@ -328,6 +328,9 @@ struct Availability {
     /// which the Working Changes Actions menu's items wait
     /// (`GitTurtle::write_unsettled`, `GitTurtle::menu_wait`).
     unsettled: bool,
+    /// Whether the shown tab is marked, whose branch would be the one from
+    /// before (`GitTurtle::header_status`).
+    unavailable: bool,
     branch: bool,
     file: bool,
     working_file: bool,
@@ -419,6 +422,10 @@ impl CommandId {
         // "Refreshing…" does.
         if self == Self::Stashes && context.unsettled {
             return Some(crate::workspace::REFRESHING_ROWS_REASON);
+        }
+        // Said as the branch picker says it, which opens no menu there.
+        if self == Self::Branch && context.unavailable {
+            return Some(crate::branch_actions::UNAVAILABLE_REASON);
         }
         if self == Self::Branch && !context.branch {
             return Some("Check out a named local branch first");
@@ -646,9 +653,9 @@ impl GitTurtle {
             busy: self.operation_busy.map(|_| self.busy_reason()),
             projects_ends_busy: self.projects_ends_busy(),
             unsettled: self.write_unsettled(),
+            unavailable: self.shown_tab_unavailable(),
             branch: self
-                .work_status
-                .as_ref()
+                .header_status()
                 .is_some_and(|status| status.branch.is_some()),
             file: file_scope.file.is_some(),
             working_file: file_scope.working.is_some(),
@@ -760,9 +767,9 @@ impl GitTurtle {
             CommandId::QuickOpen => self.open_quick_file(window, cx),
             CommandId::Compare => self.open_revision_comparison(window, cx),
             CommandId::Branch => {
+                // A marked tab's branch is the one from before.
                 if let Some(branch) = self
-                    .work_status
-                    .as_ref()
+                    .header_status()
                     .and_then(|status| status.branch.clone())
                 {
                     self.open_contextual_branch(branch, false, window, cx);
@@ -1840,6 +1847,160 @@ mod render_tests {
             Some(crate::workspace::BUSY_REASON),
             "a write does, and it says why"
         );
+    }
+
+    /// Where the tab is marked, Changes shows "Changes unavailable", as
+    /// before any status is read, and the composer names no branch: the
+    /// list kept the last status's rows, the inspector's count and the
+    /// composer's badge while the header said "Changes", and the composer
+    /// said "Commit to main", or "detached HEAD" where no status had been
+    /// read. The palette's Branch command opens nothing from before and
+    /// says why, as the picker does. Changes is shown on the tab once it is
+    /// marked, with nothing read and with a status read landing behind the
+    /// mark: a failed Refresh in Changes goes back to History.
+    #[gpui::test]
+    async fn a_marked_tab_s_changes_show_nothing_from_before(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
+        std::fs::write(root.join("staged.txt"), "new\n").unwrap();
+        crate::views::tests::fixture_git(&root, &["add", "staged.txt"]);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.refresh(&crate::Refresh, window, cx);
+                app.show_working(window, cx);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::draw(cx);
+        let heading = || {
+            crate::views::CONTROL_TOOLTIPS
+                .with(|tooltips| tooltips.borrow().get("commit-composer-heading").cloned())
+        };
+        assert!(cx.debug_bounds("working-header-count").is_some(), "a count");
+        assert!(cx.debug_bounds("commit-staged-count").is_some(), "a badge");
+        assert!(cx.debug_bounds("working-unavailable").is_none());
+        assert_eq!(heading().as_deref(), Some("Commit to main"));
+        let branch_reason = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let availability = app.read(cx).palette_availability(window, cx);
+                CommandId::Branch.reason(&availability)
+            })
+        };
+        assert_eq!(branch_reason(cx), None, "Branch opens the one checked out");
+        let kept = app.read_with(cx, |app, _| {
+            (
+                app.work_status.clone(),
+                app.working_rows.clone(),
+                app.working_paths.staged_count,
+            )
+        });
+
+        std::fs::rename(root.join(".git"), fixture.path().join("git-away")).unwrap();
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+        )
+        .unwrap();
+        // Refresh fails in History: its failed Open in Changes goes back to
+        // History with nothing read. Changes is then shown on the marked tab.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.show_history(window, cx);
+                app.refresh(&crate::Refresh, window, cx);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.shown_tab_unavailable()));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.mode == crate::WorkspaceMode::Working),
+            "Changes is shown"
+        );
+        let says_the_mark = |cx: &mut VisualTestContext, at: &str| {
+            assert!(
+                cx.debug_bounds("working-unavailable").is_some(),
+                "{at}: Changes unavailable"
+            );
+            assert!(
+                app.read_with(cx, |app, _| !app.working_files_drawn()),
+                "{at}"
+            );
+            assert!(
+                app.read_with(cx, |app, _| app.actionable_working_rows().is_empty()),
+                "{at}: no row to act on"
+            );
+            assert!(cx.debug_bounds("working-header-count").is_none(), "{at}");
+            assert!(cx.debug_bounds("commit-staged-count").is_none(), "{at}");
+            assert_eq!(
+                heading().as_deref(),
+                Some(crate::branch_actions::UNAVAILABLE_REASON),
+                "{at}: no branch from before"
+            );
+            assert_eq!(
+                app.read_with(cx, |app, cx| app.commit_action_label(cx)),
+                "Changes unavailable",
+                "{at}"
+            );
+            assert_eq!(
+                branch_reason(cx),
+                Some(crate::branch_actions::UNAVAILABLE_REASON),
+                "{at}: the palette's Branch says why"
+            );
+        };
+        says_the_mark(cx, "no status read");
+        // A status read landing behind the mark, its rows and staged count
+        // those of the status from before.
+        app.update(cx, |app, cx| {
+            (
+                app.work_status,
+                app.working_rows,
+                app.working_paths.staged_count,
+            ) = kept;
+            cx.notify();
+        });
+        crate::views::tests::draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| !app.working_rows.is_empty()),
+            "rows kept"
+        );
+        says_the_mark(cx, "a status kept beside the mark");
+        // With no error in the window, the preview beside the list says the
+        // mark and its way back, whatever the status from before listed: it
+        // said "Choose a file", or "Working tree clean" for a clean one.
+        let preview_says_the_mark = |cx: &mut VisualTestContext, at: &str| {
+            assert!(cx.debug_bounds("empty-state").is_some(), "{at}");
+            let said = crate::native_accessibility::written::get(&format!(
+                "empty-state:{}",
+                crate::branch_actions::UNAVAILABLE_REASON
+            ))
+            .and_then(|written| written.node.value().map(str::to_owned));
+            assert!(
+                said.as_deref()
+                    .is_some_and(|said| said.contains(crate::branch_actions::UNAVAILABLE_WAY_BACK)),
+                "{at}: the mark and its way back: {said:?}"
+            );
+            assert!(
+                cx.debug_bounds("working-preview-clean-line").is_none(),
+                "{at}: no clean tree from before"
+            );
+        };
+        app.update(cx, |app, cx| {
+            app.error = None;
+            cx.notify();
+        });
+        crate::views::tests::draw(cx);
+        preview_says_the_mark(cx, "rows from before");
+        app.update(cx, |app, cx| {
+            app.work_status = Some(Default::default());
+            app.working_rows = Default::default();
+            cx.notify();
+        });
+        crate::views::tests::draw(cx);
+        preview_says_the_mark(cx, "a clean tree from before");
     }
 
     use crate::{activity, recovery_drafts, repository_tabs};

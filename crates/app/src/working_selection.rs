@@ -296,8 +296,12 @@ impl GitTurtle {
     /// the filter prepares new rows there are none: the rows still shown are
     /// the previous result's, drawn so that the list holds its place, and a
     /// key or a click on them must not act on what is being replaced.
+    ///
+    /// A marked tab's rows are those of the last status read, which its
+    /// Changes does not draw (`workspace::GitTurtle::render_working_inspector`),
+    /// so they are none too.
     pub(super) fn actionable_working_rows(&self) -> &[workspace::WorkingRow] {
-        if self.working_paths.pending {
+        if self.working_paths.pending || self.shown_tab_unavailable() {
             &[]
         } else {
             &self.working_rows
@@ -310,9 +314,11 @@ impl GitTurtle {
     /// nothing, while on rows being replaced it is refused
     /// ([`Self::refuse_working_press`]).
     pub(super) fn working_files_drawn(&self) -> bool {
-        self.working_rows
-            .iter()
-            .any(|row| matches!(row, workspace::WorkingRow::File(..)))
+        !self.shown_tab_unavailable()
+            && self
+                .working_rows
+                .iter()
+                .any(|row| matches!(row, workspace::WorkingRow::File(..)))
     }
 
     /// The element ID of the shown rows' row of the `index`th file in

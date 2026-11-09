@@ -1931,6 +1931,17 @@ impl GitTurtle {
                     )
                 })
     }
+    /// The working status the header and the Git action bar speak from: none
+    /// where the shown tab is marked, whose count, branch, edge and sync
+    /// state would be those of the last status read, or "Detached HEAD" where
+    /// none was. Those bars say what the mark says instead. Read each frame
+    /// rather than cleared at the mark, since a mark goes on and off without
+    /// a status read, and a retained status read may still land behind it.
+    pub(crate) fn header_status(&self) -> Option<&gitturtle_core::RepositoryStatus> {
+        self.work_status
+            .as_deref()
+            .filter(|_| !self.shown_tab_unavailable())
+    }
     /// Clears the shown tab's " · unavailable" as a quiet read finds its
     /// repository readable again, with the opening error the window shows
     /// for it, and returns whether there was a mark to clear. A tab's mark
@@ -6586,6 +6597,208 @@ mod tests {
             );
             assert!(!app.repository_tabs.saved().tabs[0].unresolved);
         });
+    }
+
+    /// QA-107: where the tab is marked the header says what the mark says,
+    /// in the full bars and the compact ones. "Changes · 1" and the branch
+    /// came from the last status read, kept beside the mark; with no status
+    /// read the picker read "Detached HEAD", of a repository that cannot be
+    /// opened. The picker refuses its menu, which listed the branches from
+    /// before, and the edge's "No remote" goes with its action.
+    #[gpui::test]
+    async fn a_marked_tab_s_header_shows_nothing_from_before(cx: &mut TestAppContext) {
+        use crate::branch_actions::PICKER_LABEL;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::draw(cx);
+        let before = app.read_with(cx, |app, _| app.changes_label());
+        assert!(before.starts_with("Changes · "), "a count: {before}");
+        assert_eq!(
+            PICKER_LABEL.with(|label| label.borrow().clone()).as_deref(),
+            Some("main")
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.repository_edge().is_some()),
+            "the edge before the mark: no remote"
+        );
+
+        std::fs::rename(root.join(".git"), fixture.path().join("git-away")).unwrap();
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::draw(cx);
+        assert!(app.read_with(cx, |app, _| app.shown_tab_unavailable()));
+        let says_the_mark = |cx: &mut VisualTestContext, at: &str| {
+            assert_eq!(
+                app.read_with(cx, |app, _| app.changes_label()),
+                "Changes",
+                "{at}: no count from before"
+            );
+            assert_eq!(
+                PICKER_LABEL.with(|label| label.borrow().clone()).as_deref(),
+                Some("Unavailable"),
+                "{at}: no branch from before"
+            );
+            let refusal = crate::workspace::refusals::get("current-branch").expect("drawn");
+            assert!(
+                refusal.dimmed && refusal.announced,
+                "{at}: refuses its menu"
+            );
+            assert_eq!(
+                crate::views::CONTROL_TOOLTIPS
+                    .with(|tooltips| tooltips.borrow().get("current-branch").cloned())
+                    .as_deref(),
+                Some(
+                    "Repository unavailable · Refresh, or choose a repository with Open Repository"
+                ),
+                "{at}: the way back, in the mark's words"
+            );
+            assert!(
+                app.read_with(cx, |app, _| app.repository_edge().is_none()),
+                "{at}: no edge from before"
+            );
+            assert!(cx.debug_bounds("branch-edge").is_none(), "{at}: its line");
+            assert!(cx.debug_bounds("branch-sync-state").is_none(), "{at}");
+        };
+        says_the_mark(cx, "the status kept beside the mark");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        crate::views::tests::draw(cx);
+        says_the_mark(cx, "the compact bars");
+        assert_eq!(
+            crate::views::COMPACT_LABELS
+                .with(|names| names.borrow().get("changes-tab").cloned())
+                .as_deref(),
+            Some("Changes"),
+            "the compact toggle's name"
+        );
+        assert!(
+            cx.debug_bounds("changes-count-badge").is_none(),
+            "the compact toggle's badge"
+        );
+        app.update(cx, |app, cx| {
+            app.work_status = None;
+            cx.notify();
+        });
+        crate::views::tests::draw(cx);
+        says_the_mark(cx, "no status read");
+    }
+
+    /// Where the tab is marked, Fetch, Pull and Push refuse and say the mark
+    /// as the branch picker does, with a remote configured and without one.
+    /// With the status absent they read it as a detached HEAD, Pull and Push
+    /// saying "Switch to a local branch before pulling or pushing", and
+    /// Fetch stayed "Fetch from origin", a remote from before, and pressed.
+    #[gpui::test]
+    async fn a_marked_tab_s_git_actions_refuse_and_say_the_mark(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let tooltip = |id: &str| {
+            crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(id).cloned())
+        };
+        let with_a_remote = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.remotes.push(gitturtle_core::Remote {
+                        name: "origin".into(),
+                        url: "https://example.invalid/fixture.git".into(),
+                        push_url: "https://example.invalid/fixture.git".into(),
+                    });
+                    app.remote_name
+                        .update(cx, |input, cx| input.set_value("origin", window, cx));
+                    app.remote_branch
+                        .update(cx, |input, cx| input.set_value("main", window, cx));
+                    cx.notify();
+                })
+            });
+            crate::views::tests::draw(cx);
+        };
+        let destination =
+            || crate::workspace::TARGETS_DESTINATION.with(|line| line.borrow().clone());
+        let says_the_mark = |at: &str, compact: bool| {
+            for (id, label) in [("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")] {
+                let refusal = crate::workspace::refusals::get(id).expect("drawn");
+                assert!(refusal.announced && refusal.dimmed, "{at}: {id} refuses");
+                let reason = crate::branch_actions::UNAVAILABLE_REASON;
+                let said = if compact {
+                    format!("{label} · {reason}")
+                } else {
+                    reason.to_owned()
+                };
+                assert_eq!(tooltip(id), Some(said), "{at}: {id}'s tooltip");
+                if compact {
+                    assert_eq!(
+                        crate::views::COMPACT_LABELS
+                            .with(|names| names.borrow().get(id).cloned())
+                            .as_deref(),
+                        Some(format!("{label}: {reason}").as_str()),
+                        "{at}: {id}'s name"
+                    );
+                }
+            }
+            // Targets' line names no remote or branch from before either.
+            assert_eq!(
+                destination().as_deref(),
+                Some(crate::branch_actions::UNAVAILABLE_REASON),
+                "{at}: where Push goes"
+            );
+        };
+        app.update(cx, |app, cx| {
+            app.git_actions_open = true;
+            cx.notify();
+        });
+        with_a_remote(cx);
+        let before = destination().expect("Targets' line");
+        assert!(
+            before.starts_with("Push to origin/main · "),
+            "before the mark: {before}"
+        );
+        app.update(cx, |app, cx| {
+            app.remotes.clear();
+            cx.notify();
+        });
+        crate::views::tests::draw(cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("git-away")).unwrap();
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::draw(cx);
+        assert!(app.read_with(cx, |app, _| app.shown_tab_unavailable()));
+        says_the_mark("no remote", false);
+        with_a_remote(cx);
+        says_the_mark("a remote", false);
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        crate::views::tests::draw(cx);
+        says_the_mark("the compact bar, a remote", true);
+        app.update(cx, |app, cx| {
+            app.remotes.clear();
+            cx.notify();
+        });
+        crate::views::tests::draw(cx);
+        says_the_mark("the compact bar, no remote", true);
+
+        // A click does nothing: no write starts.
+        let fetch = crate::tags::tests::rendered(cx, "fetch");
+        cx.simulate_click(fetch.center(), gpui::Modifiers::default());
+        crate::views::tests::draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_none()),
+            "nothing runs"
+        );
     }
 
     /// Presses the Projects page's row for `path`, as a person would.

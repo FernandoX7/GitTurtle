@@ -226,11 +226,13 @@ impl GitTurtle {
         // once the write looks busy (`workspace::BusyLook`).
         let busy = self.operation_busy.is_some();
         let looks_busy = self.operation_shown().is_some();
-        let Some(operation) = self.integration_state.as_ref() else {
-            let diverged = self
-                .work_status
-                .as_ref()
-                .filter(|status| status.ahead > 0 && status.behind > 0);
+        // A marked tab's operation and sync state are those of the last
+        // read, as its header's are: the banner offers nothing from before
+        // (`header_status`).
+        let operation = (self.integration_state.as_ref()).filter(|_| !self.shown_tab_unavailable());
+        let Some(operation) = operation else {
+            let diverged =
+                (self.header_status()).filter(|status| status.ahead > 0 && status.behind > 0);
             return div().children(diverged.map(|status| {
                 let upstream = status.upstream.clone().unwrap_or_default();
                 let merge = "@{upstream}".to_owned();
@@ -242,7 +244,7 @@ impl GitTurtle {
                     .child(refusing(button("rebase-upstream", "Rebase…", "", false).debug_selector(|| "rebase-upstream".into()), || "rebase-upstream".into(), busy, looks_busy).on_click(cx.listener(move |this, _, window, cx| this.prepare_integration("@{upstream}".into(), true, window, cx))))
             })).into_any_element();
         };
-        let unresolved = self.work_status.as_ref().map_or(0, |status| {
+        let unresolved = self.header_status().map_or(0, |status| {
             status
                 .entries
                 .iter()
