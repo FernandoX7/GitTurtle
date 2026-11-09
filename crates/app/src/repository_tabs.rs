@@ -4099,9 +4099,13 @@ mod tests {
             "restored marked, on its own repository"
         );
         let error = error.expect("the window says why");
+        // No Git directories saved: a `.git` gone and one never there are the
+        // same on disk, so it says what works for both.
         assert!(
-            error.starts_with(&format!("The repository at {} is gone.", root.display()))
-                && error.contains(&enclosing.display().to_string()),
+            error.starts_with(&format!(
+                "This tab's folder {} has no repository of its own:",
+                root.display()
+            )) && error.contains(&enclosing.display().to_string()),
             "{error}"
         );
         cx.update(|window, cx| app.update(cx, |app, cx| app.save_repository_session(window, cx)));
@@ -4109,6 +4113,65 @@ mod tests {
         let after = Session::load_at(&destination).unwrap();
         assert_eq!(after.tabs.len(), 1);
         assert_eq!(after.tabs[0].path.path(), root, "the saved path stays");
+    }
+
+    /// A tab an older session saved on a folder inside a work tree, with no
+    /// Git directories captured, has no repository of its own to bring
+    /// back: the tab is marked, and its message says what the person can do
+    /// about it, which Open Repository on that folder then does. It read
+    /// "The repository at … is gone … Restore its .git and refresh" for
+    /// good, about a folder that never held a `.git`.
+    #[gpui::test]
+    async fn a_saved_tab_inside_a_work_tree_says_what_can_be_done(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let enclosing = enclosing_work_tree(fixture.path());
+        let folder = enclosing.join("sub").join("folder");
+        std::fs::create_dir_all(&folder).unwrap();
+        let saved: Session = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "tabs": [{ "path": folder.to_str().expect("a UTF-8 fixture path") }],
+            "active": 0,
+        }))
+        .unwrap();
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            folder.clone(),
+            saved,
+            isolated_session("saved-inside-a-work-tree.json"),
+            size(px(1000.), px(680.)),
+        );
+        let cx = &mut window_cx;
+        settle_tab_test(&app, cx).await;
+        let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
+        assert_eq!(
+            (tabs, path, marked, repository, subjects),
+            (1, folder.clone(), true, None, Vec::<String>::new()),
+            "marked, and opening nothing"
+        );
+        let error = error.expect("the window says why");
+        assert_eq!(
+            error,
+            format!(
+                "This tab's folder {} has no repository of its own: Git finds the repository at {} there, which this tab does not open. To open that repository here, choose this folder with Open Repository; otherwise close this tab.",
+                folder.display(),
+                enclosing.display()
+            )
+        );
+
+        // What it says works.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_repository_tab(folder.clone(), window, cx))
+        });
+        settle_tab_test(&app, cx).await;
+        let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
+        assert_eq!(
+            (tabs, path, marked, error, repository),
+            (1, enclosing.clone(), false, None, Some(enclosing.clone())),
+            "Open Repository on the folder opens the repository found there"
+        );
+        assert_eq!(subjects, vec!["Enclosing commit".to_owned()]);
     }
 
     /// The session is saved as tabs change, and the person asks for none of

@@ -1197,6 +1197,34 @@ impl std::fmt::Display for RepositoryGone {
 
 impl std::error::Error for RepositoryGone {}
 
+/// A tab with no Git directories captured, as an older session saved every
+/// tab, whose folder Git finds inside another repository. That may be all it
+/// ever was: such a session kept the folder the person chose, so there may
+/// be no `.git` to restore and "is gone" leaves nothing to do. It says what
+/// the person can do: Open Repository on the folder takes the tab to the
+/// repository found there, by the fresh capture a marked tab's own folder
+/// gets (`GitTurtle::recapture_marked_tab`). The read itself opens nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoRepositoryOfItsOwn {
+    /// The tab's folder.
+    pub path: PathBuf,
+    /// The repository Git finds there, by its root.
+    pub found: PathBuf,
+}
+
+impl std::fmt::Display for NoRepositoryOfItsOwn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "This tab's folder {} has no repository of its own: Git finds the repository at {} there, which this tab does not open. To open that repository here, choose this folder with Open Repository; otherwise close this tab.",
+            self.path.display(),
+            self.found.display()
+        )
+    }
+}
+
+impl std::error::Error for NoRepositoryOfItsOwn {}
+
 /// The Git directories a tab captured at its root as its snapshot was
 /// accepted, which a passive reopen of that root must find there again
 /// ([`RepositorySession::open`]): the Git directory Git reported and its
@@ -1362,12 +1390,35 @@ fn refused_open(requested: &Path, passive: bool, error: anyhow::Error) -> anyhow
 /// a refusal that says what happened in its own words.
 fn worded_open_failure(path: &Path, error: anyhow::Error) -> anyhow::Error {
     if error.is::<RepositoryGone>()
+        || error.is::<NoRepositoryOfItsOwn>()
         || error.is::<gitturtle_core::WorkTreeOutside>()
         || error.is::<gitturtle_core::ChangedWhileOpening>()
     {
         error
     } else {
         crate::repository_access::explain(path, error)
+    }
+}
+
+/// A tab's Open that found its repository gone, as [`NoRepositoryOfItsOwn`]
+/// where the tab captured no Git directories (`uncaptured`) and Git finds a
+/// repository enclosing its folder. Any other failure is left as it is.
+fn no_repository_of_its_own(uncaptured: bool, error: anyhow::Error) -> anyhow::Error {
+    if !uncaptured {
+        return error;
+    }
+    match error.downcast::<RepositoryGone>() {
+        Ok(RepositoryGone {
+            path,
+            found: Some(found),
+        }) if path
+            .canonicalize()
+            .is_ok_and(|inside| inside != found && inside.starts_with(&found)) =>
+        {
+            NoRepositoryOfItsOwn { path, found }.into()
+        }
+        Ok(gone) => gone.into(),
+        Err(error) => error,
     }
 }
 
@@ -2291,7 +2342,15 @@ fn execute(
                 cancellation,
                 session,
             )
-            .map_err(|error| worded_open_failure(&path, error))?;
+            .map_err(|error| {
+                // A tab's own saved folder, not a worktree row's reopen of
+                // the worktree it names (`State::reopen_root`): that row is
+                // no tab's folder, and captures no directories either.
+                let uncaptured = root.is_some()
+                    && git_dir.is_none()
+                    && !matches!(&scope, Some(Scope::Worktree { path: tree }) if *tree == path);
+                worded_open_failure(&path, no_repository_of_its_own(uncaptured, error))
+            })?;
             cancellation.check()?;
             snapshot.elapsed = start.elapsed();
             Ok(Output::Snapshot(snapshot))
@@ -7171,9 +7230,12 @@ mod image_tests {
         )
         .err()
         .expect("Refresh fails");
+        // A tab with no Git directories captured, as an older session's:
+        // `.git` gone or never there is the same on disk, so it says what
+        // works for both (`NoRepositoryOfItsOwn`).
         assert!(
             format!("{error:#}").starts_with(&format!(
-                "The repository at {} is gone. Git now finds the repository at ",
+                "This tab's folder {} has no repository of its own: Git finds the repository at ",
                 root.display()
             )),
             "said in its own words: {error:#}"
