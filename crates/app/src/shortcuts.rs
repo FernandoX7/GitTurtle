@@ -716,6 +716,12 @@ pub(super) enum DialogKeys {
     Shortcuts,
     /// The interactive rebase's planned sequence.
     RebaseSequence,
+    /// The GitHub panel's changed files.
+    GithubFiles,
+    /// The GitHub panel's patch lines.
+    GithubPatch,
+    /// The GitHub panel's outbound confirmation, which scrolls.
+    GithubConfirmation,
 }
 
 /// Keyboard hints for the status bar: each key and what it does.
@@ -801,6 +807,15 @@ impl DialogKeys {
     /// to about 53 px. Its inline help names every key.
     pub(super) fn key_hints(self) -> KeyHints {
         let escape = (ESCAPE.to_owned(), self.dismiss());
+        let paging = || {
+            vec![
+                (PAGE_KEYS.to_owned(), "Page"),
+                (
+                    format!("{} / {}", key_label("home"), key_label("end")),
+                    "Ends",
+                ),
+            ]
+        };
         match self {
             Self::Palette | Self::QuickOpen => KeyHints::new(vec![
                 ("↑↓".into(), "Select"),
@@ -809,13 +824,27 @@ impl DialogKeys {
             ]),
             Self::Shortcuts => KeyHints {
                 keys: vec![("↑↓".into(), "Browse"), escape],
-                spare: vec![
-                    (PAGE_KEYS.into(), "Page"),
+                spare: paging(),
+            },
+            Self::GithubFiles => KeyHints {
+                keys: vec![("↑↓".into(), "Select"), (ENTER.into(), "Open"), escape],
+                spare: paging(),
+            },
+            Self::GithubPatch => KeyHints {
+                keys: vec![
+                    ("↑↓".into(), "Line"),
                     (
-                        format!("{} / {}", key_label("home"), key_label("end")),
-                        "Ends",
+                        format!("{} / {}", key_label("shift-up"), key_label("shift-down")),
+                        "Extend",
                     ),
+                    (ENTER.into(), "Comment"),
+                    escape,
                 ],
+                spare: paging(),
+            },
+            Self::GithubConfirmation => KeyHints {
+                keys: vec![("↑↓".into(), "Scroll"), escape],
+                spare: paging(),
             },
             Self::RebaseSequence => KeyHints::new(vec![
                 ("↑↓".into(), "Select"),
@@ -830,12 +859,16 @@ impl DialogKeys {
 
     /// The verb of the dialog's button that Escape stands for, as the button
     /// and hints say it and as its inline help does: Cancel in the command
-    /// palette and Quick Open, which leave without acting, and Close in
-    /// Keyboard Shortcuts, a read-only sheet, and the rebase dialog.
+    /// palette and Quick Open, which leave without acting, Close in
+    /// Keyboard Shortcuts, a read-only sheet, and the rebase dialog, and
+    /// Back to repository in the GitHub panel, its footer's one button.
     fn verb(self) -> (&'static str, &'static str) {
         match self {
             Self::Palette | Self::QuickOpen => ("Cancel", "cancels"),
             Self::Shortcuts | Self::RebaseSequence => ("Close", "closes"),
+            Self::GithubFiles | Self::GithubPatch | Self::GithubConfirmation => {
+                ("Back to repository", "returns to the repository")
+            }
         }
     }
 

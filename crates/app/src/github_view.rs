@@ -554,6 +554,28 @@ impl GitTurtle {
         } else {
             cx.new(|cx| Panel::new(owner, repo, branch, window, cx))
         };
+        // The panel's controls with keys of their own, which the status strip names while
+        // they hold focus. Its Buttons and fields have none, so they register nothing.
+        let keyed = {
+            let panel = form.read(cx);
+            [
+                (
+                    panel.review.file_focus.clone(),
+                    shortcuts::DialogKeys::GithubFiles,
+                ),
+                (
+                    panel.review.line_focus.clone(),
+                    shortcuts::DialogKeys::GithubPatch,
+                ),
+                (
+                    panel.conversations.confirm_focus.clone(),
+                    shortcuts::DialogKeys::GithubConfirmation,
+                ),
+            ]
+        };
+        for (focus, keys) in &keyed {
+            self.dialog_hints.register(focus, *keys);
+        }
         let focus_form = form.clone();
         let ring = self.focus_ring.clone();
         window.defer(cx, move |window, cx| {
@@ -16442,6 +16464,51 @@ mod tests {
             assert!(window.has_active_dialog(cx));
         });
         settle_panel(app, cx).await;
+    }
+
+    /// The status strip names the keys of the panel's control that holds focus where it has
+    /// its own, Escape by the panel's footer button, and nothing for a control with none,
+    /// such as a field. The panel registered no control, so the strip stayed empty on its
+    /// lists as on everything else.
+    #[gpui::test]
+    async fn the_status_strip_names_only_the_focused_controls_own_keys(cx: &mut TestAppContext) {
+        use crate::shortcuts::DialogKeys;
+        let (_fixture, app, cx) = repository_window(cx);
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| panel.close(window, cx));
+            panel
+        });
+        crate::tags::tests::draw(cx);
+        open_panel(&app, cx).await;
+        let hints = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_hints(window, cx)))
+        };
+        let (files, lines, confirmation, field) = panel.read_with(cx, |panel, cx| {
+            (
+                panel.review.file_focus.clone(),
+                panel.review.line_focus.clone(),
+                panel.conversations.confirm_focus.clone(),
+                panel.destination.read(cx).focus_handle(cx),
+            )
+        });
+        for (focus, keys, name) in [
+            (files, DialogKeys::GithubFiles, "the changed files"),
+            (lines, DialogKeys::GithubPatch, "the patch"),
+            (
+                confirmation,
+                DialogKeys::GithubConfirmation,
+                "the confirmation",
+            ),
+        ] {
+            cx.update(|window, cx| window.focus(&focus, cx));
+            let named = hints(cx).unwrap_or_else(|| panic!("{name} name their keys"));
+            assert_eq!(named, keys.key_hints().whole(), "{name}");
+            assert!(named.contains("Esc Back to repository"), "{name}: {named}");
+        }
+        cx.update(|window, cx| window.focus(&field, cx));
+        assert_eq!(hints(cx), None, "a field has no keys of its own to name");
     }
 
     /// The open panel with its local reads drained.
