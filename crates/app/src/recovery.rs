@@ -88,6 +88,10 @@ const STASH_SEEK_SIZE: usize = 500;
 const READING_LIST: &str = "Reading stashes…";
 /// What it says while the chosen stash's saved changes are read.
 const READING_STASH: &str = "Reading saved changes…";
+/// What Stashes says where nothing is saved: its list's empty state, and the
+/// words its Refresh control's name carries, which focus takes as the read
+/// that opened it lands ([`StashBrowser::opening`]).
+const NO_SAVED_STASHES: &str = "No saved stashes · Save one from the Actions menu in Changes";
 /// The least height a saved file's comparison keeps in the Stashes detail,
 /// at the default interface size, where the window leaves the detail less
 /// than its inspection and it scrolls: about six lines of a patch.
@@ -960,9 +964,18 @@ impl GitTurtle {
                     move |content, _, _| content.min_h_0().child(browser.clone())
                 })
         });
-        // The dialog took focus on its own handle as it opened.
+        // The dialog took focus on its own handle as it opened, which draws
+        // nothing: Stashes opens on its saved stashes, the first real stop,
+        // set now so the first frame draws its ring. The dialog keeps the
+        // control focus was on to return to as it closes. Marked, as Settings
+        // marks the control it opens on, so the ring shows even where a
+        // click opened it.
         let dialog_focus = window.focused(cx);
+        let list = opened.read(cx).stash_focus.clone();
         opened.update(cx, |browser, _| browser.dialog_focus = dialog_focus);
+        list.focus(window, cx);
+        self.focus_ring.mark(window);
+        window.refresh();
         Some(opened)
     }
 
@@ -1713,6 +1726,14 @@ pub(crate) struct StashBrowser {
     /// ([`GitTurtle::refresh_open_stashes`]).
     dialog_focus: Option<FocusHandle>,
     file_focus: FocusHandle,
+    /// Refresh's focus, which takes focus where the read that opened Stashes
+    /// finds nothing saved ([`Self::opening`]).
+    refresh_focus: FocusHandle,
+    /// Whether the list's first read has yet to land. With nothing saved it
+    /// moves focus, while it still lies on the list where the dialog put
+    /// it, to Refresh, the first control that can take it, the list holding
+    /// no stash to reach; every later read leaves focus where it is.
+    opening: bool,
     /// Tracked, never a Tab stop, by the column that holds the chosen
     /// stash's inspection, the detail with its footer: whether focus lies
     /// anywhere inside it ([`Self::release_inspection_focus`]), on a control
@@ -1983,6 +2004,8 @@ impl StashBrowser {
             dialog_focus: None,
             // The saved files likewise: Tab passed them by.
             file_focus: cx.focus_handle().tab_stop(true),
+            refresh_focus: cx.focus_handle(),
+            opening: true,
             inspection_focus: cx.focus_handle(),
             loading: None,
             error: None,
@@ -2150,6 +2173,7 @@ impl StashBrowser {
                 }
                 this.list_task = None;
                 let quiet = std::mem::replace(&mut this.list_quiet, false);
+                let opening = std::mem::take(&mut this.opening);
                 this.loading = this.reading();
                 if !this.is_current(cx) {
                     this.spoken_refresh = None;
@@ -2284,6 +2308,16 @@ impl StashBrowser {
                 if this.list_task.is_none() {
                     this.say_refreshed(window, cx);
                 }
+                // The read that opened Stashes found nothing saved: focus
+                // goes to Refresh, enabled now, and the empty state's words
+                // are read in its name, one screen reader sentence for one
+                // opening, with no announcement of its own.
+                if opening
+                    && this.page.as_ref().is_some_and(|page| page.entries.is_empty())
+                    && this.stash_focus.is_focused(window)
+                {
+                    window.focus(&this.refresh_focus, cx);
+                }
                 cx.notify();
             });
         }));
@@ -2310,6 +2344,21 @@ impl StashBrowser {
             }
         };
         crate::copy_feedback::announce(window, cx, text);
+    }
+
+    /// Refresh's accessible name. With nothing saved it carries the empty
+    /// state's words: focus lands on it as the read that opened Stashes
+    /// finishes ([`Self::opening`]), so that landing reads them.
+    fn refresh_name(&self) -> SharedString {
+        if self
+            .page
+            .as_ref()
+            .is_some_and(|page| page.entries.is_empty())
+        {
+            format!("Refresh saved stashes. {NO_SAVED_STASHES}").into()
+        } else {
+            "Refresh saved stashes".into()
+        }
     }
 
     /// Whether row `row` of the saved stashes lay at all in the list's
@@ -3506,6 +3555,15 @@ impl Render for StashBrowser {
             Some(_) => format!("Saved work · {}–{}", self.offset + 1, self.offset + stashes),
             None => "Saved work".to_owned(),
         };
+        // A Tab stop while it holds stashes, or may: GPUI reads the stop from
+        // the handle, not the element. With nothing saved it holds nothing
+        // to reach, focus having moved on to Refresh (`Self::opening`), and
+        // Tab once drew a ring around the empty list. Focus already on it
+        // stays and moves on from its place.
+        let list_focus = self
+            .stash_focus
+            .clone()
+            .tab_stop(self.page.is_none() || stashes > 0);
         // The list draws the window's keyboard ring on its own edge, between
         // the heading and the pager.
         let list_ring = self.owner.upgrade().and_then(|owner| {
@@ -3788,8 +3846,8 @@ impl Render for StashBrowser {
                 .when(!detail, |element| element.w_full().flex_1())
                 .child(div().h(crate::appearance::ui_size(38.)).flex().items_center().px_2().gap_1().border_b_1().border_color(rgb(p.border))
                     .child(native_accessibility::text("stash-list-heading", heading).flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD))
-                    .child(button("refresh-stashes", "", "refresh", false).debug_selector(|| "refresh-stashes".into()).accessibility_label("Refresh saved stashes").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.refresh_saved_stashes(window, cx)))))
-                .child(crate::native_accessibility::clips_children(div().id("stash-list-focus").debug_selector(|| "stash-list".into()).role(Role::ListBox).aria_label("Saved stashes").tab_stop(true).track_focus(&self.stash_focus).relative().flex_1().min_h_0().flex().flex_col()
+                    .child(button("refresh-stashes", "", "refresh", false).track_focus(&self.refresh_focus).debug_selector(|| "refresh-stashes".into()).accessibility_label(self.refresh_name()).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.refresh_saved_stashes(window, cx)))))
+                .child(crate::native_accessibility::clips_children(div().id("stash-list-focus").debug_selector(|| "stash-list".into()).role(Role::ListBox).aria_label("Saved stashes").track_focus(&list_focus).relative().flex_1().min_h_0().flex().flex_col()
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected, this.page.as_ref().map_or(0, |page| page.entries.len())) {
                             cx.stop_propagation();
@@ -3798,7 +3856,7 @@ impl Render for StashBrowser {
                         }
                     }))
                     .when(stashes > 0, |element| element.child(rows))
-                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().px_3().py_2().child(EmptyState::new("stash-list-empty", "No saved stashes · Save one from the Actions menu in Changes").block(cx))))
+                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().px_3().py_2().child(EmptyState::new("stash-list-empty", NO_SAVED_STASHES).block(cx))))
                     .children(list_ring)))
                 .child(div().debug_selector(|| "stash-pager".into()).h(crate::appearance::ui_size(36.)).flex().items_center().justify_between().px_2().border_t_1().border_color(rgb(p.border))
                     .child(button("previous-stashes", "Previous", "", false).disabled(busy || self.offset == 0).on_click(cx.listener(|this, _, window, cx| this.load_page(this.offset.saturating_sub(STASH_PAGE_SIZE), window, cx))))
@@ -5356,6 +5414,162 @@ mod tests {
         });
         landed(&app, cx, drawn);
         (browser, cx)
+    }
+
+    /// Whether the last frame drew the saved stashes' keyboard ring: its
+    /// 1 px accent edge, whole on all four sides of the list.
+    fn stash_list_ringed(cx: &mut VisualTestContext) -> bool {
+        let accent = cx.read(|cx| gpui_kit::Hsla::from(rgb(palette(cx).accent)));
+        let list = cx.debug_bounds("stash-list").expect("the list is drawn");
+        crate::focus_ring::painted_outlines(cx, accent)
+            .into_iter()
+            .find(|edge| {
+                (edge.bounds.left() - list.left()).abs() <= px(1.)
+                    && (edge.bounds.top() - list.top()).abs() <= px(1.)
+                    && (edge.bounds.right() - list.right()).abs() <= px(1.)
+                    && (edge.bounds.bottom() - list.bottom()).abs() <= px(1.)
+            })
+            .is_some_and(|edge| edge.width == px(1.) && edge.whole)
+    }
+
+    /// Stashes open over `repo` with focus on History's list, its read not
+    /// yet landed, and that list, Escape's destination.
+    fn opened_from_history<'a>(
+        cx: &'a mut gpui_kit::TestAppContext,
+        repo: &GitRepository,
+    ) -> (
+        Entity<StashBrowser>,
+        FocusHandle,
+        &'a mut VisualTestContext,
+    ) {
+        use crate::tags::tests::{draw, window};
+        let (app, cx) = window(cx, repo);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+        });
+        draw(cx);
+        let opener = app.read_with(cx, |app, _| app.focus.clone());
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        let browser = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
+            .expect("Stashes opens");
+        (browser, opener, cx)
+    }
+
+    /// Closes Stashes with Escape and finds focus back on `opener`.
+    fn closes_back_to(opener: &FocusHandle, cx: &mut VisualTestContext) {
+        cx.simulate_keystrokes("escape");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        crate::tags::tests::draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes Stashes"
+        );
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "focus returns to the control that had it"
+        );
+    }
+
+    /// Stashes opens with focus on its saved stashes, the first real stop,
+    /// the list's ring whole in the frame the dialog appears, and Escape
+    /// gives focus back to the control that had it. It once opened on the
+    /// dialog's shell, which draws nothing, so the keyboard started nowhere
+    /// visible.
+    #[gpui::test]
+    async fn stashes_opens_on_its_saved_stashes_and_closes_back_to_the_opener(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, tagged_repository};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        save_stash(&repo, "kept for later");
+        let (browser, opener, cx) = opened_from_history(cx, &repo);
+        let list = browser.read_with(cx, |this, _| this.stash_focus.clone());
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the list holds focus as the dialog opens, before its first frame"
+        );
+        draw(cx);
+        assert!(
+            stash_list_ringed(cx),
+            "the first frame draws the list's ring whole"
+        );
+        StashBrowser::lands(&browser, cx);
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the saved stashes landing leaves focus on the list"
+        );
+        assert!(stash_list_ringed(cx), "and draws its ring whole");
+        closes_back_to(&opener, cx);
+    }
+
+    /// With nothing saved, the read that opened Stashes moves focus from the
+    /// list, which holds no stash, to Refresh, the first control that can
+    /// take it, whose name carries the empty state's words, so that landing
+    /// reads them with no announcement of the automatic read's result.
+    #[gpui::test]
+    async fn stashes_with_nothing_saved_moves_focus_to_refresh_and_reads_its_empty_state(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, tagged_repository};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (browser, opener, cx) = opened_from_history(cx, &repo);
+        let (list, refresh) =
+            browser.read_with(cx, |this, _| (this.stash_focus.clone(), this.refresh_focus.clone()));
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the list holds focus until the read has found what is saved"
+        );
+        StashBrowser::lands(&browser, cx);
+        assert!(
+            cx.update(|window, _| refresh.is_focused(window)),
+            "nothing saved moves focus to Refresh, the first control that can take it"
+        );
+        draw(cx);
+        assert_eq!(
+            browser.read_with(cx, |this, _| this.refresh_name()).as_ref(),
+            concat!(
+                "Refresh saved stashes. ",
+                "No saved stashes · Save one from the Actions menu in Changes"
+            ),
+            "Refresh's name carries the empty state's words as focus lands on it"
+        );
+        assert!(
+            cx.debug_bounds("stash-list-empty-line").is_some(),
+            "the list still shows the empty state's words"
+        );
+        // The empty list is no stop: Tab from Refresh goes on to the
+        // dialog's Close, and round to Refresh, never to the list.
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| !list.is_focused(window) && !refresh.is_focused(window)),
+            "Tab moves from Refresh past the empty list"
+        );
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Tab stays inside Stashes"
+        );
+        assert!(
+            !stash_list_ringed(cx),
+            "no ring is drawn around the empty list"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| refresh.is_focused(window)),
+            "the next Tab comes round to Refresh"
+        );
+        assert!(
+            crate::copy_feedback::tests::announced(cx).is_none(),
+            "the automatic read that opened Stashes announces nothing"
+        );
+        closes_back_to(&opener, cx);
     }
 
     /// Stashes opened over `messages` saved in order, the last at the top of
