@@ -34646,6 +34646,50 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A stop in the list, reached with the body scrolled past the list where
+    /// the list and the composer scroll together, returns the body to its top
+    /// as the press lands, before the frame that draws the focus, so the ring
+    /// is whole in that frame.
+    #[gpui::test]
+    async fn a_row_stop_returns_a_body_scrolled_past_the_list_to_its_top(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(640.), px(680.)));
+        draw(cx);
+        select_working_notes(&app, cx).await;
+        let body = app.read_with(cx, |app, _| app.working_body.scroll().clone());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let title = app.commit_title.read(cx).focus_handle(cx);
+                window.focus(&title, cx);
+                app.focus_ring.mark(window);
+            })
+        });
+        draw(cx);
+        let reach = body.max_offset().y;
+        assert!(reach > px(0.), "the list and the composer scroll together");
+        body.set_offset(point(px(0.), -reach));
+        draw(cx);
+        cx.simulate_keystrokes("shift-tab");
+        assert_eq!(
+            body.offset().y,
+            px(0.),
+            "the body stands at its top as the press lands"
+        );
+        draw(cx);
+        assert_eq!(working_stop(&app, cx), "stage-all", "Shift+Tab's stop");
+        assert!(
+            control_ring_whole(cx, "stage-all"),
+            "its ring is whole in the frame it takes focus"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A row's Stage that stages its file leaves no focus behind it: at 13 pt
     /// in a 1480 × 973 window, with omega.txt untracked after notes.txt, the
     /// cursor on notes.txt, Tab from the list onto its Stage and Enter stages
