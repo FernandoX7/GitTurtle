@@ -107,6 +107,17 @@ density and worktree Buttons in `projects.rs`, `settings.rs` and
 `worktrees.rs`. Remove this part of the patch when upstream Button keeps caller
 hover styles off a disabled Button, or GPUI lets the kit clear them.
 
+The stateful-element patch also modifies `src/button/button.rs`. `Button`
+implements `StatefulInteractiveElement`, as the base Button it wraps does:
+upstream gives it `InteractiveElement` alone, and GPUI keeps the accessibility
+states (`aria_expanded` and the others) on the stateful trait, so an application
+could not write a disclosure state on a Button's node. The Button's inherent
+methods shadow the trait's where both exist, so no other call changes. Blame's
+compact source line (`GitTurtle::blame_source_scope`) is the consumer, and
+`cargo test --locked -p gitturtle
+blame_s_compact_source_line_says_whether_its_note_is_open` reads the node the
+Button writes. Remove this part when upstream Button implements the trait.
+
 The accessibility-disabled patch also modifies `src/button/button.rs`.
 `Button::accessibility_disabled` passes its flag to the base Button's matching
 setter (see [the base patch](../gpui-base/GITTURTLE-PATCH.md)), which reports

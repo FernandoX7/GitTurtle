@@ -420,7 +420,6 @@ impl FocusReveal {
     }
 
     /// The control holding focus among those [`Self::focus`] handed out.
-    #[cfg(test)]
     pub(crate) fn focused(&self, window: &Window) -> Option<ElementId> {
         self.controls
             .borrow()
@@ -1037,6 +1036,12 @@ pub(crate) mod tests {
         /// Every frame painted since the last call.
         pub(crate) fn take_painted(&self) -> Vec<Painted> {
             std::mem::take(&mut *self.painted.borrow_mut())
+        }
+
+        /// The controls reported to a frame no [`FocusReveal::observe`] has
+        /// ended: none between frames.
+        pub(crate) fn controls_in_progress(&self) -> usize {
+            self.drawing.borrow().len()
         }
     }
 

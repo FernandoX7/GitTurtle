@@ -3426,7 +3426,23 @@ impl GitTurtle {
     /// with the choice of the frame before.
     pub(super) fn render_preview(&self, column_min: Pixels, cx: &mut Context<Self>) -> AnyElement {
         if self.blame.is_visible() {
-            return self.render_blame(cx);
+            // Laid out for the pane's size in the frame it is drawn, as the
+            // preview below is: what Blame's header shows is chosen from it,
+            // and a dragged inspector moves it, not the window.
+            let owner = cx.entity().downgrade();
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(
+                    crate::in_frame::in_frame(move |bounds, window, cx| {
+                        owner
+                            .update(cx, |this, cx| this.render_blame(bounds.size, window, cx))
+                            .unwrap_or_else(|_| div().into_any_element())
+                    })
+                    .named("blame"),
+                )
+                .into_any_element();
         }
         let owner = cx.entity().downgrade();
         div()

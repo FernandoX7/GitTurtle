@@ -660,37 +660,1087 @@ async fn blame_and_the_rendered_markdown_ring_whole_in_a_half_tile_at_18_pt(
         walk,
         &mut failures,
     );
-    // Awaiting their follow-ups (FU30-C2's report): the rendered Markdown's
+    // Awaiting its follow-up (FU30-C2's report): the rendered Markdown's
     // side headings wrap past the 188.5 px pane, whose clip cuts both
-    // sides' heading Buttons' rings on every side, and Blame's footer, a row
-    // that does not wrap, lies past its short pane's foot, where its four
-    // Buttons' rings are clipped away.
-    let known = [
-        known_at(
-            "Compare in Rendered",
-            18,
-            &past_the_menu([21, 25]),
-            &[6, 10],
-            "a clip cuts the top, right, bottom, left of its ring",
+    // sides' heading Buttons' rings on every side.
+    let known = known_at(
+        "Compare in Rendered",
+        18,
+        &past_the_menu([21, 25]),
+        &[6, 10],
+        "a clip cuts the top, right, bottom, left of its ring",
+    );
+    sweep::assert_whole_except(failures, &known);
+}
+
+/// Reload, its icon alone in a narrow window, leads its tooltip with its
+/// name, keeps its accessible name, and says no name twice beside a label.
+#[gpui::test]
+async fn blame_s_reload_names_itself_in_its_tooltip_when_icon_only(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window_from(cx, views::tests::history_script(2, 2)).await;
+    prepare_at(&app, cx, size(px(1480.), px(973.)), 13);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
+    blame::lands(&app, cx);
+    for (window, interface, tooltip) in [
+        (
+            size(px(1480.), px(973.)),
+            13,
+            "Read a fresh snapshot of this file",
         ),
-        known_at(
-            "Blame",
+        (
+            size(px(461.), px(490.)),
             18,
-            &past_the_menu([18, 19, 20, 21]),
-            &[6, 7, 8, 9],
-            "the focused element paints no ring",
+            "Reload · Read a fresh snapshot of this file",
         ),
-        // That footer leaves Blame's lines 2 px, and a border painted after
-        // their ring lies over its top.
-        known_at(
-            "Blame",
-            18,
-            &past_the_menu([17]),
-            &[10],
-            "painted after its ring",
-        ),
-    ];
-    sweep::assert_whole_except(failures, &known.concat());
+    ] {
+        prepare_at(&app, cx, window, interface);
+        views::tests::draw(cx);
+        assert_eq!(
+            blame::reload_tooltip_drawn(),
+            Some((tooltip, "Reload attribution")),
+            "{window:?} at {interface} pt"
+        );
+    }
+}
+
+/// Reload's label is decided from the pane, not the window: an inspector
+/// dragged wide leaves a 176 px column where Reload gives its label up, its
+/// ring whole inside the pane, and a wide pane keeps it. A window of 1,000 px
+/// with the inspector at 480 px clipped Reload and its ring while the window
+/// alone decided, and no frame draws the other form.
+#[gpui::test]
+async fn blame_s_reload_fits_the_pane_a_dragged_inspector_leaves(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window_from(cx, views::tests::history_script(2, 2)).await;
+    prepare_at(&app, cx, size(px(1480.), px(973.)), 13);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
+    blame::lands(&app, cx);
+    let bounds = |cx: &mut VisualTestContext, id: &'static str| {
+        cx.debug_bounds(id)
+            .unwrap_or_else(|| panic!("{id} is drawn"))
+    };
+    for interface in [13, 18] {
+        prepare_at(&app, cx, size(px(1480.), px(973.)), interface);
+        let room = cx.read(appearance::button_ring_room);
+        let mut narrowest = px(10_000.);
+        // The project list at its widest takes the room a wider window has, so
+        // the pane is narrow where the window is not.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.project_pane_width = 360.;
+                if !app.settings.project_pane {
+                    app.toggle_project_pane(window, cx);
+                }
+            })
+        });
+        for window in (720..=1400).step_by(20) {
+            cx.simulate_resize(size(px(window as f32), px(760.)));
+            let panels = app.read_with(cx, |app, _| app.content_panels.clone());
+            cx.update(|window, cx| {
+                panels.update(cx, |panels, cx| {
+                    panels.resize_panel(1, px(480.), window, cx)
+                });
+            });
+            views::tests::draw(cx);
+            let panel = bounds(cx, "blame-panel");
+            let reload = bounds(cx, "reload-blame");
+            narrowest = narrowest.min(panel.size.width);
+            let at = format!(
+                "{interface} pt, window {window}, pane {:?}",
+                panel.size.width
+            );
+            assert!(
+                reload.right() + room <= panel.right() + px(0.5),
+                "{at}: Reload and its ring inside the pane: {reload:?} in {panel:?}"
+            );
+            views::tests::draw(cx);
+            assert_eq!(
+                bounds(cx, "reload-blame"),
+                reload,
+                "{at}: no later frame moves it"
+            );
+        }
+        assert!(
+            narrowest < appearance::ui_size(260.),
+            "{interface} pt: the sweep reached a narrow pane: {narrowest:?}"
+        );
+    }
+}
+
+/// The compact header gives up the lineage note only where the pane cannot
+/// hold it with three rows and the footer's least, decided from the room
+/// needed: a 1,280 × 690 tile at 18 pt keeps it, where a window-height rule
+/// (`ui_size(500)` = 692 px) lost it with room to spare. Where the note does
+/// go, the source line's name says it, and the keyboard reaches it there:
+/// focused by Tab, the note reads beneath the source line.
+#[gpui::test]
+async fn blame_keeps_its_lineage_note_while_the_pane_can_hold_it(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window_from(cx, views::tests::history_script(2, 2)).await;
+    prepare_at(&app, cx, size(px(1280.), px(690.)), 18);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
+    blame::lands(&app, cx);
+    views::tests::draw(cx);
+    assert!(
+        cx.debug_bounds("blame-lineage-limit").is_some(),
+        "at 1,280 × 690 and 18 pt the note keeps its line"
+    );
+    let row = app.read_with(cx, |app, _| px(app.settings.density.history_row_height()));
+    let lines = cx.debug_bounds("blame-lines-region").expect("the lines");
+    assert!(
+        lines.size.height >= row * 3. - px(0.5),
+        "three rows beside it: {lines:?}"
+    );
+    prepare_at(&app, cx, size(px(461.), px(490.)), 18);
+    views::tests::draw(cx);
+    assert!(
+        cx.debug_bounds("blame-lineage-limit").is_none(),
+        "a 461 × 490 window gives it up"
+    );
+    assert_eq!(
+        blame::source_scope_name()
+            .as_deref()
+            .map(|name| name.contains("not traced")),
+        Some(true),
+        "the compact source line's name says the note"
+    );
+    let says = |what: &str| {
+        blame::source_scope_name()
+            .as_deref()
+            .is_some_and(|name| name.contains(what))
+    };
+    assert!(says("Show the lineage note"), "and what a press does");
+    let tooltip = blame::source_scope_tooltip().expect("its tooltip");
+    assert!(
+        tooltip.contains("Committed revision") && tooltip.contains("not traced"),
+        "its tooltip holds its full text, which can end in an ellipsis: {tooltip}"
+    );
+    assert!(
+        cx.debug_bounds("blame-source-note").is_none(),
+        "no note beneath it at rest"
+    );
+    // The keyboard's way to it: the source line is a Tab stop of its own,
+    // just before the lines, and Enter presses it.
+    let lines = app.read_with(cx, |app, _| app.blame.focus().expect("the lines"));
+    cx.update(|window, cx| lines.focus(window, cx));
+    views::tests::draw(cx);
+    cx.simulate_keystrokes("shift-tab");
+    views::tests::draw(cx);
+    // A focused Button outside a dialog presses as the key comes up.
+    cx.simulate_keystrokes("enter");
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("enter").unwrap(),
+    });
+    views::tests::draw(cx);
+    assert!(says("Hide the lineage note"), "its name follows its state");
+    assert!(
+        crate::native_accessibility::written::get("blame-source-note").is_some_and(|note| note
+            .node
+            .value()
+            .is_some_and(|text| text.contains("traced"))),
+        "the note is read as text"
+    );
+    let note = cx.debug_bounds("blame-source-note").expect("the note");
+    let panel = cx.debug_bounds("blame-panel").expect("the pane");
+    assert!(
+        note.top() >= panel.top() && note.bottom() <= panel.bottom() + px(0.5),
+        "pressed, the note reads beneath the source line: {note:?} in {panel:?}"
+    );
+}
+
+/// At 13 pt in the full window, a line's history keeps its capped list: the
+/// summary and actions stay where they were in the footer, which gains no
+/// bar, and the rows past the 130 px cap scroll in the list. Opened with its
+/// rows merged into the footer, they carried the summary and actions out of
+/// view and the footer gained a bar.
+#[gpui::test]
+async fn a_line_history_leaves_the_footers_actions_in_place_at_13_pt(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window_from(cx, views::tests::history_script(8, 2)).await;
+    prepare_at(&app, cx, size(px(1480.), px(973.)), 13);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
+    blame::lands(&app, cx);
+    views::tests::draw(cx);
+    let bounds = |cx: &mut VisualTestContext, id: &'static str| {
+        cx.debug_bounds(id)
+            .unwrap_or_else(|| panic!("{id} is drawn"))
+    };
+    let footer = bounds(cx, "blame-footer");
+    let compare = bounds(cx, "blame-compare-commit");
+    let offset = compare.top() - footer.top();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.load_line_history(window, cx)));
+    blame::lands(&app, cx);
+    views::tests::draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.blame.history_rows()) >= 6,
+        "enough rows to pass the list's cap"
+    );
+    let footer = bounds(cx, "blame-footer");
+    let compare = bounds(cx, "blame-compare-commit");
+    assert_eq!(
+        compare.top() - footer.top(),
+        offset,
+        "the actions stay in place in the footer: {compare:?} in {footer:?}"
+    );
+    assert_eq!(
+        app.read_with(cx, |app, _| app.blame.footer_overflow()),
+        Pixels::ZERO,
+        "the footer gains no scroll"
+    );
+    assert!(
+        cx.debug_bounds("blame-footer-scrollbar").is_none(),
+        "and no bar"
+    );
+    let list = bounds(cx, "line-history-results");
+    assert!(
+        list.size.height <= px(130.5),
+        "the list keeps its cap: {list:?}"
+    );
+}
+
+/// Where the footer has its full height, a Tab onto a hash past the capped
+/// list's foot reveals it in the list, whole with its ring, in the first frame
+/// that draws its focus: the list's reveal never ended a frame, so it knew no
+/// control to reveal and held one more per row in every frame Blame drew.
+#[gpui::test]
+async fn a_tab_past_the_capped_list_reveals_the_hash(cx: &mut TestAppContext) {
+    use crate::focus_reveal::tests::{Control, assert_every_frame_reveals};
+    let (_fixture, app, cx) = history_window_from(cx, views::tests::history_script(8, 2)).await;
+    prepare_at(&app, cx, size(px(1480.), px(973.)), 13);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
+    blame::lands(&app, cx);
+    views::tests::draw(cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.load_line_history(window, cx)));
+    blame::lands(&app, cx);
+    views::tests::draw(cx);
+    let rows = app.read_with(cx, |app, _| app.blame.history_rows());
+    assert!(rows >= 6, "enough rows to pass the list's cap: {rows}");
+    let list = app.read_with(cx, |app, _| app.blame.history_reveal());
+    // From the lines, past the actions, onto the originating commit's hash,
+    // the stop before the list's first.
+    let lines = app.read_with(cx, |app, _| app.blame.focus().expect("the lines"));
+    cx.update(|window, cx| lines.focus(window, cx));
+    views::tests::draw(cx);
+    cx.simulate_keystrokes("tab tab tab tab");
+    views::tests::draw(cx);
+    let controls: Vec<Control> = (0..rows)
+        .map(|row| {
+            (
+                ElementId::from(("line-history-hash", row)),
+                &*format!("copy-line-history-commit-{row}").leak(),
+            )
+        })
+        .collect();
+    assert_every_frame_reveals(cx, &list, "line-history-results", &controls);
+    assert_eq!(
+        list.controls_in_progress(),
+        0,
+        "a frame's controls end with the frame"
+    );
+    // The reveal is once, on the Tab: scrolled away, the list stays.
+    list.scroll().set_offset(point(px(0.), px(0.)));
+    views::tests::draw(cx);
+    assert_eq!(
+        list.scroll().offset().y,
+        px(0.),
+        "the person's scroll stays"
+    );
+}
+
+/// Blame open in a window of `window` at `interface` pt, on a history of
+/// `commits` commits rewriting the file's first line, and that line's history
+/// read where `history` says.
+async fn blame_at(
+    cx: &mut TestAppContext,
+    commits: usize,
+    window: Size<Pixels>,
+    interface: u8,
+    history: bool,
+) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+    let script = views::tests::history_script(commits, 2);
+    blame_with(cx, script, window, interface, history).await
+}
+
+/// A commit subject that wraps in any pane narrower than the full window.
+const LONG_SUBJECT: &str = "Reconcile the attribution footer with the least heights of the panes and window tiles it has to hold at every interface text size";
+
+/// A fast-import script committing `steps`, each a subject and the file's
+/// whole text, in order.
+fn history_of(steps: &[(String, String)]) -> String {
+    let mut input = String::new();
+    for (commit, (subject, notes)) in steps.iter().enumerate() {
+        input.push_str(&format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{subject}\nM 100644 inline notes.txt\ndata {}\n{notes}\n",
+            1_700_000_000 + commit,
+            subject.len(),
+            notes.len(),
+        ));
+    }
+    input + "done\n"
+}
+
+/// [`blame_at`] on the history `script` imports.
+async fn blame_with(
+    cx: &mut TestAppContext,
+    script: String,
+    window: Size<Pixels>,
+    interface: u8,
+    history: bool,
+) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+    let (fixture, app, cx) = history_window_from(cx, script).await;
+    prepare_at(&app, cx, window, interface);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
+    blame::lands(&app, cx);
+    views::tests::draw(cx);
+    if history {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.load_line_history(window, cx)));
+        blame::lands(&app, cx);
+        views::tests::draw(cx);
+    }
+    (fixture, app, cx)
+}
+
+/// Where the last frame drew `selector`.
+fn drawn(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+    cx.debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"))
+}
+
+/// The window resized to `window` and its interface text to `interface` pt,
+/// focus left where it is, and drawn.
+fn resized(cx: &mut VisualTestContext, window: Size<Pixels>, interface: u8) {
+    cx.simulate_resize(window);
+    sweep::interface_size(cx, interface);
+    views::tests::draw(cx);
+}
+
+/// The compact source line starts on the text edge its full form starts on,
+/// as a ghost Button stands at one (DESIGN.md, one left edge): its frame and
+/// hover fill spread into the padding before that edge and fit its text, at
+/// the full form's text size. A kit Button stretched by its column drew it
+/// centred across the pane, past the text edge and smaller than the full
+/// form. In a pane narrower than its words it ends in an ellipsis inside the
+/// pane, its ring whole.
+#[gpui::test]
+async fn blame_s_compact_source_line_stands_on_the_text_edge(cx: &mut TestAppContext) {
+    const TEXT: &str = "blame-source-scope-text";
+    let (_fixture, app, cx) = blame_at(cx, 2, size(px(1480.), px(973.)), 18, false).await;
+    assert!(
+        cx.debug_bounds("blame-lineage-limit").is_some(),
+        "the full form"
+    );
+    let edge = drawn(cx, "blame-source-scope").left() - drawn(cx, "blame-panel").left();
+    let whole = appearance::drawn_size(TEXT);
+    // Short and wide: the compact form, with room to tell its text from a
+    // frame stretched across the pane.
+    resized(cx, size(px(1200.), px(490.)), 18);
+    assert!(
+        cx.debug_bounds("blame-lineage-limit").is_none(),
+        "the compact form"
+    );
+    let panel = drawn(cx, "blame-panel");
+    let frame = drawn(cx, "blame-source-scope");
+    assert!(
+        frame.size.width < panel.size.width / 2.,
+        "its hover fill and ring fit its text: {frame:?} in {panel:?}"
+    );
+    let text = drawn(cx, TEXT);
+    assert!(
+        (text.left() - panel.left() - edge).abs() <= px(0.5),
+        "its text starts on the full form's edge: {text:?}, {edge:?} into {panel:?}"
+    );
+    assert!(
+        frame.left() < text.left(),
+        "its frame spreads into the padding: {frame:?}, {text:?}"
+    );
+    assert_eq!(
+        appearance::drawn_size(TEXT),
+        whole,
+        "at the full form's size"
+    );
+    assert_eq!(whole, Some(appearance::ui_text(11.)));
+    // Words wider than a pane the project list and inspector leave narrow.
+    app.update(cx, |app, cx| {
+        app.blame.name_target("notes.txt");
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.settings.project_pane_width = 360.;
+            if !app.settings.project_pane {
+                app.toggle_project_pane(window, cx);
+            }
+        })
+    });
+    cx.simulate_resize(size(px(760.), px(490.)));
+    let panels = app.read_with(cx, |app, _| app.content_panels.clone());
+    cx.update(|window, cx| {
+        panels.update(cx, |panels, cx| {
+            panels.resize_panel(1, px(480.), window, cx)
+        });
+    });
+    views::tests::draw(cx);
+    let room = cx.read(appearance::button_ring_room);
+    let panel = drawn(cx, "blame-panel");
+    let frame = drawn(cx, "blame-source-scope");
+    let text = drawn(cx, TEXT);
+    assert!(
+        panel.size.width < px(330.),
+        "a pane narrower than its words: {panel:?}"
+    );
+    assert!(
+        frame.right() + room <= panel.right() + px(0.5),
+        "it stays inside the pane, its ring whole: {frame:?} in {panel:?}"
+    );
+    assert!(
+        text.right() <= frame.right() + px(0.5),
+        "and its text inside its frame: {text:?} in {frame:?}"
+    );
+}
+
+/// The compact source line writes whether the note beneath it is open on its
+/// accessible node: its name said so in words, and no state followed.
+#[gpui::test]
+async fn blame_s_compact_source_line_says_whether_its_note_is_open(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = blame_at(cx, 2, size(px(461.), px(490.)), 18, false).await;
+    assert!(
+        cx.debug_bounds("blame-lineage-limit").is_none(),
+        "the compact form"
+    );
+    let expanded = |cx: &mut VisualTestContext| {
+        let owner = app.clone();
+        views::tests::view_node(cx, move |window, cx| {
+            use gpui::Element as _;
+            let button = owner
+                .update(cx, |app, cx| {
+                    app.blame_source_scope("Committed revision", "lineage", window, cx)
+                })
+                .base(window, cx);
+            let element = RenderOnce::render(button, window, cx).into_element();
+            let mut node =
+                gpui::accesskit::Node::new(element.a11y_role().expect("the source line's role"));
+            element.write_a11y_info(&mut node);
+            node
+        })
+        .is_expanded()
+    };
+    assert_eq!(expanded(cx), Some(false), "closed at rest");
+    let line = drawn(cx, "blame-source-scope");
+    cx.simulate_click(line.center(), gpui::Modifiers::default());
+    views::tests::draw(cx);
+    assert!(
+        cx.debug_bounds("blame-source-note").is_some(),
+        "pressed, the note reads beneath it"
+    );
+    assert_eq!(expanded(cx), Some(true), "and the node says it is open");
+}
+
+/// A shallow repository's boundary line counts toward the header's and the
+/// footer's forms, known before layout from the text it wraps: uncounted, a
+/// pane just above the footer's threshold kept the full footer with its first
+/// action cut, and a band of heights scrolled the whole pane.
+#[gpui::test]
+async fn the_shallow_line_counts_toward_the_blame_forms(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = blame_at(cx, 4, size(px(461.), px(700.)), 18, false).await;
+    app.update(cx, |app, cx| {
+        app.blame.mark_shallow();
+        cx.notify();
+    });
+    views::tests::draw(cx);
+    assert!(
+        cx.debug_bounds("blame-shallow-boundary").is_some(),
+        "the shallow line is drawn"
+    );
+    let room = cx.read(appearance::button_ring_room);
+    let (mut full, mut full_header) = (false, false);
+    // The narrow pane wraps the line across several rows.
+    for height in (400..=1200).step_by(3) {
+        cx.simulate_resize(size(px(461.), px(height as f32)));
+        views::tests::draw(cx);
+        if cx.debug_bounds("blame-selected-details").is_some() {
+            full = true;
+            let footer = drawn(cx, "blame-footer");
+            let compare = drawn(cx, "blame-compare-commit");
+            assert!(
+                compare.bottom() + room <= footer.bottom() + px(0.5),
+                "{height}: a full footer shows its first action whole: {compare:?} in {footer:?}"
+            );
+        }
+        if cx.debug_bounds("blame-lineage-limit").is_some() {
+            full_header = true;
+            assert_eq!(
+                app.read_with(cx, |app, _| app.blame.panel_overflow()),
+                Pixels::ZERO,
+                "{height}: a full header fits the pane"
+            );
+        }
+    }
+    assert!(full && full_header, "the sweep reached the full forms");
+}
+
+/// A full header fits the pane that draws it: computed in literal pixels for
+/// its rem-based padding, it left a band of window heights at 18 pt that
+/// scrolled the whole pane by 5 px.
+#[gpui::test]
+async fn a_full_header_leaves_no_band_of_whole_pane_scroll(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = blame_at(cx, 4, size(px(461.), px(700.)), 18, false).await;
+    let mut compact = false;
+    for height in (440..=620).step_by(2) {
+        cx.simulate_resize(size(px(461.), px(height as f32)));
+        views::tests::draw(cx);
+        if cx.debug_bounds("blame-lineage-limit").is_some() {
+            assert_eq!(
+                app.read_with(cx, |app, _| app.blame.panel_overflow()),
+                Pixels::ZERO,
+                "{height}: a full header fits the pane"
+            );
+        } else {
+            compact = true;
+        }
+    }
+    assert!(compact, "the sweep reached the compact header");
+}
+
+/// Wherever the footer keeps its full form, its first action shows whole with
+/// its ring, and it goes compact from the header, the lines' three rows and
+/// that row, while the header keeps its own threshold. Decided with the
+/// header's, panes of about 322 to 361 px at 18 pt showed a summary and a
+/// detail with no action in view.
+#[gpui::test]
+async fn the_footer_goes_compact_before_its_first_action_leaves_it(cx: &mut TestAppContext) {
+    let (_fixture, _app, cx) = blame_at(cx, 4, size(px(461.), px(700.)), 18, false).await;
+    let room = cx.read(appearance::button_ring_room);
+    let (mut full, mut compact_alone) = (false, false);
+    for height in (400..=760).step_by(3) {
+        cx.simulate_resize(size(px(461.), px(height as f32)));
+        views::tests::draw(cx);
+        if cx.debug_bounds("blame-selected-details").is_some() {
+            full = true;
+            let footer = drawn(cx, "blame-footer");
+            let compare = drawn(cx, "blame-compare-commit");
+            assert!(
+                compare.bottom() + room <= footer.bottom() + px(0.5),
+                "{height}: a full footer shows its first action whole: {compare:?} in {footer:?}"
+            );
+        } else if cx.debug_bounds("blame-lineage-limit").is_some() {
+            compact_alone = true;
+        }
+    }
+    assert!(full, "the sweep reached a full footer");
+    assert!(compact_alone, "the footer goes compact before the header");
+}
+
+/// "Tracing…" holds History of line's bounds, so the row of actions does not
+/// move, and its label starts at the control's inset, after its icon, as
+/// "History of line" does.
+#[gpui::test]
+async fn tracing_keeps_history_of_lines_bounds(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = blame_at(cx, 4, size(px(461.), px(490.)), 18, false).await;
+    let frame = drawn(cx, "blame-line-history");
+    let copy = drawn(cx, "blame-copy-line");
+    let held = app.read_with(cx, |app, _| {
+        app.worker.wait_idle();
+        app.worker.hold()
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.load_line_history(window, cx)));
+    views::tests::draw(cx);
+    assert_eq!(blame::line_history_label_drawn(), Some("Tracing…"));
+    assert_eq!(
+        drawn(cx, "blame-line-history"),
+        frame,
+        "the control keeps its bounds"
+    );
+    assert_eq!(drawn(cx, "blame-copy-line"), copy, "the row does not move");
+    let label = drawn(cx, "blame-line-history-label");
+    let inset = cx.update(|window, _| {
+        let snap = |base: f32| window.pixel_snap(appearance::ui_size(base));
+        snap(LABEL_INSET) + snap(16.) + snap(6.)
+    });
+    assert!(
+        (label.left() - frame.left() - inset).abs() <= px(0.5),
+        "its label starts at its inset: {label:?} in {frame:?}"
+    );
+    drop(held);
+    blame::lands(&app, cx);
+}
+
+/// A line's history keeps its capped list only where the footer holds it
+/// without scrolling: at 18 pt, whose cap and footer scale with the text, and
+/// never where the actions wrap, where the rows merge into the footer's own
+/// scroll. A list capped in pixels nested inside a footer that scrolled.
+#[gpui::test]
+async fn the_capped_list_never_nests_in_a_scrolling_footer(cx: &mut TestAppContext) {
+    // Past the line history's 100 rows, so the longer limit note shows, the
+    // newest commit's subject long enough to wrap, so the text above the list
+    // takes all it can.
+    let steps: Vec<_> = (0..105)
+        .map(|step| (format!("draft {step}"), format!("draft {step}\nstable\n")))
+        .chain([(LONG_SUBJECT.to_owned(), "note 1\nstable\n".to_owned())])
+        .collect();
+    let script = history_of(&steps);
+    let (_fixture, app, cx) = blame_with(cx, script, size(px(1480.), px(973.)), 13, true).await;
+    for interface in [13, 18] {
+        for width in (461..=1480).step_by(20) {
+            resized(cx, size(px(width as f32), px(973.)), interface);
+            let at = format!("{width} px at {interface} pt");
+            let list = drawn(cx, "line-history-results");
+            let capped = list.size.height <= appearance::ui_size(130.) + px(0.5);
+            let overflow = app.read_with(cx, |app, _| app.blame.footer_overflow());
+            assert!(
+                !capped || overflow == Pixels::ZERO,
+                "{at}: a capped list {list:?} nests in a footer scrolling {overflow:?}"
+            );
+            if drawn(cx, "blame-compare-commit").top() != drawn(cx, "blame-copy-line").top() {
+                assert!(!capped, "{at}: the actions wrap, so the footer is not full");
+            }
+        }
+    }
+    resized(cx, size(px(1480.), px(973.)), 18);
+    let list = drawn(cx, "line-history-results");
+    assert!(
+        list.size.height > px(130.5),
+        "at 18 pt the cap scales: {list:?}"
+    );
+}
+
+/// A control a resize takes away hands its focus to the lines, the region's
+/// own stop. A hash tracks a different handle on each side of the footer's
+/// height threshold, and the source line is a Button only while compact, so
+/// crossing either left focus on a handle nothing draws.
+#[gpui::test]
+async fn a_control_a_resize_removes_hands_its_focus_to_the_lines(cx: &mut TestAppContext) {
+    let full = size(px(1480.), px(973.));
+    let short = size(px(461.), px(490.));
+    let (_fixture, app, cx) = blame_at(cx, 8, full, 13, true).await;
+    let lines = app.read_with(cx, |app, _| app.blame.focus().expect("the lines"));
+    let hash = ElementId::from(("line-history-hash", 0usize));
+    let on_lines = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| window.focused(cx)) == Some(lines.clone())
+    };
+    let from_lines = |cx: &mut VisualTestContext, keys: &str| {
+        cx.update(|window, cx| lines.focus(window, cx));
+        views::tests::draw(cx);
+        cx.simulate_keystrokes(keys);
+        views::tests::draw(cx);
+    };
+    let (list, footer, panel) = app.read_with(cx, |app, _| {
+        (
+            app.blame.history_reveal(),
+            app.blame.footer_reveal(),
+            app.blame.panel_reveal(),
+        )
+    });
+    // The capped list's first hash, then a pane too short to keep the list.
+    from_lines(cx, "tab tab tab tab tab");
+    assert_eq!(
+        cx.update(|window, _| list.focused(window)),
+        Some(hash.clone()),
+        "on the capped list's hash"
+    );
+    resized(cx, short, 18);
+    assert!(on_lines(cx), "the merged rows took the hash: on the lines");
+    // The same hash in the merged rows, then a pane tall enough for the list.
+    from_lines(cx, "tab tab tab tab tab");
+    assert_eq!(
+        cx.update(|window, _| footer.focused(window)),
+        Some(hash),
+        "on the merged rows' hash"
+    );
+    resized(cx, full, 13);
+    assert!(on_lines(cx), "the capped list took the hash: on the lines");
+    // The compact source line, then a pane where it is text.
+    resized(cx, short, 18);
+    from_lines(cx, "shift-tab");
+    assert_eq!(
+        cx.update(|window, _| panel.focused(window)),
+        Some(ElementId::from("blame-source-scope")),
+        "on the compact source line"
+    );
+    resized(cx, full, 13);
+    assert!(on_lines(cx), "the source line became text: on the lines");
+}
+
+/// Blame's heading keeps the file name in a narrow pane, the path giving way
+/// from its middle, its name and tooltip keeping it whole: `truncate` cut the
+/// file name, the end of the path, first.
+#[gpui::test]
+async fn blame_s_heading_keeps_the_file_name_in_a_narrow_pane(cx: &mut TestAppContext) {
+    use crate::native_accessibility::written;
+    let (_fixture, app, cx) = blame_at(cx, 2, size(px(461.), px(490.)), 18, false).await;
+    let path = "services/billing/src/deeply/nested/modules/invoices/renderer.rs";
+    app.update(cx, |app, cx| {
+        app.blame.name_target(path);
+        cx.notify();
+    });
+    written::forget();
+    views::tests::draw(cx);
+    // What is drawn fits the heading, or `truncate` cuts what the string says.
+    let fits = |cx: &mut VisualTestContext, shown: &str, at: &str| {
+        let heading = drawn(cx, "blame-heading");
+        let width = cx.update(|window, _| {
+            let size = appearance::ui_text(12.);
+            views::shaped_width(shown, size, FontWeight::SEMIBOLD, window).ceil()
+        });
+        assert!(
+            width <= heading.size.width + px(0.5),
+            "{at}: {shown:?}, {width:?} wide, fits {heading:?}"
+        );
+    };
+    // The narrowest pane gives up the prefix and keeps the file name.
+    let shown = blame::heading_drawn().expect("the heading");
+    fits(cx, &shown, "461 px");
+    assert!(
+        !shown.starts_with("Blame · ") && shown.ends_with(".rs"),
+        "the file name stands in the prefix's place: {shown}"
+    );
+    let name = written::get("blame-heading").expect("the heading's node");
+    assert_eq!(
+        name.node.value(),
+        Some(format!("Blame · {path}").as_str()),
+        "its name keeps the whole path"
+    );
+    // A pane between gives the path up from its middle, never the name.
+    let mut elided = false;
+    for width in (461..=1480).step_by(40) {
+        resized(cx, size(px(width as f32), px(973.)), 18);
+        let shown = blame::heading_drawn().expect("the heading");
+        fits(cx, &shown, &format!("{width} px"));
+        // In the very narrowest panes the name itself elides in its middle,
+        // keeping its end: cut from the end, it lost the name first.
+        assert!(
+            shown.ends_with(".rs"),
+            "{width} px: the end of the file name stays: {shown}"
+        );
+        elided |= shown.starts_with("Blame · services/") && shown.contains('…');
+    }
+    assert!(elided, "some pane keeps both ends of the path");
+    // Where the whole path fits, it reads whole.
+    resized(cx, size(px(1480.), px(973.)), 13);
+    assert_eq!(
+        blame::heading_drawn().as_deref(),
+        Some(format!("Blame · {path}").as_str()),
+        "a pane with room keeps it whole"
+    );
+}
+
+/// Blame's stops at 18 pt in a 461 × 420 window, each met with its ring whole
+/// both ways.
+#[gpui::test]
+async fn blame_rings_whole_at_461_by_420_at_18_pt(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = blame_at(cx, 4, size(px(461.), px(420.)), 18, false).await;
+    let blame = app.read_with(cx, |app, _| app.blame.focus());
+    let names = repository_names(&app, cx).handle(blame, "the attribution lines");
+    let mut failures = Vec::new();
+    audit(
+        &app,
+        cx,
+        "Blame",
+        &names,
+        &["the attribution lines"],
+        Walk::PAGE.at(18),
+        &mut failures,
+    );
+    sweep::assert_whole(failures);
+}
+
+/// Arrowing through lines never changes the footer's form: it is decided from
+/// the pane alone, the summary and detail clamped to the two lines each it
+/// allows. Counting the selected line's own wrapped text, lines with different
+/// subjects landed on different sides of the threshold, and Compare commit
+/// jumped between about 40 px and over 100 px down the footer.
+#[gpui::test]
+async fn arrowing_through_lines_keeps_the_footers_form(cx: &mut TestAppContext) {
+    let script = history_of(&[
+        ("short".to_owned(), "alpha\nbeta\n".to_owned()),
+        (LONG_SUBJECT.to_owned(), "alpha\ngamma\n".to_owned()),
+    ]);
+    let (_fixture, app, cx) = blame_with(cx, script, size(px(461.), px(700.)), 18, false).await;
+    let lines = app.read_with(cx, |app, _| app.blame.focus().expect("the lines"));
+    cx.update(|window, cx| lines.focus(window, cx));
+    views::tests::draw(cx);
+    let full = |cx: &mut VisualTestContext| cx.debug_bounds("blame-selected-details").is_some();
+    let (mut seen_full, mut seen_compact) = (false, false);
+    for height in (400..=760).step_by(3) {
+        cx.simulate_resize(size(px(461.), px(height as f32)));
+        views::tests::draw(cx);
+        let first = full(cx);
+        cx.simulate_keystrokes("down");
+        views::tests::draw(cx);
+        assert_eq!(
+            full(cx),
+            first,
+            "{height}: arrowing onto the long subject keeps the footer's form"
+        );
+        cx.simulate_keystrokes("up");
+        views::tests::draw(cx);
+        seen_full |= first;
+        seen_compact |= !first;
+    }
+    assert!(seen_full && seen_compact, "the sweep reached both forms");
+    // The long subject in the full form takes its two lines at most.
+    cx.simulate_resize(size(px(461.), px(760.)));
+    views::tests::draw(cx);
+    cx.simulate_keystrokes("down");
+    views::tests::draw(cx);
+    let summary = drawn(cx, "blame-selected-summary");
+    let line = (appearance::ui_text(12.) * 1.618).ceil();
+    assert!(
+        summary.size.height <= line * 2. + px(0.5),
+        "the summary is clamped to two lines: {summary:?}"
+    );
+}
+
+/// The actions and their rings stay inside the footer down to the narrowest
+/// pane a dragged inspector leaves, at 18 pt and at 13 pt: an action wider than
+/// its room gives way to an ellipsis rather than run past the clip.
+#[gpui::test]
+async fn the_actions_and_their_rings_stay_inside_the_narrowest_pane(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = blame_at(cx, 4, size(px(1480.), px(760.)), 18, false).await;
+    let room = cx.read(appearance::button_ring_room);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.settings.project_pane_width = 360.;
+            if !app.settings.project_pane {
+                app.toggle_project_pane(window, cx);
+            }
+        })
+    });
+    let mut narrowest;
+    // At 13 pt the scrollbar's gutter, which does not scale, takes the most
+    // of the narrowest pane, where a short window scrolls the pane whole.
+    for (interface, height) in [(18, 420), (18, 760), (13, 280), (13, 420), (13, 760)] {
+        sweep::interface_size(cx, interface);
+        narrowest = px(10_000.);
+        for width in (280..=1400).step_by(40) {
+            cx.simulate_resize(size(px(width as f32), px(height as f32)));
+            let panels = app.read_with(cx, |app, _| app.content_panels.clone());
+            cx.update(|window, cx| {
+                panels.update(cx, |panels, cx| {
+                    panels.resize_panel(1, px(480.), window, cx)
+                });
+            });
+            views::tests::draw(cx);
+            let footer = drawn(cx, "blame-footer");
+            narrowest = narrowest.min(drawn(cx, "blame-panel").size.width);
+            for id in [
+                "blame-compare-commit",
+                "blame-line-history",
+                "blame-copy-line",
+                "copy-blame-commit",
+            ] {
+                let action = drawn(cx, id);
+                assert!(
+                    action.right() + room <= footer.right() + px(0.5),
+                    "{width} × {height} at {interface} pt: {id} and its ring in the footer: {action:?} in {footer:?}"
+                );
+            }
+        }
+        assert!(
+            narrowest <= appearance::ui_size(180.),
+            "{height} at {interface} pt: the sweep reached the narrowest pane: {narrowest:?}"
+        );
+    }
+}
+
+/// History of line answers in the tight footer: the pressed control says
+/// "Tracing…" while the rows are being read, nothing scrolls away from what
+/// was pressed, no row is added out of view, and the outcome is announced
+/// politely once.
+#[gpui::test]
+async fn history_of_line_answers_on_the_pressed_control_in_a_tight_footer(cx: &mut TestAppContext) {
+    use crate::copy_feedback::tests::announced;
+    let (_fixture, app, cx) = history_window_from(cx, views::tests::history_script(4, 2)).await;
+    prepare_at(&app, cx, size(px(461.), px(490.)), 18);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
+    blame::lands(&app, cx);
+    views::tests::draw(cx);
+    assert_eq!(
+        blame::line_history_label_drawn(),
+        Some("History of line"),
+        "at rest"
+    );
+    let offset = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.blame.footer_offset());
+    let before = offset(cx);
+    let held = app.read_with(cx, |app, _| {
+        app.worker.wait_idle();
+        app.worker.hold()
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.load_line_history(window, cx)));
+    views::tests::draw(cx);
+    assert_eq!(
+        blame::line_history_label_drawn(),
+        Some("Tracing…"),
+        "the pressed control says the read is under way"
+    );
+    assert!(
+        cx.debug_bounds("blame-line-history-loading").is_none(),
+        "no row added out of view"
+    );
+    assert_eq!(offset(cx), before, "nothing scrolled");
+    drop(held);
+    blame::lands(&app, cx);
+    views::tests::draw(cx);
+    assert_eq!(offset(cx), before, "nothing scrolled when the rows land");
+    assert_eq!(
+        blame::line_history_label_drawn(),
+        Some("History of line"),
+        "the read ended"
+    );
+    let (id, words) = announced(cx).expect("the outcome is announced");
+    assert!(words.starts_with("Line history ready"), "{words}");
+    views::tests::draw(cx);
+    assert_eq!(
+        announced(cx).map(|(again, _)| again),
+        Some(id),
+        "announced once"
+    );
+}
+
+/// The compact footer shows its first action: the header's `py_1` and a
+/// one-line summary, its full text and the detail in its tooltip and name,
+/// so at 18 pt in a 461 × 490 window Compare commit starts in view, where
+/// the summary, details and padding above it left it past the footer's foot.
+#[gpui::test]
+async fn the_compact_footer_shows_its_first_action(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window_from(cx, views::tests::history_script(4, 2)).await;
+    prepare_at(&app, cx, size(px(461.), px(490.)), 18);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
+    blame::lands(&app, cx);
+    views::tests::draw(cx);
+    let bounds = |cx: &mut VisualTestContext, id: &'static str| {
+        cx.debug_bounds(id)
+            .unwrap_or_else(|| panic!("{id} is drawn"))
+    };
+    let compare = bounds(cx, "blame-compare-commit");
+    let footer = bounds(cx, "blame-footer");
+    assert!(
+        compare.top() >= footer.top() && compare.top() < footer.bottom(),
+        "the first action starts in view: {compare:?} in {footer:?}"
+    );
+    let summary = bounds(cx, "blame-selected-summary");
+    let row = app.read_with(cx, |app, _| px(app.settings.density.history_row_height()));
+    assert!(summary.size.height < row, "a one-line summary: {summary:?}");
+    assert!(
+        cx.debug_bounds("blame-selected-details").is_none(),
+        "the detail is in the summary's tooltip and name"
+    );
+    prepare_at(&app, cx, size(px(1480.), px(973.)), 13);
+    views::tests::draw(cx);
+    assert!(
+        bounds(cx, "blame-selected-details").size.height > Pixels::ZERO,
+        "a footer with room keeps its detail line"
+    );
+}
+
+/// Blame keeps its source lines: at least three rows wherever the window
+/// can hold them with the header, the footer giving up its height first and
+/// scrolling within itself, as at 18 pt in a 461 × 490 half tile, where the
+/// footer once left the lines 2 px. Opened on a line's history, its results
+/// inside the footer are reached and revealed too. In the full window at
+/// 13 pt the footer takes its natural height, whole, one row of actions and
+/// no scrollbar, and the lines keep the rest: nothing moves.
+#[gpui::test]
+async fn blame_keeps_three_rows_and_its_footer_scrolls_within_itself(cx: &mut TestAppContext) {
+    // Four commits rewrite the file's first line, so a line history has
+    // several rows.
+    let (_fixture, app, cx) = history_window_from(cx, views::tests::history_script(4, 2)).await;
+    prepare_at(&app, cx, size(px(1480.), px(973.)), 13);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
+    blame::lands(&app, cx);
+    let bounds = |cx: &mut VisualTestContext, id: &'static str| {
+        cx.debug_bounds(id)
+            .unwrap_or_else(|| panic!("{id} is drawn"))
+    };
+    let row = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| px(app.settings.density.history_row_height()))
+    };
+    // In the full window the footer's height is its own and nothing cues
+    // an overflow, so the layout is what it was without a floor or a scroll.
+    views::tests::draw(cx);
+    assert_eq!(
+        app.read_with(cx, |app, _| app.blame.footer_overflow()),
+        Pixels::ZERO,
+        "the footer fits whole"
+    );
+    assert!(
+        cx.debug_bounds("blame-footer-scrollbar").is_none(),
+        "no scrollbar in the full window"
+    );
+    assert!(
+        cx.debug_bounds("blame-panel-scrollbar").is_none(),
+        "the pane does not scroll in the full window"
+    );
+    let (compare, copy) = (
+        bounds(cx, "blame-compare-commit"),
+        bounds(cx, "blame-copy-line"),
+    );
+    assert_eq!(compare.top(), copy.top(), "one row of actions");
+    let height = row(cx);
+    assert!(
+        bounds(cx, "blame-lines-region").size.height >= height * 3.,
+        "the lines take the rest"
+    );
+    prepare_at(&app, cx, size(px(461.), px(490.)), 18);
+    views::tests::draw(cx);
+    let row = row(cx);
+    let at_18 = |cx: &mut VisualTestContext, case: &str| {
+        let lines = bounds(cx, "blame-lines-region");
+        let footer = bounds(cx, "blame-footer");
+        assert!(
+            lines.size.height >= row * 3. - px(0.5),
+            "{case}: the lines keep three {row:?} rows: {lines:?}"
+        );
+        assert!(
+            (footer.top() - lines.bottom()).abs() <= px(2.),
+            "{case}: the footer starts where the lines end: {lines:?}, {footer:?}"
+        );
+    };
+    at_18(cx, "at rest");
+    assert!(
+        app.read_with(cx, |app, _| app.blame.footer_overflow()) > Pixels::ZERO,
+        "the footer scrolls within itself"
+    );
+    // Opened on a line's history, its results among the footer's stops.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.load_line_history(window, cx)));
+    blame::lands(&app, cx);
+    views::tests::draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.blame.history_rows()) >= 3,
+        "the line's history has rows to reach"
+    );
+    at_18(cx, "with the line's history open");
+    let blame = app.read_with(cx, |app, _| app.blame.focus());
+    let names = repository_names(&app, cx).handle(blame, "the attribution lines");
+    let mut failures = Vec::new();
+    audit(
+        &app,
+        cx,
+        "Blame with a line's history",
+        &names,
+        &["the attribution lines"],
+        Walk::PAGE.at(18),
+        &mut failures,
+    );
+    sweep::assert_whole(failures);
+    assert!(
+        bounds(cx, "blame-lines-region").size.height >= row * 3. - px(0.5),
+        "Tab left the lines their rows"
+    );
 }
 
 /// The captured local document a rendered Markdown's link opens, in its

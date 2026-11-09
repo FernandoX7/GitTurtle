@@ -600,6 +600,10 @@ impl InteractiveElement for Button {
     }
 }
 
+// GitTurtle patch: the states GPUI keeps on this trait, such as `aria_expanded`,
+// reach the base Button's node, as they do on `gpui_base::Button`.
+impl gpui::StatefulInteractiveElement for Button {}
+
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         self.base(window, cx)
