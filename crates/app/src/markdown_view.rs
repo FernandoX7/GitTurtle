@@ -57,6 +57,9 @@ pub struct Document {
     repository: Option<GitRepository>,
     source: Arc<str>,
     navigation: std::sync::Mutex<Option<gitturtle_core::HistoryCancellation>>,
+    /// What this side says for itself if it stays its literal Git LFS
+    /// pointer, as a side kept literal says in the place of diagrams.
+    pub(super) literal: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Origins {
@@ -96,12 +99,41 @@ impl Document {
             repository: None,
             source: Arc::from(""),
             navigation: std::sync::Mutex::new(None),
+            literal: None,
             blocks: vec![Block {
                 kind: Kind::Notice(message.into()),
                 indent: 0,
                 heading: 0,
                 line: 1,
             }],
+        }
+    }
+    /// A side that is a Git LFS pointer: its exact stored text, under the
+    /// words saying why it stays literal, never parsed as Markdown.
+    fn lfs_pointer(
+        name: &std::path::Path,
+        source: &str,
+        failure: Option<gitturtle_core::LfsObjectFailure>,
+    ) -> Self {
+        let reason = rich_preview::Literal::LfsPointer.reason(failure);
+        let block = |kind| Block {
+            kind,
+            indent: 0,
+            heading: 0,
+            line: 1,
+        };
+        Self {
+            name: name.into(),
+            present: true,
+            origin: None,
+            repository: None,
+            source: Arc::from(source),
+            navigation: std::sync::Mutex::new(None),
+            literal: Some(reason.clone()),
+            blocks: vec![
+                block(Kind::Notice(reason)),
+                block(Kind::Code("Git LFS pointer".into(), source.to_owned())),
+            ],
         }
     }
     fn bytes(&self) -> usize {
@@ -186,8 +218,16 @@ impl Comparison {
             side.page_kind = "Diagram";
             side.metadata.format = "Mermaid diagrams".into();
             if document.present {
-                // Called on the worker; text needs no cancellation point.
-                let _ = side.capture(Arc::from(document.source.as_bytes()), &|| Ok(()));
+                if let Some(reason) = &document.literal {
+                    // A literal side's text is not captured: capturing reads
+                    // it to decide what another application could open it as.
+                    side.literal = Some(rich_preview::Literal::LfsPointer);
+                    side.metadata.format = rich_preview::Literal::LfsPointer.format().into();
+                    side.metadata.details.push(reason.clone());
+                } else {
+                    // Called on the worker; text needs no cancellation point.
+                    let _ = side.capture(Arc::from(document.source.as_bytes()), &|| Ok(()));
+                }
                 side.metadata.source = Some(document.source.clone());
             }
             side.pages = document
@@ -208,7 +248,9 @@ impl Comparison {
                 })
                 .collect();
             side.page_count = side.pages.len();
-            side.metadata.details.push("Up to four bounded Mermaid blocks; Rendered includes surrounding prose and exact Source retains every block.".into());
+            if document.literal.is_none() {
+                side.metadata.details.push("Up to four bounded Mermaid blocks; Rendered includes surrounding prose and exact Source retains every block.".into());
+            }
             Arc::new(side)
         };
         let old = side(&self.old);
@@ -233,6 +275,7 @@ pub fn prepare(
     old: &str,
     new: &str,
     file: &FileChange,
+    lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
     check: impl Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<Comparison>> {
     if ![file.old_path.as_deref(), file.new_path.as_deref()]
@@ -240,26 +283,46 @@ pub fn prepare(
         .flatten()
         .any(is_markdown)
         || [file.old_mode.as_str(), file.new_mode.as_str()].contains(&"120000")
-        || [old, new]
-            .iter()
-            .any(|source| gitturtle_preview::detect_lfs_pointer(source.as_bytes()).is_some())
     {
+        return Ok(None);
+    }
+    // A pointer side stays literal and only that side, as Diagrams keeps one
+    // (`rich_preview::Literal`); with no regular side to render there is no
+    // Rendered view.
+    let old_present = file.old_path.is_some();
+    let new_present = file.new_path.is_some();
+    let old_pointer = old_present && rich_preview::Literal::of(&file.old_mode, old).is_some();
+    let new_pointer = new_present && rich_preview::Literal::of(&file.new_mode, new).is_some();
+    if !(old_present && !old_pointer) && !(new_present && !new_pointer) {
         return Ok(None);
     }
     let old_name = file.old_path.as_deref().unwrap_or_else(|| file.path());
     let new_name = file.new_path.as_deref().unwrap_or_else(|| file.path());
+    let side = |source: &str,
+                name: &std::path::Path,
+                present: bool,
+                pointer: bool,
+                failure: Option<gitturtle_core::LfsObjectFailure>| {
+        if pointer {
+            Ok(Document::lfs_pointer(name, source, failure))
+        } else {
+            prepare_document(source, name, present, &check)
+        }
+    };
     Ok(Some(Comparison {
-        old: Arc::new(prepare_document(
+        old: Arc::new(side(
             old,
             old_name,
-            file.old_path.is_some(),
-            &check,
+            old_present,
+            old_pointer,
+            lfs_failed[0],
         )?),
-        new: Arc::new(prepare_document(
+        new: Arc::new(side(
             new,
             new_name,
-            file.new_path.is_some(),
-            &check,
+            new_present,
+            new_pointer,
+            lfs_failed[1],
         )?),
     }))
 }
@@ -336,6 +399,7 @@ fn prepare_document(
         repository: None,
         source: Arc::from(source),
         navigation: std::sync::Mutex::new(None),
+        literal: None,
     })
 }
 
@@ -1068,6 +1132,12 @@ impl View {
                 },
                 index,
             ))
+            .debug_selector(move || {
+                format!(
+                    "markdown-{}-block-{index}",
+                    if side == 0 { "before" } else { "after" }
+                )
+            })
             .w_full()
             .min_w_0()
             .px_3()
@@ -1851,7 +1921,9 @@ mod tests {
             status: gitturtle_core::ChangeStatus::Modified,
         };
         let control = gitturtle_core::HistoryCancellation::default();
-        let mut comparison = prepare(source, source, &file, || Ok(())).unwrap().unwrap();
+        let mut comparison = prepare(source, source, &file, [None; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
         capture_assets(
             &mut comparison,
             &repo,
@@ -1869,11 +1941,15 @@ mod tests {
             old: Some(gitturtle_core::PreviewAssetScope::Index),
             new: Some(gitturtle_core::PreviewAssetScope::Worktree),
         };
-        let mut first = prepare(source, source, &file, || Ok(())).unwrap().unwrap();
+        let mut first = prepare(source, source, &file, [None; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
         capture_assets(&mut first, &repo, &file, &origins, &control).unwrap();
         assert_eq!(pixel(&first.new), [0, 255, 0, 255]);
         image_file(&path.join("docs/figure.png"), [255, 255, 0, 255]);
-        let mut next = prepare(source, source, &file, || Ok(())).unwrap().unwrap();
+        let mut next = prepare(source, source, &file, [None; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
         capture_assets(&mut next, &repo, &file, &origins, &control).unwrap();
         assert!(!first.same_source(&next));
         assert_eq!(std::fs::read(path.join(".git/index")).unwrap(), index);
@@ -1952,7 +2028,7 @@ mod tests {
             status: gitturtle_core::ChangeStatus::Added,
         };
         let control = gitturtle_core::HistoryCancellation::default();
-        let mut comparison = prepare(&source, &source, &file, || Ok(()))
+        let mut comparison = prepare(&source, &source, &file, [None; 2], || Ok(()))
             .unwrap()
             .unwrap();
         DECODED.take();
@@ -2111,7 +2187,9 @@ mod tests {
             status: gitturtle_core::ChangeStatus::Added,
         };
         let control = gitturtle_core::HistoryCancellation::default();
-        let mut comparison = prepare(source, source, &file, || Ok(())).unwrap().unwrap();
+        let mut comparison = prepare(source, source, &file, [None; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
         capture_assets(
             &mut comparison,
             &repo,
@@ -2193,7 +2271,9 @@ mod tests {
             status: gitturtle_core::ChangeStatus::Added,
         };
         let control = gitturtle_core::HistoryCancellation::default();
-        let mut comparison = prepare(source, source, &file, || Ok(())).unwrap().unwrap();
+        let mut comparison = prepare(source, source, &file, [None; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
         let origins = Origins::revisions(None, Some(head));
         std::thread::scope(|scope| {
             let capture =
@@ -2207,6 +2287,168 @@ mod tests {
             let error = capture.join().unwrap().unwrap_err();
             assert_eq!(error.to_string(), "Markdown local-image capture cancelled");
         });
+    }
+    fn markdown_change(old: bool, new: bool) -> FileChange {
+        FileChange {
+            old_path: old.then(|| "README.md".into()),
+            new_path: new.then(|| "README.md".into()),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Modified,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+        }
+    }
+    fn lfs_pointer() -> String {
+        format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 12\n",
+            "a".repeat(64)
+        )
+    }
+    /// The pointer side's words and exact text, drawn in that order.
+    fn literal_parts(document: &Document) -> (&str, &str) {
+        let [
+            Block {
+                kind: Kind::Notice(words),
+                ..
+            },
+            Block {
+                kind: Kind::Code(language, text),
+                ..
+            },
+        ] = document.blocks.as_slice()
+        else {
+            panic!("a literal side is its words and its text");
+        };
+        assert_eq!(language, "Git LFS pointer");
+        (words, text)
+    }
+    /// Only the side that is a Git LFS pointer stays literal: the regular
+    /// side still renders, and the pointer side shows its exact text under
+    /// the words saying why, what is wrong with it where it failed. With no
+    /// regular side left to render there is no Rendered view, as before.
+    #[test]
+    fn a_pointer_side_stays_literal_and_only_that_side() {
+        const MISSING: &str = "This side's Git LFS object is not in the local store, and no \
+                               download was attempted; its stored text is below.";
+        let pointer = lfs_pointer();
+        let regular = "# Regular side\n";
+        let both = markdown_change(true, true);
+        let prepared = |old: &str, new: &str, file: &FileChange, failed| {
+            prepare(old, new, file, failed, || Ok(())).unwrap()
+        };
+        for (name, old, new, literal_side) in [
+            ("the new side a pointer", regular, pointer.as_str(), 1),
+            ("the old side a pointer", pointer.as_str(), regular, 0),
+        ] {
+            let comparison = prepared(old, new, &both, [None; 2]).expect(name);
+            let [regular_side, literal] = if literal_side == 1 {
+                [&comparison.old, &comparison.new]
+            } else {
+                [&comparison.new, &comparison.old]
+            };
+            assert!(
+                regular_side
+                    .blocks
+                    .iter()
+                    .any(|block| matches!(block.kind, Kind::Prose(_))),
+                "{name}: the regular side renders"
+            );
+            assert!(regular_side.literal.is_none(), "{name}");
+            assert_eq!(literal.literal.as_deref(), Some(MISSING), "{name}");
+            assert_eq!(
+                literal_parts(literal),
+                (MISSING, pointer.as_str()),
+                "{name}"
+            );
+            assert_eq!(literal.source.as_ref(), pointer.as_str(), "{name}");
+        }
+        // A side that failed says what is wrong with it.
+        let comparison = prepared(
+            regular,
+            &pointer,
+            &both,
+            [None, Some(gitturtle_core::LfsObjectFailure::Corrupt)],
+        )
+        .unwrap();
+        assert_eq!(
+            literal_parts(&comparison.new).0,
+            "This side's Git LFS object failed verification in the local store; its stored \
+             text is below."
+        );
+        // Nothing regular to render keeps today's source tabs alone.
+        assert!(prepared(&pointer, &pointer, &both, [None; 2]).is_none());
+        assert!(prepared("", &pointer, &markdown_change(false, true), [None; 2]).is_none());
+        // A stored link is still refused whole, whichever side it is.
+        let mut link = both.clone();
+        link.old_mode = "120000".into();
+        assert!(prepared(regular, regular, &link, [None; 2]).is_none());
+    }
+    /// Markdown's Diagrams view shares the document's sides, so a literal
+    /// pointer side stays one there too: it says why, captures nothing for
+    /// another application and still offers its exact text, while the
+    /// regular side draws.
+    #[test]
+    fn a_literal_pointer_side_stays_literal_in_diagrams() {
+        let pointer = lfs_pointer();
+        let regular = "# Title\n\n```mermaid\nflowchart LR\n  A --> B\n```\n";
+        let comparison = prepare(
+            regular,
+            &pointer,
+            &markdown_change(true, true),
+            [None; 2],
+            || Ok(()),
+        )
+        .unwrap()
+        .unwrap();
+        let diagrams = comparison.diagrams().expect("the regular side draws");
+        assert_eq!(diagrams.old.pages.len(), 1);
+        assert!(diagrams.old.pages[0].render.is_some());
+        let literal = &diagrams.new;
+        assert_eq!(literal.literal, Some(rich_preview::Literal::LfsPointer));
+        assert_eq!(literal.metadata.format, "Git LFS pointer");
+        assert_eq!(
+            literal.metadata.details,
+            [
+                "This side's Git LFS object is not in the local store, and no download was \
+              attempted; its stored text is below."
+            ]
+        );
+        assert!(literal.captured.is_none());
+        assert_eq!(literal.metadata.source.as_deref(), Some(pointer.as_str()));
+        assert!(literal.pages.is_empty());
+    }
+    /// Rendered draws both sides of a mixed file: the regular side's blocks
+    /// and the pointer's words and literal text, each row laid out.
+    #[gpui::test]
+    fn a_mixed_markdown_file_draws_the_regular_side_and_the_literal_pointer(
+        cx: &mut TestAppContext,
+    ) {
+        crate::views::tests::init_app(cx);
+        let comparison = Arc::new(
+            prepare(
+                "# Regular side\n\nBody text.\n",
+                &lfs_pointer(),
+                &markdown_change(true, true),
+                [None; 2],
+                || Ok(()),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        let (_, cx) = cx.add_window_view(|_, cx| View::new(comparison, false, cx));
+        crate::tags::tests::draw(cx);
+        for selector in [
+            "markdown-before-block-0",
+            "markdown-before-block-1",
+            "markdown-after-block-0",
+            "markdown-after-block-1",
+        ] {
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"));
+            assert!(bounds.size.height > px(0.), "{selector}: {bounds:?}");
+        }
     }
     /// A blank Mermaid fence in a Markdown preview is no diagram: no page
     /// and no error page, where a fence with no text once parsed as an empty

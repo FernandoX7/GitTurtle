@@ -270,7 +270,7 @@ impl Literal {
         }
     }
     /// The side's caption beside the other side's diagrams.
-    fn format(self) -> &'static str {
+    pub(super) fn format(self) -> &'static str {
         match self {
             Self::Link => "Symbolic link",
             Self::LfsPointer => "Git LFS pointer",

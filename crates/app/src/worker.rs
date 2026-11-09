@@ -2815,12 +2815,17 @@ fn attach_mermaid(
     cancellation: &Cancellation,
 ) -> Result<()> {
     if let Content::Text {
-        old, new, markdown, ..
+        old,
+        new,
+        markdown,
+        lfs_failed,
+        ..
     } = content
         && markdown.is_none()
     {
         *markdown =
-            crate::markdown_view::prepare(old, new, file, || cancellation.check())?.map(Arc::new);
+            crate::markdown_view::prepare(old, new, file, *lfs_failed, || cancellation.check())?
+                .map(Arc::new);
     }
     if let Content::Text {
         old,
@@ -5781,6 +5786,82 @@ mod image_tests {
             &text([None, None]),
             &text([Some(Corrupt), None])
         ));
+    }
+
+    /// A Markdown file with one pointer side keeps its Rendered view: the
+    /// regular side renders, and the pointer side stays literal, saying what
+    /// its own object is: absent, or why it cannot be used.
+    #[test]
+    fn a_mixed_markdown_preview_renders_the_regular_side() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let pointer = |size: u64| {
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {size}\n",
+                "b".repeat(64)
+            )
+        };
+        for (name, stored, says, absent) in [
+            (
+                "missing",
+                pointer(42),
+                "This side's Git LFS object is not in the local store, and no download was \
+                 attempted; its stored text is below.",
+                true,
+            ),
+            (
+                "over the limit",
+                pointer(33 * 1024 * 1024),
+                "This side's Git LFS object is over the 32 MiB preview limit; its stored text \
+                 is below.",
+                false,
+            ),
+        ] {
+            let file = FileChange {
+                old_path: Some("README.md".into()),
+                new_path: Some("README.md".into()),
+                old_oid: Some(fixture.blob(b"# Before\n")),
+                new_oid: Some(fixture.blob(stored.as_bytes())),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file: file.clone(),
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("{name}: expected a preview")
+            };
+            let Content::Text {
+                markdown: Some(markdown),
+                lfs_missing,
+                ..
+            } = &*content
+            else {
+                panic!("{name}: a mixed file has a Rendered view")
+            };
+            assert!(
+                markdown.old.literal.is_none(),
+                "{name}: the regular side renders"
+            );
+            assert_eq!(markdown.new.literal.as_deref(), Some(says), "{name}");
+            assert_eq!(*lfs_missing, [false, absent], "{name}");
+            assert_eq!(
+                crate::lfs_download::preview_targets(&content, &file)
+                    .iter()
+                    .map(|(side, _)| *side)
+                    .collect::<Vec<_>>(),
+                if absent { vec![1] } else { Vec::new() },
+                "{name}"
+            );
+        }
     }
 
     #[test]
