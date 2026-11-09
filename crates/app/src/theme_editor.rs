@@ -1589,7 +1589,8 @@ struct RowKey {
 ///   selection and popover changes the row must show reach it through these
 ///   observers;
 /// - GPUI's own refresh (hover, press, focus, a window refresh) builds every
-///   cached view.
+///   cached view, and a frame that moves or resizes a row (a scroll, a
+///   resize, the dialog's opening slide) builds it for its new bounds.
 ///
 /// The failure mode of a missed rebuild is a row that keeps showing a
 /// previous frame: a hex field whose text or caret stands still, a swatch or
@@ -8540,6 +8541,13 @@ pub(crate) mod tests {
         let (app, cx) = open_app(cx);
         cx.update(|window, _| window.activate_window());
         settle(cx);
+        // The dialog otherwise slides in on the wall clock for 250 ms, and a
+        // frame that moves it gives every row new bounds, which builds all
+        // twenty-one: a run that reached these keys inside the slide counted
+        // those. Set once the activation has settled: the window's activation
+        // reads the system's setting again
+        // (`native_accessibility::sync_preferences`).
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         click(cx, "custom-themes-new");
         let form = form(cx, &app);
         next_frame(cx);
