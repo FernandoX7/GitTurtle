@@ -20,12 +20,20 @@ use crate::views::tests::{history_window, history_window_from, settle};
 use crate::*;
 use core::prelude::v1::test;
 
+/// The view whose Working list's row controls name their stops, and each
+/// control's selector with its name.
+type WorkingControls = (Entity<GitTurtle>, Vec<(String, &'static str)>);
+
 /// What names a stop: a focus handle the app keeps, or a drawn region,
 /// found by its debug selector, that holds the stop's ring.
 #[derive(Default)]
 struct Names {
     handles: Vec<(FocusHandle, &'static str)>,
     regions: Vec<(&'static str, &'static str)>,
+    /// The Working list's row controls by their selector, named from the
+    /// handle holding focus: a region would also claim whatever ring lies
+    /// where a scrolled body has carried the control.
+    working: Option<WorkingControls>,
 }
 
 impl Names {
@@ -41,9 +49,21 @@ impl Names {
         self
     }
 
+    /// Names the Working list's row controls, `controls` by their selector
+    /// (`GitTurtle::focused_row_control`).
+    fn working_controls(
+        mut self,
+        app: Entity<GitTurtle>,
+        controls: Vec<(String, &'static str)>,
+    ) -> Self {
+        self.working = Some((app, controls));
+        self
+    }
+
     /// The name of the stop holding focus, whose ring is `ring`: its
-    /// handle's, else the first region holding the ring's centre, else the
-    /// key contexts around it and where its ring lies.
+    /// handle's, or the row control's holding focus, else the first region
+    /// holding the ring's centre, else the key contexts around it and where
+    /// its ring lies.
     fn of(&self, cx: &mut VisualTestContext, ring: &[PaintedOutline]) -> String {
         let focused = cx.update(|window, cx| window.focused(cx));
         if let Some((_, name)) = self
@@ -52,6 +72,14 @@ impl Names {
             .find(|(handle, _)| Some(handle) == focused.as_ref())
         {
             return (*name).to_owned();
+        }
+        if let Some((app, controls)) = &self.working {
+            let held = cx.update(|window, cx| app.read(cx).focused_row_control(window, cx));
+            if let Some((_, name)) =
+                held.and_then(|held| controls.iter().find(|(selector, _)| *selector == held))
+            {
+                return (*name).to_owned();
+            }
         }
         let centre = ring.first().map(|outline| outline.bounds.center());
         if let Some(centre) = centre {
@@ -1130,35 +1158,102 @@ async fn the_rendered_markdown_rings_its_active_side(cx: &mut TestAppContext) {
     );
 }
 
+/// Working Changes meets its filter, its list and the list's stops once
+/// each, in order, at both sizes: the selected row's Stage where the row
+/// draws one, then the group headings' Unstage all and Stage all.
 #[gpui::test]
 async fn working_changes_meet_their_list_once_in_order(cx: &mut TestAppContext) {
     let (fixture, app, cx) = history_window(cx).await;
     let root = fixture.path().join("narrow");
     std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
     std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
-    prepare(&app, cx);
-    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
-    settle(&app, cx).await;
-    let names = cx.update(|_, cx| {
-        let app = app.read(cx);
-        Names::default()
-            .handle(
-                Some(app.working_filter.read(cx).focus_handle(cx)),
-                "the filter",
-            )
-            .handle(Some(app.file_focus.clone()), "the working files")
-    });
-    let mut failures = Vec::new();
-    audit(
-        &app,
-        cx,
-        "Working Changes",
-        &names,
-        &["the filter", "the working files"],
-        Walk::PAGE,
-        &mut failures,
-    );
-    sweep::assert_whole(failures);
+    std::fs::write(root.join("staged.txt"), "staged\n").unwrap();
+    tags::tests::git(&root, &["add", "staged.txt"]);
+    for (window, interface, row_control) in [
+        (size(px(1480.), px(973.)), 13, true),
+        (size(px(461.), px(490.)), 18, false),
+    ] {
+        prepare_at(&app, cx, window, interface);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let (index, position) = app.read_with(cx, |app, _| {
+            let status = app.shown_working_status().expect("a status");
+            app.working_rows
+                .iter()
+                .enumerate()
+                .find_map(|(position, row)| match row {
+                    crate::workspace::WorkingRow::File(index, area)
+                        if *area == gitturtle_core::ChangeArea::Unstaged
+                            && status.entries[*index].path == std::path::Path::new("notes.txt") =>
+                    {
+                        Some((*index, position))
+                    }
+                    _ => None,
+                })
+                .expect("notes.txt's Unstaged row")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.choose_working_selection(
+                    index,
+                    gitturtle_core::ChangeArea::Unstaged,
+                    false,
+                    false,
+                    window,
+                    cx,
+                )
+            })
+        });
+        settle(&app, cx).await;
+        let names = cx
+            .update(|_, cx| {
+                let view = app.read(cx);
+                Names::default()
+                    .handle(
+                        Some(view.working_filter.read(cx).focus_handle(cx)),
+                        "the filter",
+                    )
+                    .handle(Some(view.file_focus.clone()), "the working files")
+            })
+            .working_controls(
+                app.clone(),
+                vec![
+                    (
+                        format!("working-stage-{position}"),
+                        "the selected row's Stage",
+                    ),
+                    ("unstage-all".to_string(), "Unstage all"),
+                    ("stage-all".to_string(), "Stage all"),
+                ],
+            );
+        let mut lists = vec!["the filter", "the working files"];
+        if row_control {
+            lists.push("the selected row's Stage");
+        }
+        lists.extend(["Unstage all", "Stage all"]);
+        let mut failures = Vec::new();
+        audit(
+            &app,
+            cx,
+            "Working Changes",
+            &names,
+            &lists,
+            Walk::PAGE.at(interface),
+            &mut failures,
+        );
+        // Where the list and the composer scroll together, the body's cue
+        // lies over the list's ring by design (`ScrollCue::over_rows`): its
+        // one 6 px thumb crosses the ring's foot, and no other quad may.
+        if !row_control {
+            failures.retain(|failure| {
+                !(failure.contains("quads painted after its ring")
+                    && failure.matches("Bounds {").count() == 2
+                    && failure.contains("Size { 6px ×"))
+            });
+        }
+        sweep::assert_whole(failures);
+    }
 }
 
 /// A list that draws its designed empty state stays a stop and rings it:
