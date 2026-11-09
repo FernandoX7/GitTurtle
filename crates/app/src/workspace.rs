@@ -278,6 +278,16 @@ impl RowControls {
             .map(|(id, _)| id.clone())
     }
 
+    /// The handle of the control holding focus, if one of these does.
+    fn held_handle(&self, window: &Window) -> Option<FocusHandle> {
+        self.0
+            .borrow()
+            .handles
+            .values()
+            .find(|kept| kept.focus.is_focused(window))
+            .map(|kept| kept.focus.clone())
+    }
+
     /// Whether one of these handles holds focus.
     fn hold_focus(&self, window: &Window) -> bool {
         self.0
@@ -911,6 +921,36 @@ fn floor_fades(scroll: UniformListScrollHandle, controls: RowControls) -> impl I
     )
     .absolute()
     .size_full()
+}
+
+/// Whether the row control holding focus is out of the frame's drawn rows
+/// while its ring would show: the person's own scrolling can take it there,
+/// and no key does. Read as the frame paints, after its rows were prepainted.
+fn held_control_undrawn(
+    controls: &RowControls,
+    ring: &crate::focus_ring::FocusRing,
+    window: &Window,
+) -> bool {
+    controls.focused().is_none()
+        && controls
+            .held_handle(window)
+            .is_some_and(|focus| ring.shows(&focus))
+}
+
+/// The list's accent edge, while [`held_control_undrawn`]: the ring its
+/// control cannot draw, in the frame the control leaves and until the frame
+/// it returns, as [`floor_fades`] reads the control's place.
+fn list_edge(controls: RowControls, ring: crate::focus_ring::FocusRing) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, cx| {
+            if held_control_undrawn(&controls, &ring, window) {
+                window.paint_quad(outline(bounds, rgb(palette(cx).accent), BorderStyle::Solid));
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
 }
 
 /// The no-match line the file list draws in `room`: the whole line where it
@@ -3415,9 +3455,7 @@ impl GitTurtle {
             .shown_working_cursor()
             .filter(|_| file_action && !dimmed)
             .and_then(|(index, area)| {
-                let position = self.working_rows.iter().position(
-                    |row| matches!(row, WorkingRow::File(i, a) if (*i, *a) == (index, area)),
-                )?;
+                let position = self.shown_cursor_row()?;
                 let entry = self.shown_working_status()?.entries.get(index)?;
                 Some(RowStop {
                     id: self.working_row_key(index, area),
@@ -3512,13 +3550,16 @@ impl GitTurtle {
             }
             return;
         }
-        let at = held.and_then(|id| stops.iter().position(|stop| stop.id == id));
+        let at = held
+            .as_ref()
+            .and_then(|id| stops.iter().position(|stop| stop.id == *id));
         if forward {
             match stops.get(at.map_or(0, |index| index + 1)) {
                 Some(stop) => self.focus_row_stop(stop, window, cx),
                 // Every row control is out of the window's order, so from
                 // the list it goes on past all of them.
                 None => {
+                    self.show_cursor_row(cx);
                     window.focus(&self.file_focus, cx);
                     window.focus_next(cx);
                 }
@@ -3528,7 +3569,32 @@ impl GitTurtle {
         } else if on_list {
             cx.propagate();
         } else {
+            self.show_cursor_row(cx);
             window.focus(&self.file_focus, cx);
+        }
+    }
+
+    /// The selected row's place among the shown rows.
+    fn shown_cursor_row(&self) -> Option<usize> {
+        let (index, area) = self.shown_working_cursor()?;
+        self.working_rows
+            .iter()
+            .position(|row| matches!(row, WorkingRow::File(i, a) if (*i, *a) == (index, area)))
+    }
+
+    /// Scrolls the selected row into view by the least scroll, as focus
+    /// leaves the list's stops, a heading's reveal having taken it out of
+    /// view. Only while the control holding focus was in the last frame's
+    /// drawn rows: a wheel that took it out of them said where the person
+    /// is reading, and a reveal never undoes manual scrolling. A key that
+    /// lands before the next frame may skip one reveal.
+    fn show_cursor_row(&self, cx: &App) {
+        let drawn = self
+            .working_row_controls(cx)
+            .is_some_and(|controls| controls.focused().is_some());
+        if drawn && let Some(position) = self.shown_cursor_row() {
+            self.working_scroll
+                .scroll_to_item(position, ScrollStrategy::Nearest);
         }
     }
 
@@ -4479,6 +4545,14 @@ impl GitTurtle {
             window,
             cx,
         );
+        // A wheel can take the control holding focus out of the drawn rows,
+        // and a handle no element tracks takes its keys at the window's root,
+        // past this page's Tab and arrow bindings. This element keeps it in
+        // the frame, ahead of the rows, so a drawn row's Button, tracking the
+        // same handle later in the frame, takes it back.
+        let held_control = controls
+            .held_handle(window)
+            .map(|focus| div().absolute().size_0().track_focus(&focus));
         let row_controls = controls.clone();
         let list = uniform_list(
             "working-files",
@@ -4720,6 +4794,7 @@ impl GitTurtle {
             .flex_1()
             .min_h(px(floor))
             .overflow_hidden()
+            .children(held_control)
             .when(listed, |el| el.child(list))
             .children(travelling.filter(|_| listed))
             .children(clean)
@@ -4959,6 +5034,10 @@ impl GitTurtle {
             fitted => (composer_height, fitted.flatten()),
         };
         let scrolls = composer && description.is_none();
+        let pane = pane.child(list_edge(
+            layout.read(cx).row_controls.clone(),
+            self.focus_ring.clone(),
+        ));
         let description = if scrolls {
             Some(description_height)
         } else {

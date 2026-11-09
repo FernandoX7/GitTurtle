@@ -33673,6 +33673,21 @@ pub(crate) mod tests {
         (fixture, app, cx)
     }
 
+    /// Whether the list draws the row at `position` whole in its viewport.
+    fn working_row_in_view(
+        app: &Entity<GitTurtle>,
+        position: usize,
+        cx: &mut VisualTestContext,
+    ) -> bool {
+        let list = app.read_with(cx, |app, _| {
+            app.working_scroll.0.borrow().base_handle.bounds()
+        });
+        let selector: &'static str = format!("working-row-{position}").leak();
+        cx.debug_bounds(selector).is_some_and(|row| {
+            row.top() >= list.top() - px(0.5) && row.bottom() <= list.bottom() + px(0.5)
+        })
+    }
+
     /// Whether the accent ring around the control drawn as `selector` is
     /// painted whole in the last frame.
     fn control_ring_whole(cx: &mut VisualTestContext, selector: &str) -> bool {
@@ -34337,6 +34352,297 @@ pub(crate) mod tests {
             "the list",
             "where the rows draw no control, the arrow returns focus to the list"
         );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A wheel that took the control holding focus out of the drawn rows
+    /// keeps the list where it left it, on Tab from the last control and on
+    /// Shift+Tab from the first: a reveal never undoes manual scrolling (the
+    /// walk's own reveal is
+    /// `leaving_the_lists_stops_brings_the_selected_row_back_into_view`). The
+    /// keys reach the list's stops too, the control's handle staying in the
+    /// frame; with no element tracking it, they went from the window's root,
+    /// past this page's bindings, and did nothing.
+    #[gpui::test]
+    async fn leaving_the_lists_stops_keeps_a_list_the_wheel_has_moved(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = long_working_window(cx, 55).await;
+        cx.update(|_, cx| shortcuts::bind_keys(cx));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        for (presses, key, end) in [
+            (["tab", "tab", "tab"].as_slice(), "tab", "the title"),
+            (["tab"].as_slice(), "shift-tab", "the list"),
+        ] {
+            select_working_row(&app, 5, cx).await;
+            for press in presses {
+                cx.simulate_keystrokes(press);
+                draw(cx);
+            }
+            let list = app.read_with(cx, |app, _| {
+                app.working_scroll.0.borrow().base_handle.bounds()
+            });
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: list.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-800.))),
+                ..Default::default()
+            });
+            draw(cx);
+            let scrolled = working_list_offset(&app, cx);
+            assert!(
+                !working_row_in_view(&app, 5, cx),
+                "{key}: the wheel took row 5 away, at {scrolled:?}"
+            );
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(working_stop(&app, cx), end, "{key}: the stop it reaches");
+            assert_eq!(
+                working_list_offset(&app, cx),
+                scrolled,
+                "{key}: the list keeps the offset the wheel left"
+            );
+        }
+        // An arrow and Enter from the control the wheel took away: Enter
+        // does nothing by design, and writes nothing, and the arrow reaches
+        // the list and carries focus to the row it selects.
+        select_working_row(&app, 5, cx).await;
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(working_stop(&app, cx), "working-stage-5", "Tab's stop");
+        let list = app.read_with(cx, |app, _| {
+            app.working_scroll.0.borrow().base_handle.bounds()
+        });
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: list.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-800.))),
+            ..Default::default()
+        });
+        draw(cx);
+        let written = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                (
+                    app.working_paths.staged_count,
+                    app.operation_busy.is_some(),
+                    app.operation_task.is_some(),
+                )
+            })
+        };
+        let before = written(cx);
+        let scrolled = working_list_offset(&app, cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.run_until_parked();
+        assert_eq!(
+            written(cx),
+            before,
+            "Enter on the undrawn control writes nothing"
+        );
+        assert_eq!(
+            working_stop(&app, cx),
+            "working-stage-5",
+            "Enter leaves focus"
+        );
+        assert_eq!(
+            working_list_offset(&app, cx),
+            scrolled,
+            "Enter leaves the list where the wheel left it"
+        );
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "working-stage-6",
+            "the arrow reached the list and carried focus to the next row"
+        );
+    }
+
+    /// Where the list and the composer scroll together, the body's reveal of
+    /// the title as Tab leaves the stops keeps the selected row visible
+    /// inside the body, whether the row lies below the headings or among
+    /// them, at 18 pt in 461 × 490 and in 640 × 680.
+    #[gpui::test]
+    async fn the_selected_row_stays_visible_in_a_body_that_reveals_the_title(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = long_working_window(cx, 55).await;
+        for row in [55, 1] {
+            for (width, height, row_control) in [(461., 490., false), (640., 680., true)] {
+                let at = format!("row {row}, 18 pt in {width} × {height}");
+                cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                select_working_row(&app, row, cx).await;
+                let mut stops = Vec::new();
+                if row_control {
+                    stops.push(format!("working-stage-{row}"));
+                }
+                stops.extend(["unstage-all".to_string(), "stage-all".to_string()]);
+                for stop in stops {
+                    cx.simulate_keystrokes("tab");
+                    draw(cx);
+                    assert_eq!(working_stop(&app, cx), stop, "{at}: Tab's order");
+                }
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                assert_eq!(working_stop(&app, cx), "the title", "{at}: the walk's end");
+                let (body, reach) = app.read_with(cx, |app, _| {
+                    let scroll = app.working_body.scroll();
+                    (scroll.bounds(), scroll.max_offset().y)
+                });
+                assert!(
+                    reach > px(0.),
+                    "{at}: the list and the composer scroll together"
+                );
+                let drawn = cx.debug_bounds(format!("working-row-{row}").leak());
+                assert!(
+                    drawn.is_some_and(|drawn| {
+                        drawn.top() >= body.top() - px(0.5)
+                            && drawn.bottom() <= body.bottom() + px(0.5)
+                    }),
+                    "{at}: the row {drawn:?} visible inside the body {body:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// While the person's own scrolling holds the control with focus out of
+    /// the drawn rows, the list's accent edge shows where focus is, from the
+    /// frame the control leaves until the frame it returns, at 13 pt in
+    /// 1480 × 973 and at 18 pt in 640 × 680, where the list and the composer
+    /// scroll together.
+    #[gpui::test]
+    async fn the_lists_edge_shows_a_focused_control_the_wheel_has_taken_away(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = long_working_window(cx, 55).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let list = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.working_scroll.0.borrow().base_handle.bounds()
+            })
+        };
+        let one_frame = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        };
+        let edge = |cx: &mut VisualTestContext| {
+            let list = list(cx);
+            crate::focus_ring::painted_outlines(cx, accent)
+                .iter()
+                .any(|ring| {
+                    (ring.bounds.size.width - list.size.width).abs() <= px(3.)
+                        && (ring.bounds.size.height - list.size.height).abs() <= px(3.)
+                })
+        };
+        let wheel = |cx: &mut VisualTestContext, by: f32| {
+            let position = list(cx).center();
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position,
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(by))),
+                ..Default::default()
+            });
+        };
+        for (text, width, height) in [(13, 1480., 973.), (18, 640., 680.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            select_working_row(&app, 5, cx).await;
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert_eq!(
+                working_stop(&app, cx),
+                "working-stage-5",
+                "{at}: Tab's stop"
+            );
+            assert!(!edge(cx), "{at}: the control draws its own ring");
+            wheel(cx, -800.);
+            one_frame(cx);
+            assert!(
+                cx.debug_bounds("working-stage-5").is_none(),
+                "{at}: the wheel took the control out of the drawn rows"
+            );
+            assert!(
+                edge(cx),
+                "{at}: the edge shows in the frame the control leaves"
+            );
+            // The list scrolled back to the control, whichever way.
+            app.update(cx, |app, _| {
+                app.working_scroll
+                    .scroll_to_item(5, ScrollStrategy::Nearest)
+            });
+            one_frame(cx);
+            assert!(
+                cx.debug_bounds("working-stage-5").is_some(),
+                "{at}: the control is drawn again"
+            );
+            assert!(
+                !edge(cx),
+                "{at}: the edge goes in the frame the control returns"
+            );
+            assert_eq!(
+                working_stop(&app, cx),
+                "working-stage-5",
+                "{at}: focus stayed"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Leaving the list's stops brings the selected row back into view by
+    /// the least scroll: on Tab from the last heading to the composer, and on
+    /// Shift+Tab from the first control to the list, as the headings' reveals
+    /// had taken it out of view. Row 55 of 60, at 13 pt in 1480 × 973, where
+    /// its row draws a control, and at 18 pt in 461 × 490, where none does.
+    #[gpui::test]
+    async fn leaving_the_lists_stops_brings_the_selected_row_back_into_view(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = long_working_window(cx, 55).await;
+        let row = 55;
+        for (text, width, height, forward, back) in [
+            (
+                13,
+                1480.,
+                973.,
+                vec!["working-stage-55", "unstage-all", "stage-all", "the title"],
+                vec!["stage-all", "unstage-all", "working-stage-55", "the list"],
+            ),
+            (
+                18,
+                461.,
+                490.,
+                vec!["unstage-all", "stage-all", "the title"],
+                vec!["stage-all", "unstage-all", "the list"],
+            ),
+        ] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            select_working_row(&app, row, cx).await;
+            for stop in forward {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                assert_eq!(working_stop(&app, cx), stop, "{at}: Tab's order");
+            }
+            assert!(
+                working_row_in_view(&app, row, cx),
+                "{at}: Tab to the composer brings row {row} back into view"
+            );
+            for stop in back {
+                cx.simulate_keystrokes("shift-tab");
+                draw(cx);
+                assert_eq!(working_stop(&app, cx), stop, "{at}: Shift+Tab's order");
+            }
+            assert!(
+                working_row_in_view(&app, row, cx),
+                "{at}: Shift+Tab back into the list brings row {row} into view"
+            );
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
