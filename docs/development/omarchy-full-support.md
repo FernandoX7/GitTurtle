@@ -755,7 +755,6 @@ cover current upstream x86-64 Omarchy.
        - (S) A Clone or Create at eight tabs writes the repository and then refuses the tab, where the limit could refuse first (found by FU35-C's review).
        - (S, nit) A quiet read that hits `ChangedWhileOpening` at its own path leaves a "Local refresh:" banner the next good read does not clear, beside a mark that says the same (`crates/app/src/automatic_refresh.rs:469`; found by FU34-C's review).
        - (S, nit) Stashes speaks "Saved stashes 41 to 41" for a page of one; "Saved stash 41" reads better (`crates/app/src/recovery.rs:2298`). `stash_page` re-reads the whole reflog per page, where one core call could return a stash's position (`crates/app/src/recovery.rs:1836`).
-       - (M, briefed `FU29-A2e`) "Working one stop": the Working list as one Tab stop (`crates/app/src/workspace.rs:5187`).
        - (S) "`.mmd` changed from a link" reads "no Mermaid diagrams" over real Mermaid text, the pointer case included (`crates/app/src/rich_preview.rs:245`, in flight `FU31-B8`).
        - (S) "Ctrl+T at eight tabs": refused after the picker (`crates/app/src/repository_tabs.rs:1586`). Refuse before asking.
        - (S) "commit description's hint" (`crates/app/src/workspace.rs:4565`, kit `9c231582` unused). Orca users hear no hint.
