@@ -856,6 +856,12 @@ impl GitTurtle {
         if self.operation_busy.is_some() {
             return;
         }
+        // A marked tab's row reads its folder afresh, as the Projects page's
+        // does (`project_event`).
+        if self.repository_tabs.is_marked(&path) {
+            self.open_repository_tab(path, window, cx);
+            return;
+        }
         // Selecting the open project from Settings returns to it; selecting it
         // again on Repository must not restart the read.
         if self.path.as_ref() == Some(&path) {

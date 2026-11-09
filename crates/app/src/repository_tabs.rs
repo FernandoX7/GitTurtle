@@ -523,6 +523,9 @@ const LIBRARY_FULL_REFUSAL: &str =
     "Local library holds up to 128 repositories. Remove an entry before adding another.";
 pub(super) const TAB_LIMIT_REFUSAL: &str =
     "Switch to an open tab, or close one to open another; its commit drafts remain saved.";
+/// The refusal of a switch past the retained allowance, said where the
+/// person asked, as the tab limit's is ([`GitTurtle::refuse_where_asked`]).
+const RETAINED_ALLOWANCE_REFUSAL: &str = "Retained tabs would exceed the 512 MiB preview allowance. Close a tab to release its retained inspection before switching; drafts stay saved.";
 impl State {
     /// Whether an Open of `path` is the read an explicit Open of its marked
     /// tab's folder asked for ([`Recapture`]), naming no root or Git
@@ -534,6 +537,13 @@ impl State {
     /// generation that Open's read has.
     pub(super) fn recapture_reading(&mut self, generation: u64) {
         self.recapture = Some(Recapture::Reading(generation));
+    }
+    /// Whether `path` is a tab marked " · unavailable": a row that opens it
+    /// (the Projects page's, the project list's) is then an explicit Open of
+    /// its folder ([`Recapture`]), where a row of a whole tab only shows it.
+    pub(super) fn is_marked(&self, path: &Path) -> bool {
+        self.find(path)
+            .is_some_and(|index| self.tabs[index].error.is_some())
     }
     /// The repository a read of the shown tab just installed in place, the
     /// read's reopen having found it at the tab's root (a quiet read's, or
@@ -1143,7 +1153,7 @@ impl GitTurtle {
         let bytes = self.tab_retained_bytes();
         if !cold && self.repository_tabs.retained_bytes().saturating_add(bytes) > MAX_RETAINED_BYTES
         {
-            self.refuse_in_tab_strip("Retained tabs would exceed the 512 MiB preview allowance. Close a tab to release its retained inspection before switching; drafts stay saved.", cx);
+            self.refuse_where_asked(RETAINED_ALLOWANCE_REFUSAL, cx);
             return false;
         }
         self.persist_commit_draft(window, cx);
@@ -1598,6 +1608,8 @@ impl GitTurtle {
                         .detach();
                 }
             } else if let Some(tab) = self.repository_tabs.tabs.get_mut(index) {
+                // Refused where it was asked, which ends the wait of a row
+                // pressed on the Projects page ([`Self::refuse_where_asked`]).
                 tab.warm = warm;
             }
         }
@@ -1636,21 +1648,7 @@ impl GitTurtle {
             return false;
         }
         if self.repository_tabs.tabs.len() >= MAX_TABS {
-            // Said where the person asked: an Open from the Projects page in
-            // its feedback line, which also ends the Open the hub waits for
-            // (its actions stayed refused, "Opening project…"), and any
-            // other in the tab strip's. Neither replaces what the window
-            // shows, as the window's error did.
-            let from_projects = self.page == AppPage::Projects
-                && self
-                    .hub
-                    .update(cx, |hub, cx| hub.refuse_open(TAB_LIMIT_REFUSAL, cx));
-            if from_projects {
-                // One refusal line at a time: an earlier strip refusal goes.
-                self.repository_tabs.refusal = None;
-            } else {
-                self.refuse_in_tab_strip(TAB_LIMIT_REFUSAL, cx);
-            }
+            self.refuse_where_asked(TAB_LIMIT_REFUSAL, cx);
             return true;
         }
         if !self.retain_active_tab(window, cx) {
@@ -1765,6 +1763,25 @@ impl GitTurtle {
         self.repository_tabs.refusal = Some(reason.into());
         self.repository_tabs.refusals = self.repository_tabs.refusals.wrapping_add(1);
         cx.notify();
+    }
+    /// Refuses an Open or a switch where the person asked for it: an Open
+    /// from the Projects page, a recent project's row among them, in that
+    /// page's feedback line, under the row, which also ends the Open the hub
+    /// waits for (its actions stayed refused, "Opening project…"), and any
+    /// other in the tab strip's ([`Self::refuse_in_tab_strip`]), a Clone's
+    /// or a Create's wait going on (`ProjectHub::refuse_open`). Neither
+    /// replaces what the window shows, as the window's error did. A row's
+    /// switch past the retained allowance was said in the tab strip, and a
+    /// whole tab's left the page waiting.
+    pub(super) fn refuse_where_asked(&mut self, reason: &str, cx: &mut Context<Self>) {
+        let from_projects = self.page == AppPage::Projects
+            && self.hub.update(cx, |hub, cx| hub.refuse_open(reason, cx));
+        if from_projects {
+            // One refusal line at a time: an earlier strip refusal goes.
+            self.repository_tabs.refusal = None;
+        } else {
+            self.refuse_in_tab_strip(reason.to_owned(), cx);
+        }
     }
     /// At the tab limit, refuses in the tab strip before a folder is asked
     /// for, in the words the limit refuses a chosen folder with, and returns
@@ -2062,7 +2079,8 @@ impl GitTurtle {
         // Its cause gone with the closed tab, the page's refusal goes too,
         // as the strip's just did.
         self.hub.update(cx, |hub, cx| {
-            hub.clear_error_matching(TAB_LIMIT_REFUSAL, cx)
+            hub.clear_error_matching(TAB_LIMIT_REFUSAL, cx);
+            hub.clear_error_matching(RETAINED_ALLOWANCE_REFUSAL, cx);
         });
         let active = self.repository_tabs.active == Some(index);
         if active {
@@ -6073,6 +6091,192 @@ mod tests {
             );
             assert!(!app.repository_tabs.saved().tabs[0].unresolved);
         });
+    }
+
+    /// Presses the Projects page's row for `path`, as a person would.
+    fn press_projects_row(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, path: &Path) {
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        cx.update(|window, cx| {
+            hub.update(cx, |hub, cx| hub.set_recent(vec![path.to_owned()], cx));
+            app.update(cx, |app, cx| app.show_projects(window, cx));
+        });
+        crate::views::tests::draw(cx);
+        let row = cx
+            .debug_bounds("recent-project-0")
+            .expect("the project's row");
+        cx.simulate_click(row.center(), gpui::Modifiers::default());
+    }
+
+    /// The tab at `index` took the repository found at its folder from a
+    /// Projects row: the same tab, shown on the repository page, its mark
+    /// gone and that repository's Git directory captured.
+    fn assert_recaptured(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        index: usize,
+        root: &Path,
+        git_dir: &Path,
+    ) {
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.page, AppPage::Repository, "the tab is shown");
+            assert_eq!(app.repository_tabs.active, Some(index));
+            let tab = &app.repository_tabs.tabs[index];
+            assert_eq!(tab.path, root, "the same tab");
+            assert!(tab.error.is_none(), "its mark cleared");
+            assert!(!app.tab_label(tab).0.ends_with(" · unavailable"));
+            assert_eq!(app.error, None, "nothing left to say");
+            assert_eq!(
+                tab.git_dir.as_ref().map(|dirs| dirs.git_dir.as_path()),
+                Some(git_dir),
+                "the repository found there, by the accepted snapshot"
+            );
+            assert_eq!(
+                app.repository.as_ref().map(|repo| repo.git_dir()),
+                Some(git_dir)
+            );
+        });
+    }
+
+    /// QA-107 check 1.2: the Projects page's row for the shown marked tab
+    /// reads its folder afresh, as the Local workspaces row and Open do. It
+    /// went back to the tab through `open`, and the tab stayed unavailable
+    /// with the reason it had.
+    #[gpui::test]
+    async fn a_projects_row_captures_the_shown_marked_tab_afresh(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+        press_projects_row(&app, cx, &root);
+        settle_tab_test(&app, cx).await;
+        assert_recaptured(&app, cx, 0, &root, &third_git);
+    }
+
+    /// The same from another tab: pressed behind the tab shown, the row's
+    /// `open` became a switch, which reads the tab's own identity again.
+    #[gpui::test]
+    async fn a_projects_row_captures_a_marked_tab_behind_another_afresh(cx: &mut TestAppContext) {
+        let (fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+        open_another_tab(&app, cx, &fixture.path().join("other")).await;
+        press_projects_row(&app, cx, &root);
+        settle_tab_test(&app, cx).await;
+        assert_recaptured(&app, cx, 0, &root, &third_git);
+    }
+
+    /// A row whose fresh capture fails keeps the tab's root, Git directories
+    /// and mark, and says what the Open found, as Open and the Local
+    /// workspaces row do: the tab shown with that failure, which the Projects
+    /// page says too when it is opened again.
+    #[gpui::test]
+    async fn a_projects_row_whose_capture_fails_keeps_the_marked_tab(cx: &mut TestAppContext) {
+        let (fixture, app, cx, root, enclosing) = gone_inside_another(cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+        let (git_dir, mark) = app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            (tab.git_dir.clone(), tab.error.clone())
+        });
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+        )
+        .unwrap();
+        press_projects_row(&app, cx, &root);
+        settle_tab_test(&app, cx).await;
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        hub.read_with(cx, |hub, _| assert!(!hub.shown_busy(), "the wait is over"));
+        let said = hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned));
+        let said = said.expect("what the Open found");
+        assert!(!said.contains("is gone"), "not the mark's reason: {said}");
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.page, AppPage::Repository, "the tab shown");
+            assert_eq!(app.error.as_deref(), Some(said.as_str()));
+            let tab = &app.repository_tabs.tabs[0];
+            assert_eq!(tab.path, root, "its root");
+            assert_eq!(tab.git_dir, git_dir, "its Git directories");
+            assert_eq!(tab.error, mark, "its mark as it was");
+            assert!(!app.repository_tabs.saved().tabs[0].unresolved);
+        });
+    }
+
+    /// A row's fresh capture refused as the switch to its tab is, past the
+    /// retained allowance, ends the page's wait and says why under the row,
+    /// as the tab limit's refusal is said, and the tab strip says nothing.
+    /// Left waiting, every action on the page stayed refused under "Opening
+    /// project…" with nothing read; then it ended the wait and said why in
+    /// the strip. A whole tab's row refused so left the page waiting.
+    #[gpui::test]
+    async fn a_projects_row_refused_its_switch_ends_the_pages_wait(cx: &mut TestAppContext) {
+        let (fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+        let other = fixture.path().join("other");
+        open_another_tab(&app, cx, &other).await;
+        open_another_tab(&app, cx, &fixture.path().join("another")).await;
+        let other = app.read_with(cx, |app, _| app.repository_tabs.tabs[1].path.clone());
+        let bytes = app.update(cx, |app, _| {
+            let warm = app.repository_tabs.tabs[1]
+                .warm
+                .as_mut()
+                .expect("the second tab retained");
+            std::mem::replace(&mut warm.bytes, MAX_RETAINED_BYTES + 1)
+        });
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        for (row, what) in [
+            (&root, "the marked tab's row"),
+            (&other, "a whole tab's row"),
+        ] {
+            press_projects_row(&app, cx, row);
+            settle_tab_test(&app, cx).await;
+            hub.read_with(cx, |hub, _| {
+                assert!(!hub.shown_busy(), "{what}: the wait is over");
+                assert!(
+                    hub.shown_error()
+                        .is_some_and(|said| said == RETAINED_ALLOWANCE_REFUSAL),
+                    "{what}: said under the row"
+                );
+            });
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.page, AppPage::Projects, "{what}");
+                assert_eq!(app.repository_tabs.active, Some(2), "{what}: refused");
+                assert_eq!(
+                    app.repository_tabs.refusal, None,
+                    "{what}: not in the strip"
+                );
+                let tab = &app.repository_tabs.tabs[0];
+                assert!(tab.error.is_some(), "{what}: its mark as it was");
+                assert!(tab.warm.is_some(), "{what}: what it retained kept");
+            });
+        }
+
+        // A refused switch ends only the wait its own Open began: an Open…
+        // of the marked tab's folder while the page waits for a Clone says
+        // why in the tab strip, the Clone's wait going on.
+        cx.update(|window, cx| {
+            hub.update(cx, |hub, cx| hub.wait_for_clone(cx));
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            });
+        });
+        crate::views::tests::draw(cx);
+        hub.read_with(cx, |hub, _| {
+            assert!(hub.shown_busy(), "the Clone's wait goes on")
+        });
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.repository_tabs.refusal.as_deref(),
+                Some(RETAINED_ALLOWANCE_REFUSAL),
+                "the tab strip says why"
+            );
+        });
+        hub.update(cx, |hub, cx| hub.set_busy(false, cx));
+        app.update(cx, |app, _| {
+            let warm = app.repository_tabs.tabs[1]
+                .warm
+                .as_mut()
+                .expect("the second tab retained");
+            warm.bytes = bytes;
+        });
+        // Asked again, with the allowance back, it reads.
+        press_projects_row(&app, cx, &root);
+        settle_tab_test(&app, cx).await;
+        assert_recaptured(&app, cx, 0, &root, &third_git);
     }
 
     /// A refused switch changes nothing on a marked tab: an explicit Open of

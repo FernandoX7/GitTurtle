@@ -1708,3 +1708,44 @@ fn a_rows_menu_closes_as_the_window_holds_the_pane_back(cx: &mut TestAppContext)
         assert_eq!(open(cx), (false, false), "{menu}: still closed");
     }
 }
+
+/// The pane's row for a marked tab is an explicit Open of its folder too: the
+/// tab takes the repository found there, its mark gone. Selecting the shown
+/// project returned early, as it should for a tab that is whole, so the tab
+/// stayed unavailable.
+#[gpui::test]
+async fn a_pane_row_captures_a_marked_tab_afresh(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let third = crate::views::tests::fixture_repository(fixture.path().join("third"));
+    let third_git = third.git_dir().to_owned();
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    fs::rename(root.join(".git"), fixture.path().join("git-away")).unwrap();
+    fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", third_git.display()),
+    )
+    .unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&crate::Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "Refresh marks the tab"
+    );
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_project_from_pane(root.clone(), window, cx)
+        })
+    });
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert!(!app.shown_tab_unavailable(), "its mark cleared");
+        assert_eq!(app.error, None);
+        assert_eq!(
+            app.repository.as_ref().map(|repo| repo.git_dir()),
+            Some(third_git.as_path()),
+            "the repository found there"
+        );
+    });
+}

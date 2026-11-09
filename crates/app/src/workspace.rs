@@ -2568,7 +2568,12 @@ impl GitTurtle {
         match event {
             projects::ProjectEvent::ChooseFolder | projects::ProjectEvent::Rename(_) => {}
             projects::ProjectEvent::Open(path) => {
-                if self
+                // A marked tab's row reads its folder afresh, as Open and the
+                // Local workspaces row do: through `open` it was a switch or
+                // a return to the tab, which never clears the mark.
+                if self.repository_tabs.is_marked(path) {
+                    self.open_repository_tab(path.clone(), window, cx);
+                } else if self
                     .repository
                     .as_ref()
                     .is_some_and(|repo| repo.path() == path)

@@ -410,6 +410,13 @@ impl ProjectHub {
         self.error.as_deref()
     }
 
+    /// Test-only: waits for a Clone, as one the hub asked for does.
+    #[cfg(test)]
+    pub(crate) fn wait_for_clone(&mut self, cx: &mut Context<Self>) {
+        self.pending_mode = Some(ProjectMode::Clone);
+        self.set_waiting(true, cx);
+    }
+
     /// Test-only: whether the hub waits on an operation it asked for.
     #[cfg(test)]
     pub(crate) fn shown_busy(&self) -> bool {
