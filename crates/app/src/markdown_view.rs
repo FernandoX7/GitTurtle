@@ -1426,6 +1426,7 @@ fn open_local_document(
     cx: &mut App,
 ) -> Entity<LocalDocument> {
     let view = cx.new(|cx| LocalDocument {
+        depth,
         source,
         editor: None,
         rendered: markdown.map(|markdown| {
@@ -1439,10 +1440,14 @@ fn open_local_document(
         show_rendered: true,
     });
     let document = view.clone();
-    window.open_alert_dialog(cx, move |dialog, window, _| {
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
         dialog
-            .title(format!("Captured local document · {}", path.display()))
-            .width(appearance::dialog_width(px(900.), window))
+            .title(local_document_title(
+                &path.display().to_string(),
+                window,
+                cx,
+            ))
+            .width(appearance::dialog_width(LOCAL_DOCUMENT_WIDTH, window))
             .max_h(appearance::dialog_max_height(window))
             .child(document.clone())
             .footer(gpui_kit::component::dialog::DialogFooter::new().child(
@@ -1460,32 +1465,104 @@ fn open_local_document(
     });
     view
 }
-/// Opens a captured local document's dialog, as a link in a rendered
-/// Markdown opens one, its Markdown rendered and drawing the window's
-/// keyboard `ring`, and hands back the rendered text's focus handle.
+/// Opens a captured local document's dialog for `path`, as a link in a
+/// rendered Markdown opens one, `depth` documents deep, its Markdown rendered
+/// and drawing the window's keyboard `ring`, and hands back the rendered
+/// text's focus handle.
 #[cfg(test)]
 pub(crate) fn open_local_markdown(
+    path: &str,
+    depth: usize,
     ring: crate::focus_ring::FocusRing,
     window: &mut Window,
     cx: &mut App,
 ) -> FocusHandle {
     let source: Arc<str> = "# Companion\n\nCaptured target.\n".into();
-    let path = PathBuf::from("docs/companion.md");
+    let path = PathBuf::from(path);
     let markdown = Arc::new(Comparison {
         old: Arc::new(Document::notice(&path, false, "No file on this side")),
         new: Arc::new(prepare_document(&source, &path, true, &|| Ok(())).unwrap()),
     });
-    let document = open_local_document(path, source, Some(markdown), 1, Some(ring), window, cx);
+    let document = open_local_document(path, source, Some(markdown), depth, Some(ring), window, cx);
     let rendered = document.read(cx).rendered.clone().expect("rendered");
     rendered.read(cx).focus.clone()
 }
+/// The widest the captured local document's dialog is.
+const LOCAL_DOCUMENT_WIDTH: Pixels = px(900.);
+/// What the kit takes off a nested dialog's height cap for each layer under
+/// it (`LAYER_OFFSET` in `gpui_kit::component::dialog`).
+const DIALOG_LAYER_OFFSET: Pixels = px(16.);
+/// The words before the path in the captured local document's title.
+const LOCAL_DOCUMENT_TITLE: &str = "Captured local document · ";
+
+/// The title's line in `available`, as `width` measures text: its words
+/// whole and the path elided in the room they leave, a pixel of it spare for
+/// layout's rounding, as the GitHub panel's path line is
+/// (`views::location_tail`).
+fn local_document_title_line(
+    path: &str,
+    available: Pixels,
+    width: impl Fn(&str) -> Pixels + Copy,
+) -> String {
+    let room = (available - px(1.) - width(LOCAL_DOCUMENT_TITLE)).max(Pixels::ZERO);
+    let path = crate::views::location_tail(path, room, width);
+    format!("{LOCAL_DOCUMENT_TITLE}{path}")
+}
+
+/// The dialog's title on one line, so a long path takes no height from the
+/// document below it (DESIGN.md's responsive order: content stays whole
+/// first). Its tooltip and its accessible name, which names the dialog, keep
+/// the whole path. Elided to fit, it needs no clip, which at the title's
+/// line height of one would cut its descenders.
+fn local_document_title(path: &str, window: &Window, cx: &App) -> Stateful<Div> {
+    let whole: SharedString = format!("{LOCAL_DOCUMENT_TITLE}{path}").into();
+    let tooltip = whole.clone();
+    let side = gpui_kit::component::dialog::dialog_side_padding(window, cx);
+    let available = appearance::dialog_width(LOCAL_DOCUMENT_WIDTH, window) - px(2.) - side * 2.;
+    let line = local_document_title_line(path, available, |text| {
+        crate::views::laid_out_text_width(
+            crate::views::shaped_width(text, window.rem_size(), FontWeight::SEMIBOLD, window),
+            window,
+        )
+    });
+    div()
+        .id("local-document-title")
+        .debug_selector(|| "local-document-title".into())
+        .role(Role::Label)
+        .aria_label(whole.clone())
+        .aria_value(whole)
+        .whitespace_nowrap()
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(line)
+}
+
 struct LocalDocument {
+    /// How many local documents deep this one is, the first being 1: each
+    /// one under it is a dialog layer the kit takes off its height cap.
+    depth: usize,
     source: Arc<str>,
     editor: Option<Entity<EditorState>>,
     rendered: Option<Entity<View>>,
     show_rendered: bool,
 }
 impl LocalDocument {
+    /// The height the document takes in `window`: 65% of the window's, at
+    /// most 700 px, and at most what this dialog's height cap, less the
+    /// kit's offset for each layer under it, leaves below its chrome, as the
+    /// GitHub panel's body is capped (`github_view::body_max_height`).
+    /// Taller than that, the dialog's body cut the view and the ring on its
+    /// edge as the dialog opened, at 13 pt in a 461 × 490 window. It has no
+    /// floor, as that body has: a floor past the room would cut the ring
+    /// again.
+    fn height(&self, window: &Window) -> Pixels {
+        let cap = appearance::dialog_max_height(window)
+            - crate::github_view::dialog_chrome(window)
+            - DIALOG_LAYER_OFFSET * self.depth.saturating_sub(1) as f32;
+        (window.viewport_size().height * 0.65)
+            .min(px(700.))
+            .min(cap)
+            .max(Pixels::ZERO)
+    }
     fn focus_visible(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.show_rendered
             && let Some(rendered) = &self.rendered
@@ -1514,13 +1591,18 @@ impl Render for LocalDocument {
         if source && self.editor.is_none() {
             self.editor = Some(text::editor(&self.source, "markdown", None, window, cx));
         }
+        // The dialog body clips at this row's top, so the row keeps its
+        // toggles' ring room there; its sides have the body's own padding.
+        let room = appearance::button_ring_room(cx);
+        let height = self.height(window);
         div()
-            .h((window.viewport_size().height * 0.65).min(px(700.)))
+            .h(height)
             .flex()
             .flex_col()
             .gap_2()
             .child(
                 div()
+                    .pt(room)
                     .flex()
                     .gap_2()
                     .child(
@@ -1759,6 +1841,26 @@ impl Render for View {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    /// The title keeps its words and the path's end in the room it has, and
+    /// a path that fits is left whole.
+    #[test]
+    fn the_local_document_s_title_elides_only_its_path() {
+        let width = |text: &str| px(text.chars().count() as f32 * 7.);
+        let path =
+            "a-very-long-directory/another-long-directory/yet-another-directory/companion.md";
+        let room = px(400.);
+        let line = local_document_title_line(path, room, width);
+        assert!(line.starts_with(LOCAL_DOCUMENT_TITLE), "{line}");
+        assert!(line.ends_with("companion.md"), "{line}");
+        assert!(line.contains('…'), "{line}");
+        assert!(width(&line) <= room, "{line} fits {room:?}");
+        assert_eq!(
+            local_document_title_line("docs/a.md", px(900.), width),
+            format!("{LOCAL_DOCUMENT_TITLE}docs/a.md"),
+        );
+    }
+
     #[gpui::test]
     fn markdown_code_blocks_use_the_code_font(cx: &mut TestAppContext) {
         let font = shaped_code_font(cx, |probe, cx| {

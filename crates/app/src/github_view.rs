@@ -396,7 +396,7 @@ impl PathLine {
 /// above the footer (`gpui_kit::component::dialog`), the title's one line, a rem with a line
 /// height of one, and the half rem under it, and the footer's compact Button, 28 px at the
 /// default interface size (`crate::button_frame`).
-fn dialog_chrome(window: &Window) -> Pixels {
+pub(crate) fn dialog_chrome(window: &Window) -> Pixels {
     const EDGE: Pixels = px(1.);
     const PADDING: Pixels = px(16.);
     EDGE * 2. + PADDING * 3. + window.rem_size() * 1.5 + appearance::ui_size(28.)

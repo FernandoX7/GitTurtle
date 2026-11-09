@@ -1746,22 +1746,25 @@ async fn blame_keeps_three_rows_and_its_footer_scrolls_within_itself(cx: &mut Te
 /// The captured local document a rendered Markdown's link opens, in its
 /// dialog: its rendered text, the dialog's one side, is a stop met both
 /// ways from where the dialog puts focus, its ring whole on the view's own
-/// edge, at 13 pt in the full window and at 18 pt in a half tile. Every
-/// stop both ways counts: no sweep walks this dialog, so the rings still
-/// awaiting their fix are pinned here, each by its key, its stop and what
-/// fails.
+/// edge, at 13 pt in the full window and in a half tile, and at 18 pt in a
+/// 1,000 × 680 window and a half tile, where the dialog's capped body is
+/// shortest. Every stop both ways counts: no sweep walks this dialog.
 #[gpui::test]
 async fn the_local_document_s_markdown_is_met_both_ways(cx: &mut TestAppContext) {
     let (_fixture, app, cx) = history_window(cx).await;
     let mut failures = Vec::new();
     for (window, interface) in [
         (size(px(1480.), px(973.)), 13),
+        (size(px(461.), px(490.)), 13),
+        (size(px(1000.), px(680.)), 18),
         (size(px(461.), px(490.)), 18),
     ] {
         prepare_at(&app, cx, window, interface);
         settle(&app, cx).await;
         let ring = app.read_with(cx, |app, _| app.focus_ring.clone());
-        let rendered = cx.update(|window, cx| markdown_view::open_local_markdown(ring, window, cx));
+        let rendered = cx.update(|window, cx| {
+            markdown_view::open_local_markdown("docs/companion.md", 1, ring, window, cx)
+        });
         settle(&app, cx).await;
         views::tests::draw(cx);
         assert!(
@@ -1780,26 +1783,74 @@ async fn the_local_document_s_markdown_is_met_both_ways(cx: &mut TestAppContext)
         );
         sweep::close_dialogs(cx, "The local document", interface, &mut failures);
     }
-    // Awaiting their follow-ups (FU30-C2's report): the row of Exact source
-    // and Rendered keeps no ring room inside the dialog body's clip, which
-    // cuts both toggles' rings at the top and sides at both sizes, Tab's
-    // fifth and sixth stops and Shift+Tab's first two; and in the half tile
-    // the document keeps 65 % of the window's height, taller than the
-    // dialog's capped body, whose clip cuts the view and the ring on its
-    // edge, the last stop both ways.
-    let toggles = "a clip cuts the top, right, left of its ring";
-    let known = [
-        known_at("The local document", 13, &[4, 5], &[0, 1], toggles),
-        known_at("The local document", 18, &[4, 5], &[0, 1], toggles),
-        known_at(
-            "The local document",
-            18,
-            &[6],
-            &[6],
-            "a clip cuts the right, bottom, left of its ring",
-        ),
-    ];
-    sweep::assert_whole_except(failures, &known.concat());
+    sweep::assert_whole(failures);
+}
+
+/// A document a link inside a local document opens: the kit takes 16 px per
+/// layer off a nested dialog's height cap, so at 13 pt in a half tile a
+/// document sized for the first layer's cap ran past its body, whose clip
+/// cut the view and the ring on its edge.
+#[gpui::test]
+async fn a_nested_local_document_s_markdown_is_met_both_ways(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window(cx).await;
+    prepare_at(&app, cx, size(px(461.), px(490.)), 13);
+    settle(&app, cx).await;
+    let ring = app.read_with(cx, |app, _| app.focus_ring.clone());
+    let path = "docs/companion.md";
+    let first = ring.clone();
+    cx.update(|window, cx| markdown_view::open_local_markdown(path, 1, first, window, cx));
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    let rendered =
+        cx.update(|window, cx| markdown_view::open_local_markdown(path, 2, ring, window, cx));
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    assert!(
+        cx.update(|window, _| rendered.is_focused(window)),
+        "the nested document opens with focus on its Markdown"
+    );
+    let names = Names::default().handle(Some(rendered), "the document's Markdown");
+    let mut failures = Vec::new();
+    audit(
+        &app,
+        cx,
+        "The nested local document",
+        &names,
+        &["the document's Markdown"],
+        Walk::dialog(true).at(13),
+        &mut failures,
+    );
+    sweep::close_dialogs(cx, "The nested local document", 13, &mut failures);
+    sweep::assert_whole(failures);
+}
+
+/// A long path keeps the local document's title to one line, so it takes no
+/// height from the document, and hovering it shows the whole path.
+#[gpui::test]
+async fn the_local_document_s_title_keeps_one_line(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window(cx).await;
+    prepare_at(&app, cx, size(px(461.), px(490.)), 13);
+    settle(&app, cx).await;
+    let ring = app.read_with(cx, |app, _| app.focus_ring.clone());
+    let path = "a-very-long-directory/another-long-directory/yet-another-directory/companion.md";
+    cx.update(|window, cx| markdown_view::open_local_markdown(path, 1, ring, window, cx));
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    let title = cx
+        .debug_bounds("local-document-title")
+        .expect("the title is drawn");
+    let rem = cx.update(|window, _| window.rem_size());
+    assert!(
+        title.size.height <= rem + px(0.5),
+        "the title keeps one line: {title:?}"
+    );
+    assert!(
+        tags::tests::hovered_tooltips(cx, "local-document-title") > 0,
+        "hovering the title shows its whole path"
+    );
+    let mut failures = Vec::new();
+    sweep::close_dialogs(cx, "The local document", 13, &mut failures);
+    sweep::assert_whole(failures);
 }
 
 /// A commit adding a Markdown file, `README.md`.
