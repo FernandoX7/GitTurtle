@@ -107,6 +107,7 @@ pub fn prepare(
         old,
         new,
         presentation,
+        lfs_missing,
         ..
     } = content.as_ref()
     else {
@@ -150,6 +151,7 @@ pub fn prepare(
         patch, old: old.clone(), new: new.clone(), presentation, split,
         partial: None,
         partial_unavailable: Some("Review options are active. Partial staging is unavailable: reset to the original diff to select exact Git lines or hunks. Whole-file actions include every change.".into()),
+        lfs_missing: *lfs_missing,
     }))
 }
 
@@ -1090,6 +1092,7 @@ mod tests {
             split,
             partial: Some(partial),
             partial_unavailable: None,
+            lfs_missing: [false; 2],
         });
         let before_index = fs::read(fixture.path().join(".git/index")).unwrap();
         for options in [
@@ -1139,6 +1142,7 @@ mod tests {
             split,
             partial: None,
             partial_unavailable: None,
+            lfs_missing: [false; 2],
         })
     }
     fn patch(content: &Content) -> &str {
@@ -1147,6 +1151,30 @@ mod tests {
         };
         patch
     }
+    /// Review options redraw the comparison: what the reading found of its
+    /// Git LFS objects still decides what is called missing and offered.
+    #[test]
+    fn review_options_keep_which_lfs_objects_are_missing() {
+        let mut original = content("a\n", "b\n", "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n");
+        let Content::Text { lfs_missing, .. } = Arc::get_mut(&mut original).unwrap() else {
+            panic!("text expected")
+        };
+        *lfs_missing = [true, false];
+        let filtered = prepare(
+            &original,
+            Options {
+                hide_whitespace: true,
+                context: 3,
+            },
+            || Ok(()),
+        )
+        .unwrap();
+        let Content::Text { lfs_missing, .. } = filtered.as_ref() else {
+            panic!("text expected")
+        };
+        assert_eq!(*lfs_missing, [true, false]);
+    }
+
     #[test]
     fn whitespace_filter_preserves_original_snapshot_and_exact_sources() {
         let old = "a = 1\r\nold 🐢\n\nend";

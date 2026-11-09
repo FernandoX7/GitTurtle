@@ -239,6 +239,12 @@ const LINKED: &str = "This file is stored as a link, which Diagrams never follow
 const NO_LFS_OBJECT: &str =
     "This file's Git LFS object is not in the local store. No download was attempted.";
 
+/// Why Diagrams waits for a Mermaid file whose Git LFS object was not found
+/// absent but cannot be read as text: binary, too large, failing
+/// verification, or past the limit at which the store is not read at all, so
+/// the reason says neither that it is there nor that it is missing.
+const NO_LFS_TEXT: &str = "This file's Git LFS object can't be shown as text.";
+
 /// Why Diagrams waits for any other file without diagrams: what it shows.
 const NOT_DIAGRAMS: &str = "Diagrams shows Mermaid files and the Mermaid diagrams in Markdown.";
 
@@ -718,7 +724,12 @@ impl SeriesBrowser {
             Some(Content::Text {
                 diagrams: Some(_), ..
             }) => None,
-            Some(Content::Text { old, new, .. }) => Some(self.no_diagrams(old, new).into()),
+            Some(Content::Text {
+                old,
+                new,
+                lfs_missing,
+                ..
+            }) => Some(self.no_diagrams(old, new, *lfs_missing).into()),
             Some(Content::Images { .. } | Content::Rich(_)) => Some(NOT_DIAGRAMS.into()),
             _ => self.modes_refusal(),
         }
@@ -732,17 +743,29 @@ impl SeriesBrowser {
     /// one side stays literal and the other draws ([`Literal`]). It judges
     /// the side after the change or, for a file the change removed, the one
     /// before: judged by either side, a Mermaid file changed from a link to
-    /// a blank regular file read as stored as a link.
+    /// a blank regular file read as stored as a link. A pointer is called
+    /// missing only if the reading found its object absent (`lfs_missing`,
+    /// old then new): one that is local but unreadable as text says that.
     ///
     /// [`Literal`]: crate::rich_preview::Literal
-    fn no_diagrams(&self, old: &str, new: &str) -> &'static str {
+    fn no_diagrams(&self, old: &str, new: &str, lfs_missing: [bool; 2]) -> &'static str {
         let Some(file) = self.selected_file.and_then(|index| self.files.get(index)) else {
             return NOT_DIAGRAMS;
         };
-        let (path, mode, text) = if file.new_path.is_some() {
-            (file.new_path.as_deref(), file.new_mode.as_str(), new)
+        let (path, mode, text, missing) = if file.new_path.is_some() {
+            (
+                file.new_path.as_deref(),
+                file.new_mode.as_str(),
+                new,
+                lfs_missing[1],
+            )
         } else {
-            (file.old_path.as_deref(), file.old_mode.as_str(), old)
+            (
+                file.old_path.as_deref(),
+                file.old_mode.as_str(),
+                old,
+                lfs_missing[0],
+            )
         };
         let mermaid = path
             .and_then(|path| path.extension())
@@ -755,7 +778,8 @@ impl SeriesBrowser {
         }
         match crate::rich_preview::Literal::of(mode, text) {
             Some(crate::rich_preview::Literal::Link) => LINKED,
-            Some(crate::rich_preview::Literal::LfsPointer) => NO_LFS_OBJECT,
+            Some(crate::rich_preview::Literal::LfsPointer) if missing => NO_LFS_OBJECT,
+            Some(crate::rich_preview::Literal::LfsPointer) => NO_LFS_TEXT,
             None => NO_DIAGRAMS,
         }
     }
@@ -5184,6 +5208,204 @@ mod tests {
             held,
             "a press on a failure that fits leaves focus where it was"
         );
+    }
+
+    /// Each Git LFS side stands alone: the side whose object is in the local
+    /// store shows it and draws its diagrams, and only the side whose object
+    /// is missing stays its pointer, says so and offers a download. With only
+    /// the old object missing, Diagrams said the file's new object was not in
+    /// the local store, which was false.
+    #[gpui::test]
+    async fn diagrams_reads_each_lfs_side_on_its_own(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{git, tagged_repository, window};
+        use sha2::{Digest, Sha256};
+        const POINTER_SIDE: &str = "This side's Git LFS object is not in the local store, and no \
+                                    download was attempted; its stored text is below.";
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        // `text`'s pointer, with its object in the local store if `local`.
+        let pointer = |text: &str, local: bool| {
+            let oid = format!("{:x}", Sha256::digest(text));
+            if local {
+                let directory = repo
+                    .path()
+                    .join(".git/lfs/objects")
+                    .join(&oid[..2])
+                    .join(&oid[2..4]);
+                std::fs::create_dir_all(&directory).unwrap();
+                std::fs::write(directory.join(&oid), text).unwrap();
+            }
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+                text.len()
+            )
+        };
+        let diagram = "flowchart LR\n  A --> B\n";
+        let blank = " \n";
+        let gone = |name: &str| pointer(&format!("flowchart LR\n  {name} --> Gone\n"), false);
+        let binary = "\0binary\n";
+        // Local, and failing verification: the right size, the wrong bytes.
+        let damaged = "flowchart LR\n  Damaged --> Object\n";
+        let corrupt = pointer(damaged, true);
+        let oid = format!("{:x}", Sha256::digest(damaged));
+        std::fs::write(
+            repo.path()
+                .join(".git/lfs/objects")
+                .join(&oid[..2])
+                .join(&oid[2..4])
+                .join(&oid),
+            "x".repeat(damaged.len()),
+        )
+        .unwrap();
+        // Past the limit a download or preview takes, so never read.
+        let over_limit = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let sides = [
+            ("old-gone.mmd", gone("One"), pointer(diagram, true)),
+            ("old-gone-blank.mmd", gone("Two"), pointer(blank, true)),
+            ("new-gone.mmd", pointer(diagram, true), gone("Three")),
+            ("new-gone-blank.mmd", pointer(blank, true), gone("Four")),
+            ("new-binary.mmd", gone("Five"), pointer(binary, true)),
+            (
+                "new-oversize.mmd",
+                gone("Six"),
+                pointer(&"x\n".repeat(1_100_000), true),
+            ),
+            ("new-corrupt.mmd", gone("Seven"), corrupt),
+            ("new-over-limit.mmd", gone("Eight"), over_limit),
+            ("old-binary.mmd", pointer(binary, true), gone("Nine")),
+        ];
+        for (path, before, _) in &sides {
+            std::fs::write(repo.path().join(path), before).unwrap();
+        }
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Before"]);
+        for (path, _, after) in &sides {
+            std::fs::write(repo.path().join(path), after).unwrap();
+        }
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "--quiet", "-m", "After"]);
+        let files = last_commit_files(&repo);
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let browser = inspecting(&app, cx, &files);
+        for (name, path, kept) in [
+            ("only the old object missing", "old-gone.mmd", 0),
+            ("only the new object missing", "new-gone.mmd", 1),
+        ] {
+            let index = file_index(&files, path);
+            choose(&browser, cx, index);
+            let (literal, resolved, targets) = browser.read_with(cx, |browser, _| {
+                let content = browser.content.as_deref().expect("the preview landed");
+                let Content::Text {
+                    diagrams: Some(diagrams),
+                    ..
+                } = content
+                else {
+                    panic!("{name}: the side with its object draws");
+                };
+                let (literal, resolved) = if kept == 0 {
+                    (diagrams.old.clone(), diagrams.new.clone())
+                } else {
+                    (diagrams.new.clone(), diagrams.old.clone())
+                };
+                let targets = crate::lfs_download::preview_targets(content, &files[index])
+                    .into_iter()
+                    .map(|(side, _)| side)
+                    .collect::<Vec<_>>();
+                (literal, resolved, targets)
+            });
+            assert!(
+                resolved.pages.len() == 1 && resolved.pages[0].render.is_some(),
+                "{name}: the side with its object draws its diagram"
+            );
+            assert_eq!(
+                literal.metadata.format, "Git LFS pointer",
+                "{name}: the other side is its pointer"
+            );
+            assert_eq!(
+                literal.metadata.details,
+                [POINTER_SIDE],
+                "{name}: the words name that side alone"
+            );
+            assert_eq!(targets, [kept], "{name}: only that side offers a download");
+        }
+        // A local object is never called missing or offered for download,
+        // whichever side the reason judges.
+        for (name, path, reason, missing) in [
+            (
+                "the old object missing beside a blank new file",
+                "old-gone-blank.mmd",
+                NO_DIAGRAMS,
+                0,
+            ),
+            (
+                "the new object missing beside a blank old file",
+                "new-gone-blank.mmd",
+                NO_LFS_OBJECT,
+                1,
+            ),
+            (
+                "the old object missing beside a binary new object",
+                "new-binary.mmd",
+                NO_LFS_TEXT,
+                0,
+            ),
+            (
+                "the old object missing beside an oversize new object",
+                "new-oversize.mmd",
+                NO_LFS_TEXT,
+                0,
+            ),
+            (
+                "the old object missing beside a corrupt new object",
+                "new-corrupt.mmd",
+                NO_LFS_TEXT,
+                0,
+            ),
+            (
+                "the old object missing beside a new object past the limit",
+                "new-over-limit.mmd",
+                NO_LFS_TEXT,
+                0,
+            ),
+            (
+                "the new object missing beside a binary old object",
+                "old-binary.mmd",
+                NO_LFS_OBJECT,
+                1,
+            ),
+        ] {
+            let index = file_index(&files, path);
+            choose(&browser, cx, index);
+            let targets = browser.read_with(cx, |browser, _| {
+                let content = browser.content.as_deref().expect("the preview landed");
+                assert!(
+                    matches!(content, Content::Text { diagrams: None, .. }),
+                    "{name}: no side draws"
+                );
+                crate::lfs_download::preview_targets(content, &files[index])
+                    .into_iter()
+                    .map(|(side, _)| side)
+                    .collect::<Vec<_>>()
+            });
+            let node = crate::native_accessibility::written::get(TEXT_MODES[3].1)
+                .unwrap_or_else(|| panic!("Diagrams is drawn for {name}"))
+                .node;
+            assert_eq!(
+                node.description(),
+                Some(reason),
+                "Diagrams says why, {name}"
+            );
+            assert_eq!(
+                targets,
+                [missing],
+                "{name}: only the missing side offers a download"
+            );
+        }
     }
 
     /// Diagrams says why a file shows none: a Mermaid file stored as a

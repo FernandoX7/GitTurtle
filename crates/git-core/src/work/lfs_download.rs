@@ -32,40 +32,73 @@ pub struct LfsDownloadPlan {
     config_token: String,
 }
 
+/// What the local LFS store held for the two sides of a text comparison.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedLfsText {
+    /// The comparison with every object that could be shown, or `None` to
+    /// keep the two stored texts.
+    pub text: Option<TextPreviewWithSources>,
+    /// Which sides, old then new, are pointers whose object was found absent
+    /// from the local store. `false` means not found absent, not present: a
+    /// side can be no pointer, or its object there but binary, too large or
+    /// failing verification, or past the limit at which the store is not
+    /// read at all. A pointer's text cannot say which.
+    pub missing: [bool; 2],
+}
+
 impl GitRepository {
-    /// Resolve both available LFS text sides together. Missing objects keep the
-    /// original pointer comparison visible; resolved content has no partial
-    /// staging semantics because Git's underlying blobs remain pointers.
+    /// Resolve each LFS text side on its own, from the local store alone: a
+    /// side whose object is there shows it, and a side whose object is
+    /// missing stays its pointer. `text` is `None`, keeping the original
+    /// pointer comparison visible, with no side resolved or with a resolved
+    /// side that has no text to set beside the other's pointer; `missing`
+    /// says which sides are truly absent either way. Resolved content has no
+    /// partial staging semantics because Git's underlying blobs remain
+    /// pointers.
     pub fn resolved_lfs_text(
         &self,
         file: &FileChange,
         old: &[u8],
         new: &[u8],
-    ) -> Result<Option<TextPreviewWithSources>> {
+    ) -> Result<ResolvedLfsText> {
         let mut resolved = [None, None];
-        let mut found = false;
+        let mut missing = [false; 2];
         for (index, bytes) in [old, new].into_iter().enumerate() {
-            if let Ok((oid, size)) = parse_download_pointer(bytes) {
-                found = true;
-                let Some(local) =
-                    self.local_lfs_object(&oid, size, MAX_LFS_PREVIEW_DOWNLOAD as usize)?
-                else {
-                    return Ok(None);
-                };
-                resolved[index] = Some(local);
+            let Ok((oid, size)) = parse_download_pointer(bytes) else {
+                continue;
+            };
+            match self.local_lfs_object(&oid, size, MAX_LFS_PREVIEW_DOWNLOAD as usize) {
+                Ok(Some(local)) => resolved[index] = Some(local),
+                Ok(None) => missing[index] = true,
+                // A failure after a missing side still leaves the two
+                // pointers, as it did when that missing side ended the walk.
+                Err(_) if missing.contains(&true) => {
+                    return Ok(ResolvedLfsText {
+                        text: None,
+                        missing,
+                    });
+                }
+                Err(error) => return Err(error),
             }
         }
-        if !found {
-            return Ok(None);
+        let stored = ResolvedLfsText {
+            text: None,
+            missing,
+        };
+        if resolved.iter().all(Option::is_none) {
+            return Ok(stored);
         }
         let [before, after] = resolved;
         let old = before.unwrap_or_else(|| old.to_vec());
         let new = after.unwrap_or_else(|| new.to_vec());
-        Ok(Some(TextPreviewWithSources {
-            preview: preview_bytes(file, &old, &new),
-            old,
-            new,
-        }))
+        let preview = preview_bytes(file, &old, &new);
+        if missing.contains(&true) && !matches!(preview, TextPreview::Patch(_)) {
+            return Ok(stored);
+        }
+        Ok(ResolvedLfsText {
+            text: Some(TextPreviewWithSources { preview, old, new }),
+            missing,
+        })
     }
 
     pub fn lfs_download_plan(

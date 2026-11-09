@@ -210,6 +210,11 @@ pub enum Content {
         split: Arc<crate::split_diff::SplitPresentation>,
         partial: Option<Arc<crate::partial_view::PartialActions>>,
         partial_unavailable: Option<String>,
+        /// Which sides, old then new, are Git LFS pointers whose object the
+        /// local store does not hold, as the reading found them: a pointer's
+        /// text cannot say, since its object can be local and unreadable as
+        /// text, and only a missing one is called missing or offered.
+        lfs_missing: [bool; 2],
     },
     Images {
         old: Box<ImageSide>,
@@ -234,6 +239,7 @@ impl Content {
                 split,
                 partial,
                 partial_unavailable,
+                lfs_missing: _,
             } => {
                 diagrams
                     .as_ref()
@@ -1763,13 +1769,19 @@ fn execute(
             let (mode, bytes) = repo.read_tracked_working_file(&entry)?;
             cancellation.check()?;
             file.new_mode = mode;
+            let mut lfs_missing = [false; 2];
             let mut content = if let Some(content) =
                 supplied_nontext_content(&repo, &file, &[], &bytes, cancellation)?
             {
                 content
-            } else if let Some(content) =
-                resolved_lfs_text_content(&repo, &file, &[], &bytes, cancellation)?
-            {
+            } else if let Some(content) = resolved_lfs_text_content(
+                &repo,
+                &file,
+                &[],
+                &bytes,
+                &mut lfs_missing,
+                cancellation,
+            )? {
                 content
             } else if bytes.len() > gitturtle_core::MAX_DIFF_BYTES
                 || bytes.iter().filter(|b| **b == b'\n').count() > gitturtle_core::MAX_DIFF_LINES
@@ -1785,6 +1797,7 @@ fn execute(
                 // patch or selected-edit actions are manufactured.
                 prepared_text(String::new(), String::new(), source)
             };
+            mark_lfs_missing(&mut content, lfs_missing);
             attach_mermaid(&mut content, &file, cancellation)?;
             attach_markdown_assets(
                 &mut content,
@@ -2051,13 +2064,19 @@ fn execute(
             let file = preview.file;
             let mut partial_diff = preview.partial;
             let mut unavailable = preview.partial_unavailable;
+            let mut lfs_missing = [false; 2];
             let mut content = if let Some(content) =
                 supplied_nontext_content(&repo, &file, &preview.old, &preview.new, cancellation)?
             {
                 content
-            } else if let Some(content) =
-                resolved_lfs_text_content(&repo, &file, &preview.old, &preview.new, cancellation)?
-            {
+            } else if let Some(content) = resolved_lfs_text_content(
+                &repo,
+                &file,
+                &preview.old,
+                &preview.new,
+                &mut lfs_missing,
+                cancellation,
+            )? {
                 partial_diff = None;
                 unavailable = Some("This view shows verified LFS object content. Partial staging is unavailable because Git stages the underlying pointer; use whole-file staging.".into());
                 content
@@ -2086,6 +2105,7 @@ fn execute(
                     )),
                 }
             };
+            mark_lfs_missing(&mut content, lfs_missing);
             cancellation.check()?;
             attach_mermaid(&mut content, &file, cancellation)?;
             let origins = match area {
@@ -2682,6 +2702,15 @@ fn prepared_text(patch: String, old: String, new: String) -> Content {
         split,
         partial: None,
         partial_unavailable: None,
+        lfs_missing: [false; 2],
+    }
+}
+
+/// Records on `content`, if it is text, which sides' Git LFS objects the
+/// local store lacks ([`GitRepository::resolved_lfs_text`]).
+fn mark_lfs_missing(content: &mut Content, missing: [bool; 2]) {
+    if let Content::Text { lfs_missing, .. } = content {
+        *lfs_missing = missing;
     }
 }
 
@@ -2748,6 +2777,7 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 partial: ap,
                 diagrams: ad,
                 markdown: am,
+                lfs_missing: aq,
                 ..
             },
             Content::Text {
@@ -2758,10 +2788,12 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 partial: bp,
                 diagrams: bd,
                 markdown: bm,
+                lfs_missing: bq,
                 ..
             },
         ) => {
             a == b
+                && aq == bq
                 && match (am, bm) {
                     (None, None) => true,
                     (Some(a), Some(b)) => a.same_source(b),
@@ -2830,9 +2862,16 @@ fn text_content(
     {
         return Ok(content);
     }
-    if let Some(content) =
-        resolved_lfs_text_content(repo, file, &sources.old, &sources.new, cancellation)?
-    {
+    let mut lfs_missing = [false; 2];
+    if let Some(mut content) = resolved_lfs_text_content(
+        repo,
+        file,
+        &sources.old,
+        &sources.new,
+        &mut lfs_missing,
+        cancellation,
+    )? {
+        mark_lfs_missing(&mut content, lfs_missing);
         return Ok(content);
     }
     let mut content = match sources.preview {
@@ -2848,18 +2887,25 @@ fn text_content(
             old_oid.as_deref().unwrap_or("Absent"), new_oid.as_deref().unwrap_or("Absent")
         )),
     };
+    mark_lfs_missing(&mut content, lfs_missing);
     attach_mermaid(&mut content, file, cancellation)?;
     Ok(content)
 }
 
+/// The comparison with the Git LFS objects the local store could show, or
+/// `None` to keep the stored texts. `lfs_missing` receives which sides' objects
+/// are truly absent either way, for the caller to mark on what it shows.
 fn resolved_lfs_text_content(
     repo: &GitRepository,
     file: &FileChange,
     old: &[u8],
     new: &[u8],
+    lfs_missing: &mut [bool; 2],
     cancellation: &Cancellation,
 ) -> Result<Option<Content>> {
-    let Some(sources) = repo.resolved_lfs_text(file, old, new)? else {
+    let resolved = repo.resolved_lfs_text(file, old, new)?;
+    *lfs_missing = resolved.missing;
+    let Some(sources) = resolved.text else {
         return Ok(None);
     };
     if ([file.old_path.as_deref(), file.new_path.as_deref()]
@@ -3225,6 +3271,7 @@ mod tests {
             split,
             partial: None,
             partial_unavailable: None,
+            lfs_missing: [false; 2],
         });
         assert_eq!(content.bytes(), source_bytes + metadata_bytes);
 
@@ -5457,6 +5504,173 @@ mod image_tests {
             matches!(available, Output::Preview(content, _) if matches!(content.as_ref(), Content::Text { new, partial, .. } if new.as_bytes() == SVG && partial.is_none()))
         );
         assert_eq!(cache.entries.len(), 1);
+    }
+
+    /// With one object in the local store and the other missing, the text
+    /// shows the first and keeps the other's pointer, and nothing is cached:
+    /// the missing object can still arrive.
+    #[test]
+    fn lfs_text_preview_resolves_the_side_whose_object_is_local() {
+        let fixture = Fixture::new();
+        let local = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{LFS_OID}\nsize {}\n",
+            SVG.len()
+        );
+        let missing = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let directory = fixture
+            .0
+            .join(".git/lfs/objects")
+            .join(&LFS_OID[..2])
+            .join(&LFS_OID[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(LFS_OID), SVG).unwrap();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let file = FileChange {
+            old_path: Some("source.txt".into()),
+            new_path: Some("source.txt".into()),
+            old_oid: Some(fixture.blob(local.as_bytes())),
+            new_oid: Some(fixture.blob(missing.as_bytes())),
+            status: ChangeStatus::Modified,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+        };
+        let mut cache = PreviewCache::default();
+        let mut session = RepositorySession::default();
+        let shown = execute(
+            Job::Preview {
+                origins: Default::default(),
+                repo,
+                file,
+            },
+            &mut cache,
+            &active(),
+            &mut session,
+        )
+        .unwrap();
+        assert!(
+            matches!(shown, Output::Preview(content, _) if matches!(content.as_ref(), Content::Text { old, new, partial, lfs_missing, .. } if old.as_bytes() == SVG && new == &missing && partial.is_none() && *lfs_missing == [false, true]))
+        );
+        assert!(cache.entries.is_empty());
+    }
+
+    /// A committed text file whose working copy is now a Git LFS pointer to
+    /// an object the local store lacks, and that pointer's text.
+    fn working_missing_pointer(fixture: &Fixture) -> String {
+        fs::write(fixture.0.join("notes.txt"), "before\n").unwrap();
+        fixture.git(&["add", "notes.txt"], b"");
+        fixture.git(
+            &["-c", "commit.gpgsign=false", "commit", "-qm", "Notes"],
+            b"",
+        );
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        fs::write(fixture.0.join("notes.txt"), &pointer).unwrap();
+        pointer
+    }
+
+    /// The side a Working preview found absent is marked, so it offers its
+    /// download: unmarked, the action silently goes.
+    #[test]
+    fn a_working_preview_marks_a_missing_lfs_object_and_offers_its_download() {
+        let fixture = Fixture::new();
+        let pointer = working_missing_pointer(&fixture);
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let entry = repo.status().unwrap().entries.remove(0);
+        let Output::WorkingPreview(file, content, _) = execute(
+            Job::WorkingPreview {
+                head: None,
+                repo,
+                entry,
+                area: gitturtle_core::ChangeArea::Unstaged,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected working preview")
+        };
+        let Content::Text {
+            new, lfs_missing, ..
+        } = &*content
+        else {
+            panic!("expected the pointer's text")
+        };
+        assert_eq!(new, &pointer);
+        assert_eq!(*lfs_missing, [false, true]);
+        let targets = crate::lfs_download::preview_targets(&content, &file);
+        assert_eq!(
+            targets.iter().map(|(side, _)| *side).collect::<Vec<_>>(),
+            [1]
+        );
+    }
+
+    /// So is the side Quick Open's working source found absent.
+    #[test]
+    fn quick_open_marks_a_missing_lfs_object_and_offers_its_download() {
+        let fixture = Fixture::new();
+        let pointer = working_missing_pointer(&fixture);
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let paths = repo
+            .search_tracked_paths(
+                &gitturtle_core::PathScope::Worktree,
+                "notes",
+                &gitturtle_core::HistoryCancellation::default(),
+            )
+            .unwrap();
+        let entry = paths.entries[0].clone();
+        let file = repo.tracked_path_change(&entry);
+        let Output::Preview(content, _) = execute(
+            Job::TrackedPreview {
+                repo,
+                entry,
+                scope: gitturtle_core::PathScope::Worktree,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected quick source")
+        };
+        let Content::Text {
+            new, lfs_missing, ..
+        } = &*content
+        else {
+            panic!("expected the pointer's text")
+        };
+        assert_eq!(new, &pointer);
+        assert_eq!(*lfs_missing, [false, true]);
+        let targets = crate::lfs_download::preview_targets(&content, &file);
+        assert_eq!(
+            targets.iter().map(|(side, _)| *side).collect::<Vec<_>>(),
+            [1]
+        );
+    }
+
+    /// The same stored texts with another side's object missing are not the
+    /// same content: what the file says and offers depends on it, and it
+    /// changes without the pointer's text changing.
+    #[test]
+    fn a_change_in_which_lfs_object_is_missing_is_a_content_change() {
+        let text = |missing: [bool; 2]| {
+            let mut content = prepared_text("patch".into(), "old".into(), "new".into());
+            mark_lfs_missing(&mut content, missing);
+            content
+        };
+        assert!(content_unchanged(
+            &text([true, false]),
+            &text([true, false])
+        ));
+        assert!(!content_unchanged(
+            &text([true, false]),
+            &text([true, true])
+        ));
     }
 
     /// A snapshot names each commit's tags after its branches, by name, an

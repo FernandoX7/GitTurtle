@@ -858,6 +858,7 @@ pub fn decorated_patch_content() -> crate::worker::Content {
         split,
         partial: None,
         partial_unavailable: None,
+        lfs_missing: [false; 2],
     }
 }
 

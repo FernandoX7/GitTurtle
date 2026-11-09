@@ -11,10 +11,15 @@ pub(super) fn preview_targets(
 ) -> Vec<(usize, LfsDownloadTarget)> {
     let pointers = match content {
         Content::Images { old, new } => [old.lfs_pointer.clone(), new.lfs_pointer.clone()],
-        Content::Text { old, new, .. } => [old, new].map(|bytes| {
-            gitturtle_preview::detect_lfs_pointer(bytes.as_bytes())
-                .map(|_| bytes.as_bytes().to_vec())
-        }),
+        // Only a side whose object is truly absent: a pointer whose object
+        // is local, whatever kept it from showing, has nothing to download.
+        Content::Text {
+            old,
+            new,
+            lfs_missing,
+            ..
+        } => [(old, lfs_missing[0]), (new, lfs_missing[1])]
+            .map(|(bytes, missing)| missing.then(|| bytes.as_bytes().to_vec())),
         Content::Rich(preview) => [&preview.old, &preview.new].map(|side| {
             side.captured.as_deref().and_then(|bytes| {
                 gitturtle_preview::detect_lfs_pointer(bytes).map(|_| bytes.to_vec())

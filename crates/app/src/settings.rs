@@ -5380,6 +5380,7 @@ mod theme_apply_tests {
             split,
             partial: None,
             partial_unavailable: None,
+            lfs_missing: [false; 2],
         })
     }
 
