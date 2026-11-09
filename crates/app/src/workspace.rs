@@ -3513,9 +3513,11 @@ impl GitTurtle {
     /// stop the stop after the list in the window's order, the composer's
     /// first or, with an operation in progress, whichever comes next outside
     /// the body; Shift+Tab walks back the same way, from that stop onto the
-    /// last control and from the first control onto the list. Another row's
-    /// control a click has focused counts as standing in the list, so Tab
-    /// goes to the first stop and Shift+Tab to the list.
+    /// last control and from the first control onto the list. A row's
+    /// control still holding focus after the selection has left its row
+    /// counts as standing in the list, so Tab goes to the first stop and
+    /// Shift+Tab to the list; a press on one takes no focus, as no Button's
+    /// does.
     pub(super) fn tab_working_row_stops(
         &mut self,
         forward: bool,
