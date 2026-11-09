@@ -1352,7 +1352,7 @@ impl GitTurtle {
                             }
                         });
                         if this.repository.is_none() {
-                            this.page = AppPage::Projects;
+                            this.show_projects_for_failed_open(window, cx);
                         }
                     }
                 }

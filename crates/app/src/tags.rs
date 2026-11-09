@@ -1906,6 +1906,36 @@ pub(crate) mod tests {
         assert_room_moves_nothing(cx, app, controls, fixed);
     }
 
+    /// `selector`, a Button holding focus, paints its focus ring's quad at
+    /// the installed ring's width and gap around its bounds.
+    pub(crate) fn assert_ring_painted(
+        cx: &mut VisualTestContext,
+        selector: &'static str,
+        at: &str,
+    ) {
+        let control = rendered(cx, selector);
+        let ring = cx.read(|cx| Theme::global(cx).button_focus_ring);
+        let around = control.dilate(ring.gap + ring.width);
+        let painted = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window.painted_quads().into_iter().any(|quad| {
+                let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
+                    (device.as_f32() - logical.as_f32() * scale).abs() <= 1.
+                };
+                quad.border_widths.top.as_f32() > 0.
+                    && !quad.border_color.is_transparent()
+                    && near(quad.bounds.left(), around.left())
+                    && near(quad.bounds.top(), around.top())
+                    && near(quad.bounds.right(), around.right())
+                    && near(quad.bounds.bottom(), around.bottom())
+            })
+        });
+        assert!(
+            painted,
+            "{at}: {selector} {control:?} draws its ring {around:?}"
+        );
+    }
+
     /// Grown by the installed Button focus ring's width plus gap, each of
     /// `controls` lies inside the content mask it paints in, the intersection
     /// of every ancestor's.

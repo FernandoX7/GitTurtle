@@ -74,6 +74,11 @@ pub struct ProjectHub {
     pending_mode: Option<ProjectMode>,
     busy: bool,
     picker_pending: bool,
+    /// Whether the Enter press last going down in the recent search may
+    /// open its first project, noted by its key-down
+    /// ([`Self::search_key_down`]) for the `PressEnter` it brings, which
+    /// tells neither.
+    search_enter_opens: bool,
     can_go_back: bool,
     error: Option<String>,
     /// Errors the feedback line has been given, which gives each its own
@@ -83,6 +88,9 @@ pub struct ProjectHub {
     /// The feedback line last brought into the body's view, by
     /// `errors_shown`: each new one is revealed once, as it appears.
     error_revealed: Rc<Cell<usize>>,
+    /// The feedback line of an Open that failed as the page opened on its
+    /// first stop, by `errors_shown` ([`Self::opened_on_first_stop`]).
+    first_stop_line: Option<usize>,
     /// The feedback line, by `errors_shown`, that stayed out of view so the
     /// recent row that asked keeps its place: heard politely, not as an
     /// alert ([`place_feedback`]), and that row's project.
@@ -148,10 +156,12 @@ impl ProjectHub {
             pending_mode: None,
             busy: false,
             picker_pending: false,
+            search_enter_opens: false,
             can_go_back: false,
             error: None,
             errors_shown: 0,
             error_revealed: Rc::default(),
+            first_stop_line: None,
             error_kept: Rc::default(),
             error_line: Rc::default(),
             recent_rows: Rc::default(),
@@ -168,8 +178,18 @@ impl ProjectHub {
             window,
             |this, _, event, _, cx| match event {
                 InputEvent::Change => this.filter_recent(cx),
-                InputEvent::PressEnter { .. } => {
-                    if let Some(path) = this.filtered.first().cloned() {
+                // The key-down notes whether this Enter may open
+                // (`search_key_down`), which every Enter the field reports
+                // takes: Shift and the secondary modifier make another, which
+                // opens nothing. Taken by the plain one alone, a modified
+                // press left it set for one the field reported with no
+                // key-down.
+                InputEvent::PressEnter { secondary, shift } => {
+                    if std::mem::take(&mut this.search_enter_opens)
+                        && !secondary
+                        && !shift
+                        && let Some(path) = this.filtered.first().cloned()
+                    {
                         this.emit_operation(ProjectEvent::Open(path), cx);
                     }
                 }
@@ -484,27 +504,51 @@ impl ProjectHub {
     /// draws nothing, so nothing showed where the keyboard stood until a Tab
     /// landed on the tab strip's Menu.
     pub(crate) fn focus_selected_mode(&self, window: &mut Window, cx: &mut App) {
-        let index = match self.mode {
+        window.focus(self.selected_mode_focus(), cx);
+    }
+
+    /// Marks the feedback line now shown as the failure the page opened on
+    /// its first stop with, whose reveal leaves that stop whole
+    /// ([`reveal_feedback`]).
+    pub(crate) fn opened_on_first_stop(&mut self) {
+        self.first_stop_line = Some(self.errors_shown);
+    }
+
+    /// The selected action tab's focus: the page's first stop.
+    pub(crate) fn selected_mode_focus(&self) -> &FocusHandle {
+        &self.mode_focus[match self.mode {
             ProjectMode::Open => 0,
             ProjectMode::Clone => 1,
             ProjectMode::Create => 2,
-        };
-        window.focus(&self.mode_focus[index], cx);
+        }]
+    }
+
+    /// The recent search's focus, for a test.
+    #[cfg(test)]
+    pub(crate) fn search_focus(&self, cx: &App) -> FocusHandle {
+        self.search.read(cx).focus_handle(cx)
+    }
+
+    /// The recent search, for a test to compose in.
+    #[cfg(test)]
+    pub(crate) fn search_field(&self) -> Entity<InputState> {
+        self.search.clone()
     }
 
     /// Whether the selected action tab holds focus.
     #[cfg(test)]
     pub(crate) fn selected_mode_focused(&self, window: &Window) -> bool {
-        self.mode_focus[match self.mode {
-            ProjectMode::Open => 0,
-            ProjectMode::Clone => 1,
-            ProjectMode::Create => 2,
-        }]
-        .is_focused(window)
+        self.selected_mode_focus().is_focused(window)
     }
 
+    /// Selects `mode`'s action tab and moves to its first field. The tab
+    /// already selected does nothing, as a selected tab does: pressed by
+    /// Enter or Space on the page's first stop, it cleared the feedback
+    /// line, a restored marked tab's reason among them, and moved focus to
+    /// the recent search, where the next Enter, a held key's repeat
+    /// included, opened the first recent project.
     fn change_mode(&mut self, mode: ProjectMode, window: &mut Window, cx: &mut Context<Self>) {
-        if self.unavailable() {
+        if self.unavailable() || self.mode == mode {
             return;
         }
         self.mode = mode;
@@ -515,6 +559,41 @@ impl ProjectHub {
             ProjectMode::Create => self.name.update(cx, |input, cx| input.focus(window, cx)),
         }
         cx.notify();
+    }
+
+    /// Notes whether the Enter going down in the recent search may open the
+    /// first project it lists, which the field's `PressEnter` does once its
+    /// key-down has run: only a press that began in the field, never a held
+    /// key's repeats (marked held on macOS and Wayland), nor an Enter that
+    /// began on another control and moved focus here, as under X11 its
+    /// repeats arrive as fresh presses (`enter_press_began_on`), nor one
+    /// that goes down while an input method composes there, which commits
+    /// the composition, nor a modified one. A held Enter at launch, on the
+    /// page's first stop, opened it; acted on as a raw key-down, a modified
+    /// Enter opened it too, and so did an Enter committing a composition;
+    /// noted for a modified press, the plain Enter the field reported next
+    /// opened it with no key-down of its own.
+    fn search_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui::EntityInputHandler as _;
+        self.search_enter_opens = false;
+        let focus = self.search.read(cx).focus_handle(cx);
+        if event.keystroke.key != "enter"
+            || event.keystroke.modifiers.modified()
+            || event.is_held
+            || !focus.is_focused(window)
+            || !gpui_kit::base::enter_press_began_on(&focus, window, cx)
+        {
+            return;
+        }
+        let composing = self.search.update(cx, |search, cx| {
+            search.marked_text_range(window, cx).is_some()
+        });
+        self.search_enter_opens = !composing;
     }
 
     fn emit_operation(&mut self, event: ProjectEvent, cx: &mut Context<Self>) {
@@ -779,6 +858,7 @@ impl ProjectHub {
         let padding = crate::appearance::ui_size(6.5);
         div()
             .debug_selector(|| "project-hub-recent".into())
+            .on_key_down(cx.listener(Self::search_key_down))
             .flex_1()
             .min_w_0()
             .h_full()
@@ -857,18 +937,19 @@ impl ProjectHub {
             .into_any_element()
     }
 
-    /// Reveals the control `focus` contains, 12 px clear of the body's edges,
-    /// whenever focus moves into it.
+    /// Reveals the control `focus` contains, [`focus_clearance`] clear of the
+    /// body's edges, whenever focus moves into it.
     fn reveal_on_focus(
         &self,
         focus: FocusHandle,
+        cx: &App,
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
-        self.body.control(focus, px(12.))
+        self.body.control(focus, focus_clearance(cx))
     }
 
     fn field(&self, label: &'static str, input: &Entity<InputState>, cx: &App) -> AnyElement {
         div()
-            .on_children_prepainted(self.reveal_on_focus(input.focus_handle(cx)))
+            .on_children_prepainted(self.reveal_on_focus(input.focus_handle(cx), cx))
             .debug_selector(move || label.into())
             .flex()
             .flex_col()
@@ -919,6 +1000,8 @@ impl ProjectHub {
             let revealed = self.error_revealed.clone();
             let shown = self.errors_shown;
             let body = self.body.scroll().clone();
+            let arrival = (self.first_stop_line == Some(shown))
+                .then(|| (self.body.clone(), self.selected_mode_focus().clone()));
             let (rows, kept, spoken) = (
                 self.recent_rows.clone(),
                 self.error_kept.clone(),
@@ -962,6 +1045,7 @@ impl ProjectHub {
                             line,
                             shown,
                             body.clone(),
+                            arrival.clone(),
                             rows.clone(),
                             kept.clone(),
                             spoken.clone(),
@@ -1012,7 +1096,9 @@ impl ProjectHub {
             .gap_5()
             .child(
                 div()
-                    .on_children_prepainted(self.reveal_on_focus(self.action_tabs_focus.clone()))
+                    .on_children_prepainted(
+                        self.reveal_on_focus(self.action_tabs_focus.clone(), cx),
+                    )
                     .id("project-action-tabs")
                     .track_focus(&self.action_tabs_focus)
                     .tab_stop(false)
@@ -1216,7 +1302,7 @@ impl ProjectHub {
                             .child(
                                 div()
                                     .on_children_prepainted(
-                                        self.reveal_on_focus(self.parent_field_focus.clone()),
+                                        self.reveal_on_focus(self.parent_field_focus.clone(), cx),
                                     )
                                     .id("project-parent-field")
                                     .debug_selector(|| "project-parent-field".into())
@@ -1306,7 +1392,9 @@ impl ProjectHub {
                     })
                     .child(
                         div()
-                            .on_children_prepainted(self.reveal_on_focus(self.submit_focus.clone()))
+                            .on_children_prepainted(
+                                self.reveal_on_focus(self.submit_focus.clone(), cx),
+                            )
                             .id("project-submit-field")
                             .debug_selector(|| "project-submit-field".into())
                             .track_focus(&self.submit_focus)
@@ -1463,15 +1551,39 @@ fn place_feedback(
     }
 }
 
+/// What a focused control's ring leaves between itself and the body's edges:
+/// the 8 px step of the spacing rhythm at the default interface size
+/// (DESIGN.md, Typography and density), scaled with it as the controls are.
+const FIRST_STOP_CLEARANCE: f32 = 8.;
+
+/// How far clear of the body's edges the page shows a focused control: its
+/// focus ring, as the theme installs it, and [`FIRST_STOP_CLEARANCE`] past
+/// that. A control focus moves into comes into view so far
+/// ([`ProjectHub::reveal_on_focus`]), and a failed Open's reason leaves the
+/// first stop so far below the view's top ([`reveal_feedback`]), so the two
+/// agree. The controls' reveal once kept a literal 12 px, whatever the ring.
+fn focus_clearance(cx: &App) -> Pixels {
+    crate::appearance::button_ring_room(cx) + crate::appearance::ui_size(FIRST_STOP_CLEARANCE)
+}
+
 /// Places the body for the feedback line first drawn at `line`, once this
 /// frame has laid out the pressed row as well, and says the line politely
 /// where it stays out of view ([`place_feedback`]). Later frames leave the
 /// scroll to the person.
+///
+/// `arrival`, for the line of an Open that failed as the page opened on its
+/// first stop (`GitTurtle::show_projects_for_failed_open`), holds what keeps
+/// that stop whole: the line comes only so far as it does, as far as a
+/// pressed row's does. Revealed past it at 18 pt in a 461 × 490 window, the
+/// line scrolled the focused tab, ring and all, under the page's header. A
+/// refusal the person asked for later, as under Choose a repository… with
+/// focus still on that stop, is not one: it shows whole.
 #[allow(clippy::too_many_arguments)]
 fn reveal_feedback(
     line: Bounds<Pixels>,
     shown: usize,
     body: ScrollHandle,
+    arrival: Option<(FocusReveal, FocusHandle)>,
     rows: Rc<RefCell<RecentRows>>,
     kept: Rc<RefCell<Option<(usize, PathBuf)>>>,
     spoken: SharedString,
@@ -1483,7 +1595,18 @@ fn reveal_feedback(
         let reach = body.max_offset().y;
         let mut offset = body.offset();
         let places = pressed.as_ref().map(|(_, before, now)| (*before, *now));
-        let place = place_feedback(line, places, body.bounds(), offset.y, reach);
+        let view = body.bounds();
+        let mut place = place_feedback(line, places, view, offset.y, reach);
+        if let Some((reveal, first_stop)) = arrival
+            && pressed.is_none()
+            && first_stop.is_focused(window)
+            && let Some(stop) = reveal.focused_bounds(window, cx)
+        {
+            // The stop's ring, as the theme installs it, and the rhythm's
+            // step clear of it below the view's top.
+            let room = focus_clearance(cx);
+            place.delta = place.delta.max(view.top() + room - stop.top());
+        }
         if !place.shows_line {
             *kept.borrow_mut() = pressed.map(|(project, ..)| (shown, project));
             crate::copy_feedback::announce(window, cx, spoken);
@@ -2195,24 +2318,7 @@ mod tests {
                     "{at}: inside the window's handlers"
                 );
             });
-            let tab = crate::tags::tests::rendered(cx, "project-mode-Open");
-            let ring = cx.read(|cx| Theme::global(cx).button_focus_ring);
-            let around = tab.dilate(ring.gap + ring.width);
-            let painted = cx.update(|window, _| {
-                let scale = window.scale_factor();
-                window.painted_quads().into_iter().any(|quad| {
-                    let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
-                        (device.as_f32() - logical.as_f32() * scale).abs() <= 1.
-                    };
-                    quad.border_widths.top.as_f32() > 0.
-                        && !quad.border_color.is_transparent()
-                        && near(quad.bounds.left(), around.left())
-                        && near(quad.bounds.top(), around.top())
-                        && near(quad.bounds.right(), around.right())
-                        && near(quad.bounds.bottom(), around.bottom())
-                })
-            });
-            assert!(painted, "{at}: the tab {tab:?} draws its ring {around:?}");
+            crate::tags::tests::assert_ring_painted(cx, "project-mode-Open", &at);
             crate::tags::tests::assert_rings_whole(cx, &["project-mode-Open"]);
             cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
             crate::tags::tests::draw(cx);
@@ -2325,8 +2431,12 @@ mod tests {
 
     /// Every frame painted after focus moves into a form field, by Tab or
     /// by a click on a field the page shows only in part, the first frame
-    /// that draws the focus included, shows the field 12 px clear of the
-    /// page's edges, or as near as the page's reach allows.
+    /// that draws the focus included, shows the field [`focus_clearance`]
+    /// clear of the page's edges, or as near as the page's reach allows, and
+    /// a field Tab scrolls to comes only so far: the clearance a failed
+    /// Open's reason leaves the first stop, the ring's room and the spacing
+    /// rhythm's 8 px step scaled with the interface size, as at 18 pt. The
+    /// fields once kept a literal 12 px, and then an unscaled 8 px.
     #[gpui::test]
     fn project_hub_reveals_fields_in_the_frame_that_draws_focus(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -2342,7 +2452,22 @@ mod tests {
             gpui_kit::component::Root::new(hub, window, cx)
         });
         let hub = observed.borrow_mut().take().unwrap();
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
         cx.simulate_resize(size(px(1000.), px(680.)));
+        // What the page keeps clear of its edges at 18 pt: the ring's room
+        // and the 8 px step, scaled as the controls are.
+        fn clearance(cx: &App) -> Pixels {
+            crate::appearance::button_ring_room(cx) + crate::appearance::ui_size(8.)
+        }
+        // Scaled, the clearance falls between the window's device pixels,
+        // to which the page snaps the field's top and its height each: up
+        // to one device pixel either way, half a logical pixel at the test
+        // window's factor of 2.
+        const SLACK: Pixels = px(0.5);
+        assert!(
+            cx.read(clearance) > cx.read(crate::appearance::button_ring_room) + px(8.),
+            "the step scales at 18 pt"
+        );
 
         fn settle(cx: &mut VisualTestContext) {
             for _ in 0..2 {
@@ -2351,11 +2476,15 @@ mod tests {
             }
         }
         /// Every frame painted since the last call shows the focused field
-        /// 12 px clear of the page's edges.
-        fn assert_clear(cx: &mut VisualTestContext, hub: &Entity<ProjectHub>, after: &str) {
-            let frames = cx.read(|cx| hub.read(cx).body.take_painted());
+        /// [`focus_clearance`] clear of the page's edges; returns the last.
+        fn assert_clear(
+            cx: &mut VisualTestContext,
+            hub: &Entity<ProjectHub>,
+            after: &str,
+        ) -> crate::focus_reveal::tests::Painted {
+            let mut frames = cx.read(|cx| hub.read(cx).body.take_painted());
             assert!(!frames.is_empty(), "{after} paints the page");
-            let (margin, slack) = (px(12.), px(0.01));
+            let (margin, slack) = (cx.read(clearance), SLACK);
             for (index, frame) in frames.iter().enumerate() {
                 let field = frame
                     .control
@@ -2368,11 +2497,12 @@ mod tests {
                 assert!(
                     top && bottom,
                     "frame {index} of {} after {after} paints the field at {field:?}, less \
-                     than 12 px inside the page, {viewport:?}, at offset {:?}",
+                     than {margin:?} inside the page, {viewport:?}, at offset {:?}",
                     frames.len(),
                     frame.offset
                 );
             }
+            frames.pop().expect("a frame")
         }
 
         cx.update(|window, cx| {
@@ -2382,12 +2512,24 @@ mod tests {
         });
         settle(cx);
         let mut scrolled = false;
+        let margin = cx.read(clearance);
         for _ in 0..4 {
             cx.read(|cx| hub.read(cx).body.take_painted());
+            let before = cx.read(|cx| hub.read(cx).body.scroll().offset().y);
             cx.simulate_keystrokes("tab");
             settle(cx);
-            assert_clear(cx, &hub, "tab");
-            scrolled |= cx.read(|cx| hub.read(cx).body.scroll().offset().y) < px(0.);
+            let last = assert_clear(cx, &hub, "tab");
+            let after = cx.read(|cx| hub.read(cx).body.scroll().offset().y);
+            if after < before && after > -last.max_offset + px(0.01) {
+                let field = last.control.expect("the field");
+                assert!(
+                    (last.viewport.bottom() - margin - field.bottom()).abs() < SLACK,
+                    "Tab reveals the field {margin:?} clear of the page's foot, no more: \
+                     {field:?} in {:?}",
+                    last.viewport
+                );
+            }
+            scrolled |= after < px(0.);
         }
         assert!(scrolled, "Tab scrolls the page");
         for _ in 0..3 {
@@ -2423,6 +2565,7 @@ mod tests {
         settle(cx);
         cx.update(|window, cx| assert!(hub.read(cx).name.focus_handle(cx).is_focused(window)));
         assert_clear(cx, &hub, "a click");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     #[gpui::test]
