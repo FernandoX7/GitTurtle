@@ -286,6 +286,10 @@ impl Literal {
     }
 }
 
+/// What Diagrams draws, the sentence one side of a comparison carries.
+const STATIC_MERMAID: &str = "Static Mermaid: flowchart, sequence, class, state, ER and pie. \
+                              Source tabs retain exact text and staging.";
+
 pub(super) fn prepare_mermaid(
     old: &str,
     new: &str,
@@ -312,8 +316,18 @@ pub(super) fn prepare_mermaid(
     if old_document.is_none() && new_document.is_none() {
         return Ok(None);
     }
+    // What Diagrams draws is said once, by the first side that draws a
+    // diagram: on both sides it was read twice. Where neither draws one,
+    // only errors stand in their place, the first side with any says it.
+    let draws = |document: &Option<gitturtle_preview::mermaid::Document>| {
+        document
+            .as_ref()
+            .is_some_and(|document| document.diagrams.iter().any(|page| page.image.is_some()))
+    };
+    let says_what_draws =
+        usize::from(!(draws(&old_document) || (!draws(&new_document) && old_document.is_some())));
     let mut sides = Vec::with_capacity(2);
-    for (source, name, present, document, literal) in [
+    for (index, (source, name, present, document, literal)) in [
         (
             old,
             old_name,
@@ -328,7 +342,10 @@ pub(super) fn prepare_mermaid(
             new_document,
             new_literal,
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         check()?;
         let mut side = Side::unavailable(name, present, None);
         side.page_kind = "Diagram";
@@ -367,7 +384,9 @@ pub(super) fn prepare_mermaid(
                     error: diagram.error,
                 });
             }
-            side.metadata.details.push("Static Mermaid: flowchart, sequence, class, state, ER and pie. Source tabs retain exact text and staging.".into());
+            if index == says_what_draws {
+                side.metadata.details.push(STATIC_MERMAID.into());
+            }
             if side.pages.len() < side.page_count {
                 side.metadata.details.push(format!(
                     "First {} of {} Mermaid blocks rendered; inspect Source for all blocks.",
@@ -1330,6 +1349,184 @@ mod tests {
         assert!(
             prepared.new.pages.iter().all(|page| page.error.is_none()),
             "no page is an error page"
+        );
+    }
+
+    /// A file at `old_path` and `new_path`, each a regular file where present.
+    fn mermaid_change(
+        old_path: Option<&str>,
+        new_path: Option<&str>,
+    ) -> gitturtle_core::FileChange {
+        gitturtle_core::FileChange {
+            old_path: old_path.map(Into::into),
+            new_path: new_path.map(Into::into),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Modified,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+        }
+    }
+
+    /// Draws `comparison` in a window `quick` or side by side, with every
+    /// static text it writes recorded.
+    fn drawn(
+        cx: &mut TestAppContext,
+        comparison: Comparison,
+        quick: bool,
+    ) -> &mut gpui_kit::VisualTestContext {
+        struct Probe(Comparison, bool);
+        impl Render for Probe {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let opener = crate::system_preview::Opener::new(
+                    WeakEntity::new_invalid(),
+                    crate::system_preview::Showing::next(),
+                );
+                render_comparison(&self.0, self.1, opener, px(1000.), window, cx)
+            }
+        }
+        cx.update(gpui_kit::init);
+        cx.update(crate::image_lifetime::init);
+        native_accessibility::written::forget();
+        let (_, cx) = cx.add_window_view(move |_, _| Probe(comparison, quick));
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        }
+        cx
+    }
+
+    /// Whose details say what Diagrams draws, Before's and After's.
+    fn carriers(comparison: &Comparison) -> [bool; 2] {
+        [&comparison.old, &comparison.new]
+            .map(|side| side.metadata.details.iter().any(|d| d == STATIC_MERMAID))
+    }
+
+    /// Two drawn sides say what Diagrams draws once, on the first that draws
+    /// a diagram; each side keeps its own count of the blocks it left out.
+    /// Read in a comparison, the sentence came twice.
+    #[gpui::test]
+    fn the_static_mermaid_sentence_is_read_once_across_two_drawn_sides(cx: &mut TestAppContext) {
+        let fence = "```mermaid\nflowchart LR\n  A --> B\n```\n\n".repeat(5);
+        let file = mermaid_change(Some("a.md"), Some("a.md"));
+        let prepared = prepare_mermaid(&fence, &fence, &file, || Ok(()))
+            .unwrap()
+            .expect("both sides draw");
+        assert_eq!(carriers(&prepared), [true, false]);
+        let limit = "First 4 of 5 Mermaid blocks rendered; inspect Source for all blocks.";
+        assert_eq!(prepared.old.metadata.details, [STATIC_MERMAID, limit]);
+        assert_eq!(
+            prepared.new.metadata.details,
+            [limit],
+            "the count of what a side left out stays on that side"
+        );
+        let cx = drawn(cx, prepared, false);
+        let read = native_accessibility::written::labels()
+            .into_iter()
+            .filter(|(_, name)| name.as_deref() == Some(STATIC_MERMAID))
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            read,
+            ["rich-side-detail-0-0"],
+            "assistive technology reads it once, where it is drawn"
+        );
+        assert!(cx.debug_bounds("rich-side-detail-0-0").is_some());
+        assert!(cx.debug_bounds("rich-side-detail-1-1").is_none());
+    }
+
+    /// A view of one side, which draws the side after the change alone,
+    /// reads the sentence there.
+    #[gpui::test]
+    fn a_one_sided_view_reads_the_static_mermaid_sentence(cx: &mut TestAppContext) {
+        let file = mermaid_change(None, Some("a.mmd"));
+        let prepared = prepare_mermaid("", "flowchart LR\n  A --> B\n", &file, || Ok(()))
+            .unwrap()
+            .expect("the one side draws");
+        let _cx = drawn(cx, prepared, true);
+        let read = native_accessibility::written::get("rich-side-detail-1-0")
+            .expect("the side's sentence is written")
+            .node;
+        assert_eq!(read.value(), Some(STATIC_MERMAID));
+    }
+
+    /// The sentence stays with whichever side is the first to draw, and a
+    /// one-sided view keeps it on its one side.
+    #[test]
+    fn the_static_mermaid_sentence_goes_to_the_first_side_that_draws() {
+        let diagram = "flowchart LR\n  A --> B\n";
+        // A control character fails its block, which stands as an error.
+        let failing = "flowchart LR\n  A --> \u{1}B\n";
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "a".repeat(64)
+        );
+        let both = mermaid_change(Some("a.mmd"), Some("a.mmd"));
+        for (name, old, new, file, says) in [
+            (
+                "a file the change added",
+                "",
+                diagram,
+                mermaid_change(None, Some("a.mmd")),
+                [false, true],
+            ),
+            (
+                "a file the change removed",
+                diagram,
+                "",
+                mermaid_change(Some("a.mmd"), None),
+                [true, false],
+            ),
+            (
+                "After alone holds diagrams",
+                "notes\n",
+                diagram,
+                both.clone(),
+                [false, true],
+            ),
+            (
+                "Before stays a pointer",
+                pointer.as_str(),
+                diagram,
+                both.clone(),
+                [false, true],
+            ),
+            (
+                "Before fails and After draws",
+                failing,
+                diagram,
+                both.clone(),
+                [false, true],
+            ),
+            (
+                "Before draws and After fails",
+                diagram,
+                failing,
+                both.clone(),
+                [true, false],
+            ),
+            (
+                "neither draws, so the first with a document says it",
+                failing,
+                failing,
+                both.clone(),
+                [true, false],
+            ),
+        ] {
+            let prepared = prepare_mermaid(old, new, &file, || Ok(()))
+                .unwrap()
+                .unwrap_or_else(|| panic!("{name}: a side has a document"));
+            assert_eq!(carriers(&prepared), says, "{name}");
+        }
+        let failed = prepare_mermaid(failing, failing, &both, || Ok(()))
+            .unwrap()
+            .unwrap();
+        assert!(
+            failed.old.pages[0].render.is_none() && failed.old.pages[0].error.is_some(),
+            "the failing block draws nothing"
         );
     }
 
