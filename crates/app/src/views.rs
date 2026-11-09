@@ -34005,7 +34005,7 @@ pub(crate) mod tests {
     async fn another_rows_stage_stays_clickable_and_named_but_is_no_tab_stop(
         cx: &mut TestAppContext,
     ) {
-        let (fixture, app, cx) = working_window(cx).await;
+        let (_fixture, app, cx) = working_window(cx).await;
         hold_quiet_reads_for_test(&app, cx);
         cx.update(|_, cx| cx.set_reduce_motion(true));
         cx.simulate_resize(size(px(1480.), px(973.)));
@@ -34023,7 +34023,9 @@ pub(crate) mod tests {
             !met.iter().any(|stop| stop == alpha),
             "Tab from the list never reaches another row's control: {met:?}"
         );
-        let repository = Some(fixture.path().join("narrow"));
+        // The app's own path, resolved: a temporary directory reached through
+        // a link, as macOS's is, reads differently from the fixture's.
+        let repository = app.read_with(cx, |app, _| app.path.clone());
         let node = workspace::confirmations::file(
             &repository,
             std::path::Path::new("alpha.txt"),
