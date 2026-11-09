@@ -761,7 +761,6 @@ cover current upstream x86-64 Omarchy.
        - (S) "Ctrl+T at eight tabs": refused after the picker (`crates/app/src/repository_tabs.rs:1586`). Refuse before asking.
        - (S) "commit description's hint" (`crates/app/src/workspace.rs:4565`, kit `9c231582` unused). Orca users hear no hint.
        - (M) "Blame shows no source lines"; footer rings (one defect, `crates/app/src/blame.rs:574`, `crates/app/src/tab_order_tests.rs:649`).
-       - (M) "Colour picker swatches": no keyboard or name (`vendor/gpui-component/src/color_picker.rs:133`).
        - (M) "reveal is decided before layout": Send and Keep editing can be cut (`crates/app/src/github_view/review.rs:1558`, `:2062`).
        - (M) "Rings covered by a fill" and its every-stop check (`crates/app/src/tab_order_tests.rs:183`).
        - (S) "Exact source / Rendered toggles", "remote manager's search": cut stops pinned as known (`crates/app/src/tab_order_tests.rs:714`, `:1279`).
@@ -770,7 +769,6 @@ cover current upstream x86-64 Omarchy.
        - (S) "Operation error banner": shows the output's first line, not its `fatal:`/`error:` line (`crates/app/src/views.rs:9771`).
        - (S) "same-count change": the Working list keeps stale rows when the count is unchanged (`crates/app/src/workspace.rs:3465`).
        - (S) "non-quiet read" centres an off-screen cursor (`crates/app/src/workspace.rs:2416`).
-       - (S) "Kit popovers and menus" (`vendor/gpui-component/src/select.rs:380`, `src/menu/popup_menu.rs:1745`).
        - (S) "Inspector failed changed-file read" drawn below the view (`crates/app/src/rewrite_review.rs:1356`, `:1693`).
        - (S) "`Path::is_dir()` is false on any metadata error" and "Parent loses search permission" (one defect, fails safe: the tab is marked, `crates/git-core/src/lib.rs:519`, `:629`).
        - (S) "marked tab's explicit Refresh" keeps the old reason (`crates/app/src/repository_tabs.rs:1807`).
