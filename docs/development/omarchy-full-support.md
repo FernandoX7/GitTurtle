@@ -754,14 +754,10 @@ cover current upstream x86-64 Omarchy.
        - (S) Stashes opens with focus on its shell (found by FU35-B). The commit metadata's parent links get no reveal as they take focus, so Tab lands on a control the frame does not show (`crates/app/src/views.rs:2735`, pinned at `crates/app/src/tab_order_tests.rs:739`; found by FU35-C's review).
        - (S) A Clone or Create at eight tabs writes the repository and then refuses the tab, where the limit could refuse first (found by FU35-C's review).
        - (S, nit) A quiet read that hits `ChangedWhileOpening` at its own path leaves a "Local refresh:" banner the next good read does not clear, beside a mark that says the same (`crates/app/src/automatic_refresh.rs:469`; found by FU34-C's review).
+       - (S, nit) Stashes speaks "Saved stashes 41 to 41" for a page of one; "Saved stash 41" reads better (`crates/app/src/recovery.rs:2298`). `stash_page` re-reads the whole reflog per page, where one core call could return a stash's position (`crates/app/src/recovery.rs:1836`).
        - (M, briefed `FU29-A2e`) "Working one stop": the Working list as one Tab stop (`crates/app/src/workspace.rs:5187`).
-       - (S) "Reopening the GitHub panel": refused silently while a cancelled read drains (`crates/app/src/github_view.rs:524`, `:655`, `:663`), and the comments that state otherwise (`crates/app/src/views.rs:658`, `:881`). A control that does nothing, on a route people use.
        - (S) "`.mmd` changed from a link" reads "no Mermaid diagrams" over real Mermaid text, the pointer case included (`crates/app/src/rich_preview.rs:245`, in flight `FU31-B8`).
-       - (S) "branch manager focus", "Remote manager focus", "Quick source opening focus": the dialog takes no focus (`crates/app/src/branch_actions.rs:882`, `:776`; `crates/app/src/revision_inspection.rs:459`). The keyboard route starts here.
-       - (S) "Stashes dialog ignores Ctrl+R" (`crates/app/src/recovery.rs:3483`). The app-wide Refresh key is silently missing.
        - (S) "Ctrl+T at eight tabs": refused after the picker (`crates/app/src/repository_tabs.rs:1586`). Refuse before asking.
-       - (S) "project pane" shortcut missing from Keyboard Shortcuts (`crates/app/src/shortcuts.rs`, `crates/app/src/main.rs:162`).
-       - (S) "No `DialogKeys`": the GitHub panel lacks dialog keys (`crates/app/src/github_view.rs`).
        - (S) "commit description's hint" (`crates/app/src/workspace.rs:4565`, kit `9c231582` unused). Orca users hear no hint.
        - (M) "Blame shows no source lines"; footer rings (one defect, `crates/app/src/blame.rs:574`, `crates/app/src/tab_order_tests.rs:649`).
        - (M) "Colour picker swatches": no keyboard or name (`vendor/gpui-component/src/color_picker.rs:133`).
