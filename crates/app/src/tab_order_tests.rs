@@ -1242,16 +1242,6 @@ async fn working_changes_meet_their_list_once_in_order(cx: &mut TestAppContext) 
             Walk::PAGE.at(interface),
             &mut failures,
         );
-        // Where the list and the composer scroll together, the body's cue
-        // lies over the list's ring by design (`ScrollCue::over_rows`): its
-        // one 6 px thumb crosses the ring's foot, and no other quad may.
-        if !row_control {
-            failures.retain(|failure| {
-                !(failure.contains("quads painted after its ring")
-                    && failure.matches("Bounds {").count() == 2
-                    && failure.contains("Size { 6px ×"))
-            });
-        }
         sweep::assert_whole(failures);
     }
 }

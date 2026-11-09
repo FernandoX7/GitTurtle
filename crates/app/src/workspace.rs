@@ -149,6 +149,9 @@ struct RowControlsState {
     /// Whether the rows' form draws a file's control (`WorkingForms`), as
     /// the list last rendered, for keys that land between frames.
     file_action: bool,
+    /// The list pane's inner bounds as the frame paints it
+    /// (`record_pane`).
+    pane: Option<Bounds<Pixels>>,
 }
 
 impl RowControls {
@@ -286,6 +289,17 @@ impl RowControls {
             .values()
             .find(|kept| kept.focus.is_focused(window))
             .map(|kept| kept.focus.clone())
+    }
+
+    /// Records the list pane's inner bounds as this frame paints it, for the
+    /// outline drawn after the body's content ([`list_edge`]).
+    fn record_pane(&self, bounds: Bounds<Pixels>) {
+        self.0.borrow_mut().pane = Some(bounds);
+    }
+
+    /// The list pane's inner bounds, as [`Self::record_pane`] recorded them.
+    fn pane(&self) -> Option<Bounds<Pixels>> {
+        self.0.borrow().pane
     }
 
     /// Whether one of these handles holds focus.
@@ -937,20 +951,43 @@ fn held_control_undrawn(
             .is_some_and(|focus| ring.shows(&focus))
 }
 
-/// The list's accent edge, while [`held_control_undrawn`]: the ring its
-/// control cannot draw, in the frame the control leaves and until the frame
-/// it returns, as [`floor_fades`] reads the control's place.
-fn list_edge(controls: RowControls, ring: crate::focus_ring::FocusRing) -> impl IntoElement {
+/// The list's accent outline, on the pane's outer line, painted after the
+/// body's content: over the scroll cue's thumb where the body scrolls, so the
+/// thumb passes beneath a whole ring. The one code path for the list's own
+/// focus and for a control the list's edge stands in for
+/// ([`held_control_undrawn`]), read as the frame paints, so it comes and goes
+/// in the frame the control does. The pane's own border stays neutral. It
+/// adds no hitbox, and the body's viewport clips it as the body clips the
+/// list.
+fn list_edge(
+    controls: RowControls,
+    ring: crate::focus_ring::FocusRing,
+    list: FocusHandle,
+    body: ScrollHandle,
+) -> impl IntoElement {
     canvas(
         |_, _, _| (),
-        move |bounds, _, window, cx| {
-            if held_control_undrawn(&controls, &ring, window) {
-                window.paint_quad(outline(bounds, rgb(palette(cx).accent), BorderStyle::Solid));
+        move |_, _, window, cx| {
+            let Some(pane) = controls.pane() else {
+                return;
+            };
+            if ring.shows(&list) || held_control_undrawn(&controls, &ring, window) {
+                let border = window.pixel_snap(px(1.));
+                let mask = ContentMask {
+                    bounds: body.bounds(),
+                };
+                window.with_content_mask(Some(mask), |window| {
+                    window.paint_quad(outline(
+                        pane.dilate(border),
+                        rgb(palette(cx).accent),
+                        BorderStyle::Solid,
+                    ));
+                });
             }
         },
     )
     .absolute()
-    .inset_0()
+    .size_full()
 }
 
 /// The no-match line the file list draws in `room`: the whole line where it
@@ -4313,7 +4350,8 @@ impl GitTurtle {
         // 461 × 490 window. The controls above the body keep the inspector's
         // width. The track lies over the rows' trailing inset, `px_3`, rather
         // than beside it: the list and the composer keep the body's whole
-        // width, the list's edge, its focus ring, beneath the track, 3 px
+        // width, the list's edge beneath the track and its focus ring painted
+        // over it (`list_edge`), 3 px
         // outside the thumb the track paints 4 px in, and their rows keep the
         // gutter less that inset at their right (`WorkingForms::trailing`),
         // so each row's content and its controls' rings end where the track
@@ -4547,6 +4585,7 @@ impl GitTurtle {
             .held_handle(window)
             .map(|focus| div().absolute().size_0().track_focus(&focus));
         let row_controls = controls.clone();
+        let pane_controls = controls.clone();
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
@@ -4773,9 +4812,6 @@ impl GitTurtle {
             }))
             .border_1()
             .border_color(rgb(p.border))
-            .when(self.focus_ring.shows(&self.file_focus), |pane| {
-                pane.border_color(rgb(p.accent))
-            })
             // One pixel in from the inspector's divider, which the kit
             // paints over the inspector's first pixel: the list's own
             // left edge and focus ring stay whole beside it, as the
@@ -4801,6 +4837,7 @@ impl GitTurtle {
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, cx| {
+                        pane_controls.record_pane(bounds);
                         list_layout.update(cx, |layout, cx| {
                             if layout.list_size != Some(bounds.size) {
                                 // The list's height changes with the body's
@@ -5027,10 +5064,7 @@ impl GitTurtle {
             fitted => (composer_height, fitted.flatten()),
         };
         let scrolls = composer && description.is_none();
-        let pane = pane.child(list_edge(
-            layout.read(cx).row_controls.clone(),
-            self.focus_ring.clone(),
-        ));
+        let list_controls = layout.read(cx).row_controls.clone();
         let description = if scrolls {
             Some(description_height)
         } else {
@@ -5180,7 +5214,7 @@ impl GitTurtle {
         // frame's layout keeps the gutter otherwise than the frame assumed,
         // in either form, so a body that has stopped scrolling gives the
         // gutter back in the next frame.
-        // Its track lies over the rows, and the list's ring, so it takes no
+        // Its track lies over the rows, under the list's ring, so it takes no
         // fill (`ScrollCue::over_rows`).
         let cue = crate::tags::ScrollCue::revealing(reveal, Pixels::ZERO).over_rows();
         let observe = reveal.observe();
@@ -5764,10 +5798,18 @@ impl GitTurtle {
         // of a gutter the frame assumed (`WorkingForms::trailing`), so they
         // are laid out at the width they were fitted to, and the body gives
         // that room back in the next frame.
+        let edge = list_edge(
+            list_controls,
+            self.focus_ring.clone(),
+            self.file_focus.clone(),
+            reveal.scroll().clone(),
+        );
         if scrolls {
-            cue.list(body, "working-body-scrollbar").into_any_element()
+            cue.list(body, "working-body-scrollbar")
+                .child(edge)
+                .into_any_element()
         } else {
-            body.into_any_element()
+            body.child(edge).into_any_element()
         }
     }
 

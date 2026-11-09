@@ -34634,13 +34634,18 @@ pub(crate) mod tests {
                 window.draw(cx).clear(cx);
             });
         };
+        // On the pane's outer line exactly, where the list's own ring lies,
+        // so the ring takes no step as focus returns to the list.
         let edge = |cx: &mut VisualTestContext| {
-            let list = list(cx);
+            let pane = cx.debug_bounds("working-pane").expect("the list's pane");
+            let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.01);
             crate::focus_ring::painted_outlines(cx, accent)
                 .iter()
                 .any(|ring| {
-                    (ring.bounds.size.width - list.size.width).abs() <= px(3.)
-                        && (ring.bounds.size.height - list.size.height).abs() <= px(3.)
+                    near(ring.bounds.left(), pane.left())
+                        && near(ring.bounds.top(), pane.top())
+                        && near(ring.bounds.right(), pane.right())
+                        && near(ring.bounds.bottom(), pane.bottom())
                 })
         };
         let wheel = |cx: &mut VisualTestContext, by: f32| {
@@ -34694,6 +34699,10 @@ pub(crate) mod tests {
                 "working-stage-5",
                 "{at}: focus stayed"
             );
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            assert_eq!(working_stop(&app, cx), "the list", "{at}: Shift+Tab's stop");
+            assert!(edge(cx), "{at}: the list's own ring lies on the same line");
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
