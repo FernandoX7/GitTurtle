@@ -184,6 +184,21 @@ pub(super) struct State {
     /// The list of the chooser or remote manager opened last, for tests.
     #[cfg(test)]
     list: Option<FocusReveal>,
+    /// The search field of the chooser or remote manager opened last, for
+    /// tests.
+    #[cfg(test)]
+    query: Option<Entity<InputState>>,
+}
+
+/// Puts focus on the search field of a dialog that has just opened. Opening
+/// a dialog focuses its shell, which draws no ring, so the branch chooser
+/// and the remote manager opened with focus nowhere to be seen. Set now, as
+/// the palette sets its query, so keys typed before the next frame reach the
+/// field and the first frame draws its ring. The dialog keeps the control
+/// focus was on to return to as it closes.
+fn focus_opened_search(search: &FocusHandle, window: &mut Window, cx: &mut App) {
+    search.focus(window, cx);
+    window.refresh();
 }
 
 #[derive(Clone)]
@@ -888,7 +903,9 @@ impl GitTurtle {
                 #[cfg(test)]
                 {
                     self.branch_actions.list = Some(chooser.read(cx).list.clone());
+                    self.branch_actions.query = Some(chooser.read(cx).query.clone());
                 }
+                let search = chooser.read(cx).query.read(cx).focus_handle(cx);
                 window.open_alert_dialog(cx, move |dialog, window, cx| {
                     let chooser_ok = chooser.clone();
                     let shown = chooser.clone();
@@ -915,6 +932,7 @@ impl GitTurtle {
                             false
                         })
                 });
+                focus_opened_search(&search, window, cx);
             }
             Prepared::Remotes(remotes) => {
                 let owner = cx.entity().downgrade();
@@ -923,15 +941,28 @@ impl GitTurtle {
                 #[cfg(test)]
                 {
                     self.branch_actions.list = Some(manager.read(cx).list.clone());
+                    self.branch_actions.query = Some(manager.read(cx).query.clone());
                 }
-                window.open_alert_dialog(cx, move |dialog, window, _| {
+                let search = manager.read(cx).query.read(cx).focus_handle(cx);
+                window.open_alert_dialog(cx, move |dialog, window, cx| {
+                    // The dialog clips its body to the body's bounds, and
+                    // the manager keeps the focus ring's room inside them
+                    // above its search field, where it opens, and below its
+                    // last control. The title's margin and the footer's gap
+                    // give the room back, so nothing in the dialog moves.
+                    let room = appearance::button_ring_room(cx);
                     dialog
-                        .title("Remotes")
+                        .title(
+                            native_accessibility::dialog_title("remotes-title", "Remotes")
+                                .mb(-room),
+                        )
                         .width(appearance::dialog_width(px(580.), window))
                         .max_h(appearance::dialog_max_height(window))
+                        .gap(crate::tags::DIALOG_FOOTER_GAP - room)
                         .child(manager.clone())
                         .footer(crate::tags::dialog_footer("Done", None))
                 });
+                focus_opened_search(&search, window, cx);
             }
         }
     }
@@ -1836,7 +1867,7 @@ impl Render for RemoteManager {
         // list keeps none around the remotes.
         let room = appearance::button_ring_room(cx);
         let cue = tags::ScrollCue::revealing(&self.list, Pixels::ZERO);
-        div().flex().flex_col().gap_3()
+        div().flex().flex_col().gap_3().py(room)
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().child(Input::new(&self.query).cleanable(true)))
                 .child(dialog_action("add-remote", "Add remote…", &self.owner, &self.path, None, |this, window, cx| this.open_remote_form(None, window, cx))))

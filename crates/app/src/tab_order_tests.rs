@@ -1269,19 +1269,5 @@ async fn dialog_selection_lists_are_met_both_ways(cx: &mut TestAppContext) {
         &mut failures,
     );
     sweep::close_dialogs(cx, "The Reflog", 13, &mut failures);
-    // No sweep walked the remote manager: its search field and Add remote…
-    // draw their rings cut by the dialog body's clip, which keeps no ring
-    // room around them, Tab's first two stops and Shift+Tab's last two. Its
-    // remotes are reached whole; the clip awaits its own follow-up (FU30-C's
-    // report).
-    sweep::assert_whole_except(
-        failures,
-        &known_at(
-            "The remote manager",
-            13,
-            &[0, 1],
-            &[3, 4],
-            "a clip cuts the top, right, left of its ring",
-        ),
-    );
+    sweep::assert_whole(failures);
 }

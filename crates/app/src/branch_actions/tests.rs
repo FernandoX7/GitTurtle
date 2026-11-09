@@ -207,6 +207,103 @@ async fn open_remote_manager<'a>(
     (app, list, cx)
 }
 
+/// Opens the branch chooser or the remote manager from History's list, as a
+/// read that has yet to answer and then lands, and checks the dialog's whole
+/// keyboard route: nothing opens and focus stays while the list is read; the
+/// frame the dialog opens has focus on its search field with the field's
+/// ring whole; `stops` Tabs come round to the field, on none of the page's
+/// controls; and Escape gives focus back to the list. Each dialog once
+/// opened with focus on its shell, which draws no ring.
+async fn assert_opens_on_its_search(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    remotes: bool,
+    name: &str,
+    stops: usize,
+) {
+    let opener = app.read_with(cx, |app, _| app.focus.clone());
+    let root = app.read_with(cx, |app, _| app.app_focus.clone());
+    cx.update(|window, cx| window.focus(&opener, cx));
+    draw(cx);
+
+    let read =
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_manager(remotes, window, cx)));
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "{name}: nothing opens while its list is read"
+    );
+    assert!(
+        cx.update(|window, _| opener.is_focused(window)),
+        "{name}: focus stays on the opener while its list is read"
+    );
+    read.expect("the list is read").await;
+    let query = app
+        .read_with(cx, |app, _| app.branch_actions.query.clone())
+        .expect("the dialog's search field");
+    let search = cx.read(|cx| query.read(cx).focus_handle(cx));
+    assert!(
+        cx.update(|window, _| search.is_focused(window)),
+        "{name}: the search field holds focus before the first frame"
+    );
+    draw(cx);
+    cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+    draw(cx);
+    let text = cx.read(|cx| query.read(cx).input_bounds());
+    crate::focus_ring::assert_input_ringed(cx, text, name);
+
+    for stop in 1..stops {
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let focused = cx.update(|window, cx| window.focused(cx));
+        assert!(
+            focused.is_some() && focused != Some(search.clone()),
+            "{name}: Tab {stop} moves to another control of the dialog"
+        );
+        assert!(
+            focused != Some(opener.clone()) && focused != Some(root.clone()),
+            "{name}: Tab {stop} stays inside the dialog"
+        );
+    }
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    assert!(
+        cx.update(|window, _| search.is_focused(window)),
+        "{name}: Tab comes round to the search field after {stops} stops"
+    );
+
+    cx.simulate_keystrokes("escape");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    draw(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "{name}: Escape closes it"
+    );
+    assert!(
+        cx.update(|window, _| opener.is_focused(window)),
+        "{name}: closing gives focus back to the opener"
+    );
+}
+
+/// The branch manager opens on its search field: its three rows, Use first
+/// match and Cancel follow it round.
+#[gpui::test]
+async fn the_branch_manager_opens_on_its_search(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (_repo, app, cx) = small_window_with_branches(cx, fixture.path(), 2);
+    assert_opens_on_its_search(&app, cx, false, "the branch manager", 6).await;
+}
+
+/// The remote manager opens on its search field: Add remote…, each remote's
+/// Edit… and Remove… and Done follow it round.
+#[gpui::test]
+async fn the_remote_manager_opens_on_its_search(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (repo, app, cx) = small_window_with_branches(cx, fixture.path(), 0);
+    add_remotes(fixture.path(), &repo, 2);
+    assert_opens_on_its_search(&app, cx, true, "the remote manager", 7).await;
+}
+
 /// The branch chooser's 30 rows overflow its list at 1000 × 680, and its
 /// scrollbar's thumb follows the list's offset in a gutter clear of every
 /// ring.
