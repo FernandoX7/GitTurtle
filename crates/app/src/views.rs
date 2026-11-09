@@ -33558,6 +33558,328 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// What holds focus in Working Changes' Tab order: the list, the title,
+    /// a row control by its selector, or something else.
+    fn working_stop(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> String {
+        cx.update(|window, cx| {
+            let app = app.read(cx);
+            if app.file_focus.is_focused(window) {
+                "the list".into()
+            } else if app
+                .commit_title
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            {
+                "the title".into()
+            } else {
+                app.focused_row_control(window, cx)
+                    .unwrap_or_else(|| "something else".into())
+            }
+        })
+    }
+
+    /// Chooses notes.txt's Unstaged row in [`working_window`]'s rows and puts
+    /// focus on the list, as an arrow key leaves them. Returns where the row
+    /// stands among the rows.
+    async fn select_working_notes(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> usize {
+        let (position, index) = app.read_with(cx, |app, _| {
+            let status = app.shown_working_status().expect("a status");
+            app.working_rows
+                .iter()
+                .enumerate()
+                .find_map(|(position, row)| match row {
+                    crate::workspace::WorkingRow::File(index, area)
+                        if *area == gitturtle_core::ChangeArea::Unstaged
+                            && status.entries[*index].path == std::path::Path::new("notes.txt") =>
+                    {
+                        Some((position, *index))
+                    }
+                    _ => None,
+                })
+                .expect("notes.txt's Unstaged row")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.choose_working_selection(
+                    index,
+                    gitturtle_core::ChangeArea::Unstaged,
+                    false,
+                    false,
+                    window,
+                    cx,
+                );
+                window.focus(&app.file_focus, cx);
+                app.focus_ring.mark(window);
+            })
+        });
+        settle(app, cx).await;
+        draw(cx);
+        position
+    }
+
+    /// Whether the accent ring around the control drawn as `selector` is
+    /// painted whole in the last frame.
+    fn control_ring_whole(cx: &mut VisualTestContext, selector: &str) -> bool {
+        let selector: &'static str = selector.to_string().leak();
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let control = cx.debug_bounds(selector).expect(selector);
+        crate::focus_ring::painted_outlines(cx, accent)
+            .iter()
+            .any(|ring| {
+                ring.whole
+                    && ring.bounds.intersects(&control)
+                    && (ring.bounds.size.width - control.size.width).abs() <= px(10.)
+            })
+    }
+
+    /// Working Changes' list is one Tab stop: Tab from it reaches the selected
+    /// row's Stage or Unstage, then the group headings' Stage all and Unstage
+    /// all in order, then the composer, and Shift+Tab walks back the same
+    /// way, at 13 pt in a 1480 × 973 window and at 18 pt in 640 × 680, and in
+    /// 461 × 490, where a file's row has no room for its control and the
+    /// headings' controls follow the list. Each control is whole with its
+    /// ring as it takes focus. Tab once reached every drawn row's Stage, in
+    /// the rows' order, so a long list took a press per row.
+    #[gpui::test]
+    async fn tab_from_the_working_list_goes_to_its_selected_row_then_the_headings(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        for (text, width, height, row_control) in [
+            (13, 1480., 973., true),
+            (18, 640., 680., true),
+            (18, 461., 490., false),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let notes = select_working_notes(&app, cx).await;
+            let stage = format!("working-stage-{notes}");
+            let mut expected = vec!["the list".to_string()];
+            if row_control {
+                expected.push(stage.clone());
+            }
+            expected.extend(["unstage-all".to_string(), "stage-all".to_string()]);
+            expected.push("the title".to_string());
+            let mut met = vec![working_stop(&app, cx)];
+            for _ in 1..expected.len() {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                let stop = working_stop(&app, cx);
+                if stop.starts_with("working-stage") || stop.ends_with("stage-all") {
+                    assert!(
+                        control_ring_whole(cx, &stop),
+                        "{at}: {stop} draws its ring whole as it takes focus"
+                    );
+                }
+                met.push(stop);
+            }
+            assert_eq!(met, expected, "{at}: Tab's order from the list");
+            let mut back = vec![met.pop().unwrap()];
+            for _ in 1..expected.len() {
+                cx.simulate_keystrokes("shift-tab");
+                draw(cx);
+                let stop = working_stop(&app, cx);
+                if stop.starts_with("working-stage") || stop.ends_with("stage-all") {
+                    assert!(
+                        control_ring_whole(cx, &stop),
+                        "{at}: {stop} draws its ring whole as Shift+Tab reaches it"
+                    );
+                }
+                back.push(stop);
+            }
+            expected.reverse();
+            assert_eq!(back, expected, "{at}: Shift+Tab walks back the same way");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The control that takes focus is revealed whole with its ring room, by
+    /// the least scroll, in the frame it takes focus: with the selected row
+    /// half drawn at the list's foot, Tab from the list focuses its Stage,
+    /// scrolled just far enough to show the row whole, the ring whole, at 18
+    /// pt in a 640 × 680 window, where the list and the composer scroll
+    /// together and the row's control is drawn. A partly drawn row's control
+    /// once took focus with its ring cut at the list's edge.
+    #[gpui::test]
+    async fn tab_reveals_the_selected_rows_stage_whole_with_its_ring(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(640.), px(680.)));
+        draw(cx);
+        let handle = app.read_with(cx, |app, _| {
+            app.working_scroll.0.borrow().base_handle.clone()
+        });
+        let notes = select_working_notes(&app, cx).await;
+        let row_selector: &'static str = format!("working-row-{notes}").leak();
+        let row_height = cx.update(|window, cx| {
+            window.pixel_snap(px(app.read(cx).settings.density.file_row_height()))
+        });
+        let list = handle.bounds();
+        // Half of notes.txt's row, the last, is drawn at the list's foot.
+        handle.set_offset(point(
+            px(0.),
+            -(row_height * notes as f32 - list.size.height + row_height / 2.),
+        ));
+        draw(cx);
+        let row = cx.debug_bounds(row_selector).expect("notes.txt's row");
+        assert!(
+            row.top() < list.bottom() && row.bottom() > list.bottom() + px(1.),
+            "the row {row:?} half drawn at the foot of {list:?}"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let stage = format!("working-stage-{notes}");
+        assert_eq!(
+            working_stop(&app, cx),
+            stage,
+            "Tab from the list focuses the selected row's Stage"
+        );
+        let room = cx.read(appearance::button_ring_room);
+        let selector: &'static str = stage.leak();
+        let control = cx.debug_bounds(selector).expect("its Stage");
+        let list = handle.bounds();
+        assert!(
+            control.top() - room >= list.top() - px(0.5)
+                && control.bottom() + room <= list.bottom() + px(0.5),
+            "its Stage {control:?} and ring room inside the list {list:?}"
+        );
+        assert!(
+            control_ring_whole(cx, selector),
+            "its ring is whole in the frame it takes focus"
+        );
+        let row = cx.debug_bounds(row_selector).expect("notes.txt's row");
+        assert!(
+            (row.bottom() - list.bottom()).abs() <= px(0.5),
+            "the least scroll shows the row whole at the foot: {row:?} in {list:?}"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// When the selection moves, the roving stop moves with it: with the
+    /// selected row's Stage holding focus, an arrow key moves focus to the
+    /// Stage of the row the selection reaches, so the ring and Enter stay on
+    /// the row the person is on; Tab then moves on from there. Left on the
+    /// row the selection left, focus stayed on a control Tab can no longer
+    /// reach, beside a row that was no longer selected.
+    #[gpui::test]
+    async fn the_working_lists_roving_stop_moves_with_the_selection(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        let notes = select_working_notes(&app, cx).await;
+        // [Staged 2, alpha, beta, Unstaged 1, notes]: beta is the file row
+        // before notes.txt.
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            format!("working-stage-{notes}"),
+            "Tab from the list reaches notes.txt's Stage"
+        );
+        cx.simulate_keystrokes("up");
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "working-stage-2",
+            "focus moves to beta.txt's Unstage with the selection"
+        );
+        assert!(
+            app.read_with(cx, |app, _| {
+                let status = app.shown_working_status().expect("a status");
+                app.working_selected.is_some_and(|(index, _)| {
+                    status.entries[index].path == std::path::Path::new("beta.txt")
+                })
+            }),
+            "the selection moved to beta.txt"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "unstage-all",
+            "Tab goes on from the stop the selection took"
+        );
+    }
+
+    /// Every other row's control is out of the Tab order, and only that: a
+    /// click on another row's Unstage still unstages its file, and its
+    /// accessible node is still exposed with its name, while Tab from the
+    /// list never reaches it.
+    #[gpui::test]
+    async fn another_rows_stage_stays_clickable_and_named_but_is_no_tab_stop(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        let notes = select_working_notes(&app, cx).await;
+        let alpha = "working-stage-1";
+        assert_ne!(notes, 1, "alpha.txt's row is not the selected one");
+        let mut met = Vec::new();
+        for _ in 0..8 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            met.push(working_stop(&app, cx));
+        }
+        assert!(
+            !met.iter().any(|stop| stop == alpha),
+            "Tab from the list never reaches another row's control: {met:?}"
+        );
+        let repository = Some(fixture.path().join("narrow"));
+        let node = workspace::confirmations::file(
+            &repository,
+            std::path::Path::new("alpha.txt"),
+            gitturtle_core::ChangeArea::Staged,
+        )
+        .control()
+        .to_string();
+        let written = crate::native_accessibility::written::get(&node)
+            .unwrap_or_else(|| panic!("alpha.txt's Unstage is exposed: {node}"));
+        assert_eq!(
+            written.node.label(),
+            Some("Unstage alpha.txt"),
+            "its accessible name"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                window.focus(&app.file_focus, cx);
+            })
+        });
+        draw(cx);
+        let control = cx.debug_bounds(alpha).expect("alpha.txt's Unstage");
+        cx.simulate_click(control.center(), Modifiers::none());
+        draw(cx);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the click runs the Unstage");
+        write.await;
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_paths.staged_count),
+            1,
+            "alpha.txt left Staged"
+        );
+    }
+
     /// A row's Stage that stages its file leaves no focus behind it: at 13 pt
     /// in a 1480 × 973 window, with omega.txt untracked after notes.txt, the
     /// cursor on notes.txt, Tab from the list onto its Stage and Enter stages

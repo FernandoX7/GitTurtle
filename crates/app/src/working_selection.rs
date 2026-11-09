@@ -733,6 +733,7 @@ impl GitTurtle {
             current.saturating_sub(1)
         };
         let (index, area) = files[next];
+        let on_stop = self.selected_row_control_focused(window, cx);
         self.choose_working_selection(index, area, false, true, window, cx);
         if let Some(position) = self
             .actionable_working_rows()
@@ -741,6 +742,7 @@ impl GitTurtle {
         {
             self.working_scroll
                 .scroll_to_item(position, ScrollStrategy::Nearest);
+            self.follow_selection_with_row_stop(on_stop, (index, area, position), window, cx);
         }
     }
     pub(super) fn working_scroll_anchor(&self, window: &Window) -> Option<ScrollAnchor> {

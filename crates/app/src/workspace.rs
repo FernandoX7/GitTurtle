@@ -40,11 +40,43 @@ pub(crate) struct WorkingInspectorLayout {
     row_controls: RowControls,
 }
 
+// Tab and Shift+Tab in the Working list and the composer, while the list's
+// rows' controls take their turn before the toolkit's own order goes on
+// (`GitTurtle::tab_working_row_stops`). The toolkit's own Tab actions are
+// private to it, so the body binds its own in a deeper key context, which a
+// press tries first, and passes on what it does not move.
+gpui_kit::actions!(gitturtle_working, [NextWorkingStop, PreviousWorkingStop]);
+
+/// The Working body's key context, in which Tab and Shift+Tab reach
+/// [`NextWorkingStop`] and [`PreviousWorkingStop`] before the window's own.
+const WORKING_BODY: &str = "GitTurtleWorkingBody";
+
+/// Marks an application whose keymap holds the Working body's bindings.
+struct WorkingKeysBound;
+
+impl Global for WorkingKeysBound {}
+
+/// Binds Tab and Shift+Tab in the Working body's key context, once in each
+/// application, as the body is first rendered.
+fn bind_working_keys(cx: &mut App) {
+    if cx.has_global::<WorkingKeysBound>() {
+        return;
+    }
+    cx.set_global(WorkingKeysBound);
+    cx.bind_keys([
+        KeyBinding::new("tab", NextWorkingStop, Some(WORKING_BODY)),
+        KeyBinding::new("shift-tab", PreviousWorkingStop, Some(WORKING_BODY)),
+    ]);
+}
+
 /// The focus handles of the controls in the file list's rows, a file's
 /// Stage or Unstage and a section heading's Stage all or Unstage all, each
 /// the same in every frame that draws its row, and where the one holding
 /// focus lies in the frame being painted, which the floor's fades stop
-/// short of (`floor_fades`). Keyed by the kit inside each Button, a
+/// short of (`floor_fades`). None is in GPUI's own Tab order: the list is
+/// one stop, and Tab from it walks the selected row's control and the
+/// headings' in the order `GitTurtle::tab_working_row_stops` gives them.
+/// Keyed by the kit inside each Button, a
 /// control's handle was out of the list's reach, so the floor's fades lay
 /// over a focused Stage's ring at the floor's edge. A handle whose row the
 /// last frame did not draw is given up, unless it holds focus while its
@@ -71,6 +103,23 @@ enum RowControl {
     Heading(ChangeArea),
     /// A file's Stage or Unstage, by its path in its area.
     File(std::path::PathBuf, ChangeArea),
+}
+
+/// A stop past the Working list itself in Tab's order
+/// (`GitTurtle::working_row_stops`): its control's key among the
+/// [`RowControls`], the row it stands in, and that row's place in the list.
+struct RowStop {
+    id: ElementId,
+    row: RowControl,
+    position: usize,
+}
+
+/// The key and selector of the Stage all or Unstage all in `area`'s heading.
+fn heading_control(area: ChangeArea) -> &'static str {
+    match area {
+        ChangeArea::Staged => "unstage-all",
+        ChangeArea::Unstaged => "stage-all",
+    }
 }
 
 /// A row control's handle, the row it stands in, where the list last drew
@@ -200,6 +249,16 @@ impl RowControls {
             .any(|kept| kept.focus.is_focused(window) && !listed(&kept.row, kept.position))
     }
 
+    /// The key of the control holding focus, if one of these does.
+    fn holding(&self, window: &Window) -> Option<ElementId> {
+        self.0
+            .borrow()
+            .handles
+            .iter()
+            .find(|(_, kept)| kept.focus.is_focused(window))
+            .map(|(id, _)| id.clone())
+    }
+
     /// Whether one of these handles holds focus.
     #[cfg(test)]
     fn hold_focus(&self, window: &Window) -> bool {
@@ -208,6 +267,21 @@ impl RowControls {
             .handles
             .values()
             .any(|kept| kept.focus.is_focused(window))
+    }
+
+    /// The control holding focus, named by its selector: `working-stage-N`
+    /// for a file's, `unstage-all` or `stage-all` for a heading's.
+    #[cfg(test)]
+    fn focused_selector(&self, window: &Window) -> Option<String> {
+        self.0
+            .borrow()
+            .handles
+            .values()
+            .find(|kept| kept.focus.is_focused(window))
+            .map(|kept| match kept.row {
+                RowControl::File(..) => format!("working-stage-{}", kept.position),
+                RowControl::Heading(area) => heading_control(area).to_string(),
+            })
     }
 }
 
@@ -3220,6 +3294,18 @@ impl GitTurtle {
         focused
     }
 
+    /// The row control holding focus, by its selector
+    /// (`RowControls::focused_selector`).
+    #[cfg(test)]
+    pub(super) fn focused_row_control(&self, window: &Window, cx: &App) -> Option<String> {
+        let layout = self.working_layout.take();
+        let focused = layout
+            .as_ref()
+            .and_then(|layout| layout.read(cx).row_controls.focused_selector(window));
+        self.working_layout.set(layout);
+        focused
+    }
+
     /// Whether the shown rows still list the row a row control stands in
     /// (`RowControls`): a heading's area, or a file's path in its area. The
     /// row at `drawn`, where the list last drew it, is asked first, and the
@@ -3268,6 +3354,209 @@ impl GitTurtle {
         }
     }
 
+    /// The handles the Working list keeps for its rows' controls, once the
+    /// inspector has been drawn.
+    fn working_row_controls(&self, cx: &App) -> Option<RowControls> {
+        let layout = self.working_layout.take();
+        let controls = layout
+            .as_ref()
+            .map(|layout| layout.read(cx).row_controls.clone());
+        self.working_layout.set(layout);
+        controls
+    }
+
+    /// Whether a section heading's Stage all or Unstage all, over `count`
+    /// files, has nothing it could act on.
+    fn working_heading_empty(&self, count: usize, cx: &App) -> bool {
+        count == 0
+            || self.working_paths.error.is_some()
+            || !self.working_filter.read(cx).value().is_empty()
+    }
+
+    /// Whether a section heading's Stage all or Unstage all over `count`
+    /// files looks unavailable: it then takes no focus.
+    fn working_heading_unavailable(&self, count: usize, cx: &App) -> bool {
+        ((self.operation_busy.is_some() || self.working_paths.pending) && self.busy_shown())
+            || self.working_heading_empty(count, cx)
+    }
+
+    /// The Working list's Tab stops past the list itself, in Tab's order:
+    /// the selected row's Stage or Unstage, then each group heading's Stage
+    /// all or Unstage all in the list's order. The list is one stop, so no
+    /// other row's control is among them. Left out too is a control that
+    /// cannot take focus: a file row's where the rows' form draws none
+    /// (`file_action`), one the busy look has dimmed, which the toolkit takes
+    /// out of the Tab order, and one in the row landing from a flight, where
+    /// the list draws an empty slot.
+    fn working_row_stops(&self, file_action: bool, cx: &App) -> Vec<RowStop> {
+        let dimmed = self.operation_busy.is_some() && self.busy_shown();
+        let landing = self.working_flight(cx).map(|flight| flight.position);
+        let selected = self
+            .shown_working_cursor()
+            .filter(|_| file_action && !dimmed)
+            .and_then(|(index, area)| {
+                let position = self.working_rows.iter().position(
+                    |row| matches!(row, WorkingRow::File(i, a) if (*i, *a) == (index, area)),
+                )?;
+                let entry = self.shown_working_status()?.entries.get(index)?;
+                Some(RowStop {
+                    id: self.working_row_key(index, area),
+                    row: RowControl::File(entry.path.clone(), area),
+                    position,
+                })
+            });
+        let headings =
+            self.working_rows
+                .iter()
+                .enumerate()
+                .filter_map(|(position, row)| match row {
+                    WorkingRow::Heading(area, count)
+                        if !self.working_heading_unavailable(*count, cx) =>
+                    {
+                        Some(RowStop {
+                            id: heading_control(*area).into(),
+                            row: RowControl::Heading(*area),
+                            position,
+                        })
+                    }
+                    _ => None,
+                });
+        selected
+            .into_iter()
+            .chain(headings)
+            .filter(|stop| Some(stop.position) != landing)
+            .collect()
+    }
+
+    /// Gives `stop`'s control focus, revealed whole with its ring room in
+    /// the frame that first draws the focus. The row's control lies inside
+    /// its row, so the least scroll that shows the row whole shows the ring
+    /// (`ScrollStrategy::Nearest`); where the list and the composer scroll
+    /// together, the list stands at the top of the body, so only the body's
+    /// top shows it whole. The handle is made here where no frame has drawn
+    /// the row, and the scroll asked for lands as the next frame lays the
+    /// list out, in the frame that draws the focus, so focus never rests on
+    /// a control the frame does not draw.
+    fn focus_row_stop(&self, stop: &RowStop, window: &mut Window, cx: &mut App) {
+        let Some(controls) = self.working_row_controls(cx) else {
+            return;
+        };
+        let handle = controls.focus(stop.id.clone(), || stop.row.clone(), stop.position, cx);
+        window.focus(&handle, cx);
+        self.working_scroll
+            .scroll_to_item(stop.position, ScrollStrategy::Nearest);
+        self.working_body.scroll().set_offset(Point::default());
+    }
+
+    /// Tab (`forward`) or Shift+Tab in the Working body: moves focus through
+    /// the list's stops (`working_row_stops`), and leaves any other press to
+    /// the window's own order, where every row control is out of the Tab
+    /// order. From the list Tab reaches the first stop, and from the last
+    /// stop the stop after the list in the window's order, the composer;
+    /// Shift+Tab walks back the same way, from that stop onto the last
+    /// control and from the first control onto the list. Another row's
+    /// control a click has focused counts as standing in the list, so Tab
+    /// goes to the first stop and Shift+Tab to the list.
+    fn tab_working_row_stops(
+        &mut self,
+        forward: bool,
+        file_action: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let stops = self.working_row_stops(file_action, cx);
+        let held = self
+            .working_row_controls(cx)
+            .and_then(|controls| controls.holding(window));
+        let on_list = self.file_focus.is_focused(window);
+        if !on_list && held.is_none() {
+            // Shift+Tab from the stop Tab from the list lands on comes back
+            // through the controls, not straight to the list.
+            if !forward && !stops.is_empty() && self.stop_after_working_list(window, cx) {
+                self.focus_row_stop(stops.last().expect("not empty"), window, cx);
+            } else {
+                cx.propagate();
+            }
+            return;
+        }
+        let at = held.and_then(|id| stops.iter().position(|stop| stop.id == id));
+        if forward {
+            match stops.get(at.map_or(0, |index| index + 1)) {
+                Some(stop) => self.focus_row_stop(stop, window, cx),
+                // Every row control is out of the window's order, so from
+                // the list it goes on past all of them.
+                None => {
+                    window.focus(&self.file_focus, cx);
+                    window.focus_next(cx);
+                }
+            }
+        } else if let Some(previous) = at.and_then(|index| index.checked_sub(1)) {
+            self.focus_row_stop(&stops[previous], window, cx);
+        } else if on_list {
+            cx.propagate();
+        } else {
+            window.focus(&self.file_focus, cx);
+        }
+    }
+
+    /// Whether the focus holder is the stop the window's own Tab reaches
+    /// from the Working list, the composer's first where the composer is
+    /// drawn: the one Shift+Tab walks back through the list's stops from.
+    /// Asks the order by moving focus, which GPUI reports only once a frame
+    /// ends, and puts it back.
+    fn stop_after_working_list(&self, window: &mut Window, cx: &mut App) -> bool {
+        let here = window.focused(cx);
+        window.focus(&self.file_focus, cx);
+        window.focus_next(cx);
+        let next = window.focused(cx);
+        match &here {
+            Some(here) => window.focus(here, cx),
+            None => window.blur(cx),
+        }
+        next.is_some() && next == here
+    }
+
+    /// Moves focus onto the row at `position`'s control if the selected
+    /// row's control held it before the selection moved there
+    /// (`was_on_stop`): the roving stop moves with the selection, so the
+    /// ring and Enter stay on the row the person is on, as the Reflog's
+    /// entries take focus from the arrow keys.
+    pub(super) fn follow_selection_with_row_stop(
+        &self,
+        was_on_stop: bool,
+        (index, area, position): (usize, ChangeArea, usize),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if !was_on_stop {
+            return;
+        }
+        let Some(entry) = self
+            .shown_working_status()
+            .and_then(|status| status.entries.get(index))
+        else {
+            return;
+        };
+        let stop = RowStop {
+            id: self.working_row_key(index, area),
+            row: RowControl::File(entry.path.clone(), area),
+            position,
+        };
+        self.focus_row_stop(&stop, window, cx);
+    }
+
+    /// Whether the selected row's own Stage or Unstage holds focus.
+    pub(super) fn selected_row_control_focused(&self, window: &Window, cx: &App) -> bool {
+        let Some(held) = self
+            .working_row_controls(cx)
+            .and_then(|controls| controls.holding(window))
+        else {
+            return false;
+        };
+        self.shown_working_cursor()
+            .is_some_and(|(index, area)| self.working_row_key(index, area) == held)
+    }
+
     pub(super) fn move_working_selection(
         &mut self,
         direction: i32,
@@ -3305,9 +3594,11 @@ impl GitTurtle {
             (current as i32 + direction).clamp(0, files.len() as i32 - 1) as usize
         };
         let (position, index, area) = files[next];
+        let on_stop = self.selected_row_control_focused(window, cx);
         self.choose_working_selection(index, area, false, false, window, cx);
         self.working_scroll
             .scroll_to_item(position, ScrollStrategy::Center);
+        self.follow_selection_with_row_stop(on_stop, (index, area, position), window, cx);
     }
 
     /// One file row's Stage, or Unstage where `staged`, from its control or,
@@ -3905,6 +4196,7 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        bind_working_keys(cx);
         let p = palette(cx);
         let previous_list = self.working_scroll.0.borrow().last_item_size;
         #[cfg(test)]
@@ -4790,6 +5082,15 @@ impl GitTurtle {
             }))
             .id("working-body")
             .debug_selector(|| "working-body".into())
+            .key_context(WORKING_BODY)
+            .on_action(cx.listener(move |this, _: &NextWorkingStop, window, cx| {
+                this.tab_working_row_stops(true, forms.file_action, window, cx)
+            }))
+            .on_action(
+                cx.listener(move |this, _: &PreviousWorkingStop, window, cx| {
+                    this.tab_working_row_stops(false, forms.file_action, window, cx)
+                }),
+            )
             .w(size.width)
             .h(size.height)
             .flex()
@@ -5460,18 +5761,14 @@ impl GitTurtle {
                 use crate::native_accessibility::DrawnButton as _;
                 let staged = area == ChangeArea::Staged;
                 let name = if staged { "Staged" } else { "Unstaged" };
-                let (selector, action, detail) = if staged {
+                let selector = heading_control(area);
+                let (action, detail) = if staged {
                     (
-                        "unstage-all",
                         "Unstage all",
                         "Remove all staged changes from the next commit",
                     )
                 } else {
-                    (
-                        "stage-all",
-                        "Stage all",
-                        "Include all local changes in the next commit",
-                    )
+                    ("Stage all", "Include all local changes in the next commit")
                 };
                 // Where its label does not fit, the action keeps its icon,
                 // with its name and a tooltip that leads with it. Either way
@@ -5487,11 +5784,9 @@ impl GitTurtle {
                 );
                 let origin = mark.clone();
                 let confirming = copy_feedback::confirmed(&mark, cx);
-                let empty = count == 0
-                    || self.working_paths.error.is_some()
-                    || !self.working_filter.read(cx).value().is_empty();
+                let empty = self.working_heading_empty(count, cx);
                 let refused = busy || self.working_paths.pending || empty;
-                let unavailable = ((busy || self.working_paths.pending) && looks_busy) || empty;
+                let unavailable = self.working_heading_unavailable(count, cx);
                 // While only the rows being prepared refuse it, its name
                 // and tooltip say why once it dims (`rows_wait`).
                 let (named, tooltip) = self.rows_wait(
@@ -5518,8 +5813,11 @@ impl GitTurtle {
                 let focus = controls.map(|controls| {
                     controls.focus(selector.into(), || RowControl::Heading(area), position, cx)
                 });
-                let control =
-                    control.when_some(focus.as_ref(), |control, focus| control.track_focus(focus));
+                // Out of GPUI's order: Tab reaches it by the list's stops
+                // (`tab_working_row_stops`), even where the rows hide it.
+                let control = control
+                    .when_some(focus.as_ref(), |control, focus| control.track_focus(focus))
+                    .tab_stop(false);
                 let part = move |part: &'static str| -> String {
                     format!(
                         "{}-heading-{part}",
@@ -5637,6 +5935,7 @@ impl GitTurtle {
                     .into_any_element()
             }
             WorkingRow::File(index, area) => {
+                use crate::native_accessibility::DrawnButton as _;
                 let entry = &self.shown_working_status().unwrap().entries[index];
                 let paths = entry.paths();
                 let row_path = entry.path.clone();
@@ -5863,12 +6162,16 @@ impl GitTurtle {
                                 control.track_focus(focus)
                             })
                             .accessibility_label(stage_label)
+                            // No row's control is in GPUI's order: the list
+                            // is one Tab stop and Tab from it reaches only
+                            // the selected row's (`tab_working_row_stops`);
+                            // the picture's own handle took focus and lost
+                            // it as the row landed. A click still reaches
+                            // each, and its node stays in the tree.
+                            .tab_stop(false)
                             .map(|control| {
-                                // The picture's control is no Tab stop: its
-                                // own handle took focus and lost it as the
-                                // row landed.
                                 if picture {
-                                    return control.tab_stop(false);
+                                    return control;
                                 }
                                 refusing(
                                     control.debug_selector(move || {
@@ -5903,7 +6206,8 @@ impl GitTurtle {
                                         );
                                     },
                                 ))
-                            }),
+                            })
+                            .node_recorded(),
                             stage_focus.as_ref(),
                             window,
                         ))

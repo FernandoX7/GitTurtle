@@ -2447,12 +2447,23 @@ mod tests {
                         && (ring.bounds.size.width - stage.size.width).abs() <= px(10.)
                 })
         };
+        // The list is one Tab stop, and Tab from it reaches the selected
+        // row's control, so delta.txt's row is selected first.
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
+                let index = app
+                    .shown_working_status()
+                    .expect("a status")
+                    .entries
+                    .iter()
+                    .position(|entry| entry.path == std::path::Path::new("delta.txt"))
+                    .expect("delta.txt");
+                app.choose_working_selection(index, ChangeArea::Unstaged, false, false, window, cx);
                 window.focus(&app.file_focus, cx);
                 app.focus_ring.mark(window);
             })
         });
+        crate::views::tests::settle(app, cx).await;
         draw(cx);
         for _ in 0..8 {
             cx.simulate_keystrokes("tab");
