@@ -2426,6 +2426,11 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                     open(menu, window, cx)
                 });
                 OpenPointerMenus::open(&menu, previous.clone(), cx);
+                // A dialog one of its items opens gives focus back where the
+                // menu would have: the menu is gone by the time it closes.
+                menu.update(cx, |menu, _| {
+                    menu.set_dialog_return_focus(previous.clone());
+                });
                 // A row that stops being drawn while its menu is open, as a
                 // quiet refresh takes a deleted file's row away, drops this
                 // state and the menu with it, and no dismissal comes: focus

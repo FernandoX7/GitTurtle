@@ -796,6 +796,48 @@ clicks where a dropdown's and a right-click menu's item, a Select's list and
 a picker's popover were, before and after the closing key comes up. Remove it
 with the dialog-close-draw patch.
 
+The menu-dialog-focus patch modifies `src/menu/popup_menu.rs`,
+`src/menu/dropdown_menu.rs`, `src/button/button.rs` and `src/root.rs`, and adds
+`PopupMenu::set_dialog_return_focus`, public for the app's right-click menus.
+Upstream runs a menu item's handler, or dispatches its action, with focus on
+the menu, as an action's dispatch needs. A dialog opened there records the
+menu's handle as its opener, and the menu goes as the item finishes, so closing
+the dialog focused nothing and keys reached nothing until a click. Behind the
+item, in an effect queued after a dispatched action's,
+`PopupMenu::return_dialogs_to_opener` has `Root::return_dialogs_to` replace an
+opener that is a menu of the item's chain with the control that opened the
+menu: the dropdown's trigger, or a menu's `previous_focus_handle` or
+`action_context`, a submenu using its parent's. Items still run on the same
+focus and the menu closes as before, so an item that opens no dialog, a dialog
+that recorded anything else (a handler that moved focus first, as the Linux
+Main Menu's do) and a dialog opened any other way are unchanged; a control gone
+by the close leaves the dialog's existing fallback. A press on a dropdown's
+Button leaves focus where it was, so what held focus as the menu opened need
+not be the trigger: a Button trigger with no focus handle of its own now tracks
+one the dropdown keeps (`DropdownMenu::tracking_opener_focus`), and a caller's
+own handle stays its. Other triggers take no handle and keep the fallback, as
+does a Button that is no Tab stop: a row's menu Button that shows only on
+hover can be drawn at opacity 0. The dropdown then leaves what the menu's
+builder set with `set_dialog_return_focus` standing, as the project pane's row
+menu sets its tree.
+`scripts/vendor-crate-test.sh vendor/gpui-component a_dialog_from_a_menu focus_a_menu_item_or`
+covers a handler, an action and a submenu's item from a dropdown opened by key
+and by pointer and from a context menu, on Escape and on close, and what stays
+as it was; `cargo test --locked -p gitturtle -- stashes_from_the_actions_menu a_dialog_from_a_right_click_menu`
+covers the consumers. Remove it when upstream gives such a dialog the menu's
+opener.
+
+The dialog-close Enter patch modifies `src/root.rs`, and pairs with the base
+patch's `dialog_closing`. `Root::close_dialog` and `Root::close_all_dialogs`
+call it as they close a dialog, whichever way the dialog opened, so an Enter
+still down waits for its key-up. The close gives focus back to a control, and
+that press's repeats reached it: held past the repeat delay, the Enter that
+confirmed a dialog pressed the Button focus returned to, and under X11, whose
+repeats are not marked held, it reopened a dropdown and ran the item under the
+cursor. `scripts/vendor-crate-test.sh vendor/gpui-component the_enter_that_closes an_unmarked_repeat`
+holds Enter through a menu's dialog, a plain dialog and `close_all_dialogs`.
+Remove it with the base patch's Enter wait.
+
 The secondary-edge patch modifies `src/theme/mod.rs` and
 `src/button/button.rs`. Upstream draws a bordered secondary Button's edge in
 the shared `border` at rest and sets it from `border` again in its hovered,

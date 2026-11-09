@@ -485,6 +485,17 @@ impl Button {
         self
     }
 
+    /// GitTurtle patch: the caller-owned focus handle this Button tracks, if
+    /// it was given one ([`Self::track_focus`]).
+    pub(crate) fn provided_focus_handle(&self) -> Option<&FocusHandle> {
+        self.provided_focus_handle.as_ref()
+    }
+
+    /// GitTurtle patch: whether Tab stops on this Button.
+    pub(crate) fn is_tab_stop(&self) -> bool {
+        self.tab_stop
+    }
+
     /// Apply the given style while the pointer is over the Button, unless it is
     /// disabled.
     ///

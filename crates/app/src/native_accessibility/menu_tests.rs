@@ -825,6 +825,91 @@ fn kit_menus_stay_above_the_bottom_inset_an_application_sets(cx: &mut TestAppCon
     );
 }
 
+/// A row whose right-click menu's item opens a dialog, beside a field that
+/// holds focus as the row is pressed.
+struct PointerDialogProbe(FocusHandle);
+
+impl Render for PointerDialogProbe {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(
+                div()
+                    .id("pointer-field")
+                    .h(px(24.))
+                    .w_full()
+                    .track_focus(&self.0),
+            )
+            .child(
+                div()
+                    .id("pointer-row")
+                    .debug_selector(|| "pointer-row".into())
+                    .h(px(24.))
+                    .w_full()
+                    .child("A row")
+                    .app_context_menu(|menu, _, _| {
+                        menu.item(PopupMenuItem::new("Open").on_click(|_, window, cx| {
+                            window.open_dialog(cx, |dialog, _, _| {
+                                dialog.child(
+                                    div()
+                                        .debug_selector(|| "pointer-dialog".into())
+                                        .size(px(20.)),
+                                )
+                            });
+                        }))
+                    }),
+            )
+            .children(Root::render_dialog_layer(window, cx))
+    }
+}
+
+/// A dialog an item of a row's right-click menu opens gives focus back, on
+/// Escape, where the menu itself would have returned it: the app's own
+/// right-click menu tells the kit that place, since it keeps it itself. The
+/// dialog recorded the menu's focus, and the menu went as the item finished.
+#[gpui::test]
+fn a_dialog_from_a_right_click_menu_returns_focus_where_the_menu_would(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let field = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let field = field.clone();
+        move |window, cx| {
+            let handle = cx.focus_handle();
+            *field.borrow_mut() = Some(handle.clone());
+            let probe = cx.new(|_| PointerDialogProbe(handle));
+            Root::new(probe, window, cx)
+        }
+    });
+    draw(cx);
+    let field = field.borrow().clone().expect("the field");
+    cx.update(|window, cx| window.focus(&field, cx));
+    draw(cx);
+    let row = cx.debug_bounds("pointer-row").expect("the row");
+    cx.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+    draw(cx);
+    draw(cx);
+    let item = cx
+        .debug_bounds("menu-item: Open · MenuItem")
+        .expect("the menu's item");
+    cx.simulate_click(item.center(), Modifiers::default());
+    draw(cx);
+    assert!(
+        cx.debug_bounds("pointer-dialog").is_some(),
+        "the item opened its dialog"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(
+        cx.debug_bounds("pointer-dialog").is_none(),
+        "Escape closes the dialog"
+    );
+    assert!(
+        cx.update(|window, _| field.is_focused(window)),
+        "focus is back on the field"
+    );
+}
+
 /// A kit dropdown's button centred 40 px below the window's top, which a
 /// change of the window's width moves.
 struct CentredMenuProbe;

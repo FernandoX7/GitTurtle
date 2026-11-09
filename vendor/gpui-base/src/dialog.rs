@@ -274,6 +274,15 @@ pub fn dialog_opened(window: &Window, cx: &mut App) {
     }
 }
 
+/// GitTurtle patch: an Enter still down as a dialog in `window` closes waits
+/// for its key-up, as one that opened a dialog does ([`dialog_opened`]): the
+/// close gives focus back to a control, and that press's repeats would press
+/// it. A closer calls this as it closes the dialog, as the component `Root`
+/// does.
+pub fn dialog_closing(window: &Window, cx: &mut App) {
+    dialog_opened(window, cx);
+}
+
 /// GitTurtle patch: Enter coming up in `window` ends the press a dialog
 /// waited out, once the application next runs a task, unless an Enter goes
 /// down before that, as an input method's repeat follows its release

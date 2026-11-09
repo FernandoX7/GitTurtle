@@ -5532,6 +5532,104 @@ mod tests {
         closes_back_to(&opener, cx);
     }
 
+    /// Actions → Browse stashes…, then Escape: focus lands on the Actions
+    /// button with its ring drawn, whether the keyboard or the pointer opened
+    /// the menu. The item's handler runs on the menu, so Stashes recorded the
+    /// menu's focus as its opener and the menu went as the item finished:
+    /// Escape focused nothing, and no key reached anything until a click.
+    #[gpui::test]
+    async fn stashes_from_the_actions_menu_closes_back_to_actions(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, tagged_repository, window};
+        use gpui_kit::Modifiers;
+        const BROWSE: &str = "menu-item: Browse stashes… · MenuItem";
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        save_stash(&repo, "kept for later");
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        draw(cx);
+        let actions = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("working-recovery-menu")
+                .expect("the Actions menu")
+        };
+        let ringed = |cx: &mut VisualTestContext| {
+            let button = actions(cx);
+            !appearance::painted_button(cx, button).1.is_empty()
+        };
+        // A whole press: the keyboard's click waits for the key up.
+        let press = |cx: &mut VisualTestContext, key: &str| {
+            let keystroke = gpui::Keystroke::parse(key).expect("a keystroke");
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(gpui::KeyUpEvent { keystroke });
+            draw(cx);
+        };
+
+        for by_key in [true, false] {
+            let at = if by_key {
+                "from the keyboard"
+            } else {
+                "from the pointer"
+            };
+            if by_key {
+                for _ in 0..64 {
+                    if ringed(cx) {
+                        break;
+                    }
+                    cx.update(|window, cx| window.focus_next(cx));
+                    draw(cx);
+                }
+                assert!(ringed(cx), "{at}: keyboard focus reaches Actions");
+                press(cx, "enter");
+                draw(cx);
+                // The keyboard's cursor opens on the first action.
+                press(cx, "enter");
+            } else {
+                // A Button refuses focus on mouse down, so focus stays on the
+                // list while the pointer opens the menu.
+                let list = app.read_with(cx, |app, _| app.focus.clone());
+                cx.update(|window, cx| window.focus(&list, cx));
+                draw(cx);
+                assert!(!ringed(cx), "{at}: Actions holds no focus yet");
+                let trigger = actions(cx).center();
+                cx.simulate_click(trigger, Modifiers::default());
+                draw(cx);
+                let item = cx
+                    .debug_bounds(BROWSE)
+                    .expect("the menu offers Browse stashes…")
+                    .center();
+                cx.simulate_click(item, Modifiers::default());
+            }
+            draw(cx);
+            let browser = app
+                .read_with(cx, |app, _| app.recovery.browser.clone())
+                .and_then(|browser| browser.upgrade())
+                .unwrap_or_else(|| panic!("{at}: Stashes opened"));
+            StashBrowser::lands(&browser, cx);
+            drop(browser);
+            cx.simulate_keystrokes("escape");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(400));
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: Escape closes Stashes"
+            );
+            assert!(ringed(cx), "{at}: focus is on Actions, its ring drawn");
+        }
+    }
+
     /// With nothing saved, the read that opened Stashes moves focus from the
     /// list, which holds no stash, to Refresh, the first control that can
     /// take it, whose name carries the empty state's words, so that landing

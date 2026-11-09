@@ -1290,6 +1290,11 @@ and
 `dialog::tests::a_control_tap_during_a_held_enter_lets_no_repeat_press_the_button`
 send a modified Enter's repeats as X11 delivers them; and the application's
 is `rewrite_review::tests::a_held_return_on_a_series_row_inspects_once`.
+`dialog_closing`, which the component `Root` calls as a dialog closes, waits
+out an Enter still down the same way, since the close gives focus back to a
+control that press's repeats would press (`src/dialog.rs`; the component
+patch's dialog-close Enter tests cover it).
+
 Remove this part with the rest of the patch when upstream leaves Enter on a
 focused Button to the Button.
 

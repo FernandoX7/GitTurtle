@@ -100,8 +100,8 @@ pub use component_traits::{Disableable, Selectable};
 pub use date_picker::DatePicker;
 pub use dialog::{
     Dialog, DialogBackdrop, DialogChangeReason, DialogClose, DialogDescription, DialogHandle,
-    DialogKind, DialogPopup, DialogTitle, DialogTrigger, dialog_opened, enter_press_began_on,
-    note_key_up,
+    DialogKind, DialogPopup, DialogTitle, DialogTrigger, dialog_closing, dialog_opened,
+    enter_press_began_on, note_key_up,
 };
 pub use element_ext::ElementExt;
 pub use event::{InteractiveElementExt, OngoingScrollExt};

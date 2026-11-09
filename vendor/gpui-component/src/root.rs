@@ -371,6 +371,23 @@ impl Root {
         cx.notify();
     }
 
+    /// GitTurtle patch: a dialog that recorded one of `menus` as its opener
+    /// gives focus back to `opener` as it closes: those menus are going, and
+    /// `opener` is the control that opened them
+    /// (`PopupMenu::return_dialogs_to_opener`). Any other dialog keeps the
+    /// opener it recorded.
+    pub(crate) fn return_dialogs_to(&mut self, menus: &[FocusHandle], opener: &FocusHandle) {
+        for dialog in &mut self.active_dialogs {
+            let from_menu = dialog
+                .previous_focused_handle
+                .as_ref()
+                .is_some_and(|previous| menus.iter().any(|menu| *previous == *menu));
+            if from_menu {
+                dialog.previous_focused_handle = Some(opener.downgrade());
+            }
+        }
+    }
+
     fn close_dialog_internal(&mut self) -> Option<FocusHandle> {
         self.focused_input = None;
         self.active_dialogs
@@ -381,6 +398,11 @@ impl Root {
 
     pub fn close_dialog(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
         let closing = !self.active_dialogs.is_empty();
+        // GitTurtle patch: an Enter still down waits for its key-up, so its
+        // repeats press nothing this close gives focus to.
+        if closing {
+            gpui_base::dialog_closing(window, cx);
+        }
         if let Some(handle) = self.close_dialog_internal() {
             window.focus(&handle, cx);
         }
@@ -394,6 +416,10 @@ impl Root {
     pub fn close_all_dialogs(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
         self.focused_input = None;
         let closing = !self.active_dialogs.is_empty();
+        // GitTurtle patch: as `close_dialog` waits for an Enter still down.
+        if closing {
+            gpui_base::dialog_closing(window, cx);
+        }
         let previous_focused_handle = self
             .active_dialogs
             .first()
@@ -933,6 +959,575 @@ mod tests {
                 }
             }
         }
+    }
+
+    gpui::actions!(root_tests, [OpenBodyDialog]);
+
+    /// Opens a dialog that draws `dialog-body`.
+    fn open_body_dialog(window: &mut Window, cx: &mut App) {
+        use crate::WindowExt as _;
+        window.open_dialog(cx, |dialog, _, _| {
+            dialog.child(
+                div()
+                    .debug_selector(|| "dialog-body".into())
+                    .size(px(10.)),
+            )
+        });
+    }
+
+    /// A page with a focusable field, a dropdown on a focus handle of its own
+    /// and one on the Button's keyed handle, and a right-click row. Every
+    /// menu offers a dialog from a handler, from a dispatched action and from
+    /// a submenu's item, a dialog from a handler that first moves focus, and
+    /// an item that opens nothing.
+    struct DialogMenus {
+        field: FocusHandle,
+        trigger: FocusHandle,
+        keyed_shown: bool,
+    }
+
+    fn dialog_menu_items(
+        menu: crate::menu::PopupMenu,
+        field: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<crate::menu::PopupMenu>,
+    ) -> crate::menu::PopupMenu {
+        use crate::menu::PopupMenuItem;
+        menu.item(
+            PopupMenuItem::new("Handler").on_click(|_, window, cx| open_body_dialog(window, cx)),
+        )
+        .menu("Dispatched", Box::new(OpenBodyDialog))
+        .item(PopupMenuItem::new("Nothing").on_click(|_, _, _| {}))
+        .item(PopupMenuItem::new("Moved").on_click(move |_, window, cx| {
+            field.focus(window, cx);
+            open_body_dialog(window, cx);
+        }))
+        .submenu("More", window, cx, |menu, _, _| {
+            menu.item(
+                PopupMenuItem::new("Nested").on_click(|_, window, cx| open_body_dialog(window, cx)),
+            )
+        })
+    }
+
+    impl Render for DialogMenus {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            use crate::{
+                button::Button,
+                menu::{ContextMenuExt as _, DropdownMenu as _},
+            };
+            let (own, keyed, untabbed, row) = (
+                self.field.clone(),
+                self.field.clone(),
+                self.field.clone(),
+                self.field.clone(),
+            );
+            div()
+                .id("page")
+                .size_full()
+                .on_action(|_: &OpenBodyDialog, window, cx| open_body_dialog(window, cx))
+                .child(
+                    div()
+                        .id("field")
+                        .w(px(100.))
+                        .h(px(20.))
+                        .track_focus(&self.field),
+                )
+                .child(
+                    Button::new("own")
+                        .debug_selector(|| "own".into())
+                        .label("Own")
+                        .track_focus(&self.trigger)
+                        .dropdown_menu(move |menu, window, cx| {
+                            dialog_menu_items(menu, own.clone(), window, cx)
+                        }),
+                )
+                .when(self.keyed_shown, |this| {
+                    this.child(
+                        Button::new("keyed")
+                            .debug_selector(|| "keyed".into())
+                            .label("Keyed")
+                            .dropdown_menu(move |menu, window, cx| {
+                                dialog_menu_items(menu, keyed.clone(), window, cx)
+                            }),
+                    )
+                })
+                .child(
+                    Button::new("untabbed")
+                        .debug_selector(|| "untabbed".into())
+                        .label("Untabbed")
+                        .tab_stop(false)
+                        .dropdown_menu(move |menu, window, cx| {
+                            dialog_menu_items(menu, untabbed.clone(), window, cx)
+                        }),
+                )
+                .child(
+                    div()
+                        .id("row")
+                        .debug_selector(|| "row".into())
+                        .mt(px(40.))
+                        .w(px(200.))
+                        .h(px(28.))
+                        .context_menu(move |menu, window, cx| {
+                            dialog_menu_items(menu, row.clone(), window, cx)
+                        }),
+                )
+                .children(Root::render_dialog_layer(window, cx))
+        }
+    }
+
+    const HANDLER: &str = "menu-item: Handler · MenuItem";
+    const DISPATCHED: &str = "menu-item: Dispatched · MenuItem";
+    const NOTHING: &str = "menu-item: Nothing · MenuItem";
+    const NESTED: &str = "menu-item: Nested · MenuItem";
+
+    fn dialog_menus(cx: &mut TestAppContext) -> (Entity<DialogMenus>, &mut VisualTestContext) {
+        cx.update(crate::init);
+        let slot = Rc::new(std::cell::RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            move |window, cx| {
+                let view = cx.new(|cx| DialogMenus {
+                    field: cx.focus_handle(),
+                    trigger: cx.focus_handle(),
+                    keyed_shown: true,
+                });
+                *slot.borrow_mut() = Some(view.clone());
+                Root::new(view, window, cx).bordered(false)
+            }
+        });
+        settle(cx);
+        let view = slot.borrow().clone().expect("the page");
+        (view, cx)
+    }
+
+    fn dialog_open(cx: &mut VisualTestContext) -> bool {
+        cx.debug_bounds("dialog-body").is_some()
+    }
+
+    fn focus(handle: &FocusHandle, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| handle.focus(window, cx));
+        settle(cx);
+    }
+
+    fn focused(handle: &FocusHandle, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, _| handle.is_focused(window))
+    }
+
+    /// A whole press of Enter: a dialog it opens takes no Enter, and leaves
+    /// none to the window behind it, until the key comes up.
+    fn enter(cx: &mut VisualTestContext) {
+        let keystroke = gpui::Keystroke::parse("enter").expect("a keystroke");
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        settle(cx);
+    }
+
+    /// The keyboard's cursor down onto the menu's `index`th row, and Enter.
+    fn choose_by_key(index: usize, cx: &mut VisualTestContext) {
+        for _ in 0..=index {
+            cx.simulate_keystrokes("down");
+            settle(cx);
+        }
+        enter(cx);
+    }
+
+    fn press(cx: &mut VisualTestContext, selector: &'static str) {
+        let at = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"))
+            .center();
+        cx.simulate_click(at, gpui::Modifiers::default());
+        settle(cx);
+    }
+
+    fn right_press(cx: &mut VisualTestContext, selector: &'static str) {
+        use gpui::{Modifiers, MouseButton};
+        let at = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"))
+            .center();
+        cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+        settle(cx);
+    }
+
+    /// Closes the open dialog with Escape, or as a footer's button does.
+    #[track_caller]
+    fn close_the_dialog(at: &str, escape: bool, cx: &mut VisualTestContext) {
+        use crate::WindowExt as _;
+        assert!(dialog_open(cx), "{at}: the item opened its dialog");
+        if escape {
+            cx.simulate_keystrokes("escape");
+        } else {
+            cx.update(|window, cx| window.close_dialog(cx));
+        }
+        settle(cx);
+        assert!(!dialog_open(cx), "the dialog closed");
+    }
+
+    /// GitTurtle patch: a dialog a menu item opens gives focus back, on
+    /// Escape or close, to the control that opened the menu: a dropdown's
+    /// trigger, whichever input opened it and wherever focus was before, a
+    /// right-click menu's element, where focus was as it was pressed, and for
+    /// a submenu the top menu's. An item's handler runs on the menu, as ever,
+    /// so the dialog recorded the menu's focus, and the menu went as the item
+    /// finished: closing focused nothing, and keys reached nothing until a
+    /// click.
+    #[gpui::test]
+    fn a_dialog_from_a_menu_item_returns_focus_to_what_opened_the_menu(cx: &mut TestAppContext) {
+        let (view, cx) = dialog_menus(cx);
+        let (field, trigger) =
+            view.read_with(cx, |view, _| (view.field.clone(), view.trigger.clone()));
+
+        for escape in [true, false] {
+            for (name, selector, index) in [
+                ("Handler", Some(HANDLER), 0),
+                ("Dispatched", Some(DISPATCHED), 1),
+                ("Nested", None, 4),
+            ] {
+                let at = format!("{name}, escape {escape}");
+                let by_key = |cx: &mut VisualTestContext| {
+                    if name == "Nested" {
+                        for _ in 0..=index {
+                            cx.simulate_keystrokes("down");
+                            settle(cx);
+                        }
+                        cx.simulate_keystrokes("right");
+                        settle(cx);
+                        choose_by_key(0, cx);
+                    } else {
+                        choose_by_key(index, cx);
+                    }
+                };
+
+                // A dropdown from the keyboard: focus was on its trigger.
+                focus(&trigger, cx);
+                enter(cx);
+                by_key(cx);
+                close_the_dialog(&at, escape, cx);
+                assert!(focused(&trigger, cx), "{at}: key-opened dropdown");
+
+                // From the pointer: a Button refuses focus on mouse down, so
+                // focus stayed on the field; the trigger still takes it.
+                focus(&field, cx);
+                press(cx, "own");
+                match selector {
+                    Some(selector) => press(cx, selector),
+                    None => by_key(cx),
+                }
+                close_the_dialog(&at, escape, cx);
+                assert!(focused(&trigger, cx), "{at}: pointer-opened dropdown");
+
+                // A right-click: focus was on the field as it was pressed.
+                focus(&field, cx);
+                right_press(cx, "row");
+                match selector {
+                    Some(selector) => press(cx, selector),
+                    None => by_key(cx),
+                }
+                close_the_dialog(&at, escape, cx);
+                assert!(focused(&field, cx), "{at}: right-click menu");
+            }
+        }
+
+        // A pointer's click on a submenu's item, which leaves focus on the
+        // parent menu, so the dialog records the parent as its opener.
+        focus(&trigger, cx);
+        enter(cx);
+        for _ in 0..=4 {
+            cx.simulate_keystrokes("down");
+            settle(cx);
+        }
+        press(cx, NESTED);
+        close_the_dialog("a click in a submenu", true, cx);
+        assert!(focused(&trigger, cx), "a click in a submenu");
+
+        // A trigger on the Button's own keyed handle takes focus too: Enter
+        // on it opens its menu again.
+        focus(&field, cx);
+        press(cx, "keyed");
+        press(cx, HANDLER);
+        close_the_dialog("keyed", true, cx);
+        assert!(!focused(&field, cx), "the keyed trigger took focus");
+        enter(cx);
+        assert!(
+            cx.debug_bounds(HANDLER).is_some(),
+            "Enter on the trigger opens its menu again"
+        );
+        cx.simulate_keystrokes("escape");
+        settle(cx);
+    }
+
+    /// The control that opened the menu gone by the time the dialog closes,
+    /// the dialog's fallback stands: it focuses nothing.
+    #[gpui::test]
+    fn a_dialog_from_a_menu_whose_trigger_went_focuses_nothing(cx: &mut TestAppContext) {
+        let (view, cx) = dialog_menus(cx);
+        let field = view.read_with(cx, |view, _| view.field.clone());
+        focus(&field, cx);
+        press(cx, "keyed");
+        press(cx, HANDLER);
+        view.update(cx, |view, cx| {
+            view.keyed_shown = false;
+            cx.notify();
+        });
+        settle(cx);
+        settle(cx);
+        close_the_dialog("gone", true, cx);
+        cx.update(|window, cx| {
+            assert!(window.focused(cx).is_none(), "focus falls to nothing");
+        });
+    }
+
+    /// What a dialog from a menu must not change: an item that opens no
+    /// dialog leaves focus where the menu's closing left it, whichever way
+    /// it opened; a handler that moves focus before opening a dialog keeps
+    /// what it chose; and a dialog opened any other way returns to the focus
+    /// it opened on.
+    #[gpui::test]
+    fn focus_a_menu_item_or_a_plain_dialog_keeps_is_as_ever(cx: &mut TestAppContext) {
+        let (view, cx) = dialog_menus(cx);
+        let (field, trigger) =
+            view.read_with(cx, |view, _| (view.field.clone(), view.trigger.clone()));
+
+        // Opens nothing.
+        focus(&trigger, cx);
+        enter(cx);
+        choose_by_key(2, cx);
+        assert!(focused(&trigger, cx), "a key-opened dropdown's Nothing");
+        focus(&field, cx);
+        press(cx, "own");
+        press(cx, NOTHING);
+        assert!(focused(&field, cx), "a pointer-opened dropdown's Nothing");
+        focus(&field, cx);
+        right_press(cx, "row");
+        press(cx, NOTHING);
+        assert!(focused(&field, cx), "a right-click menu's Nothing");
+
+        // Its handler moved focus to the field first, and the dialog keeps
+        // that, as the Linux Main Menu has it.
+        focus(&trigger, cx);
+        enter(cx);
+        choose_by_key(3, cx);
+        close_the_dialog("moved", true, cx);
+        assert!(focused(&field, cx), "the handler's own choice");
+
+        // A dialog opened with no menu involved.
+        focus(&field, cx);
+        cx.update(open_body_dialog);
+        settle(cx);
+        close_the_dialog("plain", true, cx);
+        assert!(focused(&field, cx), "opened from the field");
+        focus(&trigger, cx);
+        cx.update(open_body_dialog);
+        settle(cx);
+        close_the_dialog("plain", true, cx);
+        assert!(focused(&trigger, cx), "opened from the trigger");
+    }
+
+    /// GitTurtle patch: a Button that is no Tab stop takes no focus from a
+    /// dialog its menu opened, whether or not it is drawn visibly: a row's
+    /// menu Button that shows only on hover can be drawn at opacity 0. The
+    /// dialog's fallback, and the application's focus repair after it, stand.
+    #[gpui::test]
+    fn a_dialog_from_a_no_tab_stop_trigger_leaves_it_unfocused(cx: &mut TestAppContext) {
+        let (view, cx) = dialog_menus(cx);
+        let field = view.read_with(cx, |view, _| view.field.clone());
+        focus(&field, cx);
+        press(cx, "untabbed");
+        press(cx, HANDLER);
+        close_the_dialog("no Tab stop", true, cx);
+        cx.update(|window, cx| {
+            assert!(window.focused(cx).is_none(), "the fallback focuses nothing");
+        });
+    }
+
+    /// A page for the Enter a dialog's close leaves down: Write, a Button
+    /// that counts its presses, a dropdown whose first item is under the
+    /// keyboard's cursor as its menu opens, and a right-click row. Each
+    /// menu's Handler opens a dialog Enter confirms.
+    struct HeldEnterPage {
+        write: FocusHandle,
+        written: Rc<std::cell::Cell<usize>>,
+        acted: Rc<std::cell::Cell<usize>>,
+    }
+
+    /// Opens a dialog Enter confirms: its own close, or, with `all`, every
+    /// dialog's.
+    fn open_confirming_dialog(all: bool, window: &mut Window, cx: &mut App) {
+        use crate::WindowExt as _;
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .on_ok(move |_, window, cx| {
+                    if all {
+                        window.close_all_dialogs(cx);
+                    }
+                    !all
+                })
+                .child(
+                    div()
+                        .debug_selector(|| "dialog-body".into())
+                        .size(px(10.)),
+                )
+        });
+    }
+
+    impl Render for HeldEnterPage {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            use crate::{
+                button::Button,
+                menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
+            };
+            let (written, acted) = (self.written.clone(), self.acted.clone());
+            div()
+                .id("page")
+                .size_full()
+                .child(
+                    Button::new("write")
+                        .debug_selector(|| "write".into())
+                        .label("Write")
+                        .track_focus(&self.write)
+                        .on_click(move |_, _, _| written.set(written.get() + 1)),
+                )
+                .child(
+                    Button::new("more")
+                        .debug_selector(|| "more".into())
+                        .label("More")
+                        .dropdown_menu(move |menu, _, cx| {
+                            let acted = acted.clone();
+                            let mut menu = menu
+                                .item(
+                                    PopupMenuItem::new("Act")
+                                        .on_click(move |_, _, _| acted.set(acted.get() + 1)),
+                                )
+                                .item(PopupMenuItem::new("Handler").on_click(|_, window, cx| {
+                                    open_confirming_dialog(false, window, cx)
+                                }));
+                            menu.select_first_item(cx);
+                            menu
+                        }),
+                )
+                .child(
+                    div()
+                        .id("row")
+                        .debug_selector(|| "row".into())
+                        .mt(px(40.))
+                        .w(px(200.))
+                        .h(px(28.))
+                        .context_menu(|menu, _, _| {
+                            menu.item(PopupMenuItem::new("Handler").on_click(|_, window, cx| {
+                                open_confirming_dialog(false, window, cx)
+                            }))
+                        }),
+                )
+                .children(Root::render_dialog_layer(window, cx))
+        }
+    }
+
+    fn held_enter_page(cx: &mut TestAppContext) -> (Entity<HeldEnterPage>, &mut VisualTestContext) {
+        cx.update(crate::init);
+        let slot = Rc::new(std::cell::RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            move |window, cx| {
+                let view = cx.new(|cx| HeldEnterPage {
+                    write: cx.focus_handle(),
+                    written: Default::default(),
+                    acted: Default::default(),
+                });
+                *slot.borrow_mut() = Some(view.clone());
+                Root::new(view, window, cx).bordered(false)
+            }
+        });
+        settle(cx);
+        let view = slot.borrow().clone().expect("the page");
+        (view, cx)
+    }
+
+    /// Enter going down: fresh, or `held` as a repeat macOS and Wayland mark.
+    fn enter_down(held: bool, cx: &mut VisualTestContext) {
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("enter").expect("a keystroke"),
+            is_held: held,
+            prefer_character_input: false,
+        });
+        settle(cx);
+    }
+
+    fn enter_up(cx: &mut VisualTestContext) {
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").expect("a keystroke"),
+        });
+        settle(cx);
+    }
+
+    /// GitTurtle patch: an Enter still down as a dialog closes waits for its
+    /// key-up, whichever way the dialog opened and closed. Held past the
+    /// repeat delay it pressed the Button the close gave focus back to, a
+    /// write the person never aimed at. A fresh press after the key-up acts.
+    #[gpui::test]
+    fn the_enter_that_closes_a_dialog_presses_nothing_focus_returns_to(cx: &mut TestAppContext) {
+        let (view, cx) = held_enter_page(cx);
+        let (write, written) =
+            view.read_with(cx, |view, _| (view.write.clone(), view.written.clone()));
+        for (route, all) in [("a menu", false), ("no menu", false), ("close all", true)] {
+            focus(&write, cx);
+            if route == "a menu" {
+                right_press(cx, "row");
+                press(cx, HANDLER);
+            } else {
+                cx.update(|window, cx| open_confirming_dialog(all, window, cx));
+                settle(cx);
+            }
+            assert!(dialog_open(cx), "{route}: its dialog opened");
+            enter_down(false, cx);
+            assert!(!dialog_open(cx), "{route}: Enter confirmed it");
+            assert!(focused(&write, cx), "{route}: focus went back to Write");
+            let before = written.get();
+            enter_down(true, cx);
+            enter_up(cx);
+            assert_eq!(
+                written.get(),
+                before,
+                "{route}: the held Enter and its key-up press nothing"
+            );
+            enter(cx);
+            assert_eq!(written.get(), before + 1, "{route}: a fresh Enter presses");
+        }
+    }
+
+    /// GitTurtle patch: under X11, whose repeats are not marked held, the
+    /// Enter that confirms a dialog from a dropdown's menu neither opens the
+    /// dropdown the close gave focus back to nor, on the next repeat, runs
+    /// the item under the cursor it opened on. A fresh press opens it.
+    #[gpui::test]
+    fn an_unmarked_repeat_of_the_enter_that_closes_a_dialog_reopens_no_dropdown(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = held_enter_page(cx);
+        let acted = view.read_with(cx, |view, _| view.acted.clone());
+        press(cx, "more");
+        press(cx, HANDLER);
+        assert!(dialog_open(cx), "its dialog opened");
+        enter_down(false, cx);
+        assert!(!dialog_open(cx), "Enter confirmed it");
+        for repeat in 0..3 {
+            enter_down(false, cx);
+            assert!(
+                cx.debug_bounds(ACT).is_none(),
+                "repeat {repeat} reopens no menu"
+            );
+        }
+        assert_eq!(acted.get(), 0, "no repeat ran the item");
+        enter_up(cx);
+        enter(cx);
+        assert!(cx.debug_bounds(ACT).is_some(), "a fresh Enter opens the menu");
+        cx.simulate_keystrokes("escape");
+        settle(cx);
     }
 
     #[gpui::test]

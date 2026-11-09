@@ -1595,6 +1595,7 @@ impl GitTurtle {
         };
         let toggled = cx.entity().downgrade();
         let opened = key.clone();
+        let tree = self.project_pane.focus.clone();
         Button::new("project-row-menu")
             .ghost()
             .tab_stop(false)
@@ -1611,7 +1612,12 @@ impl GitTurtle {
             // and keep the menu shut.
             .app_menu(move |menu, _, cx| {
                 let snapshot = owner.upgrade().map(|app| app.read(cx).menu_snapshot(&key));
-                row_menu(menu, &owner, &key, snapshot)
+                let mut menu = row_menu(menu, &owner, &key, snapshot);
+                // This Button is no Tab stop and takes no focus: a dialog
+                // from its menu returns to the tree, as a keyboard's row
+                // menu's does.
+                menu.set_dialog_return_focus(Some(tree.clone()));
+                menu
             })
             // A write's start or end builds the open menu again, as it does
             // the row's right-click and keyboard menus: read only as it

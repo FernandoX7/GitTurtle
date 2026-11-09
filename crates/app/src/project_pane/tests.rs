@@ -837,6 +837,52 @@ fn a_keyboard_row_menu_starts_on_its_first_action(cx: &mut TestAppContext) {
     });
 }
 
+/// A dialog opened from a row's menu button, which is no Tab stop and takes
+/// no focus itself, gives focus back to the tree as a keyboard's row menu
+/// does, and the next arrow moves the cursor. It left focus nowhere, and no
+/// key reached anything until a click.
+#[gpui::test]
+fn a_dialog_from_a_rows_menu_button_returns_focus_to_the_tree(cx: &mut TestAppContext) {
+    let (library, _, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    cx.update(|_, cx| native_accessibility::bind_keys(cx));
+    settle(cx);
+    let button = cx
+        .debug_bounds("project-row-menu-0")
+        .expect("the group's actions button");
+    cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+    settle(cx);
+    cx.simulate_click(button.center(), Modifiers::default());
+    settle(cx);
+    let item = cx
+        .debug_bounds("menu-item: Rename group… · MenuItem")
+        .expect("the menu offers Rename group…");
+    cx.simulate_click(item.center(), Modifiers::default());
+    settle(cx);
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Rename group… opened its form"
+    );
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Escape closes the form"
+    );
+    assert!(
+        cx.update(|window, cx| app.read(cx).project_pane.focus.is_focused(window)),
+        "focus is on the tree"
+    );
+    let before = app.read_with(cx, |app, _| app.project_pane.cursor);
+    cx.simulate_keystrokes("down");
+    settle(cx);
+    assert_ne!(
+        app.read_with(cx, |app, _| app.project_pane.cursor),
+        before,
+        "the next arrow moves the cursor"
+    );
+}
+
 #[gpui::test]
 fn an_older_save_reply_never_replaces_a_newer_edit(cx: &mut TestAppContext) {
     let (library, group, _) = library_with_group();

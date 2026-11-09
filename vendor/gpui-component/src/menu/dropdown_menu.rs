@@ -1,9 +1,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    Anchor, App, Context, DismissEvent, ElementId, Entity, Focusable, InteractiveElement,
-    IntoElement, RenderOnce, SharedString, StyleRefinement, Styled, Subscription, Window,
-    prelude::FluentBuilder,
+    Anchor, App, Context, DismissEvent, ElementId, Entity, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, RenderOnce, SharedString, StyleRefinement, Styled,
+    Subscription, Window, prelude::FluentBuilder,
 };
 
 use crate::{Selectable, button::Button, menu::PopupMenu, popover::Popover};
@@ -29,6 +29,20 @@ pub trait DropdownMenu: Styled + Selectable + InteractiveElement + IntoElement +
 
         DropdownMenuPopover::new(id.unwrap_or(0.into()), anchor, self, f).trigger_style(style)
     }
+
+    /// GitTurtle patch: has the trigger track `owned`, where it tracks no
+    /// focus handle of its own and can take one, and returns the trigger with
+    /// the handle it tracks: the control a dialog opened from its menu gives
+    /// focus back to ([`PopupMenu::set_dialog_return_focus`]). A trigger that
+    /// takes no handle returns `None`, and a dialog from its menu keeps the
+    /// fallback it has.
+    #[doc(hidden)]
+    fn tracking_opener_focus(self, _owned: &FocusHandle) -> (Self, Option<FocusHandle>)
+    where
+        Self: Sized,
+    {
+        (self, None)
+    }
 }
 
 /// GitTurtle patch: the part of a trigger's style that places it among its
@@ -52,10 +66,23 @@ fn take_placement(style: &mut StyleRefinement) -> StyleRefinement {
     placement
 }
 
-impl DropdownMenu for Button {}
+impl DropdownMenu for Button {
+    fn tracking_opener_focus(self, owned: &FocusHandle) -> (Self, Option<FocusHandle>) {
+        // A Button that is no Tab stop need not be drawn to be seen, as a
+        // row's menu Button that shows only on hover can be at opacity 0, so
+        // it takes no focus back from a dialog.
+        if !self.is_tab_stop() {
+            return (self, None);
+        }
+        match self.provided_focus_handle().cloned() {
+            Some(handle) => (self, Some(handle)),
+            None => (self.track_focus(owned), Some(owned.clone())),
+        }
+    }
+}
 
 #[derive(IntoElement)]
-pub struct DropdownMenuPopover<T: Selectable + IntoElement + 'static> {
+pub struct DropdownMenuPopover<T: DropdownMenu> {
     id: ElementId,
     style: StyleRefinement,
     anchor: Anchor,
@@ -66,7 +93,7 @@ pub struct DropdownMenuPopover<T: Selectable + IntoElement + 'static> {
 
 impl<T> DropdownMenuPopover<T>
 where
-    T: Selectable + IntoElement + 'static,
+    T: DropdownMenu,
 {
     fn new(
         id: ElementId,
@@ -108,27 +135,37 @@ where
     }
 }
 
-#[derive(Default)]
 struct DropdownMenuState {
     menu: Option<Entity<PopupMenu>>,
     /// GitTurtle patch: the open menu's dismiss subscription, kept with the
     /// menu and dropped with it.
     dismiss: Option<Subscription>,
+    /// GitTurtle patch: the focus handle a trigger with none of its own
+    /// tracks, so the dropdown can name the control that opened its menu:
+    /// a Button refuses focus on a press, so what held focus as a pointer
+    /// opened the menu need not be the trigger. It lives as long as the
+    /// trigger is drawn, and a dialog holds it weakly.
+    trigger_focus: FocusHandle,
 }
 
 impl<T> RenderOnce for DropdownMenuPopover<T>
 where
-    T: Selectable + IntoElement + 'static,
+    T: DropdownMenu,
 {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let builder = self.builder.clone();
-        let menu_state =
-            window.use_keyed_state(self.id.clone(), cx, |_, _| DropdownMenuState::default());
+        let menu_state = window.use_keyed_state(self.id.clone(), cx, |_, cx| DropdownMenuState {
+            menu: None,
+            dismiss: None,
+            trigger_focus: cx.focus_handle(),
+        });
+        let owned = menu_state.read(cx).trigger_focus.clone();
+        let (trigger, opener) = self.trigger.tracking_opener_focus(&owned);
 
         Popover::new(SharedString::from(format!("popover:{}", self.id)))
             .appearance(false)
             .overlay_closable(false)
-            .trigger(self.trigger)
+            .trigger(trigger)
             .trigger_style(self.style)
             .anchor(self.anchor)
             .when_some(self.on_open_change, |this, callback| {
@@ -148,6 +185,13 @@ where
                         let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
                             builder(menu, window, cx)
                         });
+                        // A trigger that takes no focus leaves what the
+                        // menu's builder set standing.
+                        if let Some(opener) = opener.clone() {
+                            menu.update(cx, |menu, _| {
+                                menu.set_dialog_return_focus(Some(opener));
+                            });
+                        }
                         menu.focus_handle(cx).focus(window, cx);
 
                         // Listen for dismiss events from the PopupMenu to close the popover.

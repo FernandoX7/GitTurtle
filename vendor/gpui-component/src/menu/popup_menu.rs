@@ -611,6 +611,13 @@ pub struct PopupMenu {
     /// change where actions are dispatched: they still bubble from the menu's
     /// own focus path (through the trigger element's ancestors).
     pub(crate) previous_focus_handle: Option<FocusHandle>,
+    /// GitTurtle patch: the control that opened this menu, where neither
+    /// handle above names it: a dropdown's trigger, or the place an
+    /// application's right-click menu returns focus to. A dialog one of the
+    /// menu's items opens gives focus back to it as it closes
+    /// ([`Self::return_dialogs_to_opener`]). Setting it changes nothing about
+    /// how the menu closes or which shortcuts it shows.
+    dialog_return_focus: Option<FocusHandle>,
     selected_index: Option<usize>,
     /// GitTurtle patch: the keyboard placed the selection (Up, Down, or Right
     /// into a submenu), so the item draws as the keyboard's cursor rather than
@@ -697,6 +704,7 @@ impl PopupMenu {
             focus_handle: cx.focus_handle(),
             action_context: None,
             previous_focus_handle: None,
+            dialog_return_focus: None,
             parent_menu: None,
             menu_items: Vec::new(),
             selected_index: None,
@@ -776,6 +784,13 @@ impl PopupMenu {
                 });
             }
         }
+    }
+
+    /// GitTurtle patch: the control that opened this menu, which a dialog one
+    /// of its items opens gives focus back to as it closes. Where it is
+    /// unset, that is the focus the menu restores as it closes, or none.
+    pub fn set_dialog_return_focus(&mut self, handle: Option<FocusHandle>) {
+        self.dialog_return_focus = handle;
     }
 
     /// Set min width of the popup menu, default is 120px
@@ -1502,6 +1517,7 @@ impl PopupMenu {
                             self.dispatch_confirm_action(action, window, cx);
                         }
 
+                        self.return_dialogs_to_opener(window, cx);
                         self.dismiss(&Cancel, window, cx)
                     }
                     Some(PopupMenuItem::ElementItem {
@@ -1512,6 +1528,7 @@ impl PopupMenu {
                         } else if let Some(action) = action.as_ref() {
                             self.dispatch_confirm_action(action, window, cx);
                         }
+                        self.return_dialogs_to_opener(window, cx);
                         self.dismiss(&Cancel, window, cx)
                     }
                     _ => {}
@@ -1519,6 +1536,47 @@ impl PopupMenu {
             }
             _ => {}
         }
+    }
+
+    /// GitTurtle patch: a dialog the chosen item opened gives focus back, as
+    /// it closes, to the control that opened this menu. The item runs on the
+    /// menu's focus, its handler or dispatched action as upstream has it, so
+    /// the dialog records the menu as its opener, and the menu goes as the
+    /// item finishes: closing the dialog then focused nothing. A dialog that
+    /// recorded anything else, as one whose handler moved focus first, keeps
+    /// it, and a menu that knows no opener leaves the dialog as it was.
+    ///
+    /// Run behind the item: a dispatched action reaches its handler in a
+    /// deferred effect queued just before this one, and either way the dialog
+    /// has been recorded by the time it runs. Focus may rest on any menu of a
+    /// submenu's chain as its item acts, so each of them counts as the menu.
+    fn return_dialogs_to_opener(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut menus = vec![self.focus_handle.clone()];
+        let mut opener = self.dialog_opener();
+        let mut parent = self.parent_menu.as_ref().and_then(WeakEntity::upgrade);
+        while let Some(entity) = parent {
+            let menu = entity.read(cx);
+            menus.push(menu.focus_handle.clone());
+            opener = opener.or_else(|| menu.dialog_opener());
+            parent = menu.parent_menu.as_ref().and_then(WeakEntity::upgrade);
+        }
+        let Some(opener) = opener else {
+            return;
+        };
+        window.defer(cx, move |window, cx| {
+            crate::Root::try_update(window, cx, |root, _, _| {
+                root.return_dialogs_to(&menus, &opener);
+            });
+        });
+    }
+
+    /// The control this menu returns a dialog's focus to, or `None` where it
+    /// knows none and a submenu's parent may.
+    fn dialog_opener(&self) -> Option<FocusHandle> {
+        self.dialog_return_focus
+            .clone()
+            .or_else(|| self.previous_focus_handle.clone())
+            .or_else(|| self.action_context.clone())
     }
 
     fn dispatch_confirm_action(
