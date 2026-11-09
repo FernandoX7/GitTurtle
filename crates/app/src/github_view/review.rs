@@ -2298,6 +2298,16 @@ fn own(bounds: &mut Vec<Bounds<Pixels>>, owned: &Owned, scroll: &ScrollHandle, i
 }
 
 impl Panel {
+    /// The Files list's accessible name. With a single page of files, both pager buttons
+    /// are disabled and no stop reveals the page label, so the name carries the reading; a
+    /// further page gives the pager a stop of its own.
+    fn files_list_name(&self) -> SharedString {
+        if self.review.file_page <= 1 && !self.review.files_next {
+            "Pull request changed files, page 1 of 1".into()
+        } else {
+            "Pull request changed files".into()
+        }
+    }
     /// The mark over what the shown section's first stop reveals as a reopen lands on it, as
     /// tall as what `focus` holds, `room` clear of the body's edges in that frame's own layout
     /// ([`Reopening::reveal_laid_out`]), `ringed` where it draws focus as a ring on its own
@@ -3565,7 +3575,7 @@ impl Panel {
                             .overflow_hidden()
                             .track_focus(&self.review.file_focus)
                             .role(Role::ListBox)
-                            .aria_label("Pull request changed files")
+                            .aria_label(self.files_list_name())
                             .aria_description(format!(
                                 "Up and Down select a file. {} moves to its patch.",
                                 shortcuts::ENTER

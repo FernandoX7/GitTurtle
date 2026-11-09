@@ -11976,6 +11976,61 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// With a single page of files both pager buttons are disabled and no stop reveals the
+    /// page label, so the Files list's accessible name carries the page reading; a further
+    /// page drops it, its pager then a stop that reveals the label. The name is all that
+    /// changes: the list stays one Tab stop and draws nothing new.
+    #[gpui::test]
+    async fn the_files_lists_name_carries_the_single_page_reading(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        show_surface(
+            (&app, &panel, &pull, &files),
+            Surface::Changes,
+            (13, 1480., 800.),
+            cx,
+        )
+        .await;
+        let name = |cx: &mut VisualTestContext| {
+            written::forget();
+            crate::tags::tests::draw(cx);
+            written::get("github-file-focus").and_then(|list| list.node.label().map(str::to_owned))
+        };
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.file_page = 1;
+                panel.review.files_next = false;
+                cx.notify();
+            })
+        });
+        assert_eq!(
+            name(cx).as_deref(),
+            Some("Pull request changed files, page 1 of 1"),
+            "a single page's list carries the page reading"
+        );
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.files_next = true;
+                cx.notify();
+            })
+        });
+        assert_eq!(
+            name(cx).as_deref(),
+            Some("Pull request changed files"),
+            "a further page leaves the reading to the pager's stop"
+        );
+        let page = cx
+            .debug_bounds("github-files-page")
+            .expect("the page label");
+        assert!(page.size.width > px(0.), "the page label still draws");
+    }
+
     /// An opening confirmation draws Send and Keep editing whole in its first frame at every
     /// size the sweep uses ([`REVEAL_SIZES`]), its region focused: a short comment and a long
     /// reply, the frame that first draws it included (a short comment whose body's foot falls
