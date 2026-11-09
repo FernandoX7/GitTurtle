@@ -11149,6 +11149,99 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// At 18 pt in a 461 × 490 window a Download row with no failure line
+    /// wraps its sentence inside the pane and sets its buttons whole beneath
+    /// it, for one side's download or both: unbounded in the row's `flex_wrap`
+    /// the sentence ran 368 px, cut at the 243 px pane's edge after "require
+    /// an". Where the row has the room the sentence keeps one line beside
+    /// the button.
+    #[gpui::test]
+    async fn a_download_row_s_sentence_wraps_inside_the_pane(cx: &mut TestAppContext) {
+        let pointer = |digit: &str| {
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+                digit.repeat(64)
+            )
+        };
+        let (old, new) = (pointer("b"), pointer("c"));
+        let input = file_commits(&[
+            (
+                "before",
+                &[("both.txt", old.as_bytes()), ("one.txt", old.as_bytes())],
+            ),
+            (
+                "after",
+                &[("both.txt", new.as_bytes()), ("one.txt", b"plain text\n")],
+            ),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        const SENTENCE: &str = "lfs-preview-download-explanation";
+        const BEFORE: &str = "download-lfs-side-0";
+        const AFTER: &str = "download-lfs-side-1";
+        for (path, sides) in [
+            ("one.txt", &[BEFORE][..]),
+            ("both.txt", &[BEFORE, AFTER][..]),
+        ] {
+            cx.simulate_resize(size(px(1800.), px(900.)));
+            draw(cx);
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+                    .expect("the commit changes it")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+            settle(&app, cx).await;
+            let sentence = cx.debug_bounds(SENTENCE).expect("the row says why");
+            let button = cx.debug_bounds(BEFORE).expect("Before offers its download");
+            assert!(
+                button.top() < sentence.bottom() && sentence.right() <= button.left(),
+                "{path}: with the room, {sentence:?} stands beside {button:?}"
+            );
+            let one_line = sentence.size.height;
+            for scale in [2.0f32, 1.2] {
+                cx.simulate_resize(size(px(461.), px(490.)));
+                cx.update(|window, _| window.set_scale_factor(scale));
+                draw(cx);
+                draw(cx);
+                let at = format!("{path} at scale {scale}");
+                let pane = cx.debug_bounds("compare-toolbar").expect("the pane");
+                let inset = cx.update(|window, _| window.rem_size() * 0.75);
+                let sentence = cx.debug_bounds(SENTENCE).expect("the row says why");
+                assert!(
+                    sentence.right() <= pane.right() - inset + px(1.),
+                    "{at}: {sentence:?} ends inside the pane, {pane:?}"
+                );
+                assert!(
+                    sentence.size.height >= one_line * 2. - px(1.),
+                    "{at}: {sentence:?} wraps, one line being {one_line:?}"
+                );
+                let mut above = sentence.bottom();
+                for &side in sides {
+                    let button = cx.debug_bounds(side).expect("the side offers its download");
+                    assert!(
+                        button.top() >= sentence.bottom() - px(0.5)
+                            && button.right() <= pane.right() + px(0.5),
+                        "{at}: {button:?} stands whole below {sentence:?} in {pane:?}"
+                    );
+                    above = above.max(button.bottom());
+                }
+                let comparison = cx
+                    .debug_bounds("preview-content")
+                    .expect("the comparison is drawn");
+                assert!(
+                    above <= comparison.top() + px(0.5),
+                    "{at}: the row ends above the comparison, {comparison:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
     /// The `(path, bytes)` files a fixture commit writes.
     type Files<'a> = &'a [(&'a str, &'a [u8])];
 

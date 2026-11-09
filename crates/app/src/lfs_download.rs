@@ -354,6 +354,10 @@ impl GitTurtle {
                 row.child(
                     label("lfs-preview-download-explanation", DOWNLOAD_EXPLANATION)
                         .debug_selector(|| "lfs-preview-download-explanation".into())
+                        // No wider than the row: a text's narrowest width is
+                        // its whole line, so it kept all of it in a pane
+                        // narrower than that and was cut at the edge.
+                        .max_w_full()
                         .text_size(appearance::ui_text(12.)),
                 )
             })
