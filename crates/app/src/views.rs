@@ -33634,6 +33634,45 @@ pub(crate) mod tests {
         draw(cx);
     }
 
+    /// Chooses the file row at `position` among the list's rows, as
+    /// [`choose_working_row`] does.
+    async fn select_working_row(
+        app: &Entity<GitTurtle>,
+        position: usize,
+        cx: &mut VisualTestContext,
+    ) {
+        let (index, area) = app.read_with(cx, |app, _| match app.working_rows[position] {
+            crate::workspace::WorkingRow::File(index, area) => (index, area),
+            _ => panic!("row {position} is a file's"),
+        });
+        choose_working_row(app, index, area, cx).await;
+    }
+
+    /// A [`working_window`] whose list runs past its viewport, with `extra`
+    /// more untracked files listed before notes.txt, quiet reads held and
+    /// motion reduced: [Staged 2, alpha, beta, Unstaged …, file-00, …, notes].
+    async fn long_working_window(
+        cx: &mut TestAppContext,
+        extra: usize,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        let (fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let root = fixture.path().join("narrow");
+        for index in 0..extra {
+            std::fs::write(root.join(format!("file-{index:02}.txt")), "new\n").unwrap();
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_rows.len()),
+            extra + 5,
+            "the rows of every file"
+        );
+        (fixture, app, cx)
+    }
+
     /// Whether the accent ring around the control drawn as `selector` is
     /// painted whole in the last frame.
     fn control_ring_whole(cx: &mut VisualTestContext, selector: &str) -> bool {
@@ -34084,6 +34123,221 @@ pub(crate) mod tests {
         }
         expected.reverse();
         assert_eq!(back, expected, "Shift+Tab walks back the same way");
+    }
+
+    /// The list's offset, its rows' scroll.
+    fn working_list_offset(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Pixels {
+        app.read_with(cx, |app, _| {
+            app.working_scroll.0.borrow().base_handle.offset().y
+        })
+    }
+
+    /// An arrow that cannot move the selection, Down on the last file and Up
+    /// on the first, leaves focus on the heading's control and the list where
+    /// it stands. It moved focus to that row's control and recentred the
+    /// list.
+    #[gpui::test]
+    async fn an_arrow_that_cannot_move_the_selection_leaves_focus_and_the_list(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = long_working_window(cx, 55).await;
+        cx.update(|_, cx| shortcuts::bind_keys(cx));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        let (first, last) = app.read_with(cx, |app, _| {
+            let files: Vec<usize> = app
+                .working_rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| matches!(row, crate::workspace::WorkingRow::File(..)))
+                .map(|(position, _)| position)
+                .collect();
+            (files[0], *files.last().unwrap())
+        });
+        for (row, key) in [(last, "down"), (first, "up")] {
+            select_working_row(&app, row, cx).await;
+            for _ in 0..2 {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+            }
+            assert_eq!(
+                working_stop(&app, cx),
+                "unstage-all",
+                "row {row}: Tab's stop"
+            );
+            let offset = working_list_offset(&app, cx);
+            let selected = app.read_with(cx, |app, _| app.working_selected);
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(
+                working_stop(&app, cx),
+                "unstage-all",
+                "{key} on row {row}: focus stays where it is"
+            );
+            assert_eq!(
+                working_list_offset(&app, cx),
+                offset,
+                "{key} on row {row}: the list stands where it was"
+            );
+            assert_eq!(
+                app.read_with(cx, |app, _| app.working_selected),
+                selected,
+                "{key} on row {row}: the selection stands"
+            );
+        }
+    }
+
+    /// Shift+arrow that cannot move anything leaves focus and the list where
+    /// they stand too, at both ends of the list, with one file selected and
+    /// with several. "Cannot move" is the cursor and the selected set staying
+    /// as they are: a plain arrow at an end still collapses a multiselection
+    /// from a control, as it does from the list, and focus goes with it.
+    #[gpui::test]
+    async fn an_arrow_at_an_end_moves_only_what_it_can(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = long_working_window(cx, 55).await;
+        cx.update(|_, cx| shortcuts::bind_keys(cx));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        let (first, last) = app.read_with(cx, |app, _| {
+            let files: Vec<usize> = app
+                .working_rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| matches!(row, crate::workspace::WorkingRow::File(..)))
+                .map(|(position, _)| position)
+                .collect();
+            (files[0], *files.last().unwrap())
+        });
+        let counted = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let (staged, unstaged) = app.selection_counts();
+                staged + unstaged
+            })
+        };
+        let onto_heading = |cx: &mut VisualTestContext| {
+            for _ in 0..2 {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+            }
+            assert_eq!(working_stop(&app, cx), "unstage-all", "Tab's stop");
+        };
+        for (row, key) in [(last, "shift-down"), (first, "shift-up")] {
+            select_working_row(&app, row, cx).await;
+            onto_heading(cx);
+            let offset = working_list_offset(&app, cx);
+            let cursor = app.read_with(cx, |app, _| app.working_selected);
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(
+                working_stop(&app, cx),
+                "unstage-all",
+                "{key} on row {row}: focus stays where it is"
+            );
+            assert_eq!(
+                working_list_offset(&app, cx),
+                offset,
+                "{key} on row {row}: the list stands where it was"
+            );
+            assert_eq!(
+                app.read_with(cx, |app, _| app.working_selected),
+                cursor,
+                "{key} on row {row}: the cursor stands"
+            );
+            assert_eq!(
+                counted(cx),
+                1,
+                "{key} on row {row}: one file stays selected"
+            );
+        }
+        // Two files selected, the cursor on the last.
+        select_working_row(&app, last - 1, cx).await;
+        cx.simulate_keystrokes("shift-down");
+        draw(cx);
+        assert_eq!(counted(cx), 2, "Shift+Down selected the last file too");
+        onto_heading(cx);
+        let offset = working_list_offset(&app, cx);
+        cx.simulate_keystrokes("shift-down");
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "unstage-all",
+            "Shift+Down with nowhere to go leaves focus"
+        );
+        assert_eq!(
+            working_list_offset(&app, cx),
+            offset,
+            "and the list where it stands"
+        );
+        assert_eq!(counted(cx), 2, "and both files selected");
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(
+            counted(cx),
+            1,
+            "a plain Down at the end collapses the selection, as from the list"
+        );
+        assert_eq!(
+            working_stop(&app, cx),
+            format!("working-stage-{last}"),
+            "focus goes with the selection that changed"
+        );
+    }
+
+    /// An arrow on a heading's Stage all or Unstage all selects the next row
+    /// and carries focus to that row's control, which the frame draws; where
+    /// the rows draw no control focus returns to the list. Only the selected
+    /// row's control counted as on a stop, so the arrow scrolled the heading
+    /// away and left focus on a control no frame drew, keys going to the
+    /// window's root.
+    #[gpui::test]
+    async fn an_arrow_on_a_headings_control_leaves_focus_where_a_frame_draws_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = long_working_window(cx, 55).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            shortcuts::bind_keys(cx);
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        select_working_row(&app, 40, cx).await;
+        for stop in ["working-stage-40", "unstage-all"] {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert_eq!(working_stop(&app, cx), stop, "Tab's order from the list");
+        }
+        cx.simulate_keystrokes("down");
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "working-stage-41",
+            "focus goes with the selection to the row the arrow reached"
+        );
+        assert!(
+            control_ring_whole(cx, "working-stage-41"),
+            "the frame draws its ring whole"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        select_working_row(&app, 40, cx).await;
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "unstage-all",
+            "at 461 px the rows draw no control, so Tab reaches the heading first"
+        );
+        cx.simulate_keystrokes("down");
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "the list",
+            "where the rows draw no control, the arrow returns focus to the list"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A row's Stage that stages its file leaves no focus behind it: at 13 pt

@@ -279,7 +279,6 @@ impl RowControls {
     }
 
     /// Whether one of these handles holds focus.
-    #[cfg(test)]
     fn hold_focus(&self, window: &Window) -> bool {
         self.0
             .borrow()
@@ -3303,7 +3302,6 @@ impl GitTurtle {
 
     /// Whether a handle the Working list keeps for its rows' controls holds
     /// focus (`RowControls`), as no control of a row's travelling copy can.
-    #[cfg(test)]
     pub(super) fn row_control_focused(&self, window: &Window, cx: &App) -> bool {
         let layout = self.working_layout.take();
         let focused = layout
@@ -3551,11 +3549,13 @@ impl GitTurtle {
         next.is_some() && next == here
     }
 
-    /// Moves focus onto the row at `position`'s control if the selected
-    /// row's control held it before the selection moved there
+    /// Moves focus onto the row at `position`'s control if a row's or a
+    /// heading's control held it before the selection moved there
     /// (`was_on_stop`): the roving stop moves with the selection, so the
     /// ring and Enter stay on the row the person is on, as the Reflog's
-    /// entries take focus from the arrow keys.
+    /// entries take focus from the arrow keys. Where the rows draw no
+    /// control focus returns to the list, the row's own stop: a heading's
+    /// control the arrow's scroll took out of view is not drawn either.
     pub(super) fn follow_selection_with_row_stop(
         &self,
         was_on_stop: bool,
@@ -3564,6 +3564,13 @@ impl GitTurtle {
         cx: &mut App,
     ) {
         if !was_on_stop {
+            return;
+        }
+        if !self
+            .working_row_controls(cx)
+            .is_some_and(|controls| controls.file_action())
+        {
+            window.focus(&self.file_focus, cx);
             return;
         }
         let Some(entry) = self
@@ -3578,18 +3585,6 @@ impl GitTurtle {
             position,
         };
         self.focus_row_stop(&stop, window, cx);
-    }
-
-    /// Whether the selected row's own Stage or Unstage holds focus.
-    pub(super) fn selected_row_control_focused(&self, window: &Window, cx: &App) -> bool {
-        let Some(held) = self
-            .working_row_controls(cx)
-            .and_then(|controls| controls.holding(window))
-        else {
-            return false;
-        };
-        self.shown_working_cursor()
-            .is_some_and(|(index, area)| self.working_row_key(index, area) == held)
     }
 
     pub(super) fn move_working_selection(
@@ -3629,7 +3624,14 @@ impl GitTurtle {
             (current as i32 + direction).clamp(0, files.len() as i32 - 1) as usize
         };
         let (position, index, area) = files[next];
-        let on_stop = self.selected_row_control_focused(window, cx);
+        let on_stop = self.row_control_focused(window, cx);
+        // An arrow that cannot move anything, Down on the last file or Up on
+        // the first with no other selected, leaves focus where it is and the
+        // list where it stands: it moved focus to the row's control and
+        // recentred the list. One that collapses a multiselection moves it.
+        if on_stop && !self.working_choice_moves(index, area, false) {
+            return;
+        }
         self.choose_working_selection(index, area, false, false, window, cx);
         self.working_scroll
             .scroll_to_item(position, ScrollStrategy::Center);

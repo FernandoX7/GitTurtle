@@ -72,6 +72,17 @@ impl Selection {
             .filter(|path| seen.insert(*path))
             .collect()
     }
+    /// Whether [`Self::choose`] of `key`, with no toggle, would change the
+    /// selected set.
+    fn choice_changes(&self, key: &Key, visible: &[Key], range: bool) -> bool {
+        let mut chosen = Self {
+            selected: self.selected.clone(),
+            anchor: self.anchor.clone(),
+            grouped: self.grouped,
+        };
+        chosen.choose(key.clone(), visible, false, range);
+        chosen.selected != self.selected
+    }
     fn retain_visible(&mut self, visible: &[Key]) {
         let visible: BTreeSet<_> = visible.iter().collect();
         self.selected.retain(|key| visible.contains(key));
@@ -688,6 +699,21 @@ impl GitTurtle {
         self.working_selection.choose(key, &visible, toggle, range);
         self.select_working(index, area, window, cx);
     }
+    /// Whether an arrow's choice of the row `(index, area)`, extending the
+    /// selection where `range` says so, would move anything: the cursor, or
+    /// the selected set. One that moves neither, at an end of the list,
+    /// leaves focus and the list where they stand.
+    pub(super) fn working_choice_moves(&self, index: usize, area: ChangeArea, range: bool) -> bool {
+        if self.working_selected != Some((index, area)) {
+            return true;
+        }
+        let Some(entry) = self.work_status.as_ref().and_then(|s| s.entries.get(index)) else {
+            return true;
+        };
+        let key = Key::new(entry.path.clone(), area);
+        self.working_selection
+            .choice_changes(&key, &self.visible_working_keys(), range)
+    }
     pub(super) fn select_all_working(&mut self, cx: &mut Context<Self>) {
         // With no file drawn there is nothing to select or refuse, so no
         // busy look either (`working_files_drawn`).
@@ -733,7 +759,12 @@ impl GitTurtle {
             current.saturating_sub(1)
         };
         let (index, area) = files[next];
-        let on_stop = self.selected_row_control_focused(window, cx);
+        let on_stop = self.row_control_focused(window, cx);
+        // As a plain arrow: with nothing to move, focus and the list stay
+        // (`working_choice_moves`).
+        if on_stop && !self.working_choice_moves(index, area, true) {
+            return;
+        }
         self.choose_working_selection(index, area, false, true, window, cx);
         if let Some(position) = self
             .actionable_working_rows()
