@@ -1236,6 +1236,20 @@ enum SpokenRefresh {
     Gone,
 }
 
+/// The words a press of Refresh says for a page of the saved stashes: the
+/// count where the page is the whole list, and otherwise which of them it
+/// shows, as the heading does, one stash read as itself: a page of one once
+/// said "Saved stashes 41 to 41".
+fn spoken_page(offset: usize, next_offset: Option<usize>, count: usize) -> String {
+    match (offset, next_offset, count) {
+        (_, _, 0) => "No saved stashes".to_owned(),
+        (0, None, 1) => "1 saved stash".to_owned(),
+        (0, None, count) => format!("{count} saved stashes"),
+        (offset, _, 1) => format!("Saved stash {}", offset + 1),
+        (offset, _, count) => format!("Saved stashes {} to {}", offset + 1, offset + count),
+    }
+}
+
 /// A saved stash's row ID: its stash commit, rather than its `stash@{n}`,
 /// which renumbers as a stash is saved above it or dropped below it, so the
 /// window's accessibility tree keeps one node for each stash as the list is
@@ -2289,15 +2303,7 @@ impl StashBrowser {
         let text = if spoken == SpokenRefresh::Gone {
             "Saved stash no longer listed".to_owned()
         } else {
-            let count = page.entries.len();
-            let stashes = match (self.offset, page.next_offset, count) {
-                (_, _, 0) => "No saved stashes".to_owned(),
-                (0, None, 1) => "1 saved stash".to_owned(),
-                (0, None, count) => format!("{count} saved stashes"),
-                (offset, _, count) => {
-                    format!("Saved stashes {} to {}", offset + 1, offset + count)
-                }
-            };
+            let stashes = spoken_page(self.offset, page.next_offset, page.entries.len());
             match self.selected.and_then(|index| page.entries.get(index)) {
                 Some(stash) => format!("{stashes}, {} selected", stash.selector),
                 None => stashes,
@@ -3492,6 +3498,11 @@ impl Render for StashBrowser {
             Some(page) if self.offset == 0 && page.next_offset.is_none() => {
                 format!("Saved work · {stashes}")
             }
+            // A page of one reads as that stash, as Refresh says it
+            // (`spoken_page`), with its word: a bare "Saved work · 41" reads
+            // as a count, as "Saved work · 12" does, and the heading once
+            // read "Saved work · 41–41".
+            Some(_) if stashes == 1 => format!("Saved work · stash {}", self.offset + 1),
             Some(_) => format!("Saved work · {}–{}", self.offset + 1, self.offset + stashes),
             None => "Saved work".to_owned(),
         };
@@ -3884,6 +3895,16 @@ pub(crate) fn amend_description(app: &GitTurtle, cx: &App) -> Option<Entity<Text
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    #[test]
+    fn a_press_of_refresh_says_the_page_it_landed_on() {
+        assert_eq!(spoken_page(0, None, 0), "No saved stashes");
+        assert_eq!(spoken_page(0, None, 1), "1 saved stash");
+        assert_eq!(spoken_page(0, None, 3), "3 saved stashes");
+        // A page of one past the first, which once said "41 to 41".
+        assert_eq!(spoken_page(40, None, 1), "Saved stash 41");
+        assert_eq!(spoken_page(40, Some(80), 40), "Saved stashes 41 to 80");
+        assert_eq!(spoken_page(0, Some(40), 40), "Saved stashes 1 to 40");
+    }
     #[test]
     fn amend_fields_preserve_description_whitespace_and_comment_lines() {
         let message = "Title\n\n  indented\n# literal description\n\n";
@@ -5591,8 +5612,17 @@ mod tests {
             crate::copy_feedback::tests::announced(cx)
                 .map(|(_, text)| text)
                 .as_deref(),
-            Some("Saved stashes 41 to 41, stash@{40} selected"),
-            "a page past the first says its range in words"
+            Some("Saved stash 41, stash@{40} selected"),
+            "a page past the first holding one stash says that stash in words"
+        );
+        crate::native_accessibility::written::forget();
+        draw(cx);
+        assert_eq!(
+            crate::native_accessibility::written::get("stash-list-heading")
+                .and_then(|heading| heading.node.value().map(str::to_owned))
+                .as_deref(),
+            Some("Saved work · stash 41"),
+            "the heading names that stash's place, not a range of one or a count"
         );
 
         // Truly gone, it is no longer selected.
