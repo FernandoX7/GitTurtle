@@ -10002,9 +10002,21 @@ impl Render for GitTurtle {
             // comparison from anywhere in the window (`shortcuts::COMPARE`).
             .key_context(if self.comparing() {
                 "GitTurtle GitTurtleCompare"
+            } else if self.page == AppPage::Repository && self.mode == WorkspaceMode::Working {
+                crate::workspace::WORKING_ROOT
             } else {
                 "GitTurtle"
             })
+            .on_action(
+                cx.listener(|this, _: &crate::workspace::NextWorkingStop, window, cx| {
+                    this.tab_working_row_stops(true, window, cx)
+                }),
+            )
+            .on_action(cx.listener(
+                |this, _: &crate::workspace::PreviousWorkingStop, window, cx| {
+                    this.tab_working_row_stops(false, window, cx)
+                },
+            ))
             .child(self.focus_ring.pointer_listener())
             .on_action(cx.listener(|this, _: &theme_editor::PageUpAction, _, cx| {
                 this.scroll_settings_page(settings::PageStep::Up, cx)
@@ -33599,23 +33611,27 @@ pub(crate) mod tests {
                 })
                 .expect("notes.txt's Unstaged row")
         });
+        choose_working_row(app, index, gitturtle_core::ChangeArea::Unstaged, cx).await;
+        position
+    }
+
+    /// Chooses the file row `index` in `area` and puts focus on the list, as
+    /// an arrow key leaves them.
+    async fn choose_working_row(
+        app: &Entity<GitTurtle>,
+        index: usize,
+        area: gitturtle_core::ChangeArea,
+        cx: &mut VisualTestContext,
+    ) {
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                app.choose_working_selection(
-                    index,
-                    gitturtle_core::ChangeArea::Unstaged,
-                    false,
-                    false,
-                    window,
-                    cx,
-                );
+                app.choose_working_selection(index, area, false, false, window, cx);
                 window.focus(&app.file_focus, cx);
                 app.focus_ring.mark(window);
             })
         });
         settle(app, cx).await;
         draw(cx);
-        position
     }
 
     /// Whether the accent ring around the control drawn as `selector` is
@@ -33878,6 +33894,196 @@ pub(crate) mod tests {
             1,
             "alpha.txt left Staged"
         );
+    }
+
+    /// A dialog or a sheet over a paused merge keeps Tab, Shift+Tab and
+    /// Enter to itself. The root that holds the Working list's stops is the
+    /// dialog layer's parent, so Shift+Tab ran before the toolkit's focus
+    /// trap and walked out of the dialog onto Stage all and the row's Stage,
+    /// where Enter staged with the dialog still open.
+    #[gpui::test]
+    async fn a_modal_over_a_paused_merge_keeps_shift_tab_and_enter(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        pause_a_merge(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        select_working_notes(&app, cx).await;
+        let written = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                (
+                    app.working_paths.staged_count,
+                    app.operation_busy.is_some(),
+                    app.operation_task.is_some(),
+                )
+            })
+        };
+        let before = written(cx);
+        let open = |cx: &mut VisualTestContext, modal: &str| {
+            cx.update(|window, cx| {
+                if modal == "dialog" {
+                    window.has_active_dialog(cx)
+                } else {
+                    window.has_active_sheet(cx)
+                }
+            })
+        };
+        for modal in ["dialog", "sheet"] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    if modal == "dialog" {
+                        app.about(window, cx);
+                    } else {
+                        window.open_sheet(cx, |sheet, _, _| sheet.title("Probe"));
+                    }
+                })
+            });
+            draw(cx);
+            assert!(open(cx, modal), "the {modal} opened");
+            // Its first stop, the one the window's order reaches from the
+            // list while nothing stands after the list.
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            for press in 0..6 {
+                cx.simulate_keystrokes("shift-tab");
+                draw(cx);
+                assert_eq!(
+                    working_stop(&app, cx),
+                    "something else",
+                    "the {modal}, Shift+Tab {press}: focus stays off the list's stops"
+                );
+                assert!(
+                    open(cx, modal),
+                    "the {modal}, Shift+Tab {press}: still open"
+                );
+                if modal == "dialog" {
+                    assert!(
+                        cx.update(|window, cx| gpui_kit::base::active_focus_trap(window, cx)
+                            .is_some_and(|trap| trap.contains_focused(window, cx))),
+                        "Shift+Tab {press}: focus stays inside the dialog"
+                    );
+                }
+            }
+            if modal == "dialog" {
+                // Copy bug diagnostics takes Enter itself and leaves the
+                // dialog open; Done, also a stop, would close it.
+                for _ in 0..8 {
+                    if cx.update(|window, _| {
+                        window
+                            .context_stack()
+                            .iter()
+                            .any(|context| format!("{context:?}").contains("GitTurtleAboutCopy"))
+                    }) {
+                        break;
+                    }
+                    cx.simulate_keystrokes("tab");
+                    draw(cx);
+                }
+            }
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            cx.run_until_parked();
+            assert_eq!(written(cx), before, "the {modal}: Enter writes nothing");
+            if modal == "dialog" {
+                assert!(open(cx, modal), "Enter on its Copy leaves the dialog open");
+                cx.update(|window, cx| window.close_all_dialogs(cx));
+            } else {
+                cx.update(|window, cx| window.close_sheet(cx));
+            }
+            draw(cx);
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(400));
+            draw(cx);
+            assert!(!open(cx, modal), "the {modal} closed");
+            cx.update(|window, cx| app.update(cx, |app, cx| window.focus(&app.file_focus, cx)));
+            draw(cx);
+        }
+    }
+
+    /// A Tab that lands before the frame after the page left Working Changes,
+    /// its binding still on the root, walks none of the list's stops.
+    #[gpui::test]
+    async fn tab_as_the_page_leaves_working_changes_walks_no_stops(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        select_working_notes(&app, cx).await;
+        app.update(cx, |app, _| app.mode = WorkspaceMode::History);
+        // The action as the last frame's binding sends it: no frame has
+        // drawn the page it left.
+        cx.update(|window, cx| {
+            window.dispatch_action(Box::new(crate::workspace::NextWorkingStop), cx)
+        });
+        assert_eq!(
+            working_stop(&app, cx),
+            "the list",
+            "the key walks no stops of a page that has left"
+        );
+    }
+
+    /// A merge in progress draws no composer, so Tab from the last heading
+    /// goes on to a stop outside the Working body; Shift+Tab from that stop
+    /// walks back through the headings and the selected row's control, the
+    /// same way. Its dispatch path lacked the body's key context, so Shift+Tab
+    /// reached the list at once, past every row stop.
+    #[gpui::test]
+    async fn shift_tab_walks_back_through_the_lists_stops_during_a_merge(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        pause_a_merge(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("commit-composer").is_none(),
+            "no composer stands after the list"
+        );
+        let notes = select_working_notes(&app, cx).await;
+        let mut expected = vec![
+            "the list".to_string(),
+            format!("working-stage-{notes}"),
+            "unstage-all".to_string(),
+            "stage-all".to_string(),
+        ];
+        let mut met = vec![working_stop(&app, cx)];
+        for _ in 1..expected.len() {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            met.push(working_stop(&app, cx));
+        }
+        assert_eq!(met, expected, "Tab's order from the list");
+        let first_stop = cx.update(|window, cx| {
+            let (root, list) = {
+                let app = app.read(cx);
+                (app.app_focus.clone(), app.file_focus.clone())
+            };
+            let here = window.focused(cx);
+            window.focus(&root, cx);
+            window.focus_next(cx);
+            let first = window.focused(cx);
+            window.focus(here.as_ref().unwrap_or(&list), cx);
+            first
+        });
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            first_stop,
+            "Tab from the last stop wraps to the window's first stop, none standing after it"
+        );
+        let mut back = Vec::new();
+        for _ in 0..expected.len() {
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            back.push(working_stop(&app, cx));
+        }
+        expected.reverse();
+        assert_eq!(back, expected, "Shift+Tab walks back the same way");
     }
 
     /// A row's Stage that stages its file leaves no focus behind it: at 13 pt

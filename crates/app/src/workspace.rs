@@ -40,32 +40,40 @@ pub(crate) struct WorkingInspectorLayout {
     row_controls: RowControls,
 }
 
-// Tab and Shift+Tab in the Working list and the composer, while the list's
-// rows' controls take their turn before the toolkit's own order goes on
+// Tab and Shift+Tab on the Working page, while the list's rows' controls take
+// their turn before the toolkit's own order goes on
 // (`GitTurtle::tab_working_row_stops`). The toolkit's own Tab actions are
-// private to it, so the body binds its own in a deeper key context, which a
-// press tries first, and passes on what it does not move.
+// private to it, so the window's root binds its own in a deeper key context,
+// which a press tries first, and passes on what it does not move. The stop
+// after the list is the composer's first only where the composer is drawn:
+// with an operation in progress it lies outside the Working body, and a
+// binding there left its Shift+Tab to the window's own order, which goes
+// straight to the list. Only the window's root holds every such stop.
 gpui_kit::actions!(gitturtle_working, [NextWorkingStop, PreviousWorkingStop]);
 
-/// The Working body's key context, in which Tab and Shift+Tab reach
-/// [`NextWorkingStop`] and [`PreviousWorkingStop`] before the window's own.
-const WORKING_BODY: &str = "GitTurtleWorkingBody";
+/// The key context the window's root adds while Working Changes shows, in
+/// which Tab and Shift+Tab reach [`NextWorkingStop`] and
+/// [`PreviousWorkingStop`] before the window's own.
+const WORKING_PAGE: &str = "GitTurtleWorkingPage";
 
-/// Marks an application whose keymap holds the Working body's bindings.
+/// The window root's key context while Working Changes shows.
+pub(crate) const WORKING_ROOT: &str = "GitTurtle GitTurtleWorkingPage";
+
+/// Marks an application whose keymap holds the Working page's bindings.
 struct WorkingKeysBound;
 
 impl Global for WorkingKeysBound {}
 
-/// Binds Tab and Shift+Tab in the Working body's key context, once in each
-/// application, as the body is first rendered.
+/// Binds Tab and Shift+Tab in the Working page's key context, once in each
+/// application, as the inspector is first rendered.
 fn bind_working_keys(cx: &mut App) {
     if cx.has_global::<WorkingKeysBound>() {
         return;
     }
     cx.set_global(WorkingKeysBound);
     cx.bind_keys([
-        KeyBinding::new("tab", NextWorkingStop, Some(WORKING_BODY)),
-        KeyBinding::new("shift-tab", PreviousWorkingStop, Some(WORKING_BODY)),
+        KeyBinding::new("tab", NextWorkingStop, Some(WORKING_PAGE)),
+        KeyBinding::new("shift-tab", PreviousWorkingStop, Some(WORKING_PAGE)),
     ]);
 }
 
@@ -138,6 +146,9 @@ struct RowControlsState {
     /// The bounds of the control holding focus, as its row was prepainted in
     /// the frame being drawn; none where no row drawn holds it.
     focused: Option<Bounds<Pixels>>,
+    /// Whether the rows' form draws a file's control (`WorkingForms`), as
+    /// the list last rendered, for keys that land between frames.
+    file_action: bool,
 }
 
 impl RowControls {
@@ -149,17 +160,20 @@ impl RowControls {
     /// goes to the list itself (`list`), as it does when the selected row
     /// leaves, in the frame's deferred work: only the focused handle asks
     /// whether its row is listed, from where the list last drew it, so a
-    /// list draws its rows at no cost for the others.
+    /// list draws its rows at no cost for the others. `file_action` is
+    /// whether this frame's rows draw a file's control.
     fn begin(
         &self,
         listed: impl Fn(&RowControl, usize) -> bool,
         list: &FocusHandle,
+        file_action: bool,
         window: &mut Window,
         cx: &mut App,
     ) {
         let mut departed = None;
         {
             let mut state = self.0.borrow_mut();
+            state.file_action = file_action;
             state.handles.retain(|_, kept| {
                 let drawn = std::mem::take(&mut kept.drawn);
                 if !kept.focus.is_focused(window) {
@@ -247,6 +261,11 @@ impl RowControls {
             .handles
             .values()
             .any(|kept| kept.focus.is_focused(window) && !listed(&kept.row, kept.position))
+    }
+
+    /// Whether the rows' form last drew a file's control.
+    fn file_action(&self) -> bool {
+        self.0.borrow().file_action
     }
 
     /// The key of the control holding focus, if one of these does.
@@ -3388,9 +3407,12 @@ impl GitTurtle {
     /// (`file_action`), one the busy look has dimmed, which the toolkit takes
     /// out of the Tab order, and one in the row landing from a flight, where
     /// the list draws an empty slot.
-    fn working_row_stops(&self, file_action: bool, cx: &App) -> Vec<RowStop> {
+    fn working_row_stops(&self, cx: &App) -> Vec<RowStop> {
         let dimmed = self.operation_busy.is_some() && self.busy_shown();
         let landing = self.working_flight(cx).map(|flight| flight.position);
+        let file_action = self
+            .working_row_controls(cx)
+            .is_some_and(|controls| controls.file_action());
         let selected = self
             .shown_working_cursor()
             .filter(|_| file_action && !dimmed)
@@ -3448,23 +3470,36 @@ impl GitTurtle {
         self.working_body.scroll().set_offset(Point::default());
     }
 
-    /// Tab (`forward`) or Shift+Tab in the Working body: moves focus through
+    /// Tab (`forward`) or Shift+Tab on the Working page: moves focus through
     /// the list's stops (`working_row_stops`), and leaves any other press to
     /// the window's own order, where every row control is out of the Tab
     /// order. From the list Tab reaches the first stop, and from the last
-    /// stop the stop after the list in the window's order, the composer;
-    /// Shift+Tab walks back the same way, from that stop onto the last
-    /// control and from the first control onto the list. Another row's
+    /// stop the stop after the list in the window's order, the composer's
+    /// first or, with an operation in progress, whichever comes next outside
+    /// the body; Shift+Tab walks back the same way, from that stop onto the
+    /// last control and from the first control onto the list. Another row's
     /// control a click has focused counts as standing in the list, so Tab
     /// goes to the first stop and Shift+Tab to the list.
-    fn tab_working_row_stops(
+    pub(super) fn tab_working_row_stops(
         &mut self,
         forward: bool,
-        file_action: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let stops = self.working_row_stops(file_action, cx);
+        // The dialog layer is a child of the root this binding stands on, so
+        // the action fires inside a dialog or a sheet ahead of the toolkit's
+        // focus trap, and it lands a frame after the page or mode has
+        // changed: both go on to the window's own order, as the root's
+        // `NextPane` checks.
+        if self.page != AppPage::Repository
+            || self.mode != WorkspaceMode::Working
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+        {
+            cx.propagate();
+            return;
+        }
+        let stops = self.working_row_stops(cx);
         let held = self
             .working_row_controls(cx)
             .and_then(|controls| controls.holding(window));
@@ -4438,6 +4473,7 @@ impl GitTurtle {
         controls.begin(
             |control, drawn| self.lists_row_control(control, drawn),
             &self.file_focus,
+            forms.file_action,
             window,
             cx,
         );
@@ -5082,15 +5118,6 @@ impl GitTurtle {
             }))
             .id("working-body")
             .debug_selector(|| "working-body".into())
-            .key_context(WORKING_BODY)
-            .on_action(cx.listener(move |this, _: &NextWorkingStop, window, cx| {
-                this.tab_working_row_stops(true, forms.file_action, window, cx)
-            }))
-            .on_action(
-                cx.listener(move |this, _: &PreviousWorkingStop, window, cx| {
-                    this.tab_working_row_stops(false, forms.file_action, window, cx)
-                }),
-            )
             .w(size.width)
             .h(size.height)
             .flex()
