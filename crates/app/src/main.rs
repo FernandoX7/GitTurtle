@@ -557,6 +557,12 @@ struct GitTurtle {
     settings_drafts: settings::DraftState,
     column_drag: Option<(columns::ColumnId, Pixels, f32)>,
     column_menu: bool,
+    /// The Columns button's focus, which Escape closing its panel gives
+    /// focus back to (`clear_search`).
+    columns_focus: FocusHandle,
+    /// The Columns panel's own focus, around its controls: a press on the
+    /// button that closes the panel asks whether focus is inside it.
+    columns_panel_focus: FocusHandle,
     git_actions_open: bool,
     layout_trace: Option<(
         Size<Pixels>,
@@ -969,6 +975,8 @@ impl GitTurtle {
             settings_drafts,
             column_drag: None,
             column_menu: false,
+            columns_focus: cx.focus_handle(),
+            columns_panel_focus: cx.focus_handle(),
             git_actions_open: false,
             layout_trace: None,
             history_horizontal: ScrollHandle::new(),
@@ -2459,20 +2467,32 @@ impl GitTurtle {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
         }
+        let on_history = self.mode == WorkspaceMode::History
+            && !self.blame.is_visible()
+            && !self.file_history.is_active()
+            && !self.revision_inspection.is_active();
         if self.column_menu {
             self.column_menu = false;
             cx.notify();
-            return;
+            if self.page == AppPage::Repository && on_history {
+                // Focus goes back to the button that opened the panel,
+                // wherever it was: a control inside the panel goes with it,
+                // and focus left there reached nothing. A text field keeps
+                // focus, its own Escape being the field's.
+                if !window.has_focused_input(cx) {
+                    self.columns_focus.focus(window, cx);
+                }
+                return;
+            }
+            // Where History is not drawn the panel and its button are not
+            // either: it closes unseen, and this Escape does what it does
+            // here.
         }
         if self.page != AppPage::Repository {
             self.return_from_page(window, cx);
             return;
         }
-        if self.mode != WorkspaceMode::History
-            || self.blame.is_visible()
-            || self.file_history.is_active()
-            || self.revision_inspection.is_active()
-        {
+        if !on_history {
             self.back_to_history(window, cx);
             self.repaint_page(window, cx);
             return;

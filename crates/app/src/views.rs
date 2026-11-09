@@ -1565,7 +1565,13 @@ impl GitTurtle {
             button("columns", "Columns", "columns", self.column_menu)
         }
         .debug_selector(|| "columns".into())
-        .on_click(cx.listener(|this, _, _, cx| {
+        .track_focus(&self.columns_focus)
+        .on_click(cx.listener(|this, _, window, cx| {
+            // A press leaves focus where it is, and closing the panel takes
+            // a control inside it away: the button takes focus instead.
+            if this.column_menu && this.columns_panel_focus.contains_focused(window, cx) {
+                this.columns_focus.focus(window, cx);
+            }
             this.column_menu = !this.column_menu;
             cx.notify();
         }));
@@ -2124,6 +2130,7 @@ impl GitTurtle {
             .when(self.column_menu, |el| {
                 el.child(
                     div()
+                        .track_focus(&self.columns_panel_focus)
                         .p_3()
                         .border_b_1()
                         .border_color(rgb(colors.border))
@@ -37184,6 +37191,200 @@ pub(crate) mod tests {
         settle(&app, cx).await;
         let (control, popup) = hover(cx, "text-review-menu");
         check("text-review-menu", control, popup);
+    }
+
+    /// Escape closing History's Columns panel gives focus back to the
+    /// Columns button with its ring drawn, wherever focus had gone: a
+    /// control inside the panel, which the panel's closing takes away, or
+    /// the list where the pointer left it, since the button refuses focus on
+    /// a press. Left on a control of the closed panel, nothing held focus and
+    /// no key reached anything until a click.
+    #[gpui::test]
+    async fn escape_closing_columns_returns_focus_to_its_button(cx: &mut TestAppContext) {
+        const PANEL: &str = "graph-spacing-row";
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        draw(cx);
+        let button = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("columns")
+                .expect("the Columns button is drawn")
+        };
+        let ringed = |cx: &mut VisualTestContext| {
+            let columns = button(cx);
+            !appearance::painted_button(cx, columns).1.is_empty()
+        };
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let next = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.focus_next(cx));
+            draw(cx);
+        };
+        // A whole press: the keyboard's click waits for the key up.
+        let enter = |cx: &mut VisualTestContext| {
+            let keystroke = gpui::Keystroke::parse("enter").expect("a keystroke");
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(gpui::KeyUpEvent { keystroke });
+            draw(cx);
+        };
+
+        // Every stop the page has with the panel closed, so a new one is
+        // the panel's.
+        let mut page = Vec::new();
+        for _ in 0..256 {
+            next(cx);
+            let Some(now) = focused(cx) else {
+                continue;
+            };
+            if page.contains(&now) {
+                break;
+            }
+            page.push(now);
+        }
+
+        // Opened from the keyboard, focus moved on into the panel.
+        for _ in 0..256 {
+            if ringed(cx) {
+                break;
+            }
+            next(cx);
+        }
+        assert!(ringed(cx), "Tab reaches the Columns button");
+        enter(cx);
+        assert!(cx.debug_bounds(PANEL).is_some(), "Enter opens the panel");
+        let mut inside = None;
+        for _ in 0..256 {
+            next(cx);
+            if let Some(now) = focused(cx)
+                && !page.contains(&now)
+            {
+                inside = Some(now);
+                break;
+            }
+        }
+        let inside = inside.expect("Tab reaches a control in the panel");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds(PANEL).is_none(), "Escape closes the panel");
+        assert_ne!(
+            focused(cx),
+            Some(inside),
+            "focus left the panel's gone control"
+        );
+        assert!(ringed(cx), "from inside the panel: the button's ring");
+
+        // A press on the button closes the panel around a control inside
+        // it: that control goes, and a press leaves focus where it is.
+        enter(cx);
+        assert!(cx.debug_bounds(PANEL).is_some(), "Enter opens the panel");
+        let mut inside = None;
+        for _ in 0..256 {
+            next(cx);
+            if let Some(now) = focused(cx)
+                && !page.contains(&now)
+            {
+                inside = Some(now);
+                break;
+            }
+        }
+        let inside = inside.expect("Tab reaches a control in the panel");
+        let center = button(cx).center();
+        cx.simulate_click(center, Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds(PANEL).is_none(),
+            "the press closes the panel"
+        );
+        assert_ne!(focused(cx), Some(inside), "focus left the gone control");
+        assert!(ringed(cx), "a press that closes it: the button's ring");
+
+        // Opened from the keyboard, focus still on the button.
+        enter(cx);
+        assert!(cx.debug_bounds(PANEL).is_some(), "Enter opens the panel");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds(PANEL).is_none(), "Escape closes the panel");
+        assert!(ringed(cx), "from the button: its ring stays");
+
+        // Opened by the pointer, focus on the list.
+        let list = app.read_with(cx, |app, _| app.focus.clone());
+        cx.update(|window, cx| window.focus(&list, cx));
+        draw(cx);
+        assert!(!ringed(cx), "the list holds focus");
+        let center = button(cx).center();
+        cx.simulate_click(center, Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds(PANEL).is_some(),
+            "the press opens the panel"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds(PANEL).is_none(), "Escape closes the panel");
+        assert!(ringed(cx), "from the pointer: the button's ring");
+
+        // A text field holds focus: Escape closes the panel around it and
+        // leaves it the focus, its own Escape being the field's.
+        let search = app.read_with(cx, |app, cx| {
+            gpui_kit::Focusable::focus_handle(app.search.read(cx), cx)
+        });
+        cx.simulate_click(center, Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds(PANEL).is_some(),
+            "the press opens the panel"
+        );
+        cx.update(|window, cx| window.focus(&search, cx));
+        draw(cx);
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds(PANEL).is_none(), "Escape closes the panel");
+        assert_eq!(focused(cx), Some(search), "the field keeps focus");
+        assert!(!ringed(cx), "the button takes no focus from a field");
+
+        // With History no longer drawn, the panel and its button are not
+        // either: Escape closes the panel and goes on to Back.
+        let columns = app.read_with(cx, |app, _| app.columns_focus.clone());
+        cx.simulate_click(center, Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds(PANEL).is_some(),
+            "the press opens the panel"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            cx.debug_bounds("columns").is_none(),
+            "Compare draws no button"
+        );
+        let files = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| window.focus(&files, cx));
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| !app.column_menu),
+            "Escape closes the hidden panel"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.mode == WorkspaceMode::History),
+            "the same Escape goes on to Back"
+        );
+        assert_ne!(
+            focused(cx),
+            Some(columns),
+            "no frame drew the button, so it took no focus"
+        );
     }
 
     /// Hide whitespace, Context and Reset stay reachable from the keyboard

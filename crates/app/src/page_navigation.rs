@@ -485,7 +485,10 @@ impl GitTurtle {
             return;
         }
         let on_replaced = replaced.is_some_and(|replaced| replaced.is_focused(window));
-        if !on_replaced && !window.context_stack().is_empty() && !self.app_focus.is_focused(window)
+        if !on_replaced
+            && !window.context_stack().is_empty()
+            && !self.app_focus.is_focused(window)
+            && !self.columns_panel_focus.is_focused(window)
         {
             return;
         }
@@ -519,9 +522,11 @@ impl GitTurtle {
     /// element that tracks focus on any press inside it that no child
     /// claims, so whoever clicked there left nothing focused. Given back,
     /// the root left Back, a closing modal, File history and Blame on
-    /// nothing a person could see, where Down moved nothing.
+    /// nothing a person could see, where Down moved nothing. The Columns
+    /// panel's container, which a press on its padding focuses, is no better
+    /// a place.
     pub(super) fn saved_focus(&self, focus: Option<FocusHandle>) -> Option<FocusHandle> {
-        focus.filter(|focus| *focus != self.app_focus)
+        focus.filter(|focus| *focus != self.app_focus && *focus != self.columns_panel_focus)
     }
 
     /// Where focus returns as a modal closes: `previous` while it is still
@@ -5537,6 +5542,45 @@ mod tests {
         assert!(
             app.read_with(cx, |app, _| app.pane == Pane::History),
             "the window names History's pane"
+        );
+    }
+
+    /// A dialog opened with focus on the Columns panel's container, where a
+    /// press on the panel's padding leaves it, closes onto the shown mode's
+    /// own list, as one opened from the window's root does: the container
+    /// shows no focus and acts on no key.
+    #[gpui::test]
+    async fn a_modal_opened_on_the_columns_panel_closes_onto_the_shown_list(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx) = two_files_checked_out(cx).await;
+        let (commits, panel) = app.read_with(cx, |app, _| {
+            (app.focus.clone(), app.columns_panel_focus.clone())
+        });
+        app.update(cx, |app, cx| {
+            app.column_menu = true;
+            cx.notify();
+        });
+        draw(cx);
+        cx.update(|window, cx| window.focus(&panel, cx));
+        draw(cx);
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Probe")));
+        draw(cx);
+        assert!(dialog_open(cx), "the dialog opens");
+        close_probe_dialog(cx);
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(commits),
+            "History's commit list"
+        );
+        let before = app.read_with(cx, |app, _| app.selected_commit);
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_ne!(
+            app.read_with(cx, |app, _| app.selected_commit),
+            before,
+            "Down moves the list's selection"
         );
     }
 
