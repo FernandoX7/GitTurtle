@@ -3966,7 +3966,14 @@ impl GitTurtle {
             });
             (floor, floor + footer_room)
         });
-        let floored = split_floor.is_some();
+        // The whole rows Split's room keeps beneath its headings before the
+        // footer gives way: three beneath the line, and one beside a Download
+        // row alone, whose sentence gives way first (`split_room`).
+        let split_rows = if split_floor.is_some() {
+            Some(SPLIT_FIND_ROWS)
+        } else {
+            (download_offered && lfs_floor.is_none()).then_some(1.)
+        };
         div()
             .size_full()
             .min_w_0()
@@ -3975,7 +3982,7 @@ impl GitTurtle {
             .bg(rgb(colors.canvas))
             .child(crate::in_frame::probed(toolbar, "compare-toolbar"))
             .children(self.render_lfs_failure_line(window, cx))
-            .child(self.render_lfs_download_actions(cx))
+            .child(self.render_lfs_download_actions(column, window, cx))
             .when(
                 matches!(self.content.as_deref(), Some(Content::Text { .. }))
                     && !self.blame.is_visible()
@@ -4008,7 +4015,7 @@ impl GitTurtle {
                     Some(view) => {
                         let room = crate::in_frame::in_frame(move |bounds, window, cx| {
                             split_room(
-                                view, edge, reason, muted, footer, floored, bounds, window, cx,
+                                view, edge, reason, muted, footer, split_rows, bounds, window, cx,
                             )
                         })
                         .named("compare-split-room");
@@ -4112,12 +4119,15 @@ thread_local! {
 /// left two rows and the top of a third above it. Its words stay in the
 /// accessible description of the comparison's group, which is named only
 /// while it carries them, as an image comparison keeps them in the image's;
-/// it comes back as Find closes or the room grows. `floored` says a failing
-/// Git LFS side's line stands above the room, which holds the rows beneath
-/// their headings first: there the footer gives way by the same reckoning,
-/// to the headings in the bar's place, once the line has given way to its
-/// one line and the rows still leave the footer no room. Kept, it ran past
-/// the column, 9 px under the status bar at 18 pt in a 461 × 490 window.
+/// it comes back as Find closes or the room grows. `rows`, where it is
+/// given, is how many whole rows the room keeps beneath its headings before
+/// the footer gives way by the same reckoning, the headings in the bar's
+/// place: three where a failing Git LFS side's line stands above the room,
+/// which holds them first, once the line has given way to its one line, and
+/// one beside a Download row alone, once its sentence has given way. Kept,
+/// the footer ran past the column, 9 px under the status bar, beneath the
+/// line, and beside two stacked Download buttons it left the text no whole
+/// row, both at 18 pt in a 461 × 490 window.
 #[allow(clippy::too_many_arguments)]
 fn split_room(
     view: Entity<crate::split_diff::SplitView>,
@@ -4125,7 +4135,7 @@ fn split_room(
     reason: Option<SharedString>,
     muted: u32,
     footer: Option<CompareFooter>,
-    floored: bool,
+    rows: Option<f32>,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
@@ -4138,20 +4148,23 @@ fn split_room(
     #[cfg(test)]
     SPLIT_FIND_BAR.set(bar);
     let device_pixel = px(1. / window.scale_factor());
-    // What stands above the text, and how much beyond its rows the footer
-    // needs to leave it: with the bar, a device pixel short of the rows, as
-    // layout may draw the text's edges, takes the footer away; beneath the
-    // line the floor holds the rows exactly, and every length is on a whole
-    // device pixel, so only a real shortage, less half a pixel, does.
+    // What stands above the text, the rows the footer leaves it and how much
+    // beyond them it needs: with the bar, a device pixel short of the rows,
+    // as layout may draw the text's edges, takes the footer away; beneath
+    // the headings every length is on a whole device pixel, so only a real
+    // shortage, less half a pixel, does.
     let above = match bar {
-        Some(bar) => Some((bar, device_pixel)),
-        None if floored && footer.is_some() => Some((
-            window.pixel_snap(appearance::ui_size(crate::split_diff::SIDE_HEADING_HEIGHT)),
-            -device_pixel / 2.,
-        )),
+        Some(bar) => Some((bar, SPLIT_FIND_ROWS, device_pixel)),
+        None if footer.is_some() => rows.map(|rows| {
+            (
+                window.pixel_snap(appearance::ui_size(crate::split_diff::SIDE_HEADING_HEIGHT)),
+                rows,
+                -device_pixel / 2.,
+            )
+        }),
         None => None,
     };
-    let gives_way = above.is_some_and(|(above, spare)| {
+    let gives_way = above.is_some_and(|(above, rows, spare)| {
         let footer = window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT));
         let reason = reason.clone().map_or(px(0.), |reason| {
             crate::in_frame::measured_height(partial_reason(reason, muted), width, window, cx)
@@ -4162,7 +4175,7 @@ fn split_room(
         // beyond the rows, a fifth of the device pixel below.
         let padding = window.pixel_snap(CODE_PADDING);
         let text = bounds.size.height - reason - footer - above - padding * 2.;
-        text < line * SPLIT_FIND_ROWS + spare
+        text < line * rows + spare
     });
     let (footer, described) = match footer {
         Some(footer) if gives_way => (None, Some(footer.line)),
@@ -11184,14 +11197,22 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// At 18 pt in a 461 × 490 window a Download row with no failure line
-    /// wraps its sentence inside the pane and sets its buttons whole beneath
-    /// it, for one side's download or both: unbounded in the row's `flex_wrap`
-    /// the sentence ran 368 px, cut at the 243 px pane's edge after "require
-    /// an". Where the row has the room the sentence keeps one line beside
-    /// the button.
+    /// A Download row with no failure line draws its sentence only on one
+    /// line beside its buttons, for one side's download or both, and
+    /// wherever it would not fit there gives it to each button's tooltip and
+    /// accessible description, decided in the frame from the measured
+    /// widths: wrapped inside the pane, at 18 pt in a 461 × 490 window it
+    /// took three lines above one button and left the comparison 4.5 px, and
+    /// Split's text none. Across the widths at 18 and 13 pt and scales 2 and
+    /// 1.2 the comparison keeps a whole row, in Split beneath its whole
+    /// headings, Compare's footer giving way there first, its words kept in
+    /// the comparison's description, and only where it would leave no whole
+    /// row. The sentence first stands at the width where it fits beside the
+    /// buttons, searched for to the pixel: a pixel narrower, it moves.
     #[gpui::test]
-    async fn a_download_row_s_sentence_wraps_inside_the_pane(cx: &mut TestAppContext) {
+    async fn a_download_row_s_sentence_stands_on_one_line_beside_its_buttons(
+        cx: &mut TestAppContext,
+    ) {
         let pointer = |digit: &str| {
             format!(
                 "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
@@ -11210,71 +11231,254 @@ pub(crate) mod tests {
             ),
         ]);
         let (_fixture, app, cx) = history_window_from(cx, &input).await;
-        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
-        const SENTENCE: &str = "lfs-preview-download-explanation";
-        const BEFORE: &str = "download-lfs-side-0";
-        const AFTER: &str = "download-lfs-side-1";
         for (path, sides) in [
-            ("one.txt", &[BEFORE][..]),
-            ("both.txt", &[BEFORE, AFTER][..]),
+            ("one.txt", &["download-lfs-side-0"][..]),
+            (
+                "both.txt",
+                &["download-lfs-side-0", "download-lfs-side-1"][..],
+            ),
         ] {
-            cx.simulate_resize(size(px(1800.), px(900.)));
-            draw(cx);
-            let index = app.read_with(cx, |app, _| {
-                app.files
-                    .iter()
-                    .position(|file| file.path() == std::path::Path::new(path))
-                    .expect("the commit changes it")
-            });
-            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
-            settle(&app, cx).await;
-            let sentence = cx.debug_bounds(SENTENCE).expect("the row says why");
-            let button = cx.debug_bounds(BEFORE).expect("Before offers its download");
-            assert!(
-                button.top() < sentence.bottom() && sentence.right() <= button.left(),
-                "{path}: with the room, {sentence:?} stands beside {button:?}"
-            );
-            let one_line = sentence.size.height;
-            for scale in [2.0f32, 1.2] {
-                cx.simulate_resize(size(px(461.), px(490.)));
-                cx.update(|window, _| window.set_scale_factor(scale));
+            for text in [18, 13] {
+                cx.update(|window, cx| {
+                    window.set_scale_factor(2.);
+                    appearance::apply_text_sizes(text, 12, window, cx)
+                });
+                cx.simulate_resize(size(px(1800.), px(900.)));
                 draw(cx);
-                draw(cx);
-                let at = format!("{path} at scale {scale}");
-                let pane = cx.debug_bounds("compare-toolbar").expect("the pane");
-                let inset = cx.update(|window, _| window.rem_size() * 0.75);
-                let sentence = cx.debug_bounds(SENTENCE).expect("the row says why");
-                assert!(
-                    sentence.right() <= pane.right() - inset + px(1.),
-                    "{at}: {sentence:?} ends inside the pane, {pane:?}"
-                );
-                assert!(
-                    sentence.size.height >= one_line * 2. - px(1.),
-                    "{at}: {sentence:?} wraps, one line being {one_line:?}"
-                );
-                let mut above = sentence.bottom();
-                for &side in sides {
-                    let button = cx.debug_bounds(side).expect("the side offers its download");
-                    assert!(
-                        button.top() >= sentence.bottom() - px(0.5)
-                            && button.right() <= pane.right() + px(0.5),
-                        "{at}: {button:?} stands whole below {sentence:?} in {pane:?}"
-                    );
-                    above = above.max(button.bottom());
+                let index = app.read_with(cx, |app, _| {
+                    app.files
+                        .iter()
+                        .position(|file| file.path() == std::path::Path::new(path))
+                        .expect("the commit changes it")
+                });
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.text_mode = TextMode::Unified;
+                        app.select_file(index, window, cx)
+                    })
+                });
+                settle(&app, cx).await;
+                for scale in [2.0f32, 1.2] {
+                    cx.simulate_resize(size(px(1800.), px(900.)));
+                    cx.update(|window, _| window.set_scale_factor(scale));
+                    draw(cx);
+                    draw(cx);
+                    let at = format!("{path} at {text} pt and scale {scale}");
+                    let whole = cx
+                        .debug_bounds(DOWNLOAD_SENTENCE)
+                        .expect("with the room, the row says why");
+                    let sentence = (whole.size.width, whole.size.height);
+                    for width in (461..=1519).step_by(46) {
+                        for mode in [TextMode::Unified, TextMode::Split] {
+                            let shown = (width as f32, scale, mode);
+                            let (drawn, ..) =
+                                download_row_at(&app, cx, shown, sides, sentence, &at).await;
+                            assert!(
+                                width > 461 || !drawn,
+                                "{at}: in a 461 px window the sentence moves"
+                            );
+                        }
+                    }
+                    // The narrowest window, to the pixel, whose row draws
+                    // the sentence, and the room on both sides of it.
+                    let (mut narrower, mut wider) = (461., 1800.);
+                    while wider - narrower > 1. {
+                        let width = ((narrower + wider) / 2.0f32).floor();
+                        let shown = (width, scale, TextMode::Unified);
+                        let (drawn, ..) =
+                            download_row_at(&app, cx, shown, sides, sentence, &at).await;
+                        if drawn {
+                            wider = width;
+                        } else {
+                            narrower = width;
+                        }
+                    }
+                    for mode in [TextMode::Unified, TextMode::Split] {
+                        let shown = (narrower, scale, mode);
+                        let (moved, short, need) =
+                            download_row_at(&app, cx, shown, sides, sentence, &at).await;
+                        let shown = (wider, scale, mode);
+                        let (stands, room, _) =
+                            download_row_at(&app, cx, shown, sides, sentence, &at).await;
+                        assert!(
+                            !moved && stands && short < need && need <= room + px(1e-3),
+                            "{at}: the sentence first fits, {need:?}, at {wider} px, in \
+                             {room:?}, and moves at {narrower} px, in {short:?}"
+                        );
+                    }
                 }
-                let comparison = cx
-                    .debug_bounds("preview-content")
-                    .expect("the comparison is drawn");
-                assert!(
-                    above <= comparison.top() + px(0.5),
-                    "{at}: the row ends above the comparison, {comparison:?}"
-                );
             }
         }
         cx.update(|window, cx| {
             window.set_scale_factor(2.);
             appearance::apply_text_sizes(13, 12, window, cx);
         });
+    }
+
+    const DOWNLOAD_SENTENCE: &str = "lfs-preview-download-explanation";
+
+    /// Draws Compare at `width` × 490 at `scale` in `mode` and checks its
+    /// Download row of `sides`, whose sentence is `sentence` wide and tall
+    /// on its one line, and the comparison beneath it: whether the row draws
+    /// its sentence, the room it has for it and the room it needs beside
+    /// the buttons, measured as drawn.
+    async fn download_row_at(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        (width, scale, mode): (f32, f32, TextMode),
+        sides: &[&'static str],
+        (sentence_width, one_line): (Pixels, Pixels),
+        at: &str,
+    ) -> (bool, Pixels, Pixels) {
+        use native_accessibility::written;
+        cx.simulate_resize(size(px(width), px(490.)));
+        COMPACT_LABELS.with(|labels| labels.borrow_mut().remove("split-comparison"));
+        cx.update(|window, cx| {
+            window.set_scale_factor(scale);
+            app.update(cx, |app, cx| {
+                app.text_mode = mode;
+                app.ensure_editor(window, cx);
+                cx.notify();
+            })
+        });
+        settle(app, cx).await;
+        draw(cx);
+        draw(cx);
+        let split = mode == TextMode::Split;
+        let at = format!(
+            "{at} in a {width} px window, {}",
+            if split { "Split" } else { "Diff" }
+        );
+        let device = px(1. / scale);
+        let pane = cx.debug_bounds("compare-toolbar").expect("the pane");
+        let (inset, gap) = cx.update(|window, _| {
+            let rem = window.rem_size();
+            (window.pixel_snap(rem * 0.75), window.pixel_snap(rem * 0.5))
+        });
+        let room = pane.size.width - inset * 2.;
+        let buttons = sides
+            .iter()
+            .map(|side| {
+                let button = cx.debug_bounds(side).expect("the side offers its download");
+                assert!(
+                    button.right() <= pane.right() + device / 2.,
+                    "{at}: {side}, {button:?}, stands whole in {pane:?}"
+                );
+                button
+            })
+            .collect::<Vec<_>>();
+        let need = buttons.iter().fold(sentence_width, |need, button| {
+            need + gap + button.size.width
+        });
+        let sentence = cx.debug_bounds(DOWNLOAD_SENTENCE);
+        assert_eq!(
+            sentence.is_some(),
+            need <= room + px(1e-3),
+            "{at}: the sentence stands where it fits beside the buttons, {need:?} in {room:?}"
+        );
+        let mut above = buttons
+            .iter()
+            .fold(pane.bottom(), |above, button| above.max(button.bottom()));
+        match sentence {
+            Some(sentence) => {
+                assert!(
+                    (sentence.size.height - one_line).abs() <= device / 2.
+                        && (sentence.size.width - sentence_width).abs() <= device / 2.
+                        && sentence.left() >= pane.left() + inset - device / 2.,
+                    "{at}: {sentence:?} stands whole on its one line, {one_line:?} tall"
+                );
+                for button in &buttons {
+                    assert!(
+                        sentence.right() <= button.left()
+                            && button.top() < sentence.bottom()
+                            && sentence.top() < button.bottom(),
+                        "{at}: {sentence:?} stands beside {button:?}"
+                    );
+                }
+                above = above.max(sentence.bottom());
+            }
+            None => {
+                for side in sides {
+                    let node = written::get(side).expect("the button is exposed");
+                    assert_eq!(
+                        node.node.description(),
+                        Some(crate::lfs_download::DOWNLOAD_EXPLANATION),
+                        "{at}: the sentence is {side}'s description"
+                    );
+                }
+            }
+        }
+        let comparison = cx
+            .debug_bounds("preview-content")
+            .expect("the comparison is drawn");
+        assert!(
+            above <= comparison.top() + device / 2.,
+            "{at}: the row ends above the comparison, {comparison:?}"
+        );
+        let (row, heading, footer_height, padding) = cx.update(|window, _| {
+            (
+                comparison_floor(1., window),
+                window.pixel_snap(appearance::ui_size(crate::split_diff::SIDE_HEADING_HEIGHT)),
+                window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT)),
+                window.pixel_snap(CODE_PADDING),
+            )
+        });
+        let status = cx.debug_bounds("status-bar").expect("the status bar");
+        let footer = cx.debug_bounds("compare-footer");
+        if let Some(footer) = footer {
+            assert!(
+                footer.bottom() <= status.top() + device / 2.,
+                "{at}: the footer, {footer:?}, ends above the status bar, {status:?}"
+            );
+        }
+        // What the column leaves the comparison and the footer beneath it.
+        let left = status.top() - comparison.top();
+        if !split {
+            assert!(footer.is_some(), "{at}: the footer stays");
+            assert!(
+                comparison.size.height >= row - device / 2.,
+                "{at}: {comparison:?} keeps a whole row, {row:?}"
+            );
+            return (sentence.is_some(), room, need);
+        }
+        let text = cx
+            .debug_bounds("split-text-0")
+            .expect("Split's Before text");
+        assert!(
+            text.top() >= comparison.top() + heading - device / 2.
+                && text.bottom() <= comparison.bottom() + device / 2.,
+            "{at}: Split's headings, {heading:?}, stand whole above {text:?} in {comparison:?}"
+        );
+        assert_eq!(
+            footer.is_some(),
+            left >= heading + row + footer_height - device / 2.,
+            "{at}: the footer gives way only where it would leave no whole row, {left:?} left"
+        );
+        if footer.is_none() {
+            let words =
+                COMPACT_LABELS.with(|labels| labels.borrow().get("split-comparison").cloned());
+            assert!(
+                words.is_some_and(|words| words.contains("Modified")),
+                "{at}: the comparison's description keeps the footer's words"
+            );
+        }
+        if left >= heading + row - device / 2. {
+            assert!(
+                text.size.height >= row - device / 2.,
+                "{at}: {text:?} keeps a whole row, {row:?}"
+            );
+        } else {
+            // No room for a whole row beneath the headings with nothing
+            // else left to give way: the text takes what remains, its
+            // first line whole above its foot's padding.
+            assert!(
+                sentence.is_none()
+                    && text.bottom() >= status.top() - device / 2.
+                    && text.size.height >= row - padding - device / 2.,
+                "{at}: {text:?} takes the room that remains, {left:?}"
+            );
+        }
+        (sentence.is_some(), room, need)
     }
 
     /// Beside a failing Git LFS side's line, Split's footer stands inside

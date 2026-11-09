@@ -268,9 +268,68 @@ pub(super) fn above_comparison<V: 'static>(
         .into_any_element()
 }
 
-/// What a Download row says, beside its buttons or, beside a failing side's
+/// What a Download row says, on one line beside its buttons where it fits
+/// there ([`sentence_fits_beside`]), otherwise, as beside a failing side's
 /// line, in each button's tooltip and accessible description.
 pub(crate) const DOWNLOAD_EXPLANATION: &str = "LFS preview objects require an explicit download.";
+
+const DOWNLOAD_BEFORE: &str = "Download Before…";
+const DOWNLOAD_AFTER: &str = "Download After…";
+const DOWNLOAD_SOURCE: &str = "Download Source…";
+
+thread_local! {
+    static DOWNLOAD_BEFORE_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static DOWNLOAD_AFTER_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static DOWNLOAD_SOURCE_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static EXPLANATION_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// The label a Download button reads, with the cache of its width.
+fn download_label(
+    quick_source: bool,
+    side: usize,
+) -> (
+    &'static str,
+    &'static std::thread::LocalKey<crate::views::TextWidth>,
+) {
+    if quick_source {
+        (DOWNLOAD_SOURCE, &DOWNLOAD_SOURCE_WIDTH)
+    } else if side == 0 {
+        (DOWNLOAD_BEFORE, &DOWNLOAD_BEFORE_WIDTH)
+    } else {
+        (DOWNLOAD_AFTER, &DOWNLOAD_AFTER_WIDTH)
+    }
+}
+
+/// Whether a Download row `column` wide draws its sentence, which it draws
+/// only on one line beside the buttons of all its `sides`, measured from
+/// the interface font in the frame the row is drawn. Wrapped inside the
+/// pane, at 18 pt in a 461 × 490 window, it took three lines above one
+/// button and left the comparison 4.5 px, and above two stacked buttons it
+/// pushed Compare's footer under the status bar; wherever it would not fit
+/// beside them, what it says moves to the buttons, as it does beside a line.
+fn sentence_fits_beside(
+    quick_source: bool,
+    sides: impl IntoIterator<Item = usize>,
+    column: Pixels,
+    window: &Window,
+) -> bool {
+    let rem = window.rem_size();
+    let gap = window.pixel_snap(rem * 0.5);
+    let room = column - window.pixel_snap(rem * 0.75) * 2. + px(1e-3);
+    let sentence =
+        crate::views::cached_text_width(&EXPLANATION_WIDTH, DOWNLOAD_EXPLANATION, window, || {
+            crate::views::line_widths(&[(DOWNLOAD_EXPLANATION, appearance::ui_text(12.))], window)
+        });
+    let buttons = sides
+        .into_iter()
+        .map(|side| {
+            let (label, cache) = download_label(quick_source, side);
+            gap + crate::labelled_button_width(label, cache, window)
+        })
+        .sum::<Pixels>();
+    crate::views::laid_out_text_width(sentence, window) + buttons <= room
+}
 
 impl GitTurtle {
     /// What the failing sides of the shown text say above it, where they say
@@ -332,12 +391,25 @@ impl GitTurtle {
         !self.lfs_download_targets().is_empty()
     }
 
-    pub(super) fn render_lfs_download_actions(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_lfs_download_actions(
+        &self,
+        column: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let targets = self.lfs_download_targets();
         if targets.is_empty() {
             return div().into_any_element();
         }
         let line_above = self.lfs_failure_sentence().is_some();
+        let quick_source = self.is_quick_source();
+        let sentence_moves = line_above
+            || !sentence_fits_beside(
+                quick_source,
+                targets.iter().map(|(side, _)| *side),
+                column,
+                window,
+            );
         div()
             .flex_none()
             .px_3()
@@ -348,16 +420,14 @@ impl GitTurtle {
             .flex_wrap()
             .items_center()
             .gap_2()
-            // Beside a line the row gives the comparison its height: what
+            // Beside a line, or where it would not fit on one line beside
+            // the buttons, the row gives the comparison its height: what
             // this says moves to each button's tooltip and description.
-            .when(!line_above, |row| {
+            .when(!sentence_moves, |row| {
                 row.child(
                     label("lfs-preview-download-explanation", DOWNLOAD_EXPLANATION)
                         .debug_selector(|| "lfs-preview-download-explanation".into())
-                        // No wider than the row: a text's narrowest width is
-                        // its whole line, so it kept all of it in a pane
-                        // narrower than that and was cut at the edge.
-                        .max_w_full()
+                        .whitespace_nowrap()
                         .text_size(appearance::ui_text(12.)),
                 )
             })
@@ -367,17 +437,11 @@ impl GitTurtle {
                     .child(
                         button(
                             ("download-lfs-side", side),
-                            if self.is_quick_source() {
-                                "Download Source…"
-                            } else if side == 0 {
-                                "Download Before…"
-                            } else {
-                                "Download After…"
-                            },
+                            download_label(quick_source, side).0,
                             "pull",
                             false,
                         )
-                        .when(line_above, |download| {
+                        .when(sentence_moves, |download| {
                             crate::branch_actions::Described(download)
                                 .aria_description(DOWNLOAD_EXPLANATION)
                                 .0
