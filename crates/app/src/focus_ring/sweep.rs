@@ -828,6 +828,12 @@ async fn working_changes_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext
     let mut failures = Vec::new();
     for interface in SIZES {
         interface_size(cx, interface);
+        // From the window's root. Without this, a walk begins where the
+        // last ended, on a roving control, whose handle is made afresh once
+        // its row leaves the frame, so the walk would not recognize its own
+        // first stop.
+        app.update_in(cx, |app, window, cx| window.focus(&app.app_focus, cx));
+        draw(cx, 2);
         walk(&app, cx, "Working Changes", interface, &mut failures);
     }
     assert_whole(failures);

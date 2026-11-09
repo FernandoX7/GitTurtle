@@ -33356,6 +33356,11 @@ pub(crate) mod tests {
         for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.), (18, 640., 680.)] {
             sweep::interface_size(cx, interface);
             cx.simulate_resize(size(px(width), px(height)));
+            // From the window's root. Without this, a walk begins where the
+            // last ended, on a roving control, whose handle is made afresh
+            // once its row leaves the frame, so the walk would not recognize
+            // its own first stop.
+            app.update_in(cx, |app, window, cx| window.focus(&app.app_focus, cx));
             draw(cx);
             assert!(
                 app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
