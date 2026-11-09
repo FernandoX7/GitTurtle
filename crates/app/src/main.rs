@@ -1338,7 +1338,7 @@ impl GitTurtle {
                         // the person who closed the tab as Projects' alert.
                         let opening_failed = opening.is_some();
                         if opening_failed {
-                            this.tab_opening_failed();
+                            this.tab_opening_failed(gitturtle_core::could_not_check(&error));
                         }
                         this.status = "Read could not complete".into();
                         this.hub.update(cx, |hub, cx| {

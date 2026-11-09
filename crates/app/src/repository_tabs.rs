@@ -509,10 +509,10 @@ enum Recapture {
     Asked(PathBuf),
     /// That read, by its generation (`GitTurtle::generation`).
     Reading(u64),
-    /// That read failed, for the tab at `path`, with what the window and the
-    /// Projects page say for it in place of the mark's own reason: it goes
-    /// with that tab's mark, never another's
-    /// ([`GitTurtle::tab_found_readable`]).
+    /// That read failed, or an Open could not check the folder, for the tab
+    /// at `path`, with what the window and the Projects page say for it in
+    /// place of the mark's own reason: it goes with that tab's mark, never
+    /// another's ([`GitTurtle::tab_found_readable`]).
     Failed { path: PathBuf, error: String },
 }
 /// The tab strip's refusal of a ninth tab, in the same words wherever the
@@ -1718,8 +1718,12 @@ impl GitTurtle {
     ///
     /// A fresh capture of a marked tab's folder that fails ([`Recapture`])
     /// leaves the tab its root, Git directory and mark as they were, the
-    /// failure said as an Open's.
-    pub(super) fn tab_opening_failed(&mut self) {
+    /// failure said as an Open's. So does an Open that `could_not_check` its
+    /// folder ([`gitturtle_core::CouldNotCheck`]): a lost permission or a
+    /// volume that stopped answering says nothing of the repository, so it
+    /// marks nothing new and leaves a mark as it was, and the next read
+    /// that finds the folder decides ([`Self::tab_found_readable`]).
+    pub(super) fn tab_opening_failed(&mut self, could_not_check: bool) {
         let afresh = matches!(
             self.repository_tabs.recapture,
             Some(Recapture::Reading(generation)) if generation == self.generation
@@ -1727,7 +1731,7 @@ impl GitTurtle {
         if let Some(index) = self.repository_tabs.active
             && let Some(tab) = self.repository_tabs.tabs.get_mut(index)
         {
-            if afresh && tab.error.is_some() {
+            if (afresh && tab.error.is_some()) || could_not_check {
                 self.repository_tabs.recapture =
                     self.error.clone().map(|error| Recapture::Failed {
                         path: tab.path.clone(),
@@ -1830,6 +1834,22 @@ impl GitTurtle {
             .and_then(|index| self.repository_tabs.tabs.get(index))
             .is_some_and(|tab| tab.error.is_some())
     }
+    /// Whether the shown tab has no History for want of a read: its Open
+    /// failed, marking it or, unable to check its folder, not
+    /// ([`Self::tab_opening_failed`]).
+    pub(super) fn shown_tab_unread(&self) -> bool {
+        self.shown_tab_unavailable()
+            || self
+                .repository_tabs
+                .active
+                .and_then(|index| self.repository_tabs.tabs.get(index))
+                .is_some_and(|tab| {
+                    matches!(
+                        &self.repository_tabs.recapture,
+                        Some(Recapture::Failed { path, .. }) if *path == tab.path
+                    )
+                })
+    }
     /// Clears the shown tab's " · unavailable" as a quiet read finds its
     /// repository readable again, with the opening error the window shows
     /// for it, and returns whether there was a mark to clear. A tab's mark
@@ -1839,24 +1859,29 @@ impl GitTurtle {
     /// Cleared only by Refresh, a repository moved back or repaired outside
     /// the app stayed "unavailable" while the window read it.
     pub(super) fn tab_found_readable(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some((path, error)) = self
+        let Some(tab) = self
             .repository_tabs
             .active
             .and_then(|index| self.repository_tabs.tabs.get_mut(index))
-            .and_then(|tab| Some((tab.path.clone(), tab.error.take()?)))
         else {
             return false;
         };
-        // A failed fresh capture of its folder said its own failure in place
-        // of the mark's reason ([`Recapture::Failed`]), which goes with it;
-        // another tab's stays for that tab.
+        let path = tab.path.clone();
+        let mark = tab.error.take();
+        // A failed fresh capture of its folder, or an Open that could not
+        // check it, said its own failure in place of the mark's reason
+        // ([`Recapture::Failed`]), which goes with it; another tab's stays
+        // for that tab.
         let failed = match self.repository_tabs.recapture.take_if(|recapture| {
             matches!(recapture, Recapture::Failed { path: failed, .. } if *failed == path)
         }) {
             Some(Recapture::Failed { error, .. }) => Some(error),
             _ => None,
         };
-        for error in std::iter::once(error).chain(failed) {
+        if mark.is_none() && failed.is_none() {
+            return false;
+        }
+        for error in mark.into_iter().chain(failed) {
             if self.error.as_ref() == Some(&error) {
                 self.error = None;
             }
@@ -4454,6 +4479,189 @@ mod tests {
                 "{after}: nothing beside it"
             );
         }
+    }
+
+    /// A folder's permissions taken away until this drops, so a test that
+    /// takes them leaves a temporary directory that can be removed, however
+    /// it ends.
+    #[cfg(unix)]
+    struct DeniedFolder {
+        path: PathBuf,
+        mode: u32,
+    }
+
+    #[cfg(unix)]
+    impl DeniedFolder {
+        fn new(path: &Path) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(path).unwrap().permissions().mode();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            Self {
+                path: path.to_owned(),
+                mode,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for DeniedFolder {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode))
+                .unwrap();
+        }
+    }
+
+    /// Whether this process is denied a mode-000 folder: root enters one.
+    #[cfg(unix)]
+    fn denied_a_locked_folder() -> bool {
+        let locked = tempfile::tempdir().unwrap();
+        let denied = DeniedFolder::new(locked.path());
+        let refused = std::fs::read_dir(locked.path()).is_err();
+        drop(denied);
+        refused
+    }
+
+    /// Which folder's permissions a test takes away.
+    #[cfg(unix)]
+    #[derive(Clone, Copy)]
+    enum Denied {
+        /// The folder above the repository, so it cannot be reached.
+        Parent,
+        /// The repository's own folder, its metadata still readable from a
+        /// parent that stays searchable.
+        Repository,
+    }
+
+    #[cfg(unix)]
+    impl Denied {
+        fn apply(self, fixture: &tempfile::TempDir, root: &Path) -> DeniedFolder {
+            DeniedFolder::new(match self {
+                Self::Parent => fixture.path(),
+                Self::Repository => root,
+            })
+        }
+    }
+
+    /// A folder whose parent lost search permission, read by a quiet read,
+    /// could not be checked: the tab is not marked and keeps its history,
+    /// and the banner says the folder could not be read and why, never that
+    /// it is gone. Giving the permission back, the next read decides: it
+    /// once read as a folder gone, marked until that read.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_quiet_read_that_cannot_check_the_folder_marks_nothing(cx: &mut TestAppContext) {
+        quiet_read_cannot_check(cx, Denied::Parent).await;
+    }
+
+    /// The repository's own folder denied says the same, its metadata still
+    /// readable: past a check of that alone, the failure came raw from
+    /// Git.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_quiet_read_of_a_denied_repository_folder_marks_nothing(cx: &mut TestAppContext) {
+        quiet_read_cannot_check(cx, Denied::Repository).await;
+    }
+
+    #[cfg(unix)]
+    async fn quiet_read_cannot_check(cx: &mut TestAppContext, which: Denied) {
+        if !denied_a_locked_folder() {
+            return;
+        }
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
+        let shows = app.read_with(cx, |app, _| app.commits.len());
+        assert!(shows > 0, "history shown");
+
+        let denied = which.apply(&fixture, &root);
+        quiet_read_landed(&app, cx);
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let shown = &app.repository_tabs.tabs[0];
+            assert!(shown.error.is_none(), "nothing marked");
+            assert!(!app.tab_label(shown).0.ends_with(" · unavailable"));
+            assert_eq!(app.error, None, "no failed Open");
+            assert_eq!(app.commits.len(), shows, "history stays");
+            let banner = app.operation_error.clone().expect("the read says why");
+            assert!(
+                banner.starts_with(&format!("Local refresh: Could not read {}", root.display()))
+                    && banner.contains("Permission denied")
+                    && !banner.contains("gone"),
+                "{banner}"
+            );
+        });
+
+        drop(denied);
+        quiet_read_landed(&app, cx);
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let shown = &app.repository_tabs.tabs[0];
+            assert!(shown.error.is_none(), "unmarked");
+            assert_eq!(app.commits.len(), shows, "history stays");
+        });
+    }
+
+    /// An explicit Refresh that cannot check the folder fails as an Open:
+    /// the window says it could not be read, the tab keeps its state, marked
+    /// nothing new, and the next read that finds the folder decides, bringing
+    /// History back and taking the words with it.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_refresh_that_cannot_check_the_folder_marks_nothing_new(cx: &mut TestAppContext) {
+        refresh_cannot_check(cx, Denied::Parent).await;
+    }
+
+    /// History's Refresh of the repository's own denied folder agrees with
+    /// the quiet read: it once failed raw past the metadata check and marked
+    /// the tab.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_refresh_of_a_denied_repository_folder_marks_nothing_new(cx: &mut TestAppContext) {
+        refresh_cannot_check(cx, Denied::Repository).await;
+    }
+
+    #[cfg(unix)]
+    async fn refresh_cannot_check(cx: &mut TestAppContext, which: Denied) {
+        if !denied_a_locked_folder() {
+            return;
+        }
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
+        let shows = app.read_with(cx, |app, _| app.commits.len());
+        assert!(shows > 0, "history shown");
+
+        let denied = which.apply(&fixture, &root);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let shown = &app.repository_tabs.tabs[0];
+            assert!(shown.error.is_none(), "nothing marked");
+            assert!(!app.tab_label(shown).0.ends_with(" · unavailable"));
+            let error = app.error.clone().expect("the window says why");
+            assert!(
+                error.contains(&format!("Could not read {}", root.display()))
+                    && error.contains("Permission denied")
+                    && !error.contains("gone"),
+                "{error}"
+            );
+        });
+
+        drop(denied);
+        quiet_read_landed(&app, cx);
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.tabs[0].error.is_none(), "unmarked");
+            assert_eq!(app.error, None, "the read found it");
+            assert_eq!(app.commits.len(), shows, "History back");
+        });
     }
 
     /// A cold tab shown again is opened by its captured root: with its

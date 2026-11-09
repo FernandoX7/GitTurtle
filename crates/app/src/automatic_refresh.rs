@@ -381,7 +381,7 @@ impl GitTurtle {
         // repository again reads the history Refresh would, so clearing the
         // mark brings back what Open would have shown
         // ([`Self::tab_found_readable`]).
-        let history = change.git || change.rescan || self.shown_tab_unavailable();
+        let history = change.git || change.rescan || self.shown_tab_unread();
         let selected = (self.mode == WorkspaceMode::Working)
             .then(|| {
                 let (index, area) = self.working_selected?;

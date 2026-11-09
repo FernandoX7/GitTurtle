@@ -1513,7 +1513,9 @@ impl RepositorySession {
         captured: Option<&Path>,
         git_dir: Option<&GitDirectories>,
     ) -> Result<GitRepository> {
-        let canonical = requested.canonicalize()?;
+        let canonical = requested
+            .canonicalize()
+            .map_err(|error| gitturtle_core::CouldNotCheck::unless_absent(requested, error))?;
         let folders = captured.and_then(|root| FoldersAbove::of(root, &canonical));
         let through = |path: &Path| match &folders {
             Some(folders) => folders.through(path),

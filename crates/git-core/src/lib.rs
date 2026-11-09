@@ -183,6 +183,86 @@ impl std::fmt::Display for ChangedWhileOpening {
 
 impl std::error::Error for ChangedWhileOpening {}
 
+/// A folder's metadata could not be read, for a reason other than nothing
+/// being there: its parent lost search permission, its volume or share
+/// stopped answering. It says nothing of what is at the path, so a check
+/// that meets it finds neither the repository nor its absence: a tab keeps
+/// the state it had until a later read decides, and a write stays refused
+/// ([`GitRepository::verify_at_path`]). [`Path::is_dir`] answers `false`
+/// here, which once read as a folder that was gone. Its text says it could
+/// not be read and, as the next cause in the chain, why.
+#[derive(Debug)]
+pub struct CouldNotCheck {
+    /// The path whose metadata could not be read.
+    pub path: PathBuf,
+    /// Why it could not.
+    pub source: std::io::Error,
+}
+
+impl CouldNotCheck {
+    /// `source`, a failure to read `path`'s metadata, as an error: where it
+    /// says nothing is there it stays as it is, and otherwise it is this.
+    pub fn unless_absent(path: &Path, source: std::io::Error) -> anyhow::Error {
+        if nothing_there(&source) {
+            source.into()
+        } else {
+            Self {
+                path: path.to_owned(),
+                source,
+            }
+            .into()
+        }
+    }
+}
+
+impl std::fmt::Display for CouldNotCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Could not read {}", self.path.display())
+    }
+}
+
+impl std::error::Error for CouldNotCheck {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Whether `error`, or anything that caused it, is [`CouldNotCheck`].
+pub fn could_not_check(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<CouldNotCheck>())
+}
+
+/// Whether a failure to read a path's metadata says nothing is there: no
+/// entry, or a path through something that is no folder, as Git takes one.
+fn nothing_there(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// Whether `path` is a folder that can be read now: `false` where nothing is
+/// there or it is no folder, and [`CouldNotCheck`] for any other failure. It
+/// asks for the folder's own `.`, which needs search permission on the
+/// folder as every read inside it does: a folder that denies it still has
+/// metadata of its own, and past a check of that alone the failure came
+/// later and raw, from `canonicalize`, the capture or Git's start. An empty
+/// path is no folder: joined, it would read as the working directory's `.`.
+fn is_folder(path: &Path) -> Result<bool> {
+    if path.as_os_str().is_empty() {
+        return Ok(false);
+    }
+    match std::fs::metadata(path.join(".")) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if nothing_there(&error) => Ok(false),
+        Err(source) => Err(CouldNotCheck {
+            path: path.to_owned(),
+            source,
+        }
+        .into()),
+    }
+}
+
 /// A repository [`GitRepository::open`] refused as it stands, nothing having
 /// changed: Git found it in one folder and reports a work tree outside that
 /// folder (`core.worktree`), which no `.git` entry leads back from, so no
@@ -906,10 +986,12 @@ impl Reported {
 /// command of an opened repository fails once its `.git` is gone. Decided by
 /// the type its failure carries ([`NotARepository`]), from Git's own words,
 /// before the message, which shows them as a terminal leaves them; the
-/// message is read only for a failure that carries none.
+/// message is read only for a failure that carries none. A folder that could
+/// not be checked found out nothing, whatever its name says.
 pub fn finds_no_repository(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| cause.is::<NotARepository>())
-        || says_no_repository(&format!("{error:#}"))
+    !could_not_check(error)
+        && (error.chain().any(|cause| cause.is::<NotARepository>())
+            || says_no_repository(&format!("{error:#}")))
 }
 
 /// Git's words for a folder it finds no repository at: its usual "not a git
@@ -993,11 +1075,7 @@ impl std::fmt::Debug for GitRepository {
 impl GitRepository {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let requested = path.as_ref();
-        ensure!(
-            requested.is_dir(),
-            "Not a directory: {}",
-            requested.display()
-        );
+        ensure!(is_folder(requested)?, "Not a directory: {}", requested.display());
         // Discovery from the requested folder, unconfined: a folder inside a
         // work tree opens that work tree.
         let reported = Reported::by_git(requested)?;
@@ -1124,8 +1202,12 @@ impl GitRepository {
     /// that failure. A passive read, which never fetches or writes; it
     /// starts one Git process, one per path where a path holds a line
     /// break.
+    ///
+    /// A path whose metadata cannot be read finds nothing out, and is
+    /// [`CouldNotCheck`]: no answer here is "gone", or lets a write through
+    /// ([`Self::verify_at_path`]).
     pub fn found_at_path(&self) -> Result<FoundAtPath> {
-        if !self.path.is_dir() {
+        if !is_folder(&self.path)? {
             return Ok(FoundAtPath::None);
         }
         let mut args = vec![
@@ -1203,7 +1285,10 @@ impl GitRepository {
     /// and root still match what was captured at open, it answers from the
     /// filesystem alone, starting no process; otherwise (an entry changed,
     /// or a repository whose commands cannot be confined) it asks Git
-    /// ([`Self::found_at_path`]).
+    /// ([`Self::found_at_path`]). A path that could not be checked is an
+    /// error ([`CouldNotCheck`]), so it is never taken for the repository:
+    /// every write's identity check ([`Self::ensure_found_at_path`]) refuses
+    /// it.
     ///
     /// A configuration edit also asks Git, once (`core.worktree` re-pointed
     /// after open moves the work tree with no `.git` entry changed): the

@@ -30,6 +30,8 @@ Quick Open source inspections retain their exact scope while switching warm tabs
 
 Moving or removing a repository does not cause automatic filesystem searches or retarget a tab. The original tab remains available with an actionable opening error. Explicitly open its new location, or reconnect its volume/access and retry the existing tab. Drafts at the old canonical path remain saved; GitTurtle does not automatically assign them to a different worktree. Closing an unavailable tab retains its pinned/library entry and recoverable draft.
 
+A folder that cannot be read, its own or its parent's search permission lost or its volume or share not answering, is not a folder gone: nothing is known about what is there. GitTurtle says it could not be read and why, marks nothing new and leaves the tab as it was, and the next read that reaches the folder decides, bringing History back where a failed Open cleared it. No write runs against a folder that could not be checked. Only nothing at the path, or a path through something that is no folder, reads as gone.
+
 ## Accepted operations
 
 An accepted operation captures a `GitRepository` and canonical worktree path before entering the serialized write executor. Tab switching changes only the viewed repository. Activity records, successful outcomes, errors, recovery form feedback, and draft completion route to that captured path. The global operation indicator names the running repository; completion in an inactive tab directs the user there for details. Closing the operation's own tab is refused with its operation/path and a Wait or Cancel recovery instruction. Other tabs remain switchable and closable. A completed Clone/Create does not replace a repository the user switched to while it ran.

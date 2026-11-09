@@ -104,37 +104,161 @@ fn empty_repository_and_nested_discovery() {
     assert!(plain.is::<NotARepository>(), "{plain:#}");
 }
 
-/// Git names the folder it could not enter, so a repository called "not a
-/// git repository" whose access was denied reports that failure: opening it
-/// is not a folder with no repository, and a write's check of what Git finds
-/// there fails with the access error rather than finding it gone.
+/// A repository folder that denies its own search permission could not be
+/// checked, and open and a write's check of what is there agree on it. Its
+/// name proves the words are not read: called "not a git repository", it is
+/// still no folder with no repository and no repository gone.
 #[cfg(unix)]
 #[test]
-fn denied_folder_named_not_a_git_repository_reports_the_access_error() {
-    use std::os::unix::fs::PermissionsExt;
+fn a_denied_repository_folder_could_not_be_checked_by_either_route() {
+    use gitturtle_core::{CouldNotCheck, finds_no_repository};
 
     // Root enters a mode-000 folder, so only a normal user is denied. Its
-    // parent stays searchable: a folder under an unsearchable one is no
-    // directory to open, and Git is never started.
+    // parent stays searchable, so the folder's own metadata still reads and
+    // only reaching inside it fails, Git included; a parent that loses
+    // search is `a_parent_without_search_permission_could_not_be_checked`.
     if rustix::process::geteuid().is_root() {
         return;
     }
     let f = Fixture::named("not a git repository");
     let repo = f.open();
-    fs::set_permissions(&f.root, fs::Permissions::from_mode(0o000)).unwrap();
-    let opened = GitRepository::open(&f.root);
-    let found = repo.found_at_path();
-    fs::set_permissions(&f.root, fs::Permissions::from_mode(0o755)).unwrap();
-    let opened = opened.unwrap_err();
-    assert!(!opened.is::<NotARepository>(), "{opened:#}");
-    assert!(
-        format!("{opened:#}").ends_with("Permission denied"),
-        "{opened:#}"
+    let (opened, found, checked);
+    {
+        let _denied = DeniedFolder::new(&f.root);
+        opened = GitRepository::open(&f.root);
+        found = repo.found_at_path();
+        checked = repo.verify_at_path();
+    }
+    for (route, error) in [
+        ("open", opened.map(|_| ()).unwrap_err()),
+        ("found_at_path", found.map(|_| ()).unwrap_err()),
+        ("verify_at_path", checked.map(|_| ()).unwrap_err()),
+    ] {
+        let unchecked = error
+            .downcast_ref::<CouldNotCheck>()
+            .unwrap_or_else(|| panic!("{route}: {error:#}"));
+        assert_eq!(
+            unchecked.source.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "{route}"
+        );
+        assert!(!error.is::<NotARepository>(), "{route}: {error:#}");
+        assert!(!finds_no_repository(&error), "{route}: {error:#}");
+    }
+    assert_eq!(repo.found_at_path().unwrap(), gitturtle_core::FoundAtPath::Same);
+}
+
+/// A folder's permissions taken away until this drops, so a test that takes
+/// them leaves a temporary directory that can be removed, however it ends.
+#[cfg(unix)]
+struct DeniedFolder<'a> {
+    path: &'a Path,
+    mode: u32,
+}
+
+#[cfg(unix)]
+impl<'a> DeniedFolder<'a> {
+    fn new(path: &'a Path) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path).unwrap().permissions().mode();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+        Self { path, mode }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for DeniedFolder<'_> {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(self.path, fs::Permissions::from_mode(self.mode)).unwrap();
+    }
+}
+
+/// A folder whose parent lost search permission could not be read, nothing
+/// more: neither a repository found nor one gone. `open` and the identity
+/// check both say so, the check's refusal is what stops a write, and giving
+/// the permission back finds the repository as it was. It once read as a
+/// folder that is gone.
+#[cfg(unix)]
+#[test]
+fn a_parent_without_search_permission_could_not_be_checked() {
+    use gitturtle_core::{CouldNotCheck, FoundAtPath, WriteCommand, could_not_check};
+
+    // Root enters a mode-000 folder, so only a normal user is denied.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let f = Fixture::new();
+    f.write("kept.txt", "kept\n");
+    f.commit("first");
+    let repo = f.open();
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    let (opened, found, checked, written);
+    {
+        let _denied = DeniedFolder::new(f.temp.path());
+        opened = GitRepository::open(&f.root);
+        found = repo.found_at_path();
+        checked = repo.verify_at_path();
+        written = repo.execute(&WriteCommand::StageAll);
+    }
+    let opened = opened.expect_err("nothing to open");
+    assert!(opened.is::<CouldNotCheck>(), "{opened:#}");
+    assert!(could_not_check(&opened));
+    assert_eq!(
+        format!("{opened:#}"),
+        format!(
+            "Could not read {}: Permission denied (os error 13)",
+            f.root.display()
+        )
     );
-    let found = found.expect_err("an access error, not a repository gone");
+    assert!(!format!("{opened:#}").contains("Not a directory"));
+    for (read, error) in [
+        ("found_at_path", found.expect_err("could not check")),
+        ("verify_at_path", checked.expect_err("could not check")),
+    ] {
+        assert!(error.is::<CouldNotCheck>(), "{read}: {error:#}");
+        assert!(!format!("{error:#}").contains("gone"), "{read}: {error:#}");
+    }
+    let refused = written.expect_err("a path that could not be checked is never written to");
+    assert!(could_not_check(&refused), "{refused:#}");
+    assert!(!format!("{refused:#}").contains("gone"), "{refused:#}");
+    assert_eq!(repo.found_at_path().unwrap(), FoundAtPath::Same);
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+}
+
+/// Nothing at the path, or a path through something that is no folder, is a
+/// folder that is gone: found as none, and `open` says what it always said.
+#[cfg(unix)]
+#[test]
+fn a_folder_that_is_not_there_is_found_as_none() {
+    use gitturtle_core::{FoundAtPath, could_not_check};
+
+    let f = Fixture::new();
+    let repo = f.open();
+    let moved = f.temp.path().join("moved");
+    fs::rename(&f.root, &moved).unwrap();
+    assert_eq!(repo.found_at_path().unwrap(), FoundAtPath::None, "NotFound");
+    assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::None, "NotFound");
+    let missing = GitRepository::open(&f.root).unwrap_err();
+    assert!(!could_not_check(&missing), "{missing:#}");
+    assert!(format!("{missing:#}").starts_with("Not a directory:"));
+
+    // A file where its folder was, and a path through that file (`ENOTDIR`).
+    fs::write(&f.root, "a file now\n").unwrap();
+    assert_eq!(repo.found_at_path().unwrap(), FoundAtPath::None, "a file");
+    let through = GitRepository::open(f.root.join("inner")).unwrap_err();
+    assert!(!could_not_check(&through), "ENOTDIR: {through:#}");
+    assert!(format!("{through:#}").starts_with("Not a directory:"));
+}
+
+/// An empty path is no folder: it never opens the repository the process
+/// happens to run in.
+#[test]
+fn an_empty_path_is_no_folder() {
+    let empty = GitRepository::open("").unwrap_err();
     assert!(
-        format!("{found:#}").ends_with("Permission denied"),
-        "{found:#}"
+        format!("{empty:#}").starts_with("Not a directory:"),
+        "{empty:#}"
     );
 }
 

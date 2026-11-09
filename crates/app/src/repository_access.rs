@@ -7,7 +7,12 @@ enum Failure {
     Missing,
     NotRepository,
     Timeout,
+    Unreadable,
     Other,
+}
+
+fn permission_denied(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::PermissionDenied || matches!(error.raw_os_error(), Some(1 | 13))
 }
 
 fn classify(error: &anyhow::Error) -> Failure {
@@ -17,10 +22,17 @@ fn classify(error: &anyhow::Error) -> Failure {
         if cause.is::<gitturtle_core::NotARepository>() {
             return Failure::NotRepository;
         }
+        // Its own type before the error it carries: "timed out" in that
+        // error's words is no Git deadline.
+        if let Some(unchecked) = cause.downcast_ref::<gitturtle_core::CouldNotCheck>() {
+            return if permission_denied(&unchecked.source) {
+                Failure::Permission
+            } else {
+                Failure::Unreadable
+            };
+        }
         if let Some(error) = cause.downcast_ref::<io::Error>() {
-            if error.kind() == io::ErrorKind::PermissionDenied
-                || matches!(error.raw_os_error(), Some(1 | 13))
-            {
+            if permission_denied(error) {
                 return Failure::Permission;
             }
             if error.kind() == io::ErrorKind::NotFound {
@@ -74,6 +86,9 @@ pub(super) fn explain(path: &Path, error: anyhow::Error) -> anyhow::Error {
             } else {
                 "Git exceeded the local read deadline. Check that the repository's storage is available, then retry. No fetch was requested."
             }
+        }
+        Failure::Unreadable => {
+            "This repository's folder could not be read, so whether it is still there is not known. Check that its volume or network share is available and readable, then refresh."
         }
         Failure::Other => {
             "The local repository could not be opened. Review the diagnostic and choose its current folder with Open Repository."
@@ -170,6 +185,45 @@ mod tests {
                 )
             );
         }
+    }
+
+    /// A folder that could not be checked is told apart by its type and
+    /// says it could not be read and why, never that it is gone or missing;
+    /// "timed out" in the operating system's words is no Git deadline.
+    #[test]
+    fn a_folder_that_could_not_be_checked_says_so() {
+        let unchecked = |code| {
+            gitturtle_core::CouldNotCheck::unless_absent(
+                Path::new("/mnt/share/project"),
+                io::Error::from_raw_os_error(code),
+            )
+        };
+        // EIO and ETIMEDOUT.
+        for code in [5, 110] {
+            assert_eq!(classify(&unchecked(code)), Failure::Unreadable, "{code}");
+            assert!(!finds_no_repository(&unchecked(code)), "{code}");
+            let said = format!(
+                "{:#}",
+                explain(Path::new("/mnt/share/project"), unchecked(code))
+            );
+            assert!(said.starts_with("This repository's folder could not be read"), "{said}");
+            assert!(said.contains("Could not read /mnt/share/project"), "{said}");
+            assert!(!said.contains("gone") && !said.contains("missing"), "{said}");
+        }
+        assert_eq!(classify(&unchecked(13)), Failure::Permission);
+        assert!(!finds_no_repository(&unchecked(13)));
+    }
+
+    /// Nothing at the path stays the plain error it was, read as missing,
+    /// through a typed helper that keeps every other error apart.
+    #[test]
+    fn nothing_at_the_path_stays_missing() {
+        let error = gitturtle_core::CouldNotCheck::unless_absent(
+            Path::new("/mnt/share/project"),
+            io::Error::from(io::ErrorKind::NotFound),
+        );
+        assert!(!gitturtle_core::could_not_check(&error), "{error:#}");
+        assert_eq!(classify(&error), Failure::Missing);
     }
 
     #[test]
