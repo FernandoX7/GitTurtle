@@ -42,6 +42,7 @@ pub(super) enum ShortcutId {
     FindInComparison,
     Search,
     Sidebar,
+    ProjectPane,
     Back,
     Copy,
     SelectWorking,
@@ -190,6 +191,14 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
         "Repository",
         "primary-b",
         ToggleSidebar,
+        APP
+    ),
+    shortcut!(
+        ProjectPane,
+        "Toggle Project List",
+        "Repository",
+        "primary-shift-b",
+        ToggleProjectPane,
         APP
     ),
     shortcut!(
@@ -2279,6 +2288,56 @@ mod tests {
                 assert!(!label(spec.id).contains(['⌃', '⌥', '⇧', '⌘']));
             }
         }
+    }
+
+    /// Toggle Project List stands beside Toggle Sidebar in the Repository
+    /// group of Keyboard Shortcuts, with the key each platform binds. It
+    /// once had no key and no row, so only the menu and palette reached it.
+    #[test]
+    fn the_project_list_toggle_is_listed_beside_the_sidebars() {
+        let place = |id| SHORTCUTS.iter().position(|spec| spec.id == id).unwrap();
+        let (sidebar, pane) = (place(ShortcutId::Sidebar), place(ShortcutId::ProjectPane));
+        assert_eq!(pane, sidebar + 1, "next to Toggle Sidebar");
+        assert_eq!(SHORTCUTS[pane].group, SHORTCUTS[sidebar].group);
+        assert_eq!(SHORTCUTS[pane].label, "Toggle Project List");
+        assert_eq!(resolve_key(SHORTCUTS[pane].key, true), "cmd-shift-b");
+        assert_eq!(resolve_key(SHORTCUTS[pane].key, false), "ctrl-shift-b");
+        let listed = help_matches("project list");
+        assert!(
+            listed.iter().any(|row| matches!(
+                row,
+                HelpRow::Entry(entry)
+                    if entry.label == "Toggle Project List"
+                        && entry.key == label(ShortcutId::ProjectPane)
+            )),
+            "Keyboard Shortcuts lists it with its key"
+        );
+    }
+
+    /// The listed key is the one the window binds: pressed from the window
+    /// it turns the project list on and off, as the menu does.
+    #[gpui::test]
+    async fn the_project_list_key_turns_the_pane_on_and_off(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|window, cx| {
+            bind_keys(cx);
+            let focus = app.read(cx).app_focus.clone();
+            window.focus(&focus, cx);
+        });
+        let key = resolve_key("primary-shift-b", cfg!(target_os = "macos"));
+        let shown = app.read_with(cx, |app, _| app.settings.project_pane);
+        cx.simulate_keystrokes(&key);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.settings.project_pane),
+            !shown,
+            "the key turns the list over"
+        );
+        cx.simulate_keystrokes(&key);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.settings.project_pane),
+            shown,
+            "and back"
+        );
     }
 
     #[test]

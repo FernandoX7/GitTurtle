@@ -18216,6 +18216,88 @@ pub(crate) mod tests {
         assert!(announced().is_empty());
     }
 
+    /// On the Projects hub, which never draws the project list, every route
+    /// that changes its setting shows the same note the held-back pane
+    /// shows, so a setting never changes with nothing visible: the key, the
+    /// View menu's action and the command palette. Wide enough to draw the
+    /// pane on any other page, the hub still does not.
+    #[gpui::test]
+    async fn toggling_the_project_list_on_the_hub_is_never_silent(cx: &mut TestAppContext) {
+        use crate::command_palette::CommandId;
+        use crate::native_accessibility::written;
+        use crate::project_pane::{HELD_BACK_OFF_NOTE, HUB_ON_NOTE};
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(app.read_with(cx, |app, _| app.page), AppPage::Projects);
+        let line = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_line_drawn(window, cx)))
+        };
+        let heard = || {
+            written::announced_from("project-pane-held-back")
+                .into_iter()
+                .map(|(id, announced)| (id, announced.live))
+                .collect::<Vec<_>>()
+        };
+        let by_key = |cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-shift-b"
+            } else {
+                "ctrl-shift-b"
+            });
+        };
+        let by_menu = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.dispatch_action(Box::new(ToggleProjectPane), cx));
+        };
+        let by_palette = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.run_palette_command(CommandId::ProjectPane, window, cx)
+                })
+            });
+        };
+        type Route<'a> = (&'a str, &'a dyn Fn(&mut VisualTestContext));
+        let routes: [Route; 3] = [
+            ("key", &by_key),
+            ("menu", &by_menu),
+            ("palette", &by_palette),
+        ];
+        for (route, press) in routes {
+            let was = app.read_with(cx, |app, _| app.settings.project_pane);
+            press(cx);
+            draw(cx);
+            let on = app.read_with(cx, |app, _| app.settings.project_pane);
+            assert_eq!(on, !was, "{route}: the setting changes");
+            assert!(
+                cx.debug_bounds("project-pane").is_none(),
+                "{route}: no pane"
+            );
+            assert_eq!(
+                line(cx),
+                if on { HUB_ON_NOTE } else { HELD_BACK_OFF_NOTE },
+                "{route}: the status bar says so"
+            );
+            let said = heard();
+            assert_eq!(said.len(), 1, "{route}: {said:?}");
+            assert_eq!(said[0].1, gpui::accesskit::Live::Polite, "{route}");
+        }
+
+        // Too narrow to draw the pane on a repository page, the note made on
+        // the hub does not follow there.
+        assert!(app.read_with(cx, |app, _| app.settings.project_pane));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert_eq!(line(cx), HUB_ON_NOTE, "the hub's note is fresh");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(app.read_with(cx, |app, _| app.page), AppPage::Repository);
+        assert_ne!(line(cx), HUB_ON_NOTE, "it stays on the hub");
+    }
+
     /// The held-back notes are whole in a 461 × 490 half tile at 13 and
     /// 18 pt: the status line lays "Project list hidden: widen the window"
     /// and "Project list off" out uncut ([`StatusLaidOut`]), where "Project

@@ -289,6 +289,10 @@ pub struct State {
 /// there.
 pub(super) const HELD_BACK_NOTE: &str = "Project list hidden: widen the window";
 
+/// What the status bar says where Toggle Project List turns the pane on from
+/// the Projects hub, which never draws it, at any window width.
+pub(super) const HUB_ON_NOTE: &str = "Project list on: hidden on this page";
+
 /// What the status bar says where Toggle Project List turns the pane off
 /// while the window holds it back: nothing on screen changes there either.
 pub(super) const HELD_BACK_OFF_NOTE: &str = "Project list off";
@@ -308,6 +312,9 @@ struct HeldNote {
     text: &'static str,
     /// The setting it answers: off only for [`HELD_BACK_OFF_NOTE`].
     on: bool,
+    /// The page it answered on: it goes as the page changes
+    /// ([`GitTurtle::follow_project_pane`]).
+    page: AppPage,
     /// Whether the status line reads it, as it reads the toggle's notes,
     /// or only the polite node announces it, as the switch's.
     shown: bool,
@@ -666,9 +673,10 @@ impl GitTurtle {
     /// the window cannot draw the pane beside the page
     /// (`GitTurtle::project_pane_fits`), the setting is saved on and the
     /// status bar says why nothing appears ([`HELD_BACK_NOTE`]); the pane
-    /// comes as soon as the window gives it room. Turned off there, the
-    /// status bar says so ([`HELD_BACK_OFF_NOTE`]), since nothing on screen
-    /// changes either.
+    /// comes as soon as the window gives it room. On the Projects hub, which
+    /// never draws it, it says the list is on but hidden there
+    /// ([`HUB_ON_NOTE`]). Turned off in either, the status bar says so
+    /// ([`HELD_BACK_OFF_NOTE`]), since nothing on screen changes either.
     pub(super) fn toggle_project_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
@@ -676,10 +684,10 @@ impl GitTurtle {
         let on = !self.settings.project_pane;
         self.settings.project_pane = on;
         self.project_pane.held_note = None;
-        let text = if on {
-            HELD_BACK_NOTE
-        } else {
-            HELD_BACK_OFF_NOTE
+        let text = match (on, self.page == AppPage::Projects) {
+            (false, _) => HELD_BACK_OFF_NOTE,
+            (true, true) => HUB_ON_NOTE,
+            (true, false) => HELD_BACK_NOTE,
         };
         self.note_held_back_pane(text, true, window, cx);
         self.save_preferences(window, cx);
@@ -720,7 +728,9 @@ impl GitTurtle {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        if self.page == AppPage::Projects || self.project_pane_fits(window) {
+        // The hub never draws the pane, so a change there shows nothing
+        // whatever the window's width and is answered like a held-back one.
+        if self.page != AppPage::Projects && self.project_pane_fits(window) {
             return;
         }
         self.project_pane.held_turns = self.project_pane.held_turns.wrapping_add(1);
@@ -737,6 +747,7 @@ impl GitTurtle {
             turn: self.project_pane.held_turns,
             text,
             on: self.settings.project_pane,
+            page: self.page,
             shown,
             _expiry: expiry,
         });
@@ -790,9 +801,12 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> Option<FocusHandle> {
         let setting = self.settings.project_pane;
+        let held = self.project_pane.held_note.as_ref();
         if drawn
-            || self.page == AppPage::Projects
-            || (self.project_pane.held_note.as_ref()).is_some_and(|note| note.on != setting)
+            // A note answers the page it was made on: the hub's says the
+            // list is hidden "on this page", which no other page can say.
+            || held.is_some_and(|note| note.page != self.page)
+            || held.is_some_and(|note| note.on != setting)
         {
             self.project_pane.held_note = None;
         }

@@ -273,7 +273,7 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         ProjectPane,
         "Show or hide the project list",
         "projects pane groups library sidebar toggle",
-        None
+        Some(ShortcutId::ProjectPane)
     ),
     command!(
         Editor,
@@ -729,7 +729,12 @@ impl GitTurtle {
         query_focus.focus(window, cx);
         window.refresh();
     }
-    fn run_palette_command(&mut self, id: CommandId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn run_palette_command(
+        &mut self,
+        id: CommandId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match id {
             CommandId::NextRepositoryTab => self.cycle_repository_tab(1, window, cx),
             CommandId::PreviousRepositoryTab => self.cycle_repository_tab(-1, window, cx),
