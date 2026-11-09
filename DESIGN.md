@@ -361,7 +361,7 @@ Use `Cmd` on macOS and `Ctrl` on Linux for the primary modifier. The [user guide
 | --- | --- |
 | Primary + O | Open repository |
 | Primary + Shift + O | Open Projects |
-| Primary + P | Quick Open a tracked file in the shown repository worktree/revision scope |
+| Primary + P | Quick Open a tracked file in the shown repository worktree/revision scope; the file opens with focus on its source text, ring drawn, and the window's shortcuts work from there |
 | Primary + Shift + P | Open the command palette |
 | Primary + 1 | Return to retained History |
 | Primary + Shift + C | Compare local revisions |

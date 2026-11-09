@@ -638,8 +638,10 @@ struct GitTurtle {
     focus: FocusHandle,
     file_focus: FocusHandle,
     /// Quick source's "Tracked source information", which stands where the
-    /// changed files would and takes the focus that lands on them there
-    /// (`GitTurtle::files_focus`), so the window's shortcuts reach it.
+    /// changed files would and holds the focus that lands on them there
+    /// while the file is read (`GitTurtle::files_focus`), so the window's
+    /// shortcuts reach it. The source text takes it as it lands
+    /// (`GitTurtle::focus_quick_source_text`).
     source_focus: FocusHandle,
     /// The cursor row's menu in the changed-file or Working Changes list,
     /// opened from the keyboard (`native_accessibility::RowActions`).
@@ -1268,6 +1270,7 @@ impl GitTurtle {
                 // held for that Compare, it was lost. A history page's scope
                 // ends with it, paging left as it was.
                 if !matches!(&reply, Ok(Ok(_))) {
+                    this.settle_quick_source_focus();
                     this.history_paging.end_read();
                     if this.repository_tabs.restoring.take().is_some() {
                         this.run_pending_search(window, cx);
@@ -1697,6 +1700,7 @@ impl GitTurtle {
                     let activated = self.preview_activation.take() == Some(self.generation)
                         && self.file_focus.is_focused(window);
                     self.prepare_editor(activated, window, cx);
+                    self.focus_quick_source_text(window, cx);
                     self.restore_tab_documents(cx);
                     self.trace_frame(
                         if self.mode == WorkspaceMode::Working {

@@ -778,47 +778,71 @@ async fn compare_meets_the_rendered_markdown_once_in_order(cx: &mut TestAppConte
     sweep::assert_whole(failures);
 }
 
-/// Quick source, a tracked file opened from Quick Open: its inspector,
-/// "Tracked source information", stands where the changed files would and
-/// takes the focus that lands on them (`GitTurtle::files_focus`), so the
-/// window's shortcuts reach it; it holds no selection, and its controls are
-/// their own stops, so it is no stop. It once tracked the changed files'
-/// handle, a stop that drew no ring there.
-#[gpui::test]
-async fn quick_source_meets_its_stops_both_ways_and_not_its_information(cx: &mut TestAppContext) {
+/// Asks for Quick source of the tracked file that `query` finds first. Its
+/// read has yet to land.
+fn show_quick_source(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, query: &str) {
     use gitturtle_core::{HistoryCancellation, PathScope};
-    let (_fixture, app, cx) = history_window(cx).await;
-    // The fixture's history is imported: its file is checked out, for
-    // Quick Open to find.
-    let path = app.read_with(cx, |app, _| app.path.clone().unwrap());
-    tags::tests::git(&path, &["reset", "--quiet", "--hard"]);
-    settle(&app, cx).await;
-    prepare(&app, cx);
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
             let repo = app.repository.clone().expect("a repository");
             let paths = repo
-                .search_tracked_paths(
-                    &PathScope::Worktree,
-                    "notes",
-                    &HistoryCancellation::default(),
-                )
+                .search_tracked_paths(&PathScope::Worktree, query, &HistoryCancellation::default())
                 .expect("tracked paths");
             let entry = paths.entries.first().expect("the file").clone();
             app.show_tracked_file(paths.scope.clone(), entry, window, cx);
         })
     });
+}
+
+/// The History window with the fixture's file checked out for Quick Open to
+/// find, its history being imported.
+async fn quick_source_window(
+    cx: &mut TestAppContext,
+) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+    let (fixture, app, cx) = history_window(cx).await;
+    let path = app.read_with(cx, |app, _| app.path.clone().unwrap());
+    tags::tests::git(&path, &["reset", "--quiet", "--hard"]);
+    settle(&app, cx).await;
+    prepare(&app, cx);
+    (fixture, app, cx)
+}
+
+/// Quick source's text and whether it holds focus with its ring drawn.
+fn quick_source_text(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> (FocusHandle, bool) {
+    let text = app
+        .read_with(cx, |app, cx| {
+            app.after_editor
+                .as_ref()
+                .map(|editor| editor.read(cx).focus_handle(cx))
+        })
+        .expect("the source text is shown");
+    let ringed =
+        cx.update(|window, cx| text.is_focused(window) && app.read(cx).text_ring_shows(cx));
+    (text, ringed)
+}
+
+/// Quick source, a tracked file opened from Quick Open: its focus lands on
+/// the source text with its ring drawn. Its inspector, "Tracked source
+/// information", stands where the changed files would and holds the focus
+/// that lands on them while the file is read (`GitTurtle::files_focus`); it
+/// holds no selection, and its controls are their own stops, so it is no
+/// stop. It once tracked the changed files' handle, a stop that drew no ring
+/// there, and then kept focus itself with no ring.
+#[gpui::test]
+async fn quick_source_meets_its_stops_both_ways_and_not_its_information(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = quick_source_window(cx).await;
+    show_quick_source(&app, cx, "notes");
     settle(&app, cx).await;
     views::tests::draw(cx);
     assert!(
         app.read_with(cx, |app, _| app.is_quick_source()),
         "Quick source is shown"
     );
-    let information = app.read_with(cx, |app, _| app.source_focus.clone());
     assert!(
-        cx.update(|window, _| information.is_focused(window)),
-        "opening Quick source puts focus on its information"
+        quick_source_text(&app, cx).1,
+        "opening Quick source puts focus on its text, its ring drawn"
     );
+    let information = app.read_with(cx, |app, _| app.source_focus.clone());
     let names = repository_names(&app, cx).handle(Some(information), "the information");
     let mut failures = Vec::new();
     let (forward, backward) = audit(
@@ -838,6 +862,203 @@ async fn quick_source_meets_its_stops_both_ways_and_not_its_information(cx: &mut
         }
     }
     sweep::assert_whole(failures);
+}
+
+/// Quick source opened by a pointer draws its ring on the text as well, the
+/// press having ended the keyboard's ring, and the window's shortcuts still
+/// work from the text: the command palette opens over it.
+#[gpui::test]
+async fn quick_source_rings_its_text_and_keeps_the_windows_keys(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = quick_source_window(cx).await;
+    // As a click on one of Quick Open's rows leaves it.
+    cx.simulate_mouse_down(point(px(2.), px(2.)), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(point(px(2.), px(2.)), MouseButton::Left, Modifiers::none());
+    views::tests::draw(cx);
+    show_quick_source(&app, cx, "notes");
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    assert!(
+        quick_source_text(&app, cx).1,
+        "the text holds focus with its ring"
+    );
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-shift-p"
+    } else {
+        "ctrl-shift-p"
+    });
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "the window's shortcuts work from the text"
+    );
+}
+
+/// A tracked file with no text to show leaves focus on Quick source's
+/// information, which then draws the ring, so focus is never left unseen.
+#[gpui::test]
+async fn quick_source_of_a_binary_rings_its_information(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = quick_source_window(cx).await;
+    let path = app.read_with(cx, |app, _| app.path.clone().unwrap());
+    std::fs::write(path.join("data.bin"), [0_u8, 1, 2, 0, 255, 0]).unwrap();
+    tags::tests::git(&path, &["add", "data.bin"]);
+    tags::tests::git(&path, &["commit", "--quiet", "-m", "A binary"]);
+    settle(&app, cx).await;
+    show_quick_source(&app, cx, "data.bin");
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    let information = app.read_with(cx, |app, _| app.source_focus.clone());
+    assert!(
+        cx.update(|window, _| information.is_focused(window)),
+        "focus rests on the information"
+    );
+    assert!(
+        cx.debug_bounds("quick-source-information-ring").is_some(),
+        "the information draws the ring"
+    );
+}
+
+/// Refresh in Quick source, and a write's landing with no key pressed, read
+/// the file again, which drops the text that held focus. Focus waits on the
+/// information while the read runs, so the window's keys still work, and goes
+/// back to the text as it lands, its ring drawn. It once rested on the
+/// dropped editor, on no control at all.
+#[gpui::test]
+async fn quick_source_keeps_focus_on_its_text_through_a_re_read(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = quick_source_window(cx).await;
+    cx.update(|_, cx| shortcuts::bind_keys(cx));
+    show_quick_source(&app, cx, "notes");
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    let source = app.read_with(cx, |app, _| app.source_focus.clone());
+    assert!(quick_source_text(&app, cx).1, "opened on its text");
+
+    // The key, which parks until the read has landed.
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-r"
+    } else {
+        "ctrl-r"
+    });
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    assert!(
+        quick_source_text(&app, cx).1,
+        "Refresh's key ends with focus on the text, ringed"
+    );
+
+    // The same action, seen while the read still runs.
+    cx.update(|window, cx| window.dispatch_action(Box::new(Refresh), cx));
+    assert!(
+        cx.update(|window, _| source.is_focused(window)),
+        "Refresh leaves focus on the information while the file is read"
+    );
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    assert!(
+        quick_source_text(&app, cx).1,
+        "and the landing gives it back to the text, ringed"
+    );
+
+    // A write's landing: an LFS download of the shown file reads it again
+    // with no key pressed (`GitTurtle::read_after_write`).
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let path = app.path.clone().expect("a repository");
+            let file = app.files[0].clone();
+            let view = (file, app.mode, app.generation);
+            app.read_after_write(&path, false, Some((true, Some(view))), window, cx);
+        })
+    });
+    assert!(
+        cx.update(|window, _| source.is_focused(window)),
+        "a landing write holds it on the information too"
+    );
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    assert!(
+        quick_source_text(&app, cx).1,
+        "and it returns to the text as the read lands"
+    );
+}
+
+/// A re-read landing never moves focus the person placed: with the file open
+/// and focus clicked onto its information, a read of the same file that lands
+/// later leaves focus there. Only the open and a re-read that held the text's
+/// own focus return it to the text.
+#[gpui::test]
+async fn quick_source_re_read_leaves_focus_the_person_placed(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = quick_source_window(cx).await;
+    show_quick_source(&app, cx, "notes");
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    let (text, ringed) = quick_source_text(&app, cx);
+    assert!(ringed, "opened on its text");
+    let source = app.read_with(cx, |app, _| app.source_focus.clone());
+    // As a click on the information region leaves it.
+    cx.update(|window, cx| window.focus(&source, cx));
+    views::tests::draw(cx);
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.read_selected_preview(window, cx)));
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+
+    assert!(
+        cx.update(|window, _| source.is_focused(window)),
+        "the read's landing leaves focus where the person put it"
+    );
+    assert!(!cx.update(|window, _| text.is_focused(window)));
+}
+
+/// A re-read that fails settles what it owed the text: focus left on the
+/// information stays there when a later read of the file succeeds.
+#[gpui::test]
+async fn quick_source_failed_re_read_owes_the_text_nothing(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = quick_source_window(cx).await;
+    show_quick_source(&app, cx, "notes");
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    assert!(quick_source_text(&app, cx).1, "opened on its text");
+    let source = app.read_with(cx, |app, _| app.source_focus.clone());
+    let file = app.read_with(cx, |app, _| app.path.clone().unwrap().join("notes.txt"));
+    let saved = std::fs::read(&file).unwrap();
+
+    // The file goes, and Refresh's read of it fails.
+    std::fs::remove_file(&file).unwrap();
+    cx.update(|window, cx| window.dispatch_action(Box::new(Refresh), cx));
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.error.is_some() && app.content.is_none()),
+        "the read failed"
+    );
+
+    // Back again, with focus placed on the information, a read succeeds.
+    std::fs::write(&file, saved).unwrap();
+    cx.update(|window, cx| window.focus(&source, cx));
+    views::tests::draw(cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.read_selected_preview(window, cx)));
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.content.is_some()),
+        "the read succeeded"
+    );
+    assert!(
+        cx.update(|window, _| source.is_focused(window)),
+        "focus stays where it was placed"
+    );
+}
+
+/// Focus the person moved while the file was read stays where they put it.
+#[gpui::test]
+async fn quick_source_leaves_focus_moved_during_its_read(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = quick_source_window(cx).await;
+    show_quick_source(&app, cx, "notes");
+    let moved = app.read_with(cx, |app, _| app.pull_requests_focus.clone());
+    cx.update(|window, cx| window.focus(&moved, cx));
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    let (text, _) = quick_source_text(&app, cx);
+    assert!(cx.update(|window, _| moved.is_focused(window)));
+    assert!(!cx.update(|window, _| text.is_focused(window)));
 }
 
 /// The rendered Markdown in Split: its keys move only the active side, so

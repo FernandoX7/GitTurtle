@@ -42,6 +42,11 @@ struct Inspection {
     lineage: file_history::State,
     previous: State,
     target: Target,
+    /// Whether focus waiting on Quick source's information goes to the text
+    /// as the next read lands: set by the open and by a re-read that dropped
+    /// the text focus was in ([`GitTurtle::focus_quick_source_text`]). Any
+    /// other landing leaves focus where the person put it.
+    text_focus_owed: bool,
 }
 enum Target {
     Comparison(RevisionComparison),
@@ -337,6 +342,7 @@ impl GitTurtle {
             lineage,
             previous,
             target,
+            text_focus_owed: false,
         }));
         self.file_filter
             .update(cx, |input, cx| input.set_value("", window, cx));
@@ -398,6 +404,9 @@ impl GitTurtle {
         self.refresh_file_filter(window, cx);
         self.selected_file = Some(0);
         self.text_mode = TextMode::After;
+        if let Some(active) = self.revision_inspection.active.as_deref_mut() {
+            active.text_focus_owed = true;
+        }
         self.status = "Tracked source file · browsing is local and read-only".into();
         self.request(
             Job::TrackedPreview { repo, entry, scope },
@@ -454,12 +463,78 @@ impl GitTurtle {
 
     /// Where focus on the changed files lands: their list, or in Quick
     /// source, which draws none, the inspector's tracked source information
-    /// beside the file, which takes the window's shortcuts there.
+    /// beside the file, which takes the window's shortcuts there while the
+    /// file is read, and then gives focus to its text
+    /// ([`Self::focus_quick_source_text`]).
     pub(super) fn files_focus(&self) -> &FocusHandle {
         if self.is_quick_source() {
             &self.source_focus
         } else {
             &self.file_focus
+        }
+    }
+
+    /// Quick source's file has been read: focus still waiting on its
+    /// information moves to the source text, which draws its ring on the
+    /// pane's edge and takes the window's shortcuts. A file with no text to
+    /// show, as an image or a binary, leaves it there, where the information
+    /// draws the ring. Either way the ring shows however Quick Open was
+    /// answered, by a click as by a key, as Settings opens. Focus the person
+    /// has moved elsewhere while the file was read stays there, as does
+    /// focus on the information itself after a later re-read: only the open
+    /// and a re-read that held the text's own focus are owed the text
+    /// ([`Inspection::text_focus_owed`]).
+    pub(super) fn focus_quick_source_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Still reading: the landing answers, with the flag still set.
+        if self.content.is_none() {
+            return;
+        }
+        // Taken by every landing, so one that left focus elsewhere owes
+        // nothing to a later re-read.
+        let owed = self
+            .revision_inspection
+            .active
+            .as_deref_mut()
+            .is_some_and(|active| std::mem::take(&mut active.text_focus_owed));
+        if !owed || !self.is_quick_source() || !self.source_focus.is_focused(window) {
+            return;
+        }
+        if let Some(views::ShownText::Editor(editor)) = self.shown_text() {
+            editor.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        self.focus_ring.mark(window);
+    }
+
+    /// A read of Quick source's file ended with nothing to show: what it owed
+    /// the text is settled, so a later read that succeeds leaves focus where
+    /// the person has put it.
+    pub(super) fn settle_quick_source_focus(&mut self) {
+        if let Some(active) = self.revision_inspection.active.as_deref_mut() {
+            active.text_focus_owed = false;
+        }
+    }
+
+    /// Before a re-read of Quick source's file drops its text: focus held
+    /// inside that text moves to the information beside it, as it waits there
+    /// while the file is first read ([`Self::files_focus`]), and the read's
+    /// landing gives it back ([`Self::focus_quick_source_text`]). Left in the
+    /// editor, focus rested on nothing once it had gone, after Refresh or a
+    /// write's landing with no key pressed, and the window's keys reached no
+    /// control until the next click.
+    fn hold_quick_source_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_quick_source() {
+            return;
+        }
+        if let Some(views::ShownText::Editor(editor)) = self.shown_text()
+            && editor
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+        {
+            self.source_focus.focus(window, cx);
+            if let Some(active) = self.revision_inspection.active.as_deref_mut() {
+                active.text_focus_owed = true;
+            }
         }
     }
 
@@ -500,6 +575,7 @@ impl GitTurtle {
             entry: entry.clone(),
             scope: scope.clone(),
         };
+        self.hold_quick_source_focus(window, cx);
         self.clear_preview();
         self.request(job, "Reading tracked file…", window, cx);
         true
@@ -516,6 +592,13 @@ impl GitTurtle {
                     && this.page == AppPage::Repository
                 {
                     this.files_focus().focus(window, cx);
+                    let failed = this.error.is_some();
+                    if let Some(active) = this.revision_inspection.active.as_deref_mut() {
+                        active.text_focus_owed = !failed;
+                    }
+                    // A file read before this frame has already landed, and
+                    // this frame's focus would otherwise rest above it.
+                    this.focus_quick_source_text(window, cx);
                 }
             });
         });
@@ -585,6 +668,7 @@ impl GitTurtle {
                         scope: scope.clone(),
                         entry: entry.clone(),
                     };
+                    self.hold_quick_source_focus(window, cx);
                     self.clear_preview();
                     self.request(job, "Refreshing tracked file…", window, cx);
                 }
@@ -632,11 +716,12 @@ impl GitTurtle {
             ),
         };
         div().id("revision-inspector").size_full().min_h_0().flex().flex_col().bg(rgb(p.panel)).border_l_1().border_color(rgb(p.border))
-            // Quick source omits the changed-file list. Its focus lands on
-            // this visible inspector instead (`files_focus`), so the app's
-            // shortcuts work; the inspector holds no selection and its
-            // controls are their own stops, so it is no Tab stop.
-            .when(self.is_quick_source(), |element| element.role(Role::Group).aria_label("Tracked source information").track_focus(&self.source_focus))
+            // Quick source omits the changed-file list. Focus waits on this
+            // visible inspector while the file is read (`files_focus`), so
+            // the app's shortcuts work, and moves to the text as it lands
+            // (`focus_quick_source_text`); the inspector holds no selection
+            // and its controls are their own stops, so it is no Tab stop.
+            .when(self.is_quick_source(), |element| element.relative().role(Role::Group).aria_label("Tracked source information").track_focus(&self.source_focus))
             .child(crate::native_accessibility::clips_children(div().id("revision-metadata").min_h_0().overflow_y_scroll().flex_shrink_0()
                 .when(!self.is_quick_source(), |element| element.max_h(px(260.)))
                 .p_3().flex().flex_col().gap_2()
@@ -644,7 +729,15 @@ impl GitTurtle {
                 .child(native_accessibility::text("revision-identities", details).text_size(crate::appearance::ui_text(11.)))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Targets stay pinned while you inspect files. Refresh reviews current refs. No checkout or download."))
                 .child(button("change-revisions","Choose targets…","",false).on_click(cx.listener(|this,_,window,cx|this.open_revision_comparison(window,cx))))))
-            .when(!self.is_quick_source(), |element| element.child(self.render_files(cx))).into_any_element()
+            .when(!self.is_quick_source(), |element| element.child(self.render_files(cx)))
+            // Where a file with no text to take focus has left it here. Not
+            // while the file is read, when the ring would flash and move on.
+            .when(self.is_quick_source() && self.loading.is_none(), |element| {
+                element.children(self.focus_ring.edge(&self.source_focus, rgb(p.accent)).map(|edge| {
+                    edge.debug_selector(|| "quick-source-information-ring".into())
+                }))
+            })
+            .into_any_element()
     }
 }
 
