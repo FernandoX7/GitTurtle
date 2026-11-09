@@ -215,6 +215,21 @@ const READING_ROW: &str = "Reading…";
 /// read's error in the preview's box (DESIGN.md, "Empty and edge states").
 const PREVIEW_UNAVAILABLE: &str = "Preview unavailable";
 
+/// The title a failed read of an inspected commit's changed files keeps
+/// above the read's error in the file box (DESIGN.md, "Empty and edge
+/// states").
+const FILES_UNAVAILABLE: &str = "Changed files unavailable";
+
+/// How tall the file box grows to hold a failed read whole, in logical
+/// pixels; a longer failure scrolls inside it. Git's usual message runs to
+/// three lines, which at 18 pt in a 461 × 490 window, wrapped, is taller than
+/// the box's resting 130 px.
+const FILES_FAILURE_MOST: f32 = 200.;
+
+/// What the preview's box says when the changed files could not be read,
+/// where it would otherwise say the commit changed none.
+const NO_FILE_TO_PREVIEW: &str = "No file to preview: the changed files could not be read.";
+
 /// What the preview's box says for a commit that changed no files.
 const NO_FILES: &str = "This commit has no changed files.";
 
@@ -376,6 +391,17 @@ impl InteractiveElement for Described {
 
 impl StatefulInteractiveElement for Described {}
 
+/// A box's failed read, which [`SeriesBrowser::failure_box`] scrolls inside
+/// it: its element's id, its scrollbar's, the name it is read by while it is
+/// a stop, and its scroll and focus.
+struct FailureBox<'a> {
+    id: &'static str,
+    scrollbar: &'static str,
+    label: &'static str,
+    scroll: &'a ScrollHandle,
+    focus: &'a FocusHandle,
+}
+
 pub(crate) struct SeriesBrowser {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
@@ -433,6 +459,15 @@ pub(crate) struct SeriesBrowser {
     failure_focus: FocusHandle,
     /// The line a failing Git LFS side says above the file's preview.
     lfs_failure_line: crate::lfs_download::FailureLine,
+    /// Why the inspected commit's changed files could not be read, which
+    /// their box says and the text modes give as their reason.
+    files_error: Option<String>,
+    /// The scroll of a failure taller than the file box, from its top for
+    /// each showing.
+    files_failure_scroll: ScrollHandle,
+    /// The focus of a failure taller than the file box, a Tab stop only
+    /// while the failure overflows.
+    files_failure_focus: FocusHandle,
     /// The answer of the last line beneath an open control in the preview
     /// that landed, recorded for every line as it lands, in view or not, so
     /// the body scrolls to each click's line once ([`Self::opener`]).
@@ -503,6 +538,9 @@ impl SeriesBrowser {
             failure_scroll: ScrollHandle::new(),
             failure_focus: cx.focus_handle(),
             lfs_failure_line: crate::lfs_download::FailureLine::new("series-lfs-failure", cx),
+            files_error: None,
+            files_failure_scroll: ScrollHandle::new(),
+            files_failure_focus: cx.focus_handle(),
             line_revealed: Default::default(),
             network_pending: false,
             error: None,
@@ -581,6 +619,8 @@ impl SeriesBrowser {
         self.selected_file = None;
         self.preview_error = None;
         self.failure_scroll = ScrollHandle::new();
+        self.files_error = None;
+        self.files_failure_scroll = ScrollHandle::new();
     }
     /// Opens captured bytes for this showing's open controls through the
     /// window's `GitTurtle`, whose keyboard focus ring it draws. A line
@@ -709,7 +749,7 @@ impl SeriesBrowser {
             Some(Content::Notice(notice)) => Some(notice.clone().into()),
             Some(_) => Some(NO_TEXT.into()),
             None if self.reading_preview() => Some(READING_PREVIEW.into()),
-            None => match &self.preview_error {
+            None => match self.preview_error.as_ref().or(self.files_error.as_ref()) {
                 Some(error) => Some(error.clone().into()),
                 None if self.selected_file.is_some() => Some(NO_TEXT.into()),
                 None => Some(CHOOSE_FILE.into()),
@@ -978,10 +1018,30 @@ impl SeriesBrowser {
         });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.generation != generation || !this.current(cx) || !this.inspecting { return; }
                 this.pending = false; this.task = None;
-                match result { Ok(Ok(Output::Changes(files, _))) => { this.files = files; this.files_scroll.scroll_to_item(0, ScrollStrategy::Top); }, Ok(Err(error)) => this.error = Some(format!("{error:#}")), _ => this.error = Some("Changed-file read was interrupted. Return to the series and select the commit again.".into()) }
+                let failed = match result {
+                    Ok(Ok(Output::Changes(files, _))) => {
+                        this.files = files;
+                        this.files_scroll.scroll_to_item(0, ScrollStrategy::Top);
+                        None
+                    }
+                    Ok(Err(error)) => Some(format!("{error:#}")),
+                    _ => Some("Changed-file read was interrupted. Return to the series and select the commit again.".to_owned()),
+                };
+                // Said in the file box, where the read was asked for, and at
+                // once to assistive technology, since focus stays on Back.
+                if let Some(error) = failed {
+                    let _ = crate::copy_feedback::alert(
+                        window,
+                        cx,
+                        native_accessibility::bounded_accessible_text(format!(
+                            "{FILES_UNAVAILABLE}: {error}"
+                        )),
+                    );
+                    this.files_error = Some(error);
+                }
                 cx.notify();
             });
         }));
@@ -1208,10 +1268,8 @@ impl SeriesBrowser {
         }
     }
 
-    /// Scrolls the failure in the preview's box a line, `down` or up, as far
-    /// as its ends.
-    fn scroll_failure(&self, down: bool, window: &Window, cx: &mut Context<Self>) {
-        let scroll = &self.failure_scroll;
+    /// Scrolls a failure in its box a line, `down` or up, as far as its ends.
+    fn scroll_failure(scroll: &ScrollHandle, down: bool, window: &Window, cx: &mut Context<Self>) {
         let line = crate::empty_state::block_height(1, false, window);
         let (at, end) = (-scroll.offset().y, scroll.max_offset().y.max(Pixels::ZERO));
         let to = (if down { at + line } else { at - line }).clamp(Pixels::ZERO, end);
@@ -1419,51 +1477,74 @@ impl SeriesBrowser {
                 .centred(cx)
                 .w_full()
                 .min_h(height);
-            let scroll = &self.failure_scroll;
-            let cue = crate::tags::ScrollCue::new(scroll, Pixels::ZERO);
-            let overflows = cue.kept();
-            let focus = &self.failure_focus;
-            let tracked = overflows || focus.is_focused(window);
-            return cue
-                .list(
-                    div()
-                        .on_children_prepainted(cue.observe(|_, _, _| {}))
-                        .id("series-preview-failure")
-                        .size_full()
-                        .overflow_y_scroll()
-                        .track_scroll(scroll)
-                        .when(tracked, |failure| {
-                            failure
-                                // The handle carries the Tab stop: GPUI
-                                // ignores the `tab_stop` of the div that
-                                // tracks it.
-                                .track_focus(&focus.clone().tab_stop(overflows))
-                                .role(Role::Group)
-                                .aria_label(PREVIEW_UNAVAILABLE)
-                                .on_key_down(cx.listener(
-                                    |this, event: &KeyDownEvent, window, cx| {
-                                        let down = match event.keystroke.key.as_str() {
-                                            "up" => false,
-                                            "down" => true,
-                                            _ => return,
-                                        };
-                                        this.scroll_failure(down, window, cx);
-                                        cx.stop_propagation();
-                                    },
-                                ))
-                        })
-                        .child(state),
-                    "series-preview-failure-scrollbar",
-                )
+            let box_ = FailureBox {
+                id: "series-preview-failure",
+                scrollbar: "series-preview-failure-scrollbar",
+                label: PREVIEW_UNAVAILABLE,
+                scroll: &self.failure_scroll,
+                focus: &self.failure_focus,
+            };
+            return Self::failure_box(state, box_, window, cx)
                 .size_full()
                 .into_any_element();
         }
-        let line = if self.files.is_empty() && !self.pending {
+        let line = if self.files_error.is_some() {
+            NO_FILE_TO_PREVIEW
+        } else if self.files.is_empty() && !self.pending {
             NO_FILES
         } else {
             CHOOSE_FILE
         };
         crate::empty_state::EmptyState::new("series-preview-empty", line).pane(cx)
+    }
+    /// `failure` in a box it fills, scrolling inside it where it is taller,
+    /// cued by its scrollbar: a Tab stop while it overflows, which Up and
+    /// Down scroll, and otherwise no stop ([`Self::preview_prompt`]). Its
+    /// host sizes the element.
+    fn failure_box(
+        failure: impl IntoElement,
+        region: FailureBox<'_>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let FailureBox {
+            id,
+            scrollbar,
+            label,
+            scroll,
+            focus,
+        } = region;
+        let cue = crate::tags::ScrollCue::new(scroll, Pixels::ZERO);
+        let overflows = cue.kept();
+        let tracked = overflows || focus.is_focused(window);
+        let keys = scroll.clone();
+        cue.list(
+            div()
+                .on_children_prepainted(cue.observe(|_, _, _| {}))
+                .id(id)
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(scroll)
+                .when(tracked, |element| {
+                    element
+                        // The handle carries the Tab stop: GPUI ignores the
+                        // `tab_stop` of the div that tracks it.
+                        .track_focus(&focus.clone().tab_stop(overflows))
+                        .role(Role::Group)
+                        .aria_label(label)
+                        .on_key_down(cx.listener(move |_, event: &KeyDownEvent, window, cx| {
+                            let down = match event.keystroke.key.as_str() {
+                                "up" => false,
+                                "down" => true,
+                                _ => return,
+                            };
+                            Self::scroll_failure(&keys, down, window, cx);
+                            cx.stop_propagation();
+                        }))
+                })
+                .child(failure),
+            scrollbar,
+        )
     }
     fn row(&self, index: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(review) = &self.review else {
@@ -1631,6 +1712,11 @@ impl Render for SeriesBrowser {
             let ring = &owner.read(cx).focus_ring;
             self.text_focus(cx).iter().any(|focus| ring.shows(focus))
         });
+        // The file box rings its own edge the same way while a failure too
+        // long for it holds focus.
+        let files_ringed = self.owner.upgrade().is_some_and(|owner| {
+            self.files_error.is_some() && owner.read(cx).focus_ring.shows(&self.files_failure_focus)
+        });
         let cue = crate::tags::ScrollCue::revealing(&self.body, room);
         // The series draws the window's keyboard ring on its own 1 px edge,
         // after a key, until a pointer press.
@@ -1767,9 +1853,18 @@ impl Render for SeriesBrowser {
                 .child(crate::edge_row(window).items_center().on_children_prepainted(self.body.controls(vec![Some(self.back.clone())], room)).child(button("back-rewrite-series", "Back to series", "arrow-left", false).track_focus(&self.back).debug_selector(|| "back-rewrite-series".into()).flex_shrink(1.).on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))).child(div().debug_selector(|| "rewrite-inspect-label".into()).flex_1().min_w_0().text_size(appearance::ui_text(12.)).child(self.inspect_label.clone())))
                 // The changed files being read say so in the file box's
                 // place, at the rows' inset, the box keeping its fixed
-                // height: said after the preview, the read lay below the
-                // view at 18 pt in a 461 × 490 window.
-                .when(self.messages.is_none(), |element| element.child(div().debug_selector(|| "series-files".into()).track_focus(&files_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).on_children_prepainted(self.body.control(files_focus.clone(), room)).h(px(130.)).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().map(|files| if self.reading_files() { files.child(div().px_3().py_2().child(crate::empty_state::EmptyState::new("series-files-reading", READING_FILES).block(cx))) } else { files.child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, window, cx| range.map(|index| {
+                // height (a failure may grow it, within its bound): said
+                // after the preview, the read lay below the view at 18 pt
+                // in a 461 × 490 window.
+                .when(self.messages.is_none(), |element| element.child(div().debug_selector(|| "series-files".into()).track_focus(&files_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).on_children_prepainted(self.body.control(files_focus.clone(), room)).map(|files| if self.files_error.is_some() { files.flex().flex_col().min_h(px(130.)).max_h(px(FILES_FAILURE_MOST)) } else { files.h(px(130.)) }).flex_shrink_0().border_1().border_color(rgb(if files_ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().map(|files| if self.reading_files() { files.child(div().px_3().py_2().child(crate::empty_state::EmptyState::new("series-files-reading", READING_FILES).block(cx))) } else if let Some(error) = &self.files_error {
+                    // Said in the box whose read failed, at the rows' inset,
+                    // the box growing within `FILES_FAILURE_MOST` to hold it,
+                    // scrolling past that: drawn at the body's end, the
+                    // failure lay below the view.
+                    let failure = div().px_3().py_2().child(crate::empty_state::EmptyState::new("series-files-failed", error.clone()).titled(Some(FILES_UNAVAILABLE)).block(cx));
+                    let region = FailureBox { id: "series-files-failure", scrollbar: "series-files-failure-scrollbar", label: FILES_UNAVAILABLE, scroll: &self.files_failure_scroll, focus: &self.files_failure_focus };
+                    files.child(Self::failure_box(failure, region, window, cx).flex_1().min_h_0().w_full())
+                } else { files.child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, window, cx| range.map(|index| {
                     let file = &this.files[index];
                     let control = button(("series-file", index), file.path().to_string_lossy().into_owned(), "", this.selected_file == Some(index)).flex_1().min_w_0().h(appearance::ui_size(30.)).on_click(cx.listener(move |this, _, window, cx| this.file(index, window, cx)));
                     // The chosen row says its preview's read where the
@@ -3740,6 +3835,207 @@ mod tests {
                 painted.last().is_some_and(|(top, _)| !moved(*top, settled)),
                 "{outcome}: the last frame puts them where they settle, {settled:?}: {painted:?}"
             );
+        }
+    }
+
+    /// A failed read of an inspected commit's changed files is said in the
+    /// file box whose read failed, in view without scrolling, at 13 pt in a
+    /// 1,480 × 973 window and at 18 pt in a 461 × 490 half tile: its title
+    /// and message inside the box and the body's view, the box and the
+    /// preview where the read left them, its message wrapped rather than cut
+    /// and announced at once, the preview's box not claiming the commit has
+    /// no files, and Back finding the series list and its actions where
+    /// they were. Drawn at the body's end, the failure lay below the view,
+    /// and the preview's box said the commit changed no files.
+    #[gpui::test]
+    async fn a_failed_changed_file_read_is_said_in_the_file_box(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, review, cx) = rewritten_review(
+            cx,
+            &[&[
+                "commit",
+                "--quiet",
+                "--amend",
+                "-m",
+                "fixture notes 2, reworded",
+            ]],
+        )
+        .await;
+        let app = cx.update(|_, cx| review.read(cx).owner.upgrade().expect("the app"));
+        // The rewritten side names commits Git cannot find, so the real read
+        // fails on the worker.
+        cx.update(|_, cx| {
+            review.update(cx, |review, _| {
+                let mut broken = (**review.review.as_ref().expect("a series")).clone();
+                for commit in &mut broken.rewritten {
+                    commit.commit.oid = "1".repeat(40);
+                }
+                review.review = Some(Arc::new(broken));
+            })
+        });
+        let bounds = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+            cx.debug_bounds(id)
+                .unwrap_or_else(|| panic!("{id} is drawn"))
+        };
+        for (text, width, height) in [(13, 1480., 973.), (18, 461., 490.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            size_to(&app, cx, text, width, height);
+            let series = [bounds(cx, "series-focus-list"), bounds(cx, "reload-series")];
+            cx.update(|window, cx| {
+                review.update(cx, |review, cx| review.inspect(false, window, cx))
+            });
+            // Asked and drawn in one frame, before the worker's reply lands.
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            let boxes = |cx: &mut gpui::VisualTestContext| {
+                ["series-files", "series-file-preview"].map(|id| bounds(cx, id))
+            };
+            let reading = boxes(cx);
+            review.read_with(cx, |review, _| review.worker.wait_idle());
+            draw(cx);
+            let error = review
+                .read_with(cx, |review, _| review.files_error.clone())
+                .unwrap_or_else(|| panic!("{at}: the read fails"));
+            let [files, preview] = boxes(cx);
+            assert_eq!(files.origin, reading[0].origin, "{at}: the box stays put");
+            assert!(
+                files.size.height >= reading[0].size.height
+                    && files.size.height <= px(FILES_FAILURE_MOST),
+                "{at}: the box keeps its resting height or grows within its bound: {files:?}"
+            );
+            if text == 18 {
+                assert!(
+                    files.size.height > reading[0].size.height,
+                    "{at}: the failure's three wrapped lines grow the box: {files:?}"
+                );
+            }
+            assert!(
+                ((preview.top() - reading[1].top()) - (files.size.height - reading[0].size.height))
+                    .abs()
+                    <= px(1.),
+                "{at}: only the box's growth moves the preview: {preview:?} from {:?}",
+                reading[1]
+            );
+            assert_eq!(
+                crate::empty_state::shown("series-files-failed").as_deref(),
+                Some(error.as_str()),
+                "{at}: the box says the read's error"
+            );
+            let body = bounds(cx, "rewrite-review-body");
+            for id in ["series-files-failed-title", "series-files-failed-line"] {
+                let drawn = bounds(cx, id);
+                assert!(
+                    lies_in(drawn, files) && lies_in(drawn, body),
+                    "{at}: {id} at {drawn:?} lies in the box, {files:?}, and the body's view, \
+                     {body:?}"
+                );
+            }
+            assert!(
+                cx.debug_bounds("series-review-error").is_none(),
+                "{at}: said once, in the box"
+            );
+            assert_eq!(
+                crate::empty_state::shown("series-preview-empty").as_deref(),
+                Some(NO_FILE_TO_PREVIEW),
+                "{at}: the preview's box claims no empty commit"
+            );
+            let (_, announced) =
+                crate::copy_feedback::tests::alerted(cx).expect("the failure is announced");
+            assert!(
+                announced.starts_with(FILES_UNAVAILABLE) && announced.contains(error.as_str()),
+                "{at}: announced at once: {announced:?}"
+            );
+            // Back finds the series list and its actions where the failure
+            // left them, before any key has moved the body.
+            cx.update(|window, cx| review.update(cx, |review, cx| review.back(window, cx)));
+            draw(cx);
+            assert_eq!(
+                [bounds(cx, "series-focus-list"), bounds(cx, "reload-series"),],
+                series,
+                "{at}: the series list and its actions are where they were"
+            );
+            cx.update(|window, cx| {
+                review.update(cx, |review, cx| review.inspect(false, window, cx))
+            });
+            review.read_with(cx, |review, _| review.worker.wait_idle());
+            draw(cx);
+            assert!(
+                review.read_with(cx, |review, _| review.files_error.is_some()),
+                "{at}: the read fails again"
+            );
+            // A report longer than the box wraps inside it and stays whole,
+            // scrolling where it is taller than the box.
+            let long = format!(
+                "fatal: {}",
+                "could not read the changed files of this commit ".repeat(10)
+            );
+            cx.update(|_, cx| {
+                review.update(cx, |review, cx| {
+                    review.files_error = Some(long.clone());
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            let [files, _] = boxes(cx);
+            assert!(
+                files.origin == reading[0].origin && files.size.height <= px(FILES_FAILURE_MOST),
+                "{at}: the box stays in its bound: {files:?}"
+            );
+            let line = bounds(cx, "series-files-failed-line");
+            assert!(
+                line.size.height >= crate::empty_state::line_text() * 2.
+                    && line.left() >= files.left()
+                    && line.right() <= files.right(),
+                "{at}: wrapped inside the box, {files:?}, at {line:?}"
+            );
+            if text == 18 {
+                let scrollbar = "series-files-failure-scrollbar";
+                assert!(
+                    cx.debug_bounds(scrollbar).is_some(),
+                    "{at}: the box's scrollbar cues the failure's rest"
+                );
+                for _ in 0..4 {
+                    cx.simulate_event(gpui::ScrollWheelEvent {
+                        position: files.center(),
+                        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-300.))),
+                        modifiers: Modifiers::default(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                    });
+                    draw(cx);
+                }
+                let line = bounds(cx, "series-files-failed-line");
+                assert!(
+                    line.bottom() <= files.bottom() + px(0.25),
+                    "{at}: scrolled to its end, the message ends at {:?} inside the box, \
+                     {files:?}",
+                    line.bottom()
+                );
+                // Too long for the box, it is a stop that rings the box's edge.
+                let focus = review.read_with(cx, |review, _| review.files_failure_focus.clone());
+                for _ in 0..30 {
+                    cx.simulate_keystrokes("tab");
+                    draw(cx);
+                    if cx.update(|window, _| focus.is_focused(window)) {
+                        break;
+                    }
+                }
+                assert!(
+                    cx.update(|window, _| focus.is_focused(window)),
+                    "{at}: Tab reaches the failure"
+                );
+                let accent: gpui::Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+                let edge = bounds(cx, "series-files");
+                assert!(
+                    crate::focus_ring::painted_outlines(cx, accent)
+                        .iter()
+                        .any(|ring| ring.bounds == edge),
+                    "{at}: the box rings its own edge at {edge:?}"
+                );
+            }
+            cx.update(|window, cx| review.update(cx, |review, cx| review.back(window, cx)));
+            draw(cx);
         }
     }
 
