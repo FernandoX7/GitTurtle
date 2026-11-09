@@ -35,6 +35,9 @@ struct Presentation {
     oid: String,
     pieces: Arc<Vec<Piece>>,
     scroll: ListState,
+    /// What reveals a parent's control, in the metadata the list's last row
+    /// holds, as the keyboard reaches it ([`State::parent_reveal`]).
+    reveal: crate::focus_reveal::FocusReveal,
     focus: FocusHandle,
     selection: Selection,
     scale: f32,
@@ -119,6 +122,9 @@ pub(super) struct State(
     RefCell<Option<Presentation>>,
     Cell<Option<Toolbar>>,
     std::cell::OnceCell<FocusHandle>,
+    /// The focus handles of the parents' controls, one for each parent
+    /// drawn so far, at most the 128 the metadata lists.
+    RefCell<Vec<FocusHandle>>,
 );
 
 /// How the message toolbar lays out Copy message, Hash and, in History and
@@ -395,6 +401,26 @@ impl State {
         self.0.borrow().as_ref().map(|state| state.focus.clone())
     }
 
+    /// What scrolls a parent's control of the presented commit into the
+    /// message's view, whole with its ring's room, as the keyboard reaches
+    /// it (DESIGN.md: whole focus). Kept with the presentation, so each
+    /// commit's metadata scrolls for itself.
+    pub(super) fn parent_reveal(&self) -> Option<crate::focus_reveal::FocusReveal> {
+        self.0.borrow().as_ref().map(|state| state.reveal.clone())
+    }
+
+    /// The focus handle the control of parent `index` tracks, the same one
+    /// for every commit the inspector shows, as the message's own focus is,
+    /// so focus on a parent's control survives the presentation's being
+    /// replaced.
+    pub(super) fn parent_focus(&self, index: usize, cx: &mut App) -> FocusHandle {
+        let mut parents = self.3.borrow_mut();
+        while parents.len() <= index {
+            parents.push(cx.focus_handle());
+        }
+        parents[index].clone()
+    }
+
     /// The presented message and metadata's height as last measured
     /// (`GitTurtle::message_extent`).
     #[cfg(test)]
@@ -472,10 +498,15 @@ impl State {
                 .2
                 .get_or_init(|| cx.focus_handle().tab_stop(true))
                 .clone();
+            let scroll = ListState::new(pieces.len() + 1, ListAlignment::Top, px(100.))
+                .with_uniform_item_height(appearance::ui_size(24.));
             *retained = Some(Presentation {
                 oid: commit.oid.clone(),
-                scroll: ListState::new(pieces.len() + 1, ListAlignment::Top, px(100.))
-                    .with_uniform_item_height(appearance::ui_size(24.)),
+                reveal: crate::focus_reveal::FocusReveal::for_list(
+                    scroll.clone(),
+                    crate::focus_reveal::Trigger::Keyboard,
+                ),
+                scroll,
                 selection: Selection::new(pieces.clone(), message_len, focus.clone(), cx),
                 pieces,
                 focus,
@@ -791,6 +822,7 @@ impl GitTurtle {
         commit: &Commit,
         file_history: bool,
         extent: Option<Pixels>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
@@ -819,6 +851,14 @@ impl GitTurtle {
             )
         });
         let (pieces, scroll, focus, selection) = self.inspector_message.presentation(commit, cx);
+        // A parent's control the keyboard has just moved onto scrolls into
+        // the list's view in this frame, before the list lays out, its
+        // state being out of reach while it does.
+        let reveal = self.inspector_message.parent_reveal();
+        if let Some(reveal) = &reveal {
+            reveal.reveal(window, cx);
+        }
+        let room = appearance::button_ring_room(cx);
         let owner = cx.entity().downgrade();
         let oid = commit.oid.clone();
         let rows = selection.clone();
@@ -847,7 +887,12 @@ impl GitTurtle {
                 })
                 .unwrap_or_else(|_| div().into_any_element())
         })
-        .size_full();
+        .size_full()
+        // The metadata ends at its last row, so scrolled to its end the
+        // last parent's control would sit on the list's edge with its ring
+        // cut: the room the reveal keeps below it, which a message that fits
+        // never reaches, the metadata keeping its inset below that row.
+        .when(!file_history, |list| list.pb(room));
         let copy_selection = selection.clone();
         let select_all = selection.clone();
         let copy_oid = commit.oid.clone();
@@ -909,6 +954,7 @@ impl GitTurtle {
                 .children(actions)
             )
             .child(div()
+                .when_some(reveal, |viewport, reveal| viewport.on_children_prepainted(reveal.observe()))
                 .id("commit-message-viewport").debug_selector(|| "commit-message-viewport".into())
                 .role(Role::Document)
                 .aria_label("Commit message. Use arrow keys, Page Up, Page Down, Home or End to scroll.")

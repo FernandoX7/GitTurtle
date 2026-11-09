@@ -2313,7 +2313,10 @@ impl StashBrowser {
                 // are read in its name, one screen reader sentence for one
                 // opening, with no announcement of its own.
                 if opening
-                    && this.page.as_ref().is_some_and(|page| page.entries.is_empty())
+                    && this
+                        .page
+                        .as_ref()
+                        .is_some_and(|page| page.entries.is_empty())
                     && this.stash_focus.is_focused(window)
                 {
                     window.focus(&this.refresh_focus, cx);
@@ -5437,11 +5440,7 @@ mod tests {
     fn opened_from_history<'a>(
         cx: &'a mut gpui_kit::TestAppContext,
         repo: &GitRepository,
-    ) -> (
-        Entity<StashBrowser>,
-        FocusHandle,
-        &'a mut VisualTestContext,
-    ) {
+    ) -> (Entity<StashBrowser>, FocusHandle, &'a mut VisualTestContext) {
         use crate::tags::tests::{draw, window};
         let (app, cx) = window(cx, repo);
         cx.update(|_, cx| {
@@ -5519,8 +5518,9 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
         let (browser, opener, cx) = opened_from_history(cx, &repo);
-        let (list, refresh) =
-            browser.read_with(cx, |this, _| (this.stash_focus.clone(), this.refresh_focus.clone()));
+        let (list, refresh) = browser.read_with(cx, |this, _| {
+            (this.stash_focus.clone(), this.refresh_focus.clone())
+        });
         assert!(
             cx.update(|window, _| list.is_focused(window)),
             "the list holds focus until the read has found what is saved"
@@ -5532,7 +5532,9 @@ mod tests {
         );
         draw(cx);
         assert_eq!(
-            browser.read_with(cx, |this, _| this.refresh_name()).as_ref(),
+            browser
+                .read_with(cx, |this, _| this.refresh_name())
+                .as_ref(),
             concat!(
                 "Refresh saved stashes. ",
                 "No saved stashes · Save one from the Actions menu in Changes"

@@ -1244,7 +1244,7 @@ impl GitTurtle {
                 // reveals the message panel whole as one region.
                 .children(entry.map(|entry| {
                     let extent = self.message_extent(&entry.commit, Some(entry), window, cx);
-                    let message = self.render_commit_message(&entry.commit, true, extent, cx);
+                    let message = self.render_commit_message(&entry.commit, true, extent, window, cx);
                     reveals.panel.region(MESSAGE_REGION, room, message, cx)
                 }))
             .children(lineage.error.as_ref().map(|error| {

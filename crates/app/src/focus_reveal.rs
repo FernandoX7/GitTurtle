@@ -70,6 +70,14 @@
 //! finds it again once it is drawn.
 //! Kept for every id ever handed out, a long session's walks through long
 //! lists grew them by each row.
+//!
+//! A container is usually a `ScrollHandle`'s scrolling element, but it can
+//! be a `gpui::list` whose rows hold the controls, as the commit message's
+//! parents' links are ([`FocusReveal::for_list`]). A list's state cannot be
+//! read while the list lays its rows out, which is when a row's control
+//! reports where it lies, so a list's reports are kept as drawn and settled
+//! once the list has prepainted, with the same offsets and the same reveals
+//! a scroll handle's get ([`FocusReveal::settle_list`]).
 
 use gpui_kit::*;
 use std::{
@@ -87,7 +95,10 @@ use std::{
 /// trackpad's scroll leaves the keyboard the last input.
 #[derive(Default, PartialEq)]
 struct Observation {
-    focus: Option<FocusHandle>,
+    /// Weak: this is only compared, and a strong handle kept alive whatever
+    /// last held focus while any revealing container was drawn, so a control
+    /// that had gone still held focus and the window's repair never ran.
+    focus: Option<WeakFocusHandle>,
     size: Size<Pixels>,
     rem_size: Pixels,
     /// What the view says the container holds ([`FocusReveal::content`]).
@@ -177,6 +188,9 @@ enum Shown {
 #[derive(Clone)]
 pub(crate) struct FocusReveal {
     scroll: ScrollHandle,
+    /// The list this reveals in, for a container whose rows hold the
+    /// controls rather than a `ScrollHandle`'s element ([`Self::for_list`]).
+    list: Option<ListState>,
     trigger: Trigger,
     /// The next frame reveals a focus change whatever made it
     /// ([`Self::reveal_next_focus`]).
@@ -226,6 +240,7 @@ impl FocusReveal {
     pub(crate) fn new(trigger: Trigger) -> Self {
         Self {
             scroll: ScrollHandle::new(),
+            list: None,
             trigger,
             next_focus: Rc::default(),
             observed: Rc::default(),
@@ -241,9 +256,56 @@ impl FocusReveal {
         }
     }
 
+    /// A reveal for the controls in `list`'s rows, the container being the
+    /// list's own element: the rows report through [`Self::control`], its
+    /// viewport prepaints [`Self::observe`] and its view calls
+    /// [`Self::reveal`] as for a scroll handle's element.
+    pub(crate) fn for_list(list: ListState, trigger: Trigger) -> Self {
+        Self {
+            list: Some(list),
+            ..Self::new(trigger)
+        }
+    }
+
     /// The container's scroll handle, for `track_scroll`.
     pub(crate) fn scroll(&self) -> &ScrollHandle {
         &self.scroll
+    }
+
+    /// How far the container has scrolled: negative, as a `ScrollHandle`'s
+    /// offset is.
+    fn offset(&self) -> Point<Pixels> {
+        match &self.list {
+            Some(list) => list.scroll_px_offset_for_scrollbar(),
+            None => self.scroll.offset(),
+        }
+    }
+
+    fn set_offset(&self, offset: Point<Pixels>) {
+        match &self.list {
+            Some(list) => list.set_offset_from_scrollbar(offset),
+            None => self.scroll.set_offset(offset),
+        }
+    }
+
+    /// Where the container's view lies in the window.
+    fn viewport(&self) -> Bounds<Pixels> {
+        match &self.list {
+            Some(list) => list.viewport_bounds(),
+            None => self.scroll.bounds(),
+        }
+    }
+
+    /// How far the container can scroll. A list clamps the offset it is
+    /// given to its own reach, which counts its padding, where the reach it
+    /// reports leaves that out, so a reveal leaves the clamp to it: stopped
+    /// at the reported reach, the commit message's last parent stopped its
+    /// ring's room short of the padding that keeps the room.
+    fn reach(&self) -> Pixels {
+        match &self.list {
+            Some(_) => px(1e9),
+            None => self.scroll.max_offset().y,
+        }
     }
 
     /// The focus handle the control `id` tracks, the same one in every frame
@@ -270,11 +332,12 @@ impl FocusReveal {
     /// end to end keeps no handle for a row it no longer draws.
     ///
     /// The handle holding focus is kept whether or not anything else holds
-    /// it: the focus the container last drew with (`observed`) is not it
-    /// where focus moved while the container drew no frame, as when a
-    /// handle held for a row focused it and was let go while the page was
-    /// covered, and given up there, it was the row's last handle and the
-    /// window lost focus. One something else holds is kept as long as it
+    /// it: the record of the focus the container last drew with
+    /// (`observed`) is weak and keeps nothing alive, and where focus moved
+    /// while the container drew no frame, as when a handle held for a row
+    /// focused it and was let go while the page was covered, given up here
+    /// it was the row's last handle and the window lost focus. One
+    /// something else holds is kept as long as it
     /// is held there, as by a dialog that returns focus to its row once it
     /// closes: the dialog may focus the row and let its handle go in one
     /// step, before any frame ends, so held only weakly by the reveal, that
@@ -353,7 +416,7 @@ impl FocusReveal {
     /// short of the control's ring.
     pub(crate) fn focused_bounds(&self, window: &Window, cx: &App) -> Option<Bounds<Pixels>> {
         self.drawn_focus(window, cx)
-            .map(|(bounds, _)| bounds + point(px(0.), self.scroll.offset().y))
+            .map(|(bounds, _)| bounds + point(px(0.), self.offset().y))
     }
 
     /// The control holding focus among those [`Self::focus`] handed out.
@@ -394,11 +457,11 @@ impl FocusReveal {
             // coming above it moved down stayed below the foot for the frame
             // they came in.
             let moved = self.content.get().1;
-            let mut at = bounds + point(px(0.), self.scroll.offset().y + moved.top);
+            let mut at = bounds + point(px(0.), self.offset().y + moved.top);
             at.size.height = (at.size.height + moved.foot - moved.top).max(Pixels::ZERO);
-            let reach = self.scroll.max_offset().y + moved.foot.max(Pixels::ZERO);
-            if let Some(offset) = self.target(at, margin, self.scroll.bounds(), due, reach) {
-                self.scroll.set_offset(offset);
+            let reach = self.reach() + moved.foot.max(Pixels::ZERO);
+            if let Some(offset) = self.target(at, margin, self.viewport(), due, reach) {
+                self.set_offset(offset);
             }
         }
     }
@@ -574,8 +637,8 @@ impl FocusReveal {
 
     fn observation(&self, window: &Window, cx: &App) -> Observation {
         Observation {
-            focus: window.focused(cx),
-            size: self.scroll.bounds().size,
+            focus: window.focused(cx).map(|focus| focus.downgrade()),
+            size: self.viewport().size,
             rem_size: window.rem_size(),
             content: self.content.get().0,
         }
@@ -619,8 +682,20 @@ impl FocusReveal {
         margin: Pixels,
         within: Option<(FocusReveal, Pixels)>,
     ) {
-        let bounds = bounds - point(px(0.), self.scroll.offset().y);
-        self.drawing.borrow_mut().push(Drawn {
+        let mut drawing = self.drawing.borrow_mut();
+        let bounds = if self.list.is_some() {
+            // A row reports from inside the list's layout, where the list's
+            // state cannot be read: its offset is taken off once the list
+            // has prepainted ([`Self::settle_list`]). A list can prepaint its
+            // rows twice in one frame, so this report replaces any earlier
+            // one of the control's: where a scroll into view took a second
+            // pass, it held on to the first pass's position.
+            drawing.retain(|drawn| drawn.focus != focus);
+            bounds
+        } else {
+            bounds - point(px(0.), self.offset().y)
+        };
+        drawing.push(Drawn {
             focus,
             bounds,
             margin,
@@ -645,6 +720,7 @@ impl FocusReveal {
             drawing.clear();
             drawn.items = items;
         }
+        self.settle_list(window, cx);
         // After the last frame's items have given way to this frame's, so
         // they hold no handle this frame did not hand out.
         self.release_undrawn(window, cx);
@@ -656,11 +732,8 @@ impl FocusReveal {
         }
         // Where a reveal this frame requested will leave the container: it
         // shows the control whole there before any later resize is drawn.
-        let offset = self
-            .pending
-            .take()
-            .unwrap_or_else(|| self.scroll.offset().y);
-        let viewport = self.scroll.bounds();
+        let offset = self.pending.take().unwrap_or_else(|| self.offset().y);
+        let viewport = self.viewport();
         let slack = px(0.01);
         // A control taller than the view, which a reveal shows by its
         // leading edge, is shown while that edge is, with its margin, as the
@@ -685,12 +758,29 @@ impl FocusReveal {
         self.content.set((self.content.get().0, Moved::default()));
         #[cfg(test)]
         self.painted.borrow_mut().push(tests::Painted {
-            focus: window.focused(cx),
+            focus: window.focused(cx).map(|focus| focus.downgrade()),
             control: self.focused_bounds(window, cx),
-            viewport: self.scroll.bounds(),
-            offset: self.scroll.offset().y,
-            max_offset: self.scroll.max_offset().y,
+            viewport: self.viewport(),
+            offset: self.offset().y,
+            max_offset: self.reach(),
         });
+    }
+
+    /// For a list ([`Self::for_list`]), the part of ending a frame that a
+    /// scroll handle's controls do as they are drawn: takes the list's offset
+    /// off the rows' reports, now the list can be read, and makes the
+    /// request a report makes for the control holding focus.
+    fn settle_list(&self, window: &mut Window, cx: &mut App) {
+        if self.list.is_none() {
+            return;
+        }
+        let offset = self.offset().y;
+        for control in &mut self.drawn.borrow_mut().controls {
+            control.bounds.origin.y -= offset;
+        }
+        if let Some((bounds, margin)) = self.drawn_focus(window, cx) {
+            self.requested(bounds + point(px(0.), offset), margin, window, cx);
+        }
     }
 
     /// The control holding focus among those the last prepainted frame drew:
@@ -776,7 +866,7 @@ impl FocusReveal {
         } else {
             return None;
         };
-        let previous = self.scroll.offset();
+        let previous = self.offset();
         let offset = point(previous.x, (previous.y + delta).clamp(-reach, px(0.)));
         (offset != previous).then_some(offset)
     }
@@ -784,27 +874,35 @@ impl FocusReveal {
     /// Reveals `bounds`, where the control is drawn in this frame, if a
     /// reveal is due ([`Self::due`]) and [`Self::reveal`] has not already
     /// shown it: as after a resize, which only this frame's layout shows.
+    /// A list's rows report from inside its layout, where nothing here
+    /// could read it: [`Self::settle_list`] makes their request once it can.
     fn request(&self, bounds: Bounds<Pixels>, margin: Pixels, window: &mut Window, cx: &mut App) {
+        if self.list.is_none() {
+            self.requested(bounds, margin, window, cx);
+        }
+    }
+
+    fn requested(&self, bounds: Bounds<Pixels>, margin: Pixels, window: &mut Window, cx: &mut App) {
         let observed = self.observation(window, cx);
         let Some(due) = self.due(&observed, window) else {
             return;
         };
-        let viewport = self.scroll.bounds();
-        let reach = self.scroll.max_offset().y;
+        let viewport = self.viewport();
+        let reach = self.reach();
         let Some(offset) = self.target(bounds, margin, viewport, due, reach) else {
             return;
         };
-        let scroll = self.scroll.clone();
-        let previous = scroll.offset();
+        let this = self.clone();
+        let previous = self.offset();
         self.pending.set(Some(offset.y));
         // Apply one reveal after painting, unless focus or a user's scroll
         // has already superseded this request.
         window.defer(cx, move |window, cx| {
-            if window.focused(cx) == observed.focus
-                && scroll.offset() == previous
-                && scroll.bounds() == viewport
+            if window.focused(cx).map(|focus| focus.downgrade()) == observed.focus
+                && this.offset() == previous
+                && this.viewport() == viewport
             {
-                scroll.set_offset(offset);
+                this.set_offset(offset);
                 window.refresh();
             }
         });
@@ -926,7 +1024,9 @@ pub(crate) mod tests {
     /// reach.
     #[derive(Clone, Debug)]
     pub(crate) struct Painted {
-        pub(crate) focus: Option<FocusHandle>,
+        /// Weak, as the reveal's own record is: a strong one kept a control
+        /// that had gone holding focus, which masked the window's repair.
+        pub(crate) focus: Option<WeakFocusHandle>,
         pub(crate) control: Option<Bounds<Pixels>>,
         pub(crate) viewport: Bounds<Pixels>,
         pub(crate) offset: Pixels,

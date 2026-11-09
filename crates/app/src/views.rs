@@ -2669,7 +2669,7 @@ impl GitTurtle {
             .bg(rgb(colors.panel))
             .border_l_1()
             .border_color(rgb(colors.border))
-            .child(self.render_commit_message(commit, false, extent, cx))
+            .child(self.render_commit_message(commit, false, extent, window, cx))
             .child(
                 div()
                     .id("commit-inspector-files")
@@ -2708,6 +2708,13 @@ impl GitTurtle {
             .inspector_message
             .details_room()
             .is_none_or(|room| parent_controls_width(&labels, window) <= room);
+        // The list paints the metadata's whole row once its top is in view,
+        // so Tab reaches a parent's control below the message's fold, where
+        // the frame cuts it away: revealed whole with its ring's room as the
+        // keyboard moves onto it, by the message's reveal
+        // (`commit_message::State::parent_reveal`).
+        let reveal = self.inspector_message.parent_reveal();
+        let room = appearance::button_ring_room(cx);
         let mut parents = div().flex().flex_wrap().gap_1();
         for (i, (parent, label)) in commit.parents.iter().zip(labels).enumerate() {
             let name = format!("Compare against parent {} · {}", i + 1, parent);
@@ -2721,14 +2728,24 @@ impl GitTurtle {
                     control.accessibility_label(name.clone())
                 }
             };
-            parents = parents.child(
-                control
-                    .debug_selector(move || format!("commit-parent-{i}"))
-                    .tooltip(name)
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.change_parent(i, window, cx)),
-                    ),
-            );
+            let focus = self.inspector_message.parent_focus(i, cx);
+            let control = control
+                .track_focus(&focus)
+                .debug_selector(move || format!("commit-parent-{i}"))
+                .tooltip(name)
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.change_parent(i, window, cx)),
+                );
+            parents = parents.child(match &reveal {
+                Some(reveal) => {
+                    let report = reveal.control(focus, room);
+                    gpui_kit::base::ElementExt::on_prepaint(control, move |bounds, window, cx| {
+                        report(vec![bounds], window, cx);
+                    })
+                    .into_any_element()
+                }
+                None => control.into_any_element(),
+            });
         }
         if commit.parents.len() > 128 {
             parents = parents.child(format!("Showing 128 of {} parents", commit.parents.len()));
@@ -27705,6 +27722,169 @@ pub(crate) mod tests {
             cx.read(|cx| app.read(cx).inspector_message.overflow())
                 .is_some_and(|overflow| overflow > px(0.)),
             "a long message scrolls"
+        );
+    }
+
+    /// A commit with a parent, its body `lines` lines long, the newest of
+    /// two, so its metadata follows a message of that length.
+    fn parented_script(lines: usize) -> String {
+        let body: String = (1..=lines)
+            .map(|line| format!("Body line {line}\n"))
+            .collect();
+        let message = format!("fixture notes\n\n{body}");
+        format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nfirst\nM 100644 inline notes.txt\ndata 5\nnote\n\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000001 +0000\ndata {}\n{message}\nM 100644 inline notes.txt\ndata 6\nnotes\n\ndone\n",
+            message.len(),
+        )
+    }
+
+    /// Whether the last frame painted an accent ring whole around `control`.
+    fn ring_whole_around(cx: &mut VisualTestContext, control: Bounds<Pixels>) -> bool {
+        let accent: gpui::Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        crate::focus_ring::painted_outlines_where(cx, |color| {
+            color.a > 0.
+                && gpui::Hsla {
+                    a: accent.a,
+                    ..color
+                } == accent
+        })
+        .iter()
+        .any(|ring| {
+            ring.whole
+                && ring.bounds.contains(&control.center())
+                && ring.bounds.size.width >= control.size.width
+                && ring.bounds.size.height >= control.size.height
+        })
+    }
+
+    /// Shrinks the window, tallest first, until the message's viewport and
+    /// its first parent's control, painted in the list's row, satisfy
+    /// `found`: where they do depends on the fixture's message and the
+    /// inspector's share of the window. Whether any height did.
+    fn resize_until_parent(
+        cx: &mut VisualTestContext,
+        found: impl Fn(Bounds<Pixels>, Bounds<Pixels>) -> bool,
+    ) -> bool {
+        (440..=980).rev().step_by(4).any(|height| {
+            cx.simulate_resize(size(px(1000.), px(height as f32)));
+            draw(cx);
+            let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+            cx.debug_bounds("commit-parent-0")
+                .is_some_and(|link| found(viewport, link))
+        })
+    }
+
+    /// Only the keyboard reveals a parent's control. A press on the part of
+    /// one the message's fold leaves in view scrolls nothing, and focus
+    /// placed on it while the pointer was the last input leaves it cut by
+    /// the fold where it is.
+    #[gpui::test]
+    async fn a_parent_s_control_a_pointer_reaches_is_not_revealed(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &parented_script(10)).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        assert!(
+            resize_until_parent(cx, |viewport, link| {
+                link.top() + px(4.) < viewport.bottom()
+                    && link.bottom() > viewport.bottom() + px(4.)
+            }),
+            "a window height leaves the fold across the parent's control"
+        );
+        let link = cx.debug_bounds("commit-parent-0").expect("drawn");
+        cx.simulate_click(
+            point(link.center().x, link.top() + px(2.)),
+            Modifiers::none(),
+        );
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            cx.debug_bounds("commit-parent-0"),
+            Some(link),
+            "a click on the control scrolls nothing"
+        );
+        // Focus moves here, whatever the click did with it: onto the
+        // message, then onto the control, the pointer still the last input.
+        let message = app
+            .read_with(cx, |app, _| app.inspector_message.focus())
+            .expect("the message is presented");
+        cx.update(|window, cx| window.focus(&message, cx));
+        draw(cx);
+        assert!(
+            cx.update(|window, _| message.is_focused(window)),
+            "the message holds focus before the control takes it"
+        );
+        let parent =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.inspector_message.parent_focus(0, cx)));
+        cx.update(|window, cx| window.focus(&parent, cx));
+        draw(cx);
+        draw(cx);
+        assert!(
+            cx.update(|window, _| parent.is_focused(window)),
+            "the control holds focus"
+        );
+        assert_eq!(
+            cx.debug_bounds("commit-parent-0"),
+            Some(link),
+            "focus placed after the pointer leaves the control where it is"
+        );
+    }
+
+    /// The list paints the metadata's row whole once its top is in the
+    /// message's view, so a parent's control can lie past the fold, where
+    /// Tab lands on it and the frame shows nothing of it. Revealed as the
+    /// keyboard moves onto it, the control shows whole, its ring whole and
+    /// clear of the message's edges, the last parent's room kept below it;
+    /// and a person who then scrolls the message by hand is not pulled back.
+    #[gpui::test]
+    async fn a_parent_s_control_is_revealed_whole_as_tab_reaches_it(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &parented_script(10)).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        // The list paints a row that starts in its view, the metadata whole
+        // with the parents' row below the fold: a window that leaves the
+        // metadata's top inside the message's view and its parents past it.
+        assert!(
+            resize_until_parent(cx, |viewport, link| link.top() >= viewport.bottom()),
+            "a window height leaves the parent's control past the fold, in a painted row"
+        );
+
+        let message = app
+            .read_with(cx, |app, _| app.inspector_message.focus())
+            .expect("the message is presented");
+        let parent =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.inspector_message.parent_focus(0, cx)));
+        cx.update(|window, cx| window.focus(&message, cx));
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| parent.is_focused(window)),
+            "Tab moves from the message onto its parent's control"
+        );
+        let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+        let link = cx.debug_bounds("commit-parent-0").expect("drawn");
+        let room = cx.read(appearance::button_ring_room);
+        assert!(
+            link.top() - room >= viewport.top()
+                && link.bottom() + room <= viewport.bottom() + px(0.5),
+            "the control is shown whole with its ring's room: {link:?} in {viewport:?}"
+        );
+        assert!(
+            ring_whole_around(cx, link),
+            "its ring is drawn whole in that frame: {link:?}"
+        );
+
+        // By hand, the person scrolls the message back up and away from it;
+        // no later frame brings it back.
+        crate::tags::tests::scroll_down(
+            cx,
+            viewport.center(),
+            ScrollDelta::Pixels(point(px(0.), px(200.))),
+        );
+        draw(cx);
+        draw(cx);
+        let scrolled = cx.debug_bounds("commit-parent-0");
+        assert!(
+            scrolled.is_none_or(|bounds| bounds.top() > viewport.bottom() - room),
+            "scrolled back by hand, the control is not pulled into view again: {scrolled:?}"
         );
     }
 

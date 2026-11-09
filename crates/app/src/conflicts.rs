@@ -2504,7 +2504,7 @@ mod tests {
         let frames: Vec<_> = body
             .take_painted()
             .into_iter()
-            .filter(|frame| frame.focus.as_ref() == Some(&draft))
+            .filter(|frame| frame.focus.as_ref().is_some_and(|focus| *focus == draft))
             .collect();
         let last = frames
             .last()

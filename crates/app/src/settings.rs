@@ -9684,7 +9684,7 @@ mod display_row_tests {
                 panic!("{key} paints a stale frame and then more: {frames:?}");
             };
             assert!(
-                stale.focus.as_ref() == Some(&root) && stale.offset == before,
+                stale.focus.as_ref().is_some_and(|focus| *focus == root) && stale.offset == before,
                 "{key}'s first frame is drawn before focus moves, at the page's offset \
                  {before:?}: {stale:?}"
             );
@@ -9692,7 +9692,7 @@ mod display_row_tests {
             for (index, painted) in after.iter().enumerate() {
                 let frame = index + 1;
                 assert!(
-                    painted.focus == focus,
+                    painted.focus == focus.as_ref().map(FocusHandle::downgrade),
                     "{key}: frame {frame} holds the focus the key moved to: {painted:?}"
                 );
                 if in_page {
