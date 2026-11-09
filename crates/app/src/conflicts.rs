@@ -344,6 +344,9 @@ pub struct ConflictView {
     /// How many times the review's column has been measured before layout.
     #[cfg(test)]
     measures: usize,
+    /// The height its last measure found.
+    #[cfg(test)]
+    measured_column: Pixels,
 }
 
 /// What sets the height of the review's column, in a frame laid out for a
@@ -404,6 +407,8 @@ impl ConflictView {
             measured: None,
             #[cfg(test)]
             measures: 0,
+            #[cfg(test)]
+            measured_column: Pixels::ZERO,
             presentation,
             readers: [None, None, None],
             resolution: None,
@@ -432,7 +437,6 @@ impl ConflictView {
     }
 
     /// Whether the resolution draft holds the window's focus.
-    #[cfg(test)]
     pub(crate) fn resolution_focused(&self, window: &Window, cx: &App) -> bool {
         self.resolution
             .as_ref()
@@ -611,6 +615,7 @@ impl ConflictView {
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.block_generation != generation { return; }
                 this.block_pending = false;
+                let shown = (this.blocks.is_empty(), this.block_issue.is_some());
                 match result {
                     Ok(Ok((source, blocks))) => {
                         this.block_source = source;
@@ -618,6 +623,17 @@ impl ConflictView {
                         this.block_selected = this.block_selected.min(this.blocks.len().saturating_sub(1));
                     }
                     _ => { this.blocks.clear(); this.block_issue = Some("Block review was interrupted. Edit the result to retry, or save the draft and refresh.".into()); }
+                }
+                // Blocks or an issue going or coming change the status's and
+                // the issue's lines and swap the sides' text for their
+                // messages, moving what lies below: the draft holding focus
+                // is drawn whole where it stays in the frame the review lands
+                // in.
+                if (this.blocks.is_empty(), this.block_issue.is_some()) != shown
+                    && this.resolution_focused(window, cx)
+                {
+                    this.body.reveal_next_focus();
+                    this.reveal_draft = true;
                 }
                 if this.block_mode {
                     this.readers = [None, None, None];
@@ -702,14 +718,28 @@ impl ConflictView {
         }
     }
 
-    fn render_side(&self, side: usize, room: Pixels, cx: &mut Context<Self>) -> AnyElement {
+    /// One version's side: its header, its text where it has a reader, and
+    /// otherwise a message saying why. `drawn` is false where the column is
+    /// only measured, which needs the header and the message but no editor.
+    fn render_side(
+        &self,
+        side: usize,
+        room: Pixels,
+        drawn: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         let versions = [
             &self.presentation.snapshot.base,
             &self.presentation.snapshot.current,
             &self.presentation.snapshot.incoming,
         ];
-        let description = if self.block_mode {
+        // A choice of block hides the text while its review runs, and says
+        // so on the header's own line, whose height never changes: said in
+        // the pane, at 18 pt it took more than the versions' 100 px leave.
+        let description = if self.block_mode && self.block_pending {
+            "Updating conflict blocks…".to_string()
+        } else if self.block_mode {
             self.blocks.get(self.block_selected).map_or_else(
                 || "No unresolved blocks".into(),
                 |block| {
@@ -737,9 +767,10 @@ impl ConflictView {
             .child(div().px_3().py_2().flex().flex_col().gap_1().bg(rgb(p.panel))
                 .child(div().truncate().text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM).child(self.presentation.label(side)))
                 .child(div().truncate().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child(description)))
-            .child(div().flex_1().min_h_0().when_some(self.readers[side].as_ref().map(|reader| reader.focus_handle(cx)), |pane, focus| pane.on_children_prepainted(self.body.control(focus, room))).children(self.readers[side].as_ref().filter(|_| !self.block_mode || !self.block_pending).map(|reader| crate::editor_find::Editor::new(reader).readonly(true).bordered(false).h(relative(1.)).text_size(crate::appearance::code_text()).aria_label(format!("Conflict version: {}", self.presentation.label(side))))))
-            .when(self.block_mode && self.block_pending, |el| el.child(div().p_4().text_size(crate::appearance::ui_text(12.)).child("Updating conflict blocks…")))
-            .when(self.readers[side].is_none(), |el| el.child(div().p_4().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.block_mode && self.blocks.is_empty() { "No unresolved blocks remain. Review the result, then explicitly save or stage it." } else if self.block_mode && side == 0 { "This marker style does not include a base block. Choose Whole file to inspect the full common ancestor." } else if versions[side].is_none() { "File absent in this version" } else { "Binary or large content · choose a complete version or use an external editor." })))
+            // Its height is the room the header and any message leave, so its
+            // text never counts towards the versions' least height.
+            .child(div().flex_grow(1.).h_0().when_some(self.readers[side].as_ref().filter(|_| drawn).map(|reader| reader.focus_handle(cx)), |pane, focus| pane.on_children_prepainted(self.body.control(focus, room))).children(self.readers[side].as_ref().filter(|_| drawn && (!self.block_mode || !self.block_pending)).map(|reader| crate::editor_find::Editor::new(reader).readonly(true).bordered(false).h(relative(1.)).text_size(crate::appearance::code_text()).aria_label(format!("Conflict version: {}", self.presentation.label(side))))))
+            .when(self.readers[side].is_none(), |el| el.child(div().debug_selector(move || format!("conflict-side-message-{side}")).p_4().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.block_mode && self.blocks.is_empty() { "No unresolved blocks remain. Review the result, then explicitly save or stage it." } else if self.block_mode && side == 0 { "This marker style does not include a base block. Choose Whole file to inspect the full common ancestor." } else if versions[side].is_none() { "File absent in this version" } else { "Binary or large content · choose a complete version or use an external editor." })))
             .into_any_element()
     }
 }
@@ -802,7 +833,8 @@ impl ConflictView {
         // out. Where it did not, as in the frame that opens the file or
         // first draws the draft Edit result opens, the review's column is
         // laid out first at the review's width, with the versions at their
-        // 100 px, and keeps the gutter in this frame where it is taller than
+        // least height, the larger of 100 px and the sides' header and
+        // message, and keeps the gutter in this frame where it is taller than
         // the review: laid out without it, the frame that first drew the
         // draft focused drew the controls above it wrapped into the wider
         // column, and the next, keeping the gutter, moved the draft 70 px
@@ -811,8 +843,8 @@ impl ConflictView {
         let laid = Rc::new(Cell::new(None));
         // The body is the column itself, so where everything fits the
         // versions take the room the rest leaves, as they did before it
-        // scrolled, and where it does not they keep their 100 px and the rest
-        // its own height, and the column scrolls.
+        // scrolled, and where it does not they keep their least height and
+        // the rest its own, and the column scrolls.
         let body = self
             .review_column(lines, room, Some((&cue, laid.clone())), cx)
             .when(reserve, |body| body.pr(crate::tags::ScrollCue::gutter()))
@@ -899,8 +931,12 @@ impl ConflictView {
             self.measures += 1;
         }
         let column = self.review_column(lines, room, None, cx);
-        let taller = crate::in_frame::measured_height(column, size.width, window, cx)
-            > size.height + px(0.01);
+        let height = crate::in_frame::measured_height(column, size.width, window, cx);
+        #[cfg(test)]
+        {
+            self.measured_column = height;
+        }
+        let taller = height > size.height + px(0.01);
         self.measured = Some(Measured { key, taller });
         taller
     }
@@ -932,7 +968,8 @@ impl ConflictView {
     /// controls report where they lie to the body, a ring's `room` clear of
     /// its edges. Drawn, it is `cue`'s list, and the draft records the
     /// layout it is laid out under in `laid`; without them it is only
-    /// measured, its versions their 100 px and the draft its height alone.
+    /// measured, its versions their headers and messages with no editor and
+    /// the draft its height alone.
     fn review_column(
         &mut self,
         lines: f32,
@@ -998,12 +1035,14 @@ impl ConflictView {
             .resolution
             .as_ref()
             .map(|editor| editor.focus_handle(cx));
-        let sides = if laid.is_none() {
-            Vec::new()
-        } else if self.base {
-            vec![self.render_side(0, room, cx)]
+        let drawn = laid.is_some();
+        let sides = if self.base {
+            vec![self.render_side(0, room, drawn, cx)]
         } else {
-            vec![self.render_side(1, room, cx), self.render_side(2, room, cx)]
+            vec![
+                self.render_side(1, room, drawn, cx),
+                self.render_side(2, room, drawn, cx),
+            ]
         };
         div().when_some(observe, |column, observe| column.on_children_prepainted(observe)).id("conflict-review").debug_selector(|| "conflict-review".into()).flex().flex_col()
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -1033,9 +1072,13 @@ impl ConflictView {
                     .child(button("accept-incoming-block", "Accept incoming", "", false).track_focus(&accept_incoming).debug_selector(|| "accept-incoming-block".into()).accessibility_label(format!("Accept incoming block from {incoming} into the result draft")).tooltip(format!("Use only this block from {incoming} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Incoming, window, cx))))
                     .child(button("accept-both-block", "Accept both", "", false).track_focus(&accept_both).debug_selector(|| "accept-both-block".into()).accessibility_label("Accept both versions of this block, current then incoming, into the result draft").tooltip("Keep current, then incoming, for this block; review ordering in the result draft").disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Both, window, cx)))))
                 .children(self.block_issue.as_ref().map(|issue| div().id("conflict-block-issue").alert(issue.clone()).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.clone())))))
-            // The versions keep their 100 px however short the window: the
-            // body scrolls instead.
-            .child(div().flex_1().min_h(px(100.)).flex().debug_selector(|| "conflict-versions".into()).children(sides))
+            // The versions keep their least height however short the window,
+            // and the body scrolls instead: the larger of 100 px, held by the
+            // empty strut, and the sides' header and message, which a row
+            // with no minimum of its own is at least as tall as. A fixed
+            // 100 px left a side's message wrapped below the versions in a
+            // 461 px window, under the footer.
+            .child(div().flex_1().flex().debug_selector(|| "conflict-versions".into()).child(div().h(px(100.))).children(sides))
             .child(div().px_3().py_2().flex().flex_col().gap_2().bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                 .child(div().id("conflict-draft-storage-status").role(Role::Status).aria_label(self.durable_status.clone()).polite().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(self.durable_status.clone()))
                 .when_some(self.durable_saved.clone(), |element, (valid, text)| {
@@ -2148,6 +2191,200 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Every side of `view` with no reader draws its message whole inside
+    /// the versions, above the footer, the versions no shorter than their
+    /// 100 px and the body scrolling for it.
+    fn assert_messages_stay_inside_the_versions(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+        at: &str,
+    ) {
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let versions = rendered(cx, "conflict-versions");
+        assert!(
+            versions.size.height >= px(100.),
+            "{at}: the versions keep their 100 px, {versions:?}"
+        );
+        let mut shown = 0;
+        for (side, selector) in [
+            "conflict-side-message-0",
+            "conflict-side-message-1",
+            "conflict-side-message-2",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let Some(message) = cx.debug_bounds(selector) else {
+                continue;
+            };
+            shown += 1;
+            assert!(
+                message.top() >= versions.top() - px(0.01)
+                    && message.bottom() <= versions.bottom() + px(0.01),
+                "{at}: side {side}'s message, {message:?}, lies inside the versions, \
+                 {versions:?}"
+            );
+        }
+        assert!(shown > 0, "{at}: a side draws its message");
+        assert!(
+            body.scroll().max_offset().y > Pixels::ZERO,
+            "{at}: the body scrolls rather than cut the message"
+        );
+    }
+
+    /// Each side's message where it has no reader, no unresolved blocks
+    /// left, a binary file or a side missing, stays whole inside the versions
+    /// at 18 pt in a 461 × 490 half tile. It wraps to several lines beside
+    /// the other side, and past a fixed 100 px, the footer drawn over its
+    /// foot. The column's measure counts the message, so the first frame
+    /// that overflows keeps the scrollbar's gutter. Where the review fits,
+    /// at 1,480 × 800, the versions still take the room the rest leaves them.
+    #[gpui::test]
+    async fn each_sides_message_stays_inside_the_versions_in_a_half_tile(cx: &mut TestAppContext) {
+        const BLOCK: &str = "<<<<<<< current\ncurrent\n=======\nincoming\n>>>>>>> incoming\n";
+        // A line of the message at 18 pt, by which the gutter can rewrap it.
+        const ONE_LINE: Pixels = px(30.);
+
+        // No unresolved block left in the result, in block mode, reached
+        // where the review fits, so the frame that first overflows measures
+        // the column.
+        let (view, cx) = conflict_window(cx, BLOCK.to_string());
+        cx.executor().allow_parking();
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 18, window, cx));
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(cx);
+        set_draft(cx, &view, "resolved\n");
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        parse.expect("the draft schedules a block review").await;
+        settle(cx);
+        assert!(cx.read(|cx| view.read(cx).blocks.is_empty()));
+        assert_eq!(
+            body.scroll().max_offset().y,
+            Pixels::ZERO,
+            "the review fits at 1,480 × 800"
+        );
+        cx.simulate_resize(size(px(461.), px(490.)));
+        settle(cx);
+        assert_messages_stay_inside_the_versions(cx, &view, "no unresolved block left");
+        let measured = cx.read(|cx| view.read(cx).measured_column);
+        let laid = body.scroll().bounds().size.height + body.scroll().max_offset().y;
+        assert!(
+            measured + ONE_LINE >= laid,
+            "the column's measure, {measured:?}, counts the message the layout gives {laid:?}"
+        );
+
+        // A binary version and an absent one, in the whole file's versions.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let mut snapshot = (*view.presentation.snapshot).clone();
+                snapshot.current.as_mut().unwrap().content.bytes = vec![0, 159, 146, 150];
+                snapshot.incoming = None;
+                view.presentation = Arc::new(Presentation::prepare(snapshot));
+                view.block_mode = false;
+                view.readers = [None, None, None];
+                view.prepare_readers(window, cx);
+                cx.notify();
+            })
+        });
+        settle(cx);
+        assert_messages_stay_inside_the_versions(cx, &view, "a binary side and an absent one");
+
+        // Where the review fits, the versions take the room the rest leaves.
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(cx);
+        let versions = rendered(cx, "conflict-versions");
+        assert!(
+            versions.size.height > px(200.),
+            "at 1,480 × 800 the versions take the room the rest leaves, {versions:?}"
+        );
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Restore saved draft with a draft that has no markers, at 18 pt in a
+    /// 461 × 490 half tile: as the review lands no blocks, the sides' text
+    /// gives way to their taller messages, and every frame draws the focused
+    /// draft whole with its ring where it stays, and so do the frames of a
+    /// review that lands an unclosed marker's issue with still no blocks,
+    /// takes it away, or brings the blocks back. Left where it lay, the
+    /// draft was pushed down past the body's foot as the review landed.
+    #[gpui::test]
+    async fn a_review_that_lands_no_blocks_draws_the_draft_where_it_stays(cx: &mut TestAppContext) {
+        const AT: &str = "461 × 490, 18 pt, code 18 pt";
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        let (body, blocks) = cx.read(|cx| {
+            let view = view.read(cx);
+            (view.body.clone(), view.accepted_draft.clone())
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.durable_saved = Some((true, "resolved\n".into()));
+                cx.notify();
+            })
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 18, window, cx));
+        settle(cx);
+        let room = cx.read(crate::appearance::button_ring_room);
+
+        let (release, held) = hold_block_review(cx, &view).await;
+        cx.update(|window, cx| {
+            body.reveal_next_focus();
+            body.focus("restore-saved-conflict", cx).focus(window, cx);
+        });
+        settle(cx);
+        let restore = rendered(cx, "restore-saved-conflict");
+        cx.simulate_click(restore.center(), Modifiers::default());
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).block_pending),
+            "{AT}: Restore saved draft starts a block review"
+        );
+        body.take_painted();
+        land_block_review(cx, &view, release, held).await;
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).blocks.is_empty()),
+            "{AT}: the review lands no blocks"
+        );
+        assert_drawn_where_it_stays(cx, &view, room, &format!("{AT}: no blocks land"));
+
+        // An unclosed marker: still no blocks, but the status and the issue
+        // line change, and again as it is taken away.
+        for (draft, issue, at) in [
+            ("<<<<<<< current\nresolved\n", true, "an unclosed marker"),
+            ("resolved\n", false, "the unclosed marker removed"),
+        ] {
+            let (release, held) = hold_block_review(cx, &view).await;
+            set_draft(cx, &view, draft);
+            settle(cx);
+            body.take_painted();
+            land_block_review(cx, &view, release, held).await;
+            settle(cx);
+            cx.read(|cx| {
+                let view = view.read(cx);
+                assert!(view.blocks.is_empty(), "{AT}: {at}: no blocks");
+                assert_eq!(view.block_issue.is_some(), issue, "{AT}: {at}: the issue");
+            });
+            assert_drawn_where_it_stays(cx, &view, room, &format!("{AT}: {at}"));
+        }
+
+        let (release, held) = hold_block_review(cx, &view).await;
+        set_draft(cx, &view, &blocks);
+        settle(cx);
+        body.take_painted();
+        land_block_review(cx, &view, release, held).await;
+        settle(cx);
+        assert_eq!(
+            cx.read(|cx| view.read(cx).blocks.len()),
+            2,
+            "{AT}: the review brings the blocks back"
+        );
+        assert_drawn_where_it_stays(cx, &view, room, &format!("{AT}: the blocks come back"));
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A block review that lands a status taller than the one it began from,
     /// blocks where none remained, measures the review's column again, once:
     /// in a 461 px wide half tile at 18 pt with 18 pt code, where the blocks'
@@ -3018,10 +3255,7 @@ mod tests {
                 window.refresh();
             });
             crate::views::tests::draw(cx);
-            let code = [
-                rendered(cx, "conflict-versions"),
-                rendered(cx, "conflict-result-draft"),
-            ];
+            let code = [rendered(cx, "conflict-result-draft")];
             let state = rendered(cx, "conflict-saved-draft-state");
             assert!(
                 state.top() >= review.top() && state.bottom() <= review.bottom(),
