@@ -350,8 +350,10 @@ pub struct ConflictView {
 /// room `size`: the room, the scale and text sizes it is drawn at, its
 /// focus rings' room, and what each of its sections holds, the versions
 /// shown, the result draft and its error, the saved draft's row, the
-/// storage status and the block review. The block review an edit starts is
-/// left out while it is under way ([`Measured::pending`]).
+/// storage status and the block review. A block review under way is left
+/// out: its status keeps the height of the one it replaces
+/// ([`ConflictView::block_status`]), so its frames lay the column out as the
+/// frames before it did.
 #[derive(Clone, PartialEq)]
 struct ColumnKey {
     size: Size<Pixels>,
@@ -369,10 +371,6 @@ struct ColumnKey {
 /// then, and whether it was taller than the review.
 struct Measured {
     key: ColumnKey,
-    /// Whether the block review was under way: its frames show its status
-    /// and, choosing a block, versions saying so, so the frame after it ends
-    /// measures the column again.
-    pending: bool,
     taller: bool,
 }
 
@@ -890,16 +888,8 @@ impl ConflictView {
                 self.block_issue.clone(),
             ),
         };
-        // An edit's block review keeps the measure of the state it began
-        // from while it is under way, its frames measured again only for
-        // another change: its status is shorter than any it replaces, and
-        // where its versions alone overflow the review, the cue draws the
-        // gutter one frame later (`ScrollCue::observe`), as it did for every
-        // change before the column was measured.
-        let pending = self.block_pending;
         if let Some(measured) = &self.measured
             && measured.key == key
-            && (pending || !measured.pending)
             && !self.reveal_draft
         {
             return measured.taller;
@@ -911,12 +901,29 @@ impl ConflictView {
         let column = self.review_column(lines, room, None, cx);
         let taller = crate::in_frame::measured_height(column, size.width, window, cx)
             > size.height + px(0.01);
-        self.measured = Some(Measured {
-            key,
-            pending,
-            taller,
-        });
+        self.measured = Some(Measured { key, taller });
         taller
+    }
+
+    /// What the block status says of the blocks last reviewed. While a
+    /// review runs its "Updating conflict blocks…" stands over these words
+    /// unseen, in one cell, so the status keeps its height through the
+    /// review: at 18 pt in a 461 px half tile its one line replaced the
+    /// blocks' two, and the result draft below moved 27 px as the review
+    /// began and again as it landed.
+    fn block_status(&self) -> String {
+        if self.block_issue.is_some() {
+            "Block decisions unavailable · edit the result or use a whole-file resolution".into()
+        } else if self.blocks.is_empty() {
+            "No unresolved blocks in the result".into()
+        } else {
+            format!(
+                "{} · selected {} · result line {}",
+                crate::counted(self.blocks.len(), "unresolved block", "unresolved blocks"),
+                self.block_selected + 1,
+                self.blocks[self.block_selected].first_line
+            )
+        }
     }
 
     /// The review's column: its header, the block controls, the versions,
@@ -944,19 +951,11 @@ impl ConflictView {
             self.block_pending || self.block_issue.is_some() || !self.blocks.is_empty();
         let cannot_stage_working =
             !self.presentation.blocks.is_empty() || self.presentation.block_issue.is_some();
+        let landed = self.block_status();
         let status = if self.block_pending {
-            "Updating conflict blocks…".into()
-        } else if self.block_issue.is_some() {
-            "Block decisions unavailable · edit the result or use a whole-file resolution".into()
-        } else if self.blocks.is_empty() {
-            "No unresolved blocks in the result".into()
+            "Updating conflict blocks…".to_string()
         } else {
-            format!(
-                "{} · selected {} · result line {}",
-                crate::counted(self.blocks.len(), "unresolved block", "unresolved blocks"),
-                self.block_selected + 1,
-                self.blocks[self.block_selected].first_line
-            )
+            landed.clone()
         };
         let [drafts, branches, base, block_mode, whole_mode, external] = [
             "saved-conflict-drafts",
@@ -1023,7 +1022,9 @@ impl ConflictView {
                 .child(button("external-conflict-editor", "Open in editor", "", false).track_focus(&external).debug_selector(|| "external-conflict-editor".into()).tooltip("Open the working file with its default application. Refresh after saving, then stage the resolved file.")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::OpenEditor)))))
             .when(self.presentation.result.is_some(), |element| element.child(div().px_3().py_2().flex().flex_col().gap_2().border_b_1().border_color(rgb(p.border))
-                .child(div().id("conflict-block-status").role(Role::Status).polite().aria_label(status.clone()).text_size(crate::appearance::ui_text(12.)).child(status))
+                .child(div().id("conflict-block-status").debug_selector(|| "conflict-block-status".into()).role(Role::Status).polite().aria_label(status.clone()).text_size(crate::appearance::ui_text(12.)).grid().grid_cols(1)
+                    .when(self.block_pending, |cell| cell.child(div().row_start(1).col_start(1).invisible().child(landed)))
+                    .child(div().row_start(1).col_start(1).child(status)))
                 .child(div().flex().flex_wrap().gap_2().items_center()
                     .on_children_prepainted(self.body.controls(vec![Some(previous.clone()), Some(next.clone()), Some(accept_current.clone()), Some(accept_incoming.clone()), Some(accept_both.clone())], room))
                     .child(button("previous-conflict-block", "Previous", "", false).track_focus(&previous).debug_selector(|| "previous-conflict-block".into()).accessibility_label("Previous conflict block").tooltip(format!("Previous conflict · {}", shortcuts::key_label(PREVIOUS_BLOCK))).disabled(blocked || self.block_selected == 0).on_click(cx.listener(|this, _, window, cx| this.select_block(true, window, cx))))
@@ -2015,43 +2016,30 @@ mod tests {
         assert_eq!(since(cx), 1, "Edit result");
     }
 
-    /// A resize while an edit's block review runs measures the review's
-    /// column with that review's status, "Updating conflict blocks…", and
-    /// once the review lands the column is measured again, once: in a
-    /// 461 px wide half tile at 18 pt with 18 pt code, where the blocks'
-    /// status the review lands takes a line more than its own, and at a
-    /// height between the two, the first frame after it lands lays the body
-    /// out with the gutter, and every frame draws the focused draft where it
-    /// stays. Kept from while the review ran, the measure left the gutter
-    /// out of that frame, which drew the draft 434 px wide, and the next
-    /// drew it 415 px wide beside the gutter.
-    #[gpui::test]
-    async fn the_column_is_measured_again_once_a_block_review_lands(cx: &mut TestAppContext) {
-        const AT: &str = "461 px wide, 18 pt, code 18 pt";
-        cx.executor().allow_parking();
-        let (view, cx) = review_window(cx);
-        let room = cx.read(crate::appearance::button_ring_room);
-        let body = cx.read(|cx| view.read(cx).body.clone());
-        let editor = cx.read(|cx| view.read(cx).resolution.clone().expect("the draft"));
-        let reach = |cx: &mut VisualTestContext| {
-            settle(cx);
-            body.scroll().bounds().size.height + body.scroll().max_offset().y
-        };
-        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 18, window, cx));
-        // The review's height with the blocks' status, read where it
-        // overflows and the draft keeps its eight lines, with the caret at
-        // the draft's end, where a keystroke changes no block. At this width
-        // the gutter rewraps no row, so it is the height the column measures.
-        cx.simulate_resize(size(px(461.), px(400.)));
+    /// `text` as the result draft, its block review scheduled, as Restore
+    /// saved draft sets it.
+    fn set_draft(cx: &mut VisualTestContext, view: &Entity<ConflictView>, text: &str) {
         cx.update(|window, cx| {
-            let end = editor.read(cx).text().len();
-            editor.update(cx, |editor, cx| editor.set_selected_range(end..end, cx));
-            window.focus(&editor.focus_handle(cx), cx);
+            view.update(cx, |view, cx| {
+                let editor = view.resolution.clone().expect("the draft");
+                editor.update(cx, |editor, cx| {
+                    editor.set_value(text.to_string(), window, cx)
+                });
+                view.accepted_draft = text.into();
+                view.schedule_blocks(window, cx);
+            })
         });
-        let landed = reach(cx);
+    }
 
-        // A keystroke starts a block review, held on its worker while the
-        // window is resized.
+    /// Holds `view`'s block review worker until the returned sender sends,
+    /// and the job that holds it, so a review started now stays under way.
+    async fn hold_block_review(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+    ) -> (
+        std::sync::mpsc::Sender<()>,
+        futures::channel::oneshot::Receiver<anyhow::Result<()>>,
+    ) {
         let (release, wait) = std::sync::mpsc::channel();
         let (started, ready) = futures::channel::oneshot::channel();
         let held = cx.update(|_, cx| {
@@ -2062,16 +2050,167 @@ mod tests {
             })
         });
         ready.await.unwrap();
-        cx.simulate_input("x");
+        (release, held)
+    }
+
+    /// Releases `held` and waits for the block review behind it to land.
+    async fn land_block_review(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+        release: std::sync::mpsc::Sender<()>,
+        held: futures::channel::oneshot::Receiver<anyhow::Result<()>>,
+    ) {
+        release.send(()).unwrap();
+        held.await.unwrap().unwrap();
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        parse.expect("the block review is scheduled").await;
+        assert!(
+            !cx.read(|cx| view.read(cx).block_pending),
+            "the block review lands"
+        );
+    }
+
+    /// Restore saved draft at 18 pt in a 461 × 490 half tile, where the
+    /// blocks' status takes two lines: "Updating conflict blocks…" stands in
+    /// the status's own height from the frame that starts the review to the
+    /// frame it lands in, and the result draft below it stays where that
+    /// frame drew it. Its one line replaced the blocks' two, and the draft
+    /// moved 27 px as the review began and again as it landed.
+    #[gpui::test]
+    async fn the_block_status_keeps_its_height_through_the_review(cx: &mut TestAppContext) {
+        const AT: &str = "461 × 490, 18 pt, code 18 pt";
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        let (body, saved) = cx.read(|cx| {
+            let view = view.read(cx);
+            (view.body.clone(), format!("{}kept\n", view.accepted_draft))
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.durable_saved = Some((true, saved));
+                cx.notify();
+            })
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 18, window, cx));
+        settle(cx);
+        let room = cx.read(crate::appearance::button_ring_room);
+        let two_lines = cx.read(|cx| view.read(cx).block_status());
+        let before = rendered(cx, "conflict-block-status").size.height;
+        assert!(
+            before > crate::appearance::ui_text(12.) * 2.,
+            "{AT}: {two_lines:?} takes two lines, {before:?}"
+        );
+
+        let (release, held) = hold_block_review(cx, &view).await;
+        cx.update(|window, cx| {
+            body.reveal_next_focus();
+            body.focus("restore-saved-conflict", cx).focus(window, cx);
+        });
+        settle(cx);
+        let restore = rendered(cx, "restore-saved-conflict");
+        cx.simulate_click(restore.center(), Modifiers::default());
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).block_pending),
+            "{AT}: Restore saved draft starts a block review"
+        );
+        assert_eq!(
+            rendered(cx, "conflict-block-status").size.height,
+            before,
+            "{AT}: the status keeps its height as the review runs"
+        );
+        assert!(
+            crate::native_accessibility::written::announced("conflict-block-status").is_some(),
+            "{AT}: the status stays a live region"
+        );
+        let draft = rendered(cx, "conflict-result-draft");
+
+        body.take_painted();
+        land_block_review(cx, &view, release, held).await;
+        settle(cx);
+        assert_eq!(
+            cx.read(|cx| view.read(cx).block_status()),
+            two_lines,
+            "{AT}: the review lands the blocks' status"
+        );
+        assert_eq!(
+            rendered(cx, "conflict-block-status").size.height,
+            before,
+            "{AT}: the landed status is as tall as the review's"
+        );
+        assert_eq!(
+            rendered(cx, "conflict-result-draft"),
+            draft,
+            "{AT}: the draft stays as the review lands"
+        );
+        assert_drawn_where_it_stays(cx, &view, room, &format!("{AT}: the review lands"));
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A block review that lands a status taller than the one it began from,
+    /// blocks where none remained, measures the review's column again, once:
+    /// in a 461 px wide half tile at 18 pt with 18 pt code, where the blocks'
+    /// status takes a line more than "No unresolved blocks in the result",
+    /// and at a height between the two, the first frame after it lands lays
+    /// the body out with the gutter, and every frame draws the focused draft
+    /// where it stays. Kept from while the review ran, the measure left the
+    /// gutter out of that frame, which drew the draft 434 px wide, and the
+    /// next drew it 415 px wide beside the gutter. The whole file's versions
+    /// are shown, so the versions keep their height whatever the review
+    /// lands.
+    #[gpui::test]
+    async fn the_column_is_measured_again_once_a_block_review_lands(cx: &mut TestAppContext) {
+        const AT: &str = "461 px wide, 18 pt, code 18 pt";
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        let room = cx.read(crate::appearance::button_ring_room);
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let (editor, blocks) = cx.read(|cx| {
+            let view = view.read(cx);
+            (
+                view.resolution.clone().expect("the draft"),
+                view.accepted_draft.clone(),
+            )
+        });
+        let reach = |cx: &mut VisualTestContext| {
+            settle(cx);
+            body.scroll().bounds().size.height + body.scroll().max_offset().y
+        };
+        cx.update(|window, cx| {
+            crate::appearance::apply_text_sizes(18, 18, window, cx);
+            view.update(cx, |view, cx| {
+                view.block_mode = false;
+                view.readers = [None, None, None];
+                view.prepare_readers(window, cx);
+                cx.notify();
+            });
+        });
+        // The review's height with the blocks' status, read where it
+        // overflows and the draft keeps its eight lines, the draft focused.
+        // At this width the gutter rewraps no row, so it is the height the
+        // column measures.
+        cx.simulate_resize(size(px(461.), px(400.)));
+        cx.update(|window, cx| window.focus(&editor.focus_handle(cx), cx));
+        let landed = reach(cx);
+
+        // And with no block left, the status a line shorter, and a review
+        // that brings the blocks back held on its worker while the window
+        // is resized.
+        set_draft(cx, &view, "resolved\n");
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        parse.expect("the draft schedules a block review").await;
+        let (release, held) = hold_block_review(cx, &view).await;
+        set_draft(cx, &view, &blocks);
         let running = reach(cx);
         assert!(
             cx.read(|cx| view.read(cx).block_pending),
-            "{AT}: the keystroke's block review runs"
+            "{AT}: the draft's block review runs"
         );
         assert!(
             landed > running + px(8.),
-            "{AT}: the blocks' status takes a line more than the running review's, \
-             {landed:?} against {running:?}"
+            "{AT}: the blocks' status takes a line more than the status the review began \
+             from, {landed:?} against {running:?}"
         );
 
         // The measures since the last call.
@@ -2091,18 +2230,12 @@ mod tests {
 
         // Every frame from here on is drawn after the review lands.
         body.take_painted();
-        release.send(()).unwrap();
-        held.await.unwrap().unwrap();
-        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
-        parse.expect("the keystroke schedules a block review").await;
-        assert!(
-            !cx.read(|cx| view.read(cx).block_pending),
-            "{AT}: the block review lands"
-        );
+        land_block_review(cx, &view, release, held).await;
         settle(cx);
-        assert!(
-            cx.read(|cx| view.read(cx).accepted_draft.ends_with('x')),
-            "{AT}: the keystroke edits the draft"
+        assert_eq!(
+            cx.read(|cx| view.read(cx).blocks.len()),
+            2,
+            "{AT}: the review lands the draft's blocks"
         );
         assert!(
             body.scroll().max_offset().y > Pixels::ZERO,
