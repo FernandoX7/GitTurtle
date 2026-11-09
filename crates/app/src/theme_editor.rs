@@ -33,6 +33,7 @@ use gpui_kit::component::{
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     dialog::Confirm,
     menu::PopupMenuItem,
+    tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder;
 use preferences::MAX_CUSTOM_THEMES;
@@ -2456,6 +2457,12 @@ impl ThemeForm {
         )
     }
 
+    /// What a token row's name and description say whole where the row cuts
+    /// them short.
+    fn row_tooltip(kind: TokenKind) -> SharedString {
+        format!("{} · {}", kind.label(), kind.description()).into()
+    }
+
     fn render_row(
         &self,
         row: &TokenRow,
@@ -2467,6 +2474,7 @@ impl ThemeForm {
         let kind = row.kind;
         let color = self.draft.get(kind);
         let label = kind.label();
+        let tooltip = Self::row_tooltip(kind);
         let trigger = row.picker.focus_handle(cx);
         let picker_focused = trigger.is_focused(window);
         div()
@@ -2481,22 +2489,35 @@ impl ThemeForm {
             .items_center()
             .gap_2()
             .child(
+                // The name gives way for the row's controls, after the
+                // description: at 18 pt in a 461 px window the row's fixed
+                // columns ran 21 px past its content, under the scrollbar's
+                // track and past the panel's clip, and cut the colour
+                // picker's ring.
                 div()
+                    .id(("theme-token-name", kind as usize))
+                    .debug_selector(move || format!("theme-token-name-{}", kind.key()))
                     .w(appearance::ui_size(128.))
-                    .flex_shrink_0()
+                    .min_w_0()
                     .truncate()
                     .text_size(appearance::ui_text(12.))
                     .text_color(rgb(p.text))
+                    .tooltip({
+                        let tooltip = tooltip.clone();
+                        move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+                    })
                     .child(label),
             )
             .child(
                 div()
+                    .id(("theme-token-description", kind as usize))
                     .flex_1()
                     .min_w_0()
                     .truncate()
                     .text_size(appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
                     .debug_selector(move || format!("theme-token-description-{}", kind.key()))
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                     .child(kind.description()),
             )
             .children(if row.invalid {
@@ -3962,6 +3983,36 @@ pub(crate) mod tests {
             })
     }
 
+    /// The colour picker trigger's own ring the last frame drew, its
+    /// wrapper's 2 px accent edge, where it drew it whole: every edge shown
+    /// by the parts it is painted in.
+    fn whole_trigger_ring(cx: &mut VisualTestContext) -> Option<Bounds<Pixels>> {
+        let accent = Hsla::from(rgb(applied(cx).accent));
+        let outer = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            window.painted_quads().into_iter().find_map(|quad| {
+                (quad.border_color == accent && quad.border_widths.top.as_f32() == 2. * scale).then(
+                    || {
+                        Bounds::from_corners(
+                            gpui::point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                            gpui::point(
+                                logical(quad.bounds.right()),
+                                logical(quad.bounds.bottom()),
+                            ),
+                        )
+                    },
+                )
+            })
+        });
+        let outer = outer?;
+        let ring = PaintedRing::around(&painted_quads(cx), outer, Pixels::ZERO);
+        ring.edges(px(2.))
+            .into_iter()
+            .all(|(_, band)| ring.shows(band))
+            .then_some(outer)
+    }
+
     /// A row's colour picker, opened from its trigger by Enter, keeps focus
     /// in its popover while the popover is drawn (decided 2026-11-07,
     /// `DESIGN.md`'s focus rules): Tab and Shift+Tab cycle through the
@@ -4072,7 +4123,52 @@ pub(crate) mod tests {
                 cx.update(|window, _| trigger.is_focused(window)),
                 "{at}: Escape gives focus back to the trigger"
             );
+            let ring = whole_trigger_ring(cx)
+                .unwrap_or_else(|| panic!("{at}: the trigger draws its ring whole"));
+            let track = bounds(cx, "theme-editor-scrollbar".into());
+            assert!(
+                ring.right() <= track.left(),
+                "{at}: the ring {ring:?} stays clear of the scrollbar's track {track:?}"
+            );
         }
+    }
+
+    /// A token row's name, which ends in an ellipsis where the row is short
+    /// of room, reads whole with its description in a tooltip: a pointer
+    /// user has no other way to read them, the accessible name being for
+    /// assistive technology.
+    #[gpui::test]
+    fn a_token_rows_name_reads_whole_in_a_tooltip(cx: &mut TestAppContext) {
+        const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        settle(cx);
+        assert_eq!(
+            ThemeForm::row_tooltip(TokenKind::Canvas).as_ref(),
+            format!(
+                "{} · {}",
+                TokenKind::Canvas.label(),
+                TokenKind::Canvas.description()
+            ),
+            "the tooltip holds the name and the description"
+        );
+        let popover =
+            cx.read(|cx| Background::from(gpui_kit::component::Theme::global(cx).tokens.popover));
+        let shown = |cx: &mut VisualTestContext| {
+            painted_quads(cx)
+                .iter()
+                .filter(|quad| quad.background == popover)
+                .count()
+        };
+        let before = shown(cx);
+        let name = bounds(cx, "theme-token-name-canvas".into());
+        cx.simulate_mouse_move(name.center(), None, gpui::Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        settle(cx);
+        assert!(shown(cx) > before, "hovering the name shows the tooltip");
     }
 
     /// The first row's picker, focus on its trigger, at 13 pt in 1480 × 973:
