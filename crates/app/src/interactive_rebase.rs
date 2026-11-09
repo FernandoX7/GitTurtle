@@ -10,7 +10,10 @@ use gpui_kit::component::{
     scroll::{Scrollbar, ScrollbarMode},
 };
 use gpui_kit::prelude::FluentBuilder;
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 pub(crate) const PREPARING: &str = "Reading rebase sequence…";
 
@@ -47,9 +50,21 @@ struct Fit {
     /// drawn holds them ([`Marked`]).
     content: Rc<Cell<Option<LayoutId>>>,
     list: Rc<Cell<Option<LayoutId>>>,
-    /// The window's viewport size the form was last rendered at: a frame at
-    /// another starts from the whole sequence ([`Fit::start`]).
-    window: Rc<Cell<Option<Size<Pixels>>>>,
+    /// What set the sequence's room as the form was last rendered: a frame
+    /// with another starts from the whole sequence ([`Fit::start`]).
+    last: Rc<RefCell<Option<Room>>>,
+}
+
+/// What sets the room the form leaves its sequence, beside the sequence
+/// itself: the window, the text size and the lines that come and go around
+/// it.
+#[derive(Clone, PartialEq)]
+struct Room {
+    viewport: Size<Pixels>,
+    text: Pixels,
+    changed_base: bool,
+    issue: Option<String>,
+    error: Option<String>,
 }
 
 impl Default for Fit {
@@ -59,23 +74,22 @@ impl Default for Fit {
             reveal: Rc::default(),
             content: Rc::default(),
             list: Rc::default(),
-            window: Rc::default(),
+            last: Rc::default(),
         }
     }
 }
 
 impl Fit {
     /// The sequence's height the frame being rendered lays the form out with
-    /// first: as the last frame left it, or, in the first frame at a new
-    /// window size, [`SEQUENCE_HEIGHT`], which that frame's own
-    /// layout shrinks where the form then overflows its body ([`Fitted`]).
-    /// Started from the last frame's, the first frame after the window grew
-    /// from 461 × 490 to 1,480 × 973 at 18 pt, with the form open and as it
-    /// opened again there, drew the sequence at the half tile's 214 px, the
-    /// body fitting with that shorter one, and the 220 px came only later.
-    fn start(&self, window: &Window) -> Pixels {
-        let at = Some(window.viewport_size());
-        if self.window.replace(at) != at {
+    /// first: as the last frame left it, or, in the first frame with another
+    /// [`Room`], [`SEQUENCE_HEIGHT`], which that frame's own layout shrinks
+    /// where the form then overflows its body ([`Fitted`]). Started from the
+    /// last frame's, the first frame after the window grew from 461 × 490 to
+    /// 1,480 × 973 at 18 pt, with the form open and as it opened again there,
+    /// drew the sequence at the half tile's 214 px, the body fitting with
+    /// that shorter one, and the 220 px came only later.
+    fn start(&self, room: Room) -> Pixels {
+        if self.last.replace(Some(room.clone())).as_ref() != Some(&room) {
             self.sequence.set(SEQUENCE_HEIGHT);
         }
         self.sequence.get()
@@ -96,12 +110,12 @@ impl Fit {
 /// room by the least scroll, from where this frame lays it out: the body's
 /// reveal (`focus_reveal`) knows only where the last frame drew a control,
 /// and the last frame drew no sequence, so it scrolled to the sequence a
-/// frame late. The first frame at a new window size starts from the whole
-/// sequence ([`Fit::start`]), so a window grown or shrunk lays the
+/// frame late. The first frame with another window size, text size or line
+/// around the sequence starts from the whole sequence ([`Fit::start`]), so a
+/// window grown or shrunk, or an error line or "Base edited" going, lays the
 /// final height out in that frame too, whether the form is open or opens
-/// again in it. Only a body whose content shrinks under a shorter sequence,
-/// as when an error line goes, is drawn once more, its sequence at full
-/// height.
+/// again in it. Only a body whose content shrinks under a shorter sequence
+/// for any other reason is drawn once more, its sequence at full height.
 struct Fitted {
     form: WeakEntity<RebaseForm>,
     fit: Fit,
@@ -178,9 +192,9 @@ impl Element for Fitted {
                     again = true;
                 }
             } else if self.sequence != SEQUENCE_HEIGHT {
-                // The body fits with a shorter sequence, as once an error
-                // line goes: whether it still fits with the whole one only
-                // that frame's layout can tell.
+                // The body fits with a shorter sequence, which nothing
+                // `Fit::start` compares explains: whether it still fits with
+                // the whole one only that frame's layout can tell.
                 self.fit.sequence.set(SEQUENCE_HEIGHT);
                 window.defer(cx, |window, _| window.refresh());
             }
@@ -1072,7 +1086,14 @@ impl Render for RebaseForm {
         // and I understand these commits may be shared, after it, lay below
         // its fold, focused and drawn nowhere.
         self.body.reveal(window, cx);
-        let sequence = self.fit.start(window);
+        let (issue, changed_base) = self.notices(cx);
+        let sequence = self.fit.start(Room {
+            viewport: window.viewport_size(),
+            text: appearance::ui_text(12.),
+            changed_base,
+            issue,
+            error: self.error.clone(),
+        });
         Fitted {
             form: cx.entity().downgrade(),
             fit: self.fit.clone(),
@@ -1084,6 +1105,22 @@ impl Render for RebaseForm {
 }
 
 impl RebaseForm {
+    /// The plan's validation error, and whether the base field no longer
+    /// says the revision the plan was loaded from: each draws a line of the
+    /// form while it holds.
+    fn notices(&self, cx: &App) -> (Option<String>, bool) {
+        let issue = self
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.validate_steps(&self.steps).err())
+            .map(|error| error.to_string());
+        let changed_base = self
+            .plan
+            .as_ref()
+            .is_some_and(|plan| plan.base_revision != self.base.read(cx).value().trim());
+        (issue, changed_base)
+    }
+
     /// The form, its sequence `sequence` tall ([`Fitted`]).
     fn content(
         &mut self,
@@ -1094,15 +1131,7 @@ impl RebaseForm {
         self.fit.content.set(None);
         self.fit.list.set(None);
         let p = palette(cx);
-        let issue = self
-            .plan
-            .as_ref()
-            .and_then(|plan| plan.validate_steps(&self.steps).err())
-            .map(|error| error.to_string());
-        let changed_base = self
-            .plan
-            .as_ref()
-            .is_some_and(|plan| plan.base_revision != self.base.read(cx).value().trim());
+        let (issue, changed_base) = self.notices(cx);
         // A write refuses Load commits and Review rebase… at once, and
         // assistive technology hears them unavailable at once, while they dim
         // only once it looks busy (`workspace::BusyLook`); each refused a
@@ -1139,7 +1168,12 @@ impl RebaseForm {
         // clamped to the list's reach, differs from where the list rested.
         // Judged by a step recomputed from the event's vertical part, a
         // sideways turn scrolled both, and a turn by lines was measured by
-        // the window's line height rather than the list's.
+        // the window's line height rather than the list's. The clamped
+        // offset is written back, for the next turn before a frame clamps
+        // it: left past the end, a turn back up within the frame ended where
+        // the list rested, so it scrolled the body instead. The reach is the
+        // last frame's, so a resize before the next prepaint judges one turn
+        // against the old reach, and that prepaint clamps what it leaves.
         .on_scroll_wheel({
             let (scroll, rest) = (self.scroll.clone(), self.rest.clone());
             move |_, _, cx| {
@@ -1148,7 +1182,9 @@ impl RebaseForm {
                     return;
                 };
                 let reach = (size.contents.height - size.item.height).max(Pixels::ZERO);
-                let turned = state.base_handle.offset().y.clamp(-reach, Pixels::ZERO);
+                let offset = state.base_handle.offset();
+                let turned = offset.y.clamp(-reach, Pixels::ZERO);
+                state.base_handle.set_offset(point(offset.x, turned));
                 // Within a rounding error of where it rested, as GPUI
                 // rounds the reach it clamps to.
                 if (rest.replace(turned) - turned).abs() > px(0.01) {
@@ -2514,6 +2550,150 @@ mod tests {
         assert!(
             shrunk.iter().all(|frame| frame.offset < px(0.)),
             "the reopened half tile's body is scrolled to the sequence in every frame"
+        );
+    }
+
+    /// Edit local commits at 1,480 × 973 at 13 pt, where the form fits its
+    /// body with the whole sequence: as an error line goes and as "Base
+    /// edited" goes, the form getting shorter, every frame draws the
+    /// sequence at the 220 px it ends at. The shorter height is seeded,
+    /// since at today's lines a sequence below 220 px leaves a body the form
+    /// never fits: the rule is that such a line's going never draws it.
+    /// Started from the last frame's, the frame the line went drew the
+    /// shorter sequence, and the next the 220 px.
+    #[gpui::test]
+    async fn a_line_going_draws_the_whole_sequence_in_every_frame(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = published_repository(directory.path());
+        let (_app, form, cx, _loaded) = loaded_from_the_branch_picker(
+            cx,
+            &repo,
+            size(px(1480.), px(973.)),
+            13,
+            None,
+            Press::Click,
+        )
+        .await;
+        let room = cx.read(appearance::button_ring_room);
+        let base = form.read_with(cx, |form, _| form.base.clone());
+        let loaded = cx.update(|_, cx| base.read(cx).value().to_string());
+        assert_eq!(
+            rendered(cx, "rebase-list-focus").size.height,
+            SEQUENCE_HEIGHT,
+            "the form fits with the whole sequence"
+        );
+        let seed = |cx: &mut VisualTestContext| {
+            form.read_with(cx, |form, _| form.fit.sequence.set(px(150.)));
+            frames(cx, &form);
+        };
+
+        cx.update(|_, cx| {
+            form.update(cx, |form, cx| {
+                form.error = Some("The plan could not be read.".into());
+                cx.notify();
+            })
+        });
+        draw(cx);
+        seed(cx);
+        cx.update(|_, cx| {
+            form.update(cx, |form, cx| {
+                form.error = None;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        assert_every_frame_final(
+            &frames(cx, &form),
+            SEQUENCE_HEIGHT,
+            room,
+            "the error line goes",
+        );
+
+        cx.update(|window, cx| {
+            base.update(cx, |input, cx| input.set_value("elsewhere", window, cx))
+        });
+        draw(cx);
+        assert!(
+            form.read_with(cx, |form, cx| form.notices(cx).1),
+            "the base field says another revision"
+        );
+        seed(cx);
+        cx.update(|window, cx| {
+            base.update(cx, |input, cx| input.set_value(loaded.clone(), window, cx))
+        });
+        draw(cx);
+        assert_every_frame_final(
+            &frames(cx, &form),
+            SEQUENCE_HEIGHT,
+            room,
+            "Base edited goes",
+        );
+    }
+
+    /// Twelve commits at 18 pt in a 461 × 490 half tile, the sequence at its
+    /// end, a turn down and a turn back up with no frame between them: the
+    /// first goes to the body, the sequence having nowhere to go, and the
+    /// second moves the sequence off its end, the offset the first left
+    /// clamped to the list's reach. Left past the end, the turn back up
+    /// ended where the list rested, so it moved the body instead.
+    #[gpui::test]
+    async fn a_turn_reversed_within_a_frame_moves_the_sequence(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = published_series(directory.path(), 12);
+        let (_app, form, cx, _loaded) = loaded_from_the_branch_picker(
+            cx,
+            &repo,
+            size(px(461.), px(490.)),
+            18,
+            None,
+            Press::Click,
+        )
+        .await;
+        let (list, body) = form.read_with(cx, |form, _| {
+            (form.scroll.clone(), form.body.scroll().clone())
+        });
+        cx.update(|window, _| {
+            list.scroll_to_item(11, ScrollStrategy::Bottom);
+            window.refresh();
+        });
+        draw(cx);
+        let reach = list
+            .0
+            .borrow()
+            .last_item_size
+            .map(|size| size.item.height - size.contents.height)
+            .expect("the sequence is laid out");
+        assert!(reach < px(0.), "the sequence is longer than its view");
+        assert_eq!(list.0.borrow().base_handle.offset().y, reach);
+        let before = body.offset().y;
+        let end = -body.max_offset().y;
+        let viewport = rendered(cx, "rebase-plan-scroll");
+        let position = rendered(cx, "rebase-list-focus")
+            .intersect(&viewport)
+            .center();
+        let step = px(60.);
+        let turn = |dy: Pixels| {
+            gpui::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(px(0.), dy)),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            })
+        };
+        cx.update(|window, cx| {
+            window.dispatch_event(turn(-step), cx);
+            window.dispatch_event(turn(step), cx);
+        });
+        draw(cx);
+        assert_eq!(
+            list.0.borrow().base_handle.offset().y,
+            reach + step,
+            "the turn back moves the sequence off its end"
+        );
+        assert_eq!(
+            body.offset().y,
+            (before - step).max(end),
+            "only the turn down reaches the body"
         );
     }
 
