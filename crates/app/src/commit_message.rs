@@ -15,6 +15,7 @@ use gitturtle_core::FileHistoryEntry;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::prelude::FluentBuilder;
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use unicode_segmentation::UnicodeSegmentation;
 
 const PIECE_BYTES: usize = 1024;
@@ -38,6 +39,8 @@ struct Presentation {
     /// What reveals a parent's control, in the metadata the list's last row
     /// holds, as the keyboard reaches it ([`State::parent_reveal`]).
     reveal: crate::focus_reveal::FocusReveal,
+    /// The parents' controls as Tab meets them ([`ParentStops`]).
+    parent_stops: Rc<ParentStops>,
     focus: FocusHandle,
     selection: Selection,
     scale: f32,
@@ -45,6 +48,58 @@ struct Presentation {
     /// (`GitTurtle::message_extent`), with the width, the bound, the font
     /// and the display scale it was measured for.
     extent: Option<Extent>,
+}
+
+/// How the parents' controls take part in Tab's order. The list draws only
+/// the rows in its view and a control no frame draws is no Tab stop, so under
+/// a long message Tab went from the message's text to the files, past every
+/// parent, until the message was scrolled there. While the list draws the
+/// metadata's row its controls are the stops; while it does not, a stand-in
+/// in the message's viewport tracks each parent's focus handle in their
+/// place ([`State::parent_stand_ins`]), and focus landing on one brings the
+/// row into the frame that first draws that focus. Kept with the
+/// presentation, as the reveal is: each commit's metadata scrolls for itself.
+#[derive(Default)]
+pub(super) struct ParentStops {
+    /// Whether a parent's control has prepainted in the frame being drawn:
+    /// taken as the viewport builds the stand-ins, after the list has
+    /// prepainted in the same frame, so a frame never draws both.
+    drawn: Cell<bool>,
+    /// The view's height, where the frame being rendered brought the
+    /// metadata's row in for the control focus has just moved onto.
+    revealing: Cell<Option<Pixels>>,
+}
+
+impl ParentStops {
+    /// For a parent's control tracking `focus` as it prepaints at `bounds`,
+    /// inside the list's row: where this frame brought the row in for it,
+    /// asks the list to show it with its ring's `room`. The list lays its
+    /// rows out again at once, so the frame that first draws the focus shows
+    /// the control whole wherever in the row it lies, even on a wrapped line
+    /// above the row's last or in a view shorter than the row. A control
+    /// taller than the view asks for its leading edge alone, as much of it
+    /// as the list's rows have, its `room` of padding below them: that puts
+    /// it where the reveal's own rule does (`focus_reveal::tall`), so no
+    /// later frame moves it. Asked to show the whole control, the list ended
+    /// at its foot and the reveal swung it back to its top a frame later.
+    pub(super) fn prepainted(
+        &self,
+        focus: &FocusHandle,
+        bounds: Bounds<Pixels>,
+        room: Pixels,
+        window: &mut Window,
+    ) {
+        self.drawn.set(true);
+        if let Some(view) = self.revealing.get()
+            && focus.is_focused(window)
+        {
+            let mut shown = bounds.dilate(room);
+            if shown.size.height > view {
+                shown.size.height = (view - room).max(Pixels::ZERO);
+            }
+            window.request_autoscroll(shown);
+        }
+    }
 }
 
 /// A measured height of a presented message and its metadata.
@@ -123,9 +178,25 @@ pub(super) struct State(
     Cell<Option<Toolbar>>,
     std::cell::OnceCell<FocusHandle>,
     /// The focus handles of the parents' controls, one for each parent
-    /// drawn so far, at most the 128 the metadata lists.
-    RefCell<Vec<FocusHandle>>,
+    /// drawn so far, at most the 128 the metadata lists. Shared with the
+    /// frame's stand-ins, which clone them only where they are drawn.
+    Rc<RefCell<Vec<FocusHandle>>>,
+    /// The parent whose control held focus as the last frame was rendered,
+    /// which tells focus moving onto one from focus resting on one. Kept
+    /// here, not with the presentation, as the handles are: a commit that
+    /// changes while a parent keeps focus is no move of focus.
+    Cell<Option<usize>>,
 );
+
+/// The focus handle of parent `index`'s control in `handles`, made the first
+/// time it is asked for.
+fn parent_handle(handles: &RefCell<Vec<FocusHandle>>, index: usize, cx: &mut App) -> FocusHandle {
+    let mut parents = handles.borrow_mut();
+    while parents.len() <= index {
+        parents.push(cx.focus_handle());
+    }
+    parents[index].clone()
+}
 
 /// How the message toolbar lays out Copy message, Hash and, in History and
 /// Compare, the selected commit's Actions in an inspector the window draws
@@ -409,16 +480,108 @@ impl State {
         self.0.borrow().as_ref().map(|state| state.reveal.clone())
     }
 
+    /// The presented commit's parents' Tab stops ([`ParentStops`]).
+    pub(super) fn parent_stops(&self) -> Option<Rc<ParentStops>> {
+        self.0
+            .borrow()
+            .as_ref()
+            .map(|state| state.parent_stops.clone())
+    }
+
+    /// For the render of the message, before its list lays out, with the
+    /// `parents` the presented commit shows in the metadata's row, row
+    /// `metadata`: the stops that stand in for their controls while the list
+    /// does not draw that row, built after the list has laid out in the
+    /// same frame, in the controls' place in Tab's order and drawing nothing.
+    ///
+    /// Focus the keyboard has just moved onto a parent's control the last
+    /// frame did not draw, a stand-in's, scrolls the row to the top of the
+    /// list's view, which draws it; the control then asks for what else it
+    /// needs as it prepaints ([`ParentStops::prepainted`]). Only that move
+    /// scrolls: a person who scrolls away from a focused parent stays where
+    /// they scrolled to, with focus still on it for the keyboard to go on
+    /// from, and a pointer never brings the row in, as it reveals no parent.
+    /// Runs in every render of a commit with parents, so it only reads the
+    /// handles here; they are cloned for the frames that draw the stand-ins.
+    /// No stand-in is a stop where the view is no taller than the list's
+    /// `room` of padding, where the list drops every row and a stop could
+    /// never show anything. The one holding focus is still tracked there, as
+    /// no stop, as the kit's Button is while disabled and focused: with
+    /// nothing tracking the focused handle, keys went out from the window's
+    /// root, above the Tab bindings, and Tab did nothing until a click.
+    fn parent_stand_ins(
+        &self,
+        parents: usize,
+        metadata: usize,
+        room: Pixels,
+        window: &Window,
+        cx: &App,
+    ) -> Option<AnyElement> {
+        if parents == 0 {
+            return None;
+        }
+        let focused = self
+            .3
+            .borrow()
+            .iter()
+            .take(parents)
+            .position(|handle| handle.is_focused(window));
+        let moved = self.4.replace(focused) != focused && focused.is_some();
+        let presentation = self.0.borrow();
+        let state = presentation.as_ref()?;
+        let view = (moved
+            && window.last_input_was_keyboard()
+            && state.reveal.focused_bounds(window, cx).is_none())
+        .then(|| state.scroll.viewport_bounds().size.height);
+        state.parent_stops.revealing.set(view);
+        if view.is_some() {
+            state.scroll.scroll_to(ListOffset {
+                item_ix: metadata,
+                offset_in_item: px(0.),
+            });
+        }
+        let stops = state.parent_stops.clone();
+        let handles = self.3.clone();
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(crate::in_frame::in_frame(move |bounds, window, cx| {
+                    if stops.drawn.take() {
+                        return div().into_any_element();
+                    }
+                    if bounds.size.height <= room {
+                        let focused = handles
+                            .borrow()
+                            .iter()
+                            .take(parents)
+                            .find(|handle| handle.is_focused(window))
+                            .cloned();
+                        return div()
+                            .children(
+                                focused.map(|handle| div().track_focus(&handle.tab_stop(false))),
+                            )
+                            .into_any_element();
+                    }
+                    let stand_ins: Vec<_> = (0..parents)
+                        .map(|index| {
+                            div().track_focus(&parent_handle(&handles, index, cx).tab_stop(true))
+                        })
+                        .collect();
+                    div().children(stand_ins).into_any_element()
+                }))
+                .into_any_element(),
+        )
+    }
+
     /// The focus handle the control of parent `index` tracks, the same one
     /// for every commit the inspector shows, as the message's own focus is,
     /// so focus on a parent's control survives the presentation's being
     /// replaced.
     pub(super) fn parent_focus(&self, index: usize, cx: &mut App) -> FocusHandle {
-        let mut parents = self.3.borrow_mut();
-        while parents.len() <= index {
-            parents.push(cx.focus_handle());
-        }
-        parents[index].clone()
+        parent_handle(&self.3, index, cx)
     }
 
     /// The presented message and metadata's height as last measured
@@ -506,6 +669,7 @@ impl State {
                     scroll.clone(),
                     crate::focus_reveal::Trigger::Keyboard,
                 ),
+                parent_stops: Rc::default(),
                 scroll,
                 selection: Selection::new(pieces.clone(), message_len, focus.clone(), cx),
                 pieces,
@@ -674,12 +838,16 @@ fn render_piece(piece: &Piece, index: usize, selection: &Selection, cx: &App) ->
 /// move. Built from the list's bounds in this frame, the cue follows a
 /// resize or a cap that shrinks the viewport in the frame that shrinks it.
 /// Tests find the bar, while it is drawn, by its id.
-fn message_cue(scroll: ListState, cx: &App) -> impl IntoElement {
+fn message_cue(
+    scroll: ListState,
+    reveal: Option<crate::focus_reveal::FocusReveal>,
+    cx: &App,
+) -> impl IntoElement {
     let surface: Hsla = rgb(palette(cx).panel).into();
     div().absolute().size_full().flex().flex_col().child(
         crate::in_frame::in_frame(move |_, _, _| {
             if scroll.viewport_bounds().size.height < crate::tags::SHORTEST_SCROLL_TRACK {
-                return message_fades(scroll, surface).into_any_element();
+                return message_fades(scroll, reveal, surface).into_any_element();
             }
             crate::in_frame::probed(
                 div()
@@ -709,17 +877,29 @@ fn message_cue(scroll: ListState, cx: &App) -> impl IntoElement {
 /// offset and reach as it paints, after the list clamped them in the same
 /// frame, so a wheel or a resize moves the fades in the frame that scrolls
 /// it, and it inserts no hitbox, so a wheel over a fade scrolls the
-/// message.
-fn message_fades(scroll: ListState, surface: Hsla) -> impl IntoElement {
+/// message. A fade whose band reaches the ring of the parent's control
+/// `reveal` shows holding focus ends where the ring begins, as a scrolling
+/// list's does (`tags::fade_reach`): in a viewport under the shortest track
+/// the reveal keeps only the ring's room, so the top fade lay over the ring.
+fn message_fades(
+    scroll: ListState,
+    reveal: Option<crate::focus_reveal::FocusReveal>,
+    surface: Hsla,
+) -> impl IntoElement {
     canvas(
         |_, _, _| (),
-        move |_, _, window, _| {
+        move |_, _, window, cx| {
             let list = scroll.viewport_bounds();
             let full = appearance::ui_size(crate::tags::EDGE_FADE);
             if list.size.height < full {
                 return;
             }
             let fade = full.min(list.size.height / 4.);
+            let ring = reveal
+                .as_ref()
+                .and_then(|reveal| reveal.focused_bounds(window, cx))
+                .map(|control| control.dilate(appearance::button_ring_room(cx)));
+            let (top_fade, bottom_fade) = crate::tags::fade_reach(list, fade, ring);
             // Half a pixel either way is an end, as a scrolling list's.
             let slack = px(0.5);
             let scrolled = -scroll.scroll_px_offset_for_scrollbar().y;
@@ -730,16 +910,17 @@ fn message_fades(scroll: ListState, surface: Hsla) -> impl IntoElement {
                     linear_color_stop(surface, 1.),
                 )
             };
-            if scrolled > slack {
+            if scrolled > slack && top_fade > Pixels::ZERO {
                 // Toward the top, opaque at the viewport's top edge.
-                let top = Bounds::new(list.origin, size(list.size.width, fade));
+                let top = Bounds::new(list.origin, size(list.size.width, top_fade));
                 window.paint_quad(fill(top, band(0.)));
             }
-            if scrolled < scroll.max_offset_for_scrollbar().y - slack {
+            if scrolled < scroll.max_offset_for_scrollbar().y - slack && bottom_fade > Pixels::ZERO
+            {
                 // Toward the bottom, opaque at the viewport's bottom edge.
                 let bottom = Bounds::new(
-                    point(list.left(), list.bottom() - fade),
-                    size(list.size.width, fade),
+                    point(list.left(), list.bottom() - bottom_fade),
+                    size(list.size.width, bottom_fade),
                 );
                 window.paint_quad(fill(bottom, band(180.)));
             }
@@ -859,6 +1040,18 @@ impl GitTurtle {
             reveal.reveal(window, cx);
         }
         let room = appearance::button_ring_room(cx);
+        let stand_ins = (!file_history)
+            .then(|| {
+                self.inspector_message.parent_stand_ins(
+                    commit.parents.len().min(128),
+                    pieces.len(),
+                    room,
+                    window,
+                    cx,
+                )
+            })
+            .flatten();
+        let cue_reveal = reveal.clone();
         let owner = cx.entity().downgrade();
         let oid = commit.oid.clone();
         let rows = selection.clone();
@@ -995,7 +1188,8 @@ impl GitTurtle {
                 })
                 .child(list)
                 .child(selection.registrar(scroll.clone()))
-                .child(message_cue(scroll.clone(), cx))
+                .children(stand_ins)
+                .child(message_cue(scroll.clone(), cue_reveal, cx))
                 // Its keyboard ring on its own edge, inside its clip, over
                 // the text, so none of it moves.
                 .children(self.focus_ring.edge(&focus, rgb(colors.accent)))
@@ -2168,6 +2362,156 @@ pub(crate) mod tests {
             }
             (top, bottom)
         })
+    }
+
+    /// In a viewport too short for a thumb that moves, the top fade lay over
+    /// the ring of a parent's control at the message's end: the fade stops
+    /// short of the ring while the control holds focus, as a scrolling
+    /// list's does (`tags::fade_reach`), and comes back whole as focus
+    /// leaves it.
+    #[gpui::test]
+    async fn the_fades_stop_short_of_a_parent_s_ring(cx: &mut TestAppContext) {
+        let body = "A body long enough to run past the panel's cap. ".repeat(12);
+        let (probe, app, short) = fixture(cx, vec![commit("a", "Selected title", &body)]);
+        let scroll = short.read(|cx| {
+            let state = app.read(cx).inspector_message.0.borrow();
+            state.as_ref().expect("presented").scroll.clone()
+        });
+        let room = short.read(appearance::button_ring_room);
+        let band = |viewport: Bounds<Pixels>| {
+            appearance::ui_size(crate::tags::EDGE_FADE).min(viewport.size.height / 4.)
+        };
+        let found = (150..=280).step_by(2).find_map(|height| {
+            probe.update(short, |probe, cx| {
+                (probe.width, probe.height, probe.toolbar) = (280., height as f32, true);
+                cx.notify();
+            });
+            scroll.scroll_to_end();
+            crate::views::tests::draw(short);
+            let viewport = short.debug_bounds("commit-message-viewport").unwrap();
+            let ring = short.debug_bounds("commit-parent-0")?.dilate(room);
+            (viewport.size.height < crate::tags::SHORTEST_SCROLL_TRACK
+                && ring.top() >= viewport.top()
+                && ring.top() < viewport.top() + band(viewport))
+            .then_some((viewport, ring))
+        });
+        let (viewport, ring) =
+            found.expect("a panel height leaves a parent's ring under the top fade");
+
+        let parent = short
+            .update(|_, cx| app.update(cx, |app, cx| app.inspector_message.parent_focus(0, cx)));
+        short.update(|window, cx| window.focus(&parent, cx));
+        crate::views::tests::draw(short);
+        let (top, _) = fades_on(short, viewport);
+        assert!(
+            top.is_none_or(|top| viewport.top() + top <= ring.top() + px(0.5)),
+            "the fade, {top:?} tall, stops short of the ring at {ring:?} in {viewport:?}"
+        );
+
+        let message = short
+            .read(|cx| app.read(cx).inspector_message.focus())
+            .expect("the message is presented");
+        short.update(|window, cx| window.focus(&message, cx));
+        crate::views::tests::draw(short);
+        let (top, _) = fades_on(short, viewport);
+        assert!(
+            top.is_some_and(|top| (top - band(viewport)).abs() < px(0.5)),
+            "focus gone, the fade is whole again: {top:?}"
+        );
+    }
+
+    /// The list drops every row where its height is at most its padding, so
+    /// a stand-in there would be a stop that could never show anything: in
+    /// the 1.5 px sliver at 112 px Tab goes on past the parents, and in the
+    /// 4 px view at 118 px, where the list draws, it meets them.
+    #[gpui::test]
+    async fn no_stand_in_is_a_stop_where_the_list_can_draw_nothing(cx: &mut TestAppContext) {
+        let body = "A body long enough to run past the panel's cap. ".repeat(12);
+        let (probe, app, short) = fixture(cx, vec![commit("a", "Selected title", &body)]);
+        short.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let room = short.read(appearance::button_ring_room);
+        crate::views::tests::draw(short);
+        let message = short
+            .read(|cx| app.read(cx).inspector_message.focus())
+            .expect("the message is presented");
+        let parent = short
+            .update(|_, cx| app.update(cx, |app, cx| app.inspector_message.parent_focus(0, cx)));
+        for (height, stop) in [(112., false), (118., true)] {
+            probe.update(short, |probe, cx| {
+                (probe.width, probe.height, probe.toolbar) = (156., height, true);
+                cx.notify();
+            });
+            crate::views::tests::draw(short);
+            let viewport = short.debug_bounds("commit-message-viewport").unwrap();
+            assert_eq!(
+                viewport.size.height > room,
+                stop,
+                "{height} px leaves {viewport:?} against the list's {room:?} of padding"
+            );
+            short.update(|window, cx| window.focus(&message, cx));
+            crate::views::tests::draw(short);
+            short.update(|window, cx| window.focus_next(cx));
+            crate::views::tests::draw(short);
+            assert_eq!(
+                short.update(|window, _| parent.is_focused(window)),
+                stop,
+                "in a {:?} view the parent is a stop: {stop}",
+                viewport.size.height
+            );
+        }
+    }
+
+    /// A parent holding focus as a resize takes the view to where the list
+    /// draws nothing still has an element tracking its handle: with none,
+    /// keys went out from the window's root, above the Tab bindings, and Tab
+    /// and Shift+Tab did nothing until a click. Each move leaves the handle
+    /// a stop again once there is room, whichever way it left.
+    #[gpui::test]
+    async fn tab_still_moves_from_a_parent_the_list_can_no_longer_draw(cx: &mut TestAppContext) {
+        let body = "A body long enough to run past the panel's cap. ".repeat(12);
+        let (probe, app, short) = fixture(cx, vec![commit("a", "Selected title", &body)]);
+        short.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let room = short.read(appearance::button_ring_room);
+        crate::views::tests::draw(short);
+        let message = short
+            .read(|cx| app.read(cx).inspector_message.focus())
+            .expect("the message is presented");
+        let parent = short
+            .update(|_, cx| app.update(cx, |app, cx| app.inspector_message.parent_focus(0, cx)));
+        let panel = |short: &mut VisualTestContext, height: f32| {
+            probe.update(short, |probe, cx| {
+                (probe.width, probe.height, probe.toolbar) = (156., height, true);
+                cx.notify();
+            });
+            crate::views::tests::draw(short);
+        };
+        for key in ["tab", "shift-tab"] {
+            panel(short, 200.);
+            short.update(|window, cx| window.focus(&message, cx));
+            crate::views::tests::draw(short);
+            short.simulate_keystrokes("tab");
+            crate::views::tests::draw(short);
+            assert!(
+                short.update(|window, _| parent.is_focused(window)),
+                "Tab reaches the parent before {key}"
+            );
+            panel(short, 112.);
+            let viewport = short.debug_bounds("commit-message-viewport").unwrap();
+            assert!(
+                viewport.size.height <= room,
+                "112 px leaves {viewport:?}, where the list draws nothing"
+            );
+            assert!(
+                short.update(|window, _| parent.is_focused(window)),
+                "the resize leaves focus on the parent"
+            );
+            short.simulate_keystrokes(key);
+            crate::views::tests::draw(short);
+            assert!(
+                short.update(|window, _| !parent.is_focused(window)),
+                "{key} moves on from the parent"
+            );
+        }
     }
 
     /// The cue the message viewport drew in the last frame.

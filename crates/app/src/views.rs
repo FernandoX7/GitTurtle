@@ -2720,8 +2720,12 @@ impl GitTurtle {
         // so Tab reaches a parent's control below the message's fold, where
         // the frame cuts it away: revealed whole with its ring's room as the
         // keyboard moves onto it, by the message's reveal
-        // (`commit_message::State::parent_reveal`).
+        // (`commit_message::State::parent_reveal`). Below what the list
+        // draws at all, Tab meets a stand-in in the control's place, and the
+        // control it brings in asks the list to show it as it prepaints
+        // (`commit_message::ParentStops`).
         let reveal = self.inspector_message.parent_reveal();
+        let stops = self.inspector_message.parent_stops();
         let room = appearance::button_ring_room(cx);
         let mut parents = div().flex().flex_wrap().gap_1();
         for (i, (parent, label)) in commit.parents.iter().zip(labels).enumerate() {
@@ -2744,15 +2748,17 @@ impl GitTurtle {
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.change_parent(i, window, cx)),
                 );
-            parents = parents.child(match &reveal {
-                Some(reveal) => {
-                    let report = reveal.control(focus, room);
+            parents = parents.child(match (&reveal, &stops) {
+                (Some(reveal), Some(stops)) => {
+                    let report = reveal.control(focus.clone(), room);
+                    let stops = stops.clone();
                     gpui_kit::base::ElementExt::on_prepaint(control, move |bounds, window, cx| {
                         report(vec![bounds], window, cx);
+                        stops.prepainted(&focus, bounds, room, window);
                     })
                     .into_any_element()
                 }
-                None => control.into_any_element(),
+                _ => control.into_any_element(),
             });
         }
         if commit.parents.len() > 128 {
@@ -28462,6 +28468,327 @@ pub(crate) mod tests {
             scrolled.is_none_or(|bounds| bounds.top() > viewport.bottom() - room),
             "scrolled back by hand, the control is not pulled into view again: {scrolled:?}"
         );
+    }
+
+    /// A merge whose message runs `lines` lines, the head of main: two
+    /// parents' controls, in the metadata's row after that message.
+    fn merged_script(lines: usize) -> String {
+        let body: String = (1..=lines)
+            .map(|line| format!("Body line {line}\n"))
+            .collect();
+        let message = format!("fixture notes\n\n{body}");
+        format!(
+            "commit refs/heads/main\nmark :1\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nfirst\nM 100644 inline notes.txt\ndata 5\nnote\n\ncommit refs/heads/side\nmark :2\ncommitter Fixture <fixture@example.invalid> 1700000001 +0000\ndata 4\nside\nfrom :1\nM 100644 inline side.txt\ndata 5\nside\n\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000002 +0000\ndata {}\n{message}\nfrom :1\nmerge :2\nM 100644 inline notes.txt\ndata 6\nnotes\n\ndone\n",
+            message.len(),
+        )
+    }
+
+    /// Presses `key`, which moves focus onto `parent`, the control drawn as
+    /// `selector`: in every frame painted since, the first that draws the
+    /// new focus included, the control lies whole in the message's view with
+    /// its ring's room, and its ring is drawn whole.
+    fn key_reveals_parent(
+        cx: &mut VisualTestContext,
+        reveal: &crate::focus_reveal::FocusReveal,
+        key: &str,
+        parent: &FocusHandle,
+        selector: &'static str,
+    ) {
+        let room = cx.read(appearance::button_ring_room);
+        reveal.take_painted();
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert!(
+            cx.update(|window, _| parent.is_focused(window)),
+            "{key} moves onto {selector}"
+        );
+        // A frame drawn as the key arrives still holds the focus before it.
+        let frames: Vec<_> = reveal
+            .take_painted()
+            .into_iter()
+            .filter(|frame| frame.focus == Some(parent.downgrade()))
+            .collect();
+        assert!(!frames.is_empty(), "{key} paints {selector}'s focus");
+        for (index, frame) in frames.iter().enumerate() {
+            let ring = frame
+                .control
+                .unwrap_or_else(|| panic!("frame {index} after {key} draws {selector}"))
+                .dilate(room);
+            assert!(
+                ring.top() + px(0.01) >= frame.viewport.top()
+                    && ring.bottom() <= frame.viewport.bottom() + px(0.01),
+                "frame {index} of {} after {key} shows {selector} whole: {ring:?} in {:?}",
+                frames.len(),
+                frame.viewport
+            );
+        }
+        let link = cx.debug_bounds(selector).expect("drawn");
+        assert!(
+            ring_whole_around(cx, link),
+            "{selector}'s ring is drawn whole: {link:?}"
+        );
+    }
+
+    /// The list draws no row below its view, so under a long message the
+    /// parents' controls are not in the window at all: Tab went from the
+    /// message straight to the files, and the parents could be reached only
+    /// after scrolling to them. Tab now meets each parent there, from either
+    /// side, and shows it whole with its ring in the first frame that draws
+    /// the focus; a person who scrolls away from a focused parent is left
+    /// where they scrolled to, and the keyboard goes on from that parent.
+    #[gpui::test]
+    async fn tab_reaches_a_parent_s_control_below_a_long_message(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &merged_script(200)).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.simulate_resize(size(px(1000.), px(700.)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("commit-parent-0").is_none(),
+            "the long message leaves the metadata's row undrawn"
+        );
+        let (message, reveal) = app.read_with(cx, |app, _| {
+            (
+                app.inspector_message
+                    .focus()
+                    .expect("the message is presented"),
+                app.inspector_message
+                    .parent_reveal()
+                    .expect("the message's reveal"),
+            )
+        });
+        let (first, second) = cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                (
+                    app.inspector_message.parent_focus(0, cx),
+                    app.inspector_message.parent_focus(1, cx),
+                )
+            })
+        });
+        cx.update(|window, cx| window.focus(&message, cx));
+        draw(cx);
+        key_reveals_parent(cx, &reveal, "tab", &first, "commit-parent-0");
+        key_reveals_parent(cx, &reveal, "tab", &second, "commit-parent-1");
+
+        let away = |cx: &mut VisualTestContext| {
+            let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+            crate::tags::tests::scroll_down(
+                cx,
+                viewport.center(),
+                ScrollDelta::Pixels(point(px(0.), px(200_000.))),
+            );
+            draw(cx);
+            draw(cx);
+            assert!(
+                cx.debug_bounds("commit-parent-0").is_none(),
+                "scrolled back by hand, the parents are not pulled into view"
+            );
+        };
+        away(cx);
+        assert!(
+            cx.update(|window, _| second.is_focused(window)),
+            "the control scrolled away from keeps focus"
+        );
+        key_reveals_parent(cx, &reveal, "shift-tab", &first, "commit-parent-0");
+
+        // From the stop after the last parent, Shift+Tab comes back to it.
+        key_reveals_parent(cx, &reveal, "tab", &second, "commit-parent-1");
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| !second.is_focused(window)
+                && !first.is_focused(window)
+                && !message.is_focused(window)),
+            "Tab goes on past the parents"
+        );
+        away(cx);
+        key_reveals_parent(cx, &reveal, "shift-tab", &second, "commit-parent-1");
+    }
+
+    /// With the metadata's row drawn its controls are the parents' only
+    /// stops: a stand-in drawn beside them would hold a second place in
+    /// Tab's order under the same handle, and Shift+Tab would go round
+    /// between the two parents and never reach the message.
+    #[gpui::test]
+    async fn shift_tab_walks_a_drawn_row_s_parents_to_the_message(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &merged_script(1)).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.simulate_resize(size(px(1000.), px(700.)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("commit-parent-1").is_some(),
+            "the short message leaves the metadata's row drawn"
+        );
+        let message = app
+            .read_with(cx, |app, _| app.inspector_message.focus())
+            .expect("the message is presented");
+        let (first, second) = cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                (
+                    app.inspector_message.parent_focus(0, cx),
+                    app.inspector_message.parent_focus(1, cx),
+                )
+            })
+        });
+        cx.update(|window, cx| window.focus(&second, cx));
+        draw(cx);
+        for (handle, stop) in [(&first, "the first parent"), (&message, "the message")] {
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            assert!(
+                cx.update(|window, _| handle.is_focused(window)),
+                "Shift+Tab meets {stop}"
+            );
+        }
+    }
+
+    /// Three commits on main, the newest two with a message of `lines` lines
+    /// and a parent each.
+    fn chained_script(lines: usize) -> String {
+        let body: String = (1..=lines)
+            .map(|line| format!("Body line {line}\n"))
+            .collect();
+        let message = format!("fixture notes\n\n{body}");
+        let length = message.len();
+        format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nfirst\nM 100644 inline notes.txt\ndata 5\nnote\n\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000001 +0000\ndata {length}\n{message}\nM 100644 inline notes.txt\ndata 6\nnotes\n\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000002 +0000\ndata {length}\n{message}\nM 100644 inline notes.txt\ndata 7\nnotes2\n\ndone\n",
+        )
+    }
+
+    /// A parent's control keeps focus through a change of commit, its handle
+    /// being every commit's, and that is no move of focus: the new commit's
+    /// long message opens at its top, not scrolled to its metadata.
+    #[gpui::test]
+    async fn a_new_commit_opens_at_its_message_while_a_parent_keeps_focus(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &chained_script(200)).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.simulate_resize(size(px(1000.), px(700.)));
+        draw(cx);
+        let (message, reveal) = app.read_with(cx, |app, _| {
+            (
+                app.inspector_message
+                    .focus()
+                    .expect("the message is presented"),
+                app.inspector_message
+                    .parent_reveal()
+                    .expect("the message's reveal"),
+            )
+        });
+        let parent =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.inspector_message.parent_focus(0, cx)));
+        cx.update(|window, cx| window.focus(&message, cx));
+        draw(cx);
+        key_reveals_parent(cx, &reveal, "tab", &parent, "commit-parent-0");
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(
+            cx.update(|window, _| parent.is_focused(window)),
+            "the parent's control keeps focus across the commits"
+        );
+        assert!(
+            cx.debug_bounds("commit-parent-0").is_none(),
+            "the new commit's long message opens at its top"
+        );
+    }
+
+    /// A control taller than the view, with its ring, cannot be whole: it
+    /// shows its leading edge from the first frame that draws the focus,
+    /// where the reveal's own rule leaves it, so no later frame moves it.
+    #[gpui::test]
+    async fn a_parent_taller_than_the_view_leads_from_its_first_frame(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &merged_script(200)).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let room = cx.read(appearance::button_ring_room);
+        let found = (260..=440).rev().step_by(2).any(|height| {
+            cx.simulate_resize(size(px(1000.), px(height as f32)));
+            draw(cx);
+            let view = cx.debug_bounds("commit-message-viewport").unwrap();
+            view.size.height > room * 2. && view.size.height < px(40.)
+        });
+        assert!(
+            found,
+            "a window height leaves a view shorter than the control"
+        );
+        let (message, reveal) = app.read_with(cx, |app, _| {
+            (
+                app.inspector_message
+                    .focus()
+                    .expect("the message is presented"),
+                app.inspector_message
+                    .parent_reveal()
+                    .expect("the message's reveal"),
+            )
+        });
+        let parent =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.inspector_message.parent_focus(0, cx)));
+        cx.update(|window, cx| window.focus(&message, cx));
+        draw(cx);
+        reveal.take_painted();
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| parent.is_focused(window)),
+            "Tab moves onto the parent's control"
+        );
+        let frames: Vec<_> = reveal
+            .take_painted()
+            .into_iter()
+            .filter(|frame| frame.focus == Some(parent.downgrade()))
+            .collect();
+        let first = frames.first().expect("a frame draws the new focus");
+        let ring = first
+            .control
+            .expect("the first frame draws it")
+            .dilate(room);
+        assert!(
+            (ring.top() - first.viewport.top()).abs() < px(0.01),
+            "its leading edge starts the view: {ring:?} in {:?}",
+            first.viewport
+        );
+        for frame in &frames {
+            assert!(
+                (frame.offset - first.offset).abs() < px(0.01),
+                "no later frame moves it: {:?} after {:?}",
+                frame.offset,
+                first.offset
+            );
+        }
+    }
+
+    /// At 18 pt in a window 440 px tall the message's view is shorter than
+    /// the metadata's row, so bringing that row to the top of the view
+    /// leaves the parent's control below the fold: the first frame that
+    /// draws the focus still shows it whole, with its ring.
+    #[gpui::test]
+    async fn tab_shows_a_parent_s_control_whole_in_a_view_shorter_than_its_row(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window_from(cx, &merged_script(200)).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(1000.), px(440.)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("commit-parent-0").is_none(),
+            "the long message leaves the metadata's row undrawn"
+        );
+        let (message, reveal) = app.read_with(cx, |app, _| {
+            (
+                app.inspector_message
+                    .focus()
+                    .expect("the message is presented"),
+                app.inspector_message
+                    .parent_reveal()
+                    .expect("the message's reveal"),
+            )
+        });
+        let first =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.inspector_message.parent_focus(0, cx)));
+        cx.update(|window, cx| window.focus(&message, cx));
+        draw(cx);
+        key_reveals_parent(cx, &reveal, "tab", &first, "commit-parent-0");
     }
 
     /// A parent's control fits the 156 px inspector of an 18 pt half tile,
