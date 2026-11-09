@@ -341,6 +341,10 @@ struct Availability {
     /// The project pane on where the window holds it back
     /// (`GitTurtle::project_pane_drawn`).
     project_pane_held_back: bool,
+    /// The GitHub panel can open now, whatever the busy spell says: a read
+    /// of its own that closing cancelled is still draining
+    /// (`GitTurtle::github_open_refusal`).
+    github_opens: bool,
 }
 impl CommandId {
     fn workspace(self) -> bool {
@@ -377,6 +381,7 @@ impl CommandId {
         // which it ends as it opens.
         if let Some(reason) = context.busy
             && !(self == Self::Projects && context.projects_ends_busy)
+            && !(self == Self::GitHub && context.github_opens)
             && !matches!(
                 self,
                 Self::History
@@ -657,6 +662,7 @@ impl GitTurtle {
             project_pane_held_back: self.settings.project_pane
                 && self.page != AppPage::Projects
                 && !self.project_pane_fits(window),
+            github_opens: self.github_open_refusal().is_none(),
         }
     }
     pub(super) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1810,6 +1816,32 @@ mod tests {
 #[cfg(test)]
 mod render_tests {
     use super::*;
+
+    /// The GitHub command runs over a read of the panel's that closing cancelled and that
+    /// still drains, as the header's Pull requests does, and says why it waits for a write.
+    #[gpui::test]
+    async fn the_github_command_opens_over_a_draining_read_and_waits_for_a_write(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::github_view::RequestKind;
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let reason = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                CommandId::GitHub.reason(&app.read(cx).palette_availability(window, cx))
+            })
+        };
+        app.update(cx, |app, _| {
+            app.operation_busy = Some(RequestKind::Load.label())
+        });
+        assert_eq!(reason(cx), None, "a draining read does not stop it");
+        app.update(cx, |app, _| app.operation_busy = Some("Committing…"));
+        assert_eq!(
+            reason(cx),
+            Some(crate::workspace::BUSY_REASON),
+            "a write does, and it says why"
+        );
+    }
+
     use crate::{activity, recovery_drafts, repository_tabs};
     use core::prelude::v1::test;
     use gpui_kit::{Background, Bounds, ScaledPixels, component::Root, point};

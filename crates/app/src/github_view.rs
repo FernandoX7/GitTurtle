@@ -480,7 +480,148 @@ impl WarmPanels {
         }
     }
 }
+/// A press of Pull requests that could not open the panel
+/// ([`GitTurtle::github_open_refusal`]), which the status bar says while it is fresh.
+#[derive(Default)]
+pub(super) struct OpenRefusal {
+    /// How many presses have been refused, so each is announced again with a fresh node.
+    turns: usize,
+    note: Option<OpenRefusalNote>,
+}
+struct OpenRefusalNote {
+    turn: usize,
+    /// What it says, in the words the button's tooltip gives ([`open_refused_sentence`]).
+    reason: SharedString,
+    _expiry: Task<()>,
+}
+/// What a refused press of Pull requests says, in its tooltip, the status line and the live
+/// region alike: the panel's name as its subject, so it means something heard alone, and what
+/// it waits for, without implying the panel will open by itself afterwards.
+pub(super) fn open_refused_sentence(reason: &str) -> SharedString {
+    format!(
+        "Pull requests: {}{}",
+        reason[..1].to_ascii_lowercase(),
+        &reason[1..]
+    )
+    .into()
+}
 impl GitTurtle {
+    /// Why the panel cannot open now, or none where it can. A read of the panel's own that
+    /// closing cancelled holds the window's busy spell until the executor has stopped it, so
+    /// it does not refuse the panel, which opens at once with its own reads waiting behind
+    /// that drain ([`Panel::load_local`]) and says why its requests wait meanwhile. A request
+    /// that may have changed something, an outbound action or an account change, and any Git
+    /// write or preparation still refuse it.
+    pub(super) fn github_open_refusal(&self) -> Option<&'static str> {
+        let busy = self.operation_busy?;
+        if running_request(busy).is_some_and(RequestKind::reads_only) {
+            return None;
+        }
+        Some(self.busy_reason())
+    }
+
+    /// The header's Pull requests as the window's busy spell leaves it: while the panel cannot
+    /// open it is announced unavailable and its tooltip says why, from the spell's first frame
+    /// to its last, and once the spell looks busy its label takes the disabled colour. It is
+    /// never `.disabled`, which `workspace::refusing` would make it: the kit's disabled Button
+    /// drops a click and Enter and leaves the Tab order, so 200 ms into a Fetch or a Push a
+    /// press went unanswered ([`Self::say_github_open_refused`]) for the rest of the spell. The
+    /// colour is the label's alone, so the focus ring stays whole. A refused press also answers
+    /// on the button itself: the tooltip says the reason ([`open_refused_sentence`]) and stays
+    /// through the press, since the status line is at the window's foot, 900 px from a pointer
+    /// on the header. At rest a press opens the panel, and the tooltip goes with it. `compact` is the short header form, whose tooltip names the control; the
+    /// tooltip is formatted only as it shows, so a frame copies none of it.
+    pub(super) fn refusing_pull_requests(
+        &self,
+        open: Button,
+        compact: bool,
+        cx: &Context<Self>,
+    ) -> Button {
+        let refused = self.github_open_refusal().is_some();
+        let dimmed = refused && self.operation_shown().is_some();
+        #[cfg(test)]
+        crate::workspace::refusals::record("pull-requests".into(), refused, dimmed);
+        let idle = if compact {
+            "Pull requests · Discover pull requests and review captured changes"
+        } else {
+            "Discover pull requests and review captured changes"
+        };
+        let owner = cx.entity().downgrade();
+        open.accessibility_disabled(refused)
+            .when(dimmed, |open| {
+                open.text_color(gpui_kit::component::Theme::global(cx).disabled_foreground())
+            })
+            .when(refused, |open| open.tooltip_through_press())
+            .tooltip_view(move |window, cx| {
+                let refusal = owner
+                    .upgrade()
+                    .and_then(|app| app.read(cx).github_open_refusal());
+                let text = refusal.map_or(SharedString::new_static(idle), open_refused_sentence);
+                Tooltip::element(move |_, _| {
+                    let probe = text.clone();
+                    div()
+                        .debug_selector(move || format!("pull-requests/tooltip/{probe}"))
+                        .child(text.clone())
+                })
+                .build(window, cx)
+            })
+    }
+
+    /// Says why a press could not open the panel, as the status line's text while it is
+    /// fresh, for [`crate::copy_feedback::RESTORE_AFTER`], as a write's outcome is, and in the
+    /// button's tooltip. Nothing else on screen changes.
+    fn say_github_open_refused(&mut self, reason: &str, cx: &mut Context<Self>) {
+        self.github_refusal.turns = self.github_refusal.turns.wrapping_add(1);
+        let expiry = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::copy_feedback::RESTORE_AFTER)
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.github_refusal.note = None;
+                cx.notify();
+            });
+        });
+        self.github_refusal.note = Some(OpenRefusalNote {
+            turn: self.github_refusal.turns,
+            reason: open_refused_sentence(reason),
+            _expiry: expiry,
+        });
+        cx.notify();
+    }
+
+    /// The refusal the status line reads while it is fresh and the panel is still refused: a
+    /// read's error and a write's fresh outcome keep the line, and it is announced beside them
+    /// ([`Self::github_refusal_announcement`]). A "Wait for…" could otherwise stay up for
+    /// [`crate::copy_feedback::RESTORE_AFTER`] after the write it waited for had ended.
+    pub(super) fn github_refusal_line(&self) -> Option<&str> {
+        let note = self.github_refusal.note.as_ref()?;
+        (self.page == AppPage::Repository
+            && self.error.is_none()
+            && self.fresh_outcome().is_none()
+            && self.github_open_refusal().is_some())
+        .then_some(note.reason.as_ref())
+    }
+
+    /// The status live region that says why a press could not open the panel, a fresh node
+    /// for each press, as the narrow rail's refusal is: nothing else on screen changes, and
+    /// a repeated refusal would otherwise go unheard. Its text is the node's name and its
+    /// value, which AT-SPI and macOS announce respectively. It draws nothing.
+    pub(super) fn github_refusal_announcement(&self) -> Option<impl IntoElement> {
+        let note = self.github_refusal.note.as_ref()?;
+        Some(crate::native_accessibility::recorded(
+            div()
+                .id(("github-open-refused", note.turn))
+                .debug_selector(|| "github-open-refused".into())
+                .role(Role::Status)
+                .polite()
+                .aria_label(note.reason.clone())
+                .aria_value(note.reason.clone())
+                .absolute()
+                .size(px(1.))
+                .overflow_hidden(),
+        ))
+    }
+
     /// Open the panel from the header's Pull requests button, full or
     /// compact, which closing returns focus to.
     pub(super) fn open_github_from_header(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -512,7 +653,13 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.operation_busy.is_some() || self.page != AppPage::Repository {
+        if self.page != AppPage::Repository {
+            return;
+        }
+        // Answered now or not at all: a press that cannot open the panel says why and leaves
+        // everything as it was, and no open waits to happen once the person has moved on.
+        if let Some(reason) = self.github_open_refusal() {
+            self.say_github_open_refused(reason, cx);
             return;
         }
         let Some(repo) = self.repository.clone() else {
@@ -805,7 +952,7 @@ impl RequestKind {
         Self::Templates,
     ];
     /// Its busy line.
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         #[cfg(test)]
         if let Some(label) = BUSY_LABEL_FOR_TEST.with(std::cell::Cell::get) {
             return label;
@@ -916,6 +1063,12 @@ impl RequestKind {
     /// once cancelled: the panel stays open while it runs.
     fn writing(self) -> bool {
         self == Self::Send
+    }
+    /// Whether it only reads, so that once cancelled it can drain behind a reopened panel
+    /// ([`GitTurtle::github_open_refusal`]). Connect and Disconnect change the stored
+    /// account, and Send what GitHub holds.
+    fn reads_only(self) -> bool {
+        matches!(self, Self::Load | Self::Compare | Self::Templates)
     }
 }
 /// The request of the panel that `label`, the window's busy spell, runs, if
@@ -16464,6 +16617,422 @@ mod tests {
             assert!(window.has_active_dialog(cx));
         });
         settle_panel(app, cx).await;
+    }
+
+    /// A closed panel whose local read has yet to run, for tests that reopen it.
+    fn closed_panel(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Entity<Panel> {
+        cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| panel.close(window, cx));
+            panel
+        })
+    }
+
+    /// A press of Pull requests while a cancelled read still drains opens the panel at once,
+    /// its own local read waiting behind the drain, and the button is neither dimmed nor
+    /// announced unavailable. The press once did nothing, with nothing said, until the drain
+    /// had ended.
+    #[gpui::test]
+    async fn pull_requests_opens_at_once_over_a_cancelled_read_still_draining(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        use crate::workspace::refusals;
+        let (_fixture, app, cx) = repository_window(cx);
+        let panel = closed_panel(&app, cx);
+        draw(cx);
+        for kind in [
+            RequestKind::Load,
+            RequestKind::Compare,
+            RequestKind::Templates,
+        ] {
+            app.update(cx, |app, _| app.operation_busy = Some(kind.label()));
+            draw(cx);
+            let refusal = refusals::get("pull-requests").expect("the button is built");
+            assert!(
+                !refusal.announced && !refusal.dimmed,
+                "{kind:?}: {refusal:?}"
+            );
+        }
+        // The cancelled read, draining: it holds the executor and the busy spell.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        app.update(cx, |app, _| {
+            app.operation_busy = Some(RequestKind::Load.label())
+        });
+        draw(cx);
+        crate::copy_feedback::tests::click(cx, "pull-requests");
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the panel opens at once"
+        );
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                panel.local_loading && !panel.local_loaded,
+                "its local read waits behind the drain"
+            );
+        });
+
+        app.update(cx, |app, _| app.operation_busy = None);
+        drop(held);
+        settle_panel(&app, cx).await;
+        assert!(
+            panel.read_with(cx, |panel, _| panel.local_loaded),
+            "and runs once the drain has ended"
+        );
+    }
+
+    /// A press of Pull requests the panel cannot answer, while a Git write, an outbound action
+    /// or an account change runs, leaves things as they are and says why in the status line
+    /// and its live region, again for each press; and the panel never opens later by itself
+    /// once the work has ended and the person has moved on.
+    #[gpui::test]
+    async fn a_press_of_pull_requests_a_write_refuses_says_why_and_never_opens_later(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        use crate::workspace::{BUSY_REASON, refusals};
+        let (_fixture, app, cx) = repository_window(cx);
+        let opener = app.read_with(cx, |app, _| app.pull_requests_focus.clone());
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        let press = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.open_github_from_header(window, cx))
+            });
+            draw(cx);
+        };
+        let line = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_line_drawn(window, cx)))
+        };
+        let heard = || written::announced_from("github-open-refused");
+        for (label, reason) in [
+            ("Committing…", BUSY_REASON),
+            (RequestKind::Send.label(), RequestKind::Send.reason()),
+            (RequestKind::Connect.label(), RequestKind::Connect.reason()),
+            (
+                RequestKind::Disconnect.label(),
+                RequestKind::Disconnect.reason(),
+            ),
+        ] {
+            app.update(cx, |app, _| app.operation_busy = Some(label));
+            draw(cx);
+            assert!(
+                refusals::get("pull-requests")
+                    .expect("the button")
+                    .announced,
+                "{label}: announced unavailable"
+            );
+            press(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{label}: stays refused"
+            );
+            let sentence = open_refused_sentence(reason);
+            assert_eq!(line(cx), sentence, "{label}: the status line says why");
+            let said = heard();
+            assert_eq!(said.len(), 1, "{label}: {said:?}");
+            assert_eq!(said[0].1.live, gpui::accesskit::Live::Polite, "{label}");
+            assert_eq!(
+                written::get(&said[0].0).and_then(|node| node.node.label().map(str::to_owned)),
+                Some(sentence.to_string()),
+                "{label}: spoken in full"
+            );
+            assert!(
+                cx.update(|window, _| opener.is_focused(window)),
+                "{label}: focus stays on the button"
+            );
+            let first = said[0].0.clone();
+            press(cx);
+            let again = heard();
+            assert_eq!(again.len(), 1, "{label}: {again:?}");
+            assert_ne!(again[0].0, first, "{label}: a fresh node for each press");
+        }
+
+        app.update(cx, |app, _| app.operation_busy = None);
+        cx.executor().advance_clock(
+            crate::copy_feedback::RESTORE_AFTER + std::time::Duration::from_millis(50),
+        );
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "nothing opens once the work has ended"
+        );
+        assert!(heard().is_empty(), "the note goes as it lapses");
+    }
+
+    /// A press of Pull requests a write refuses is answered for the whole busy spell, by a
+    /// click and by Enter, once the button looks refused as before it; the button stays a Tab
+    /// stop and its tooltip gives the reason in both phases. Drawn `.disabled`, the kit's
+    /// Button dropped both presses 200 ms into a Fetch, so a keyboard or Orca user got nothing
+    /// for the rest of it, and Tab stepped over it.
+    #[gpui::test]
+    async fn a_refused_press_of_pull_requests_is_answered_for_the_whole_busy_spell(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        use crate::workspace::{BUSY_LOOK_DELAY, BUSY_REASON, refusals};
+        let (_fixture, app, cx) = repository_window(cx);
+        draw(cx);
+        let opener = app.read_with(cx, |app, _| app.pull_requests_focus.clone());
+        let heard = || written::announced_from("github-open-refused");
+        // Says the press was answered: the panel stays shut, the line gives the reason and a
+        // fresh live region, the only one, speaks it.
+        let answered = |cx: &mut VisualTestContext, phase: &str, last: Option<String>| {
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{phase}: stays refused"
+            );
+            assert_eq!(
+                cx.update(|window, cx| app.update(cx, |app, cx| app.status_line_drawn(window, cx))),
+                open_refused_sentence(BUSY_REASON),
+                "{phase}: the status line says why"
+            );
+            let said = heard();
+            assert_eq!(said.len(), 1, "{phase}: {said:?}");
+            assert_eq!(said[0].1.live, gpui::accesskit::Live::Polite, "{phase}");
+            assert_ne!(Some(&said[0].0), last.as_ref(), "{phase}: a fresh node");
+            said[0].0.clone()
+        };
+        const TOOLTIP: &str =
+            "pull-requests/tooltip/Pull requests: wait for the current Git operation to finish";
+        let tooltip_shows = |cx: &mut VisualTestContext| {
+            let button = cx.debug_bounds("pull-requests").expect("the button");
+            cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+            cx.executor().advance_clock(Duration::from_millis(500));
+            draw(cx);
+            let shown = cx.debug_bounds(TOOLTIP).is_some();
+            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+            draw(cx);
+            shown
+        };
+
+        app.update(cx, |app, _| app.operation_busy = Some("Fetching…"));
+        draw(cx);
+        assert_eq!(
+            refusals::get("pull-requests"),
+            Some(refusals::Refusal {
+                announced: true,
+                dimmed: false
+            }),
+            "refused at once, the look waiting"
+        );
+        assert!(tooltip_shows(cx), "the reason before the busy look");
+        crate::copy_feedback::tests::click(cx, "pull-requests");
+        let first = answered(cx, "a click before the busy look", None);
+
+        cx.executor().advance_clock(BUSY_LOOK_DELAY);
+        cx.run_until_parked();
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_shown().is_some()),
+            "past the delay the spell looks busy"
+        );
+        assert_eq!(
+            refusals::get("pull-requests"),
+            Some(refusals::Refusal {
+                announced: true,
+                dimmed: true
+            }),
+            "announced and dimmed"
+        );
+        assert!(tooltip_shows(cx), "the reason once it looks busy");
+        crate::copy_feedback::tests::click(cx, "pull-requests");
+        let clicked = answered(cx, "a click once it looks busy", Some(first));
+
+        // A Tab stop still: met going forward from the stop before it.
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(
+            !cx.update(|window, _| opener.is_focused(window)),
+            "Shift+Tab leaves it"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "Tab meets it while it looks busy"
+        );
+        let keystroke = gpui::Keystroke::parse("enter").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        answered(cx, "Enter once it looks busy", Some(clicked));
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "focus stays on the button"
+        );
+    }
+
+    /// A refused press answers on the button too: its tooltip, resting there as the press lands,
+    /// stays through the press and reads the reason with its subject; the status line keeps it
+    /// for speech and history only while the panel is still refused, never after the write has
+    /// ended. It once hid with the press, and the reason stood 900 px away at the window's foot.
+    #[gpui::test]
+    async fn a_refused_press_of_pull_requests_answers_on_the_button(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        use crate::workspace::BUSY_REASON;
+        let (_fixture, app, cx) = repository_window(cx);
+        draw(cx);
+        const TOOLTIP: &str =
+            "pull-requests/tooltip/Pull requests: wait for the current Git operation to finish";
+        let line = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_line_drawn(window, cx)))
+        };
+        app.update(cx, |app, _| app.operation_busy = Some("Fetching…"));
+        draw(cx);
+
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+        cx.executor().advance_clock(Duration::from_millis(500));
+        draw(cx);
+        assert!(cx.debug_bounds(TOOLTIP).is_some(), "the reason on hover");
+
+        cx.simulate_click(button.center(), Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds(TOOLTIP).is_some(),
+            "still shown after the press"
+        );
+        assert_eq!(
+            line(cx),
+            open_refused_sentence(BUSY_REASON),
+            "the status line says it too, while the write runs"
+        );
+
+        // The write ends with the note still fresh: nothing goes on saying to wait for it.
+        app.update(cx, |app, _| app.operation_busy = None);
+        draw(cx);
+        let idle = line(cx);
+        assert_ne!(
+            idle,
+            open_refused_sentence(BUSY_REASON),
+            "a stale refusal never outlasts the write"
+        );
+    }
+
+    /// A real cancelled read under a reopened panel: the read is submitted, the close cancels
+    /// it, the panel reopens over its drain, and a Send refused by that drain stays to be sent.
+    /// The reopened panel, the refused confirmation and the drain's own `operation_busy` all
+    /// survive the drain's end; the tests beside this one set the busy spell by hand.
+    #[gpui::test]
+    async fn a_refused_send_under_a_reopened_panel_survives_the_drain(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // Opened at rest, so a click lands where the last frame drew its button.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        let pull = local_pull(&app, cx);
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| panel.pull = Some(pull.clone()));
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+
+        // Changes, held as a large comparison holds it.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.changes(window, cx)));
+        draw(cx);
+        let running = RequestKind::Compare.label();
+        let busy = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.operation_busy);
+        assert_eq!(busy(cx), Some(running), "the read runs");
+
+        // Closing cancels it, and its drain still holds the busy spell.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        draw(cx);
+        assert_eq!(busy(cx), Some(running), "the cancelled read still drains");
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the panel is closed"
+        );
+
+        // Pull requests opens the panel again at once, over that drain.
+        crate::copy_feedback::tests::click(cx, "pull-requests");
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the panel reopens at once"
+        );
+
+        // A Send the drain refuses says why and stays to be sent.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.confirm = Some(confirmed_comment());
+                panel.submit(window, cx);
+            })
+        });
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(!panel.pending, "nothing is sent");
+            assert!(panel.confirm.is_some(), "the confirmation stays");
+            assert_eq!(
+                panel.error.as_deref(),
+                Some("Wait for the pull request comparison to finish, then try again.")
+            );
+        });
+        assert_eq!(busy(cx), Some(running), "nothing clobbers the drain");
+
+        // The drain ends: the panel survives, its refusal with it.
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(busy(cx), None, "the drain has ended");
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the reopened panel survives"
+        );
+        panel.read_with(cx, |panel, _| {
+            assert!(!panel.closed, "still open");
+            assert!(panel.confirm.is_some(), "the refused confirmation stays");
+        });
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// Pressing Pull requests at rest opens the panel and takes its tooltip with it. Kept
+    /// through every press, "Discover pull requests…" could stay over the opened panel: only
+    /// a refused press, which opens nothing, answers in the tooltip.
+    #[gpui::test]
+    async fn the_idle_pull_requests_tooltip_goes_as_the_panel_opens(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let _panel = closed_panel(&app, cx);
+        draw(cx);
+        const TOOLTIP: &str =
+            "pull-requests/tooltip/Discover pull requests and review captured changes";
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+        cx.executor().advance_clock(Duration::from_millis(500));
+        draw(cx);
+        assert!(cx.debug_bounds(TOOLTIP).is_some(), "shown on hover");
+
+        cx.simulate_click(button.center(), Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the panel opens"
+        );
+        assert!(
+            cx.debug_bounds(TOOLTIP).is_none(),
+            "its tooltip goes in the frame the panel opens"
+        );
+        cx.executor().advance_clock(Duration::from_millis(500));
+        draw(cx);
+        assert!(
+            cx.debug_bounds(TOOLTIP).is_none(),
+            "and does not come back over it"
+        );
+        settle_panel(&app, cx).await;
     }
 
     /// The status strip names the keys of the panel's control that holds focus where it has

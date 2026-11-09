@@ -670,6 +670,9 @@ struct GitTurtle {
     focus_ring: focus_ring::FocusRing,
     /// The dialog controls whose keys the status bar names.
     dialog_hints: shortcuts::DialogHints,
+    /// A press of Pull requests that could not open the panel, which the
+    /// status bar says while it is fresh.
+    github_refusal: github_view::OpenRefusal,
     pane: Pane,
     history_scroll: UniformListScrollHandle,
     file_scroll: UniformListScrollHandle,
@@ -1042,6 +1045,7 @@ impl GitTurtle {
             pull_requests_focus: cx.focus_handle(),
             focus_ring: focus_ring::FocusRing::default(),
             dialog_hints: shortcuts::DialogHints::default(),
+            github_refusal: github_view::OpenRefusal::default(),
             pane: Pane::History,
             history_scroll: UniformListScrollHandle::new(),
             file_scroll: UniformListScrollHandle::new(),

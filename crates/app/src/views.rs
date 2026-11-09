@@ -519,7 +519,6 @@ impl GitTurtle {
         static HISTORY_TOOLTIP: std::sync::LazyLock<SharedString> =
             std::sync::LazyLock::new(|| format!("History · {}1", primary_label()).into());
         let p = palette(cx);
-        let busy = self.operation_shown().is_some();
         let (widths, labels) = self.kept_chrome(window, |widths, labels| (*widths, labels.clone()));
         let place = plan.operation;
         let before = self
@@ -655,20 +654,11 @@ impl GitTurtle {
                         )
                         .debug_selector(|| "pull-requests".into())
                         .track_focus(&self.pull_requests_focus)
-                        // `open_github_from_header` refuses while a write runs.
-                        .map(|open| {
-                            crate::workspace::refusing(
-                                open,
-                                || "pull-requests".into(),
-                                self.operation_busy.is_some(),
-                                busy,
-                            )
-                        })
-                        // Fixed, and longer than a shared string holds inline: a
-                        // static one, so a frame copies none of it.
-                        .tooltip(SharedString::new_static(
-                            "Pull requests · Discover pull requests and review captured changes",
-                        ))
+                        // Refused while the panel cannot open, saying why
+                        // and still answering a press; a cancelled read
+                        // still draining does not stop it
+                        // (`GitTurtle::github_open_refusal`).
+                        .map(|open| self.refusing_pull_requests(open, true, cx))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_github_from_header(window, cx)
                         })),
@@ -721,7 +711,6 @@ impl GitTurtle {
             (Chrome::Full { narrow }, _) => narrow,
         };
         let p = palette(cx);
-        let busy = self.operation_shown().is_some();
         let back_label = self.back_label();
         let back_to_projects = back_label == "Back to Projects";
         if self.page == AppPage::Settings {
@@ -878,19 +867,11 @@ impl GitTurtle {
                         button("pull-requests", "Pull requests", "", false)
                             .debug_selector(|| "pull-requests".into())
                             .track_focus(&self.pull_requests_focus)
-                            // `open_github_from_header` refuses while a write
-                            // runs.
-                            .map(|open| {
-                                crate::workspace::refusing(
-                                    open,
-                                    || "pull-requests".into(),
-                                    self.operation_busy.is_some(),
-                                    busy,
-                                )
-                            })
-                            .tooltip(SharedString::new_static(
-                                "Discover pull requests and review captured changes",
-                            ))
+                            // Refused while the panel cannot open, saying
+                            // why and still answering a press; a cancelled
+                            // read still draining does not stop it
+                            // (`GitTurtle::github_open_refusal`).
+                            .map(|open| self.refusing_pull_requests(open, false, cx))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_github_from_header(window, cx)
                             })),
@@ -9107,6 +9088,9 @@ impl GitTurtle {
         if let Some(note) = self.project_pane_note_line() {
             return note;
         }
+        if let Some(reason) = self.github_refusal_line() {
+            return reason;
+        }
         match self.page {
             AppPage::Projects => "Open a project or start a new repository",
             AppPage::Settings => "Appearance and layout preferences",
@@ -9279,7 +9263,9 @@ impl GitTurtle {
             // keeps no room for them.
             let first = self.status_first_line();
             let fresh = !carried
-                && (self.project_pane_note_line().is_some() || self.fresh_outcome().is_some());
+                && (self.project_pane_note_line().is_some()
+                    || self.github_refusal_line().is_some()
+                    || self.fresh_outcome().is_some());
             let line = if fresh {
                 status_line_width(&STATUS_OUTCOME, first.text, window, || {
                     #[cfg(test)]
@@ -9974,6 +9960,7 @@ impl Render for GitTurtle {
                                 .overflow_hidden(),
                         )
                     }))
+                    .children(self.github_refusal_announcement())
                     .when(watch_warning, |footer| {
                         footer.child(div().flex().flex_shrink_0().items_center().gap_2()
                             .debug_selector(|| "local-refresh-warning".into())
