@@ -448,7 +448,13 @@ impl GitTurtle {
                             None | Some(Ok(worker::QuietHistory::Refreshed(_)))
                         );
                         let shown = this.shows_quiet_refresh(&refresh);
-                        let entries = this.apply_quiet_refresh(*refresh, requested, window, cx);
+                        let entries = this.apply_quiet_refresh(
+                            *refresh,
+                            changed.after_write,
+                            requested,
+                            window,
+                            cx,
+                        );
                         found = !shown || entries;
                         if readable && this.tab_found_readable(cx) {
                             found = true;
@@ -538,15 +544,18 @@ impl GitTurtle {
 
     /// Applies a quiet read asked for as the `requested`th working-state
     /// read (`request_status_read`), and returns whether the working
-    /// entries it brought differ from those shown.
+    /// entries it brought differ from those shown. `from_write` says a
+    /// write asked for it as it ended.
     fn apply_quiet_refresh(
         &mut self,
         refresh: worker::QuietRefresh,
+        from_write: bool,
         requested: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let entries = self.apply_worktree_state(refresh.working, true, requested, window, cx);
+        let entries =
+            self.apply_worktree_state(refresh.working, true, from_write, requested, window, cx);
         if let Some(Ok(history)) = &refresh.snapshot {
             self.repository_tabs.follow_read_repository(match history {
                 worker::QuietHistory::Refreshed(snapshot) => &snapshot.repository,

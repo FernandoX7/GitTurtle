@@ -10634,7 +10634,7 @@ mod tests {
 
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                app.apply_worktree_state(held, true, requested, window, cx)
+                app.apply_worktree_state(held, true, false, requested, window, cx)
             })
         });
         frame(cx);

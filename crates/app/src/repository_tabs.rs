@@ -1424,7 +1424,7 @@ impl GitTurtle {
         // and scrolls to the top, a Changes tab once came back at its first
         // row with nothing selected.
         if let Some(preparation) = warm.working_unprepared {
-            self.schedule_working_filter(None, false, preparation, window, cx);
+            self.schedule_working_filter(None, false, None, preparation, window, cx);
         }
         self.hub.update(cx, |hub, cx| {
             hub.set_can_go_back(true, cx);

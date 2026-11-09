@@ -83,6 +83,16 @@ impl Selection {
         chosen.choose(key.clone(), visible, false, range);
         chosen.selected != self.selected
     }
+    /// The row of `from` has become the row of `to`, its file having changed
+    /// group: selected there too, and a Shift range goes on from it.
+    fn follow(&mut self, from: &Key, to: Key) {
+        if self.selected.remove(from) {
+            self.selected.insert(to.clone());
+        }
+        if self.anchor.as_ref() == Some(from) {
+            self.anchor = Some(to);
+        }
+    }
     fn retain_visible(&mut self, visible: &[Key]) {
         let visible: BTreeSet<_> = visible.iter().collect();
         self.selected.retain(|key| visible.contains(key));
@@ -444,12 +454,7 @@ impl GitTurtle {
     /// where no such row is drawn or the list was never laid out, which no
     /// scroll of theirs explains.
     fn working_cursor_scrolled_away(&self, window: &Window) -> bool {
-        let Some(cursor) = self.shown_working_cursor() else {
-            return false;
-        };
-        let Some(position) = self.working_rows.iter().position(
-            |row| matches!(row, workspace::WorkingRow::File(index, area) if (*index, *area) == cursor),
-        ) else {
+        let Some(position) = self.shown_cursor_row() else {
             return false;
         };
         let scroll = self.working_scroll.0.borrow();
@@ -459,6 +464,35 @@ impl GitTurtle {
         let row = window.pixel_snap(px(self.settings.density.file_row_height()));
         let (top, start) = (-scroll.base_handle.offset().y, row * position as f32);
         start + row <= top || start >= top + size.item.height
+    }
+
+    /// The selection's key for the cursor's row among the shown rows.
+    fn shown_cursor_key(&self) -> Option<Key> {
+        let (index, area) = self.shown_working_cursor()?;
+        let entry = self.shown_working_status()?.entries.get(index)?;
+        Some(Key::new(entry.path.clone(), area))
+    }
+
+    /// The rows of a newer status have landed, and the cursor's file, whose
+    /// key among the rows before them was `shown`, may stand in the other
+    /// group now, as a file staged by any means does: the selection goes
+    /// with it to its new row. Keyed by group, it was dropped with the row
+    /// that left, and the cursor stood on a row drawn unselected.
+    fn selection_follows_cursor(&mut self, shown: Option<Key>) {
+        let (Some(shown), Some((index, area))) = (shown, self.working_selected) else {
+            return;
+        };
+        if shown.staged == (area == ChangeArea::Staged) {
+            return;
+        }
+        let entry = self
+            .work_status
+            .as_ref()
+            .and_then(|status| status.entries.get(index));
+        if let Some(entry) = entry.filter(|entry| same_path(&entry.path, &shown.path)) {
+            let moved = Key::new(entry.path.clone(), area);
+            self.working_selection.follow(&shown, moved);
+        }
     }
 
     /// Takes the rows that just landed as laid out, so that a change in their
@@ -809,15 +843,23 @@ impl GitTurtle {
     pub(super) fn filter_working_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.working_selection.clear();
         self.working_scroll.scroll_to_item(0, ScrollStrategy::Top);
-        self.schedule_working_filter(None, false, Preparation::Filter, window, cx);
+        self.schedule_working_filter(None, false, None, Preparation::Filter, window, cx);
     }
 
     /// Prepares the rows the filter shows of the window's status, for
-    /// `preparation`, off the UI thread.
+    /// `preparation`, off the UI thread. `aloud` says they are those of a
+    /// read that is not a quiet one, a write's own or Refresh's; `anchor`
+    /// keeps the rows being read in place, for a read from outside the app
+    /// or a write's quiet one. Whichever read brings them, the selected file stays
+    /// selected at its new row. `follow` is how the list then brings that
+    /// row into view, where it was in view as these land
+    /// (`workspace::working_follow`); where the person had scrolled it out
+    /// of view, the list stays where it is.
     pub(super) fn schedule_working_filter(
         &mut self,
         anchor: Option<ScrollAnchor>,
-        center_selected: bool,
+        aloud: bool,
+        follow: Option<ScrollStrategy>,
         preparation: Preparation,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -898,10 +940,12 @@ impl GitTurtle {
                         let vacated = this.vacated_working_place(window, cx);
                         // Asked of the rows still drawn, before these replace
                         // them, for a write's rows and a passive read's alike.
-                        let scrolled_away = (center_selected || anchor.is_some()) && this.working_cursor_scrolled_away(window);
+                        let scrolled_away = (aloud || anchor.is_some()) && this.working_cursor_scrolled_away(window);
+                        let shown_cursor = this.shown_cursor_key();
                         this.working_rows = rows;
                         this.working_paths.retained = None;
                         this.release_departed_row_control(window, cx);
+                        this.selection_follows_cursor(shown_cursor);
                         this.reconcile_working_selection();
                         let selected = this.working_selected.and_then(|(i, a)| this.working_rows.iter().position(|r| matches!(r, workspace::WorkingRow::File(index, area) if *index == i && *area == a)));
                         if this.working_selected.is_some() && selected.is_none() {
@@ -916,20 +960,21 @@ impl GitTurtle {
                         if let Some(vacated) = vacated {
                             this.select_working_neighbour(vacated, window, cx);
                         }
-                        if let Some(anchor) = anchor {
-                            if let Some(next_top) = this.working_rows.iter().position(|row| match row {
+                        if let Some(anchor) = anchor
+                            && let Some(next_top) = this.working_rows.iter().position(|row| match row {
                                 workspace::WorkingRow::Heading(area, _) | workspace::WorkingRow::Directory(_, area) => anchor.path.is_none() && *area == anchor.area,
                                 workspace::WorkingRow::File(index, area) => *area == anchor.area && this.work_status.as_ref().and_then(|status| status.entries.get(*index)).is_some_and(|entry| anchor.path.as_deref().is_some_and(|path| same_path(&entry.path, path))),
-                            }) {
-                                let height = f32::from(window.pixel_snap(px(this.settings.density.file_row_height())));
-                                this.working_scroll.0.borrow().base_handle.set_offset(anchor.reanchored_offset(next_top, height));
-                            }
-                        } else if center_selected && !scrolled_away && let Some(position) = selected {
-                            this.working_scroll.scroll_to_item(position, ScrollStrategy::Center);
+                            })
+                        {
+                            let height = f32::from(window.pixel_snap(px(this.settings.density.file_row_height())));
+                            this.working_scroll.0.borrow().base_handle.set_offset(anchor.reanchored_offset(next_top, height));
+                        }
+                        if !scrolled_away && let (Some(strategy), Some(position)) = (follow, selected) {
+                            this.working_scroll.scroll_to_item(position, strategy);
                         }
                         // A cursor the person scrolled away from has no say in
                         // how far a confirming heading moves the list.
-                        if center_selected { this.reveal_confirming_heading(selected.filter(|_| !scrolled_away), window, cx); }
+                        if aloud { this.reveal_confirming_heading(selected.filter(|_| !scrolled_away), window, cx); }
                         if scrolled_away { this.keep_working_offset(window); }
                         this.rows_moved_under_pointer(window, cx);
                         this.land_working_row(landing, cx);

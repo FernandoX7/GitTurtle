@@ -1573,7 +1573,239 @@ mod tests {
         );
     }
 
-    /// The cursor's row in view, which the write moves out of it: the list
+    /// A read of the working state that a test starts after changing the
+    /// repository outside the app.
+    #[derive(Clone, Copy)]
+    enum ReadBy {
+        /// The local watcher's, quietly.
+        Watcher,
+        /// Refresh's, aloud.
+        Refresh,
+    }
+
+    /// Reads the working state by `read` and draws what lands.
+    async fn read_working(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, read: ReadBy) {
+        match read {
+            ReadBy::Watcher => quietly_refreshed(app, cx),
+            ReadBy::Refresh => {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+                rows_arrived(app, cx).await;
+            }
+        }
+        draw(cx);
+        draw(cx);
+    }
+
+    /// Whether the row of `name` in `area` is drawn selected.
+    fn drawn_selected(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        name: &str,
+        area: ChangeArea,
+    ) -> bool {
+        app.read_with(cx, |app, _| {
+            let status = app.work_status.as_ref().expect("a status");
+            let index = status
+                .entries
+                .iter()
+                .position(|entry| entry.path.as_os_str() == std::ffi::OsStr::new(name))
+                .expect(name);
+            app.working_is_selected(index, area)
+        })
+    }
+
+    /// Whether the cursor stands on the row of `name` in `area`.
+    fn cursor_stands_on(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        name: &str,
+        area: ChangeArea,
+    ) -> bool {
+        app.read_with(cx, |app, _| {
+            let status = app.work_status.as_ref().expect("a status");
+            app.working_selected.is_some_and(|(index, at)| {
+                at == area && status.entries[index].path.as_os_str() == std::ffi::OsStr::new(name)
+            })
+        })
+    }
+
+    /// One file leaves Unstaged for Staged outside the app, which keeps the
+    /// rows' number, and takes the cursor's row, in view, above the rows
+    /// shown: the file stays selected at its new row, and the list moves
+    /// only as far as shows it there, whole at the list's top. Its draw
+    /// compares the rows' number, so a passive read moved nothing and the
+    /// selected file left the list's view; a Refresh centred it.
+    async fn a_move_up_keeps_the_cursors_file_in_view(cx: &mut TestAppContext, read: ReadBy) {
+        // [Staged 30, f00…f29, Unstaged 30, f30…f59]: f56 at row 58 goes to
+        // row 31, far above the rows shown once the list has scrolled to it.
+        let (fixture, app, cx) = long_list(cx, 30, 30).await;
+        scroll_list(&app, cx, 50);
+        assert!(row_in_view(cx, 58) && !row_in_view(cx, 31), "row 58 shown");
+        let cursor_row = row(cx, 58).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        assert!(drawn_selected(&app, cx, "f56.txt", ChangeArea::Unstaged));
+        fixture_git(&fixture.path().join("narrow"), &["add", "f56.txt"]);
+        read_working(&app, cx, read).await;
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 62);
+        let landed = position_of(&app, cx, "f56.txt", ChangeArea::Staged);
+        assert!(cursor_stands_on(&app, cx, "f56.txt", ChangeArea::Staged));
+        assert!(
+            drawn_selected(&app, cx, "f56.txt", ChangeArea::Staged),
+            "the file stays selected at its new row"
+        );
+        assert!(row_in_view(cx, landed), "the new row {landed} is in view");
+        let pane = cx.debug_bounds("working-pane").expect("the list");
+        assert!(
+            (row(cx, landed).top() - pane.top()).abs() <= px(1.),
+            "by the least move: {:?} in {pane:?}",
+            row(cx, landed)
+        );
+        // A Shift range goes on from the row the file is on now.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.extend_working_selection(true, window, cx))
+        });
+        assert!(
+            drawn_selected(&app, cx, "f56.txt", ChangeArea::Staged)
+                && drawn_selected(&app, cx, "f30.txt", ChangeArea::Unstaged),
+            "the range starts at the file's new row"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_passive_move_up_keeps_the_cursors_file_in_view(cx: &mut TestAppContext) {
+        a_move_up_keeps_the_cursors_file_in_view(cx, ReadBy::Watcher).await;
+    }
+
+    #[gpui::test]
+    async fn a_refreshed_move_up_keeps_the_cursors_file_in_view(cx: &mut TestAppContext) {
+        a_move_up_keeps_the_cursors_file_in_view(cx, ReadBy::Refresh).await;
+    }
+
+    /// As above, the other way: a file leaves Staged for Unstaged, below the
+    /// rows shown, and lands whole at the list's foot.
+    async fn a_move_down_keeps_the_cursors_file_in_view(cx: &mut TestAppContext, read: ReadBy) {
+        // [Staged 50, f00…f49, Unstaged 10, f50…f59]: f01 at row 2 goes among
+        // the new files, below the rows the list shows at its top.
+        let (fixture, app, cx) = long_list(cx, 50, 10).await;
+        let cursor_row = row(cx, 2).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        fixture_git(
+            &fixture.path().join("narrow"),
+            &["reset", "--quiet", "--", "f01.txt"],
+        );
+        read_working(&app, cx, read).await;
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 62);
+        let landed = position_of(&app, cx, "f01.txt", ChangeArea::Unstaged);
+        assert!(cursor_stands_on(&app, cx, "f01.txt", ChangeArea::Unstaged));
+        assert!(
+            drawn_selected(&app, cx, "f01.txt", ChangeArea::Unstaged),
+            "the file stays selected at its new row"
+        );
+        assert!(row_in_view(cx, landed), "the new row {landed} is in view");
+        let pane = cx.debug_bounds("working-pane").expect("the list");
+        assert!(
+            (row(cx, landed).bottom() - pane.bottom()).abs() <= px(1.),
+            "by the least move: {:?} in {pane:?}",
+            row(cx, landed)
+        );
+    }
+
+    #[gpui::test]
+    async fn a_passive_move_down_keeps_the_cursors_file_in_view(cx: &mut TestAppContext) {
+        a_move_down_keeps_the_cursors_file_in_view(cx, ReadBy::Watcher).await;
+    }
+
+    #[gpui::test]
+    async fn a_refreshed_move_down_keeps_the_cursors_file_in_view(cx: &mut TestAppContext) {
+        a_move_down_keeps_the_cursors_file_in_view(cx, ReadBy::Refresh).await;
+    }
+
+    /// A change outside the app moves a file out from above the rows being
+    /// read, the list scrolled away from the cursor: Refresh keeps those
+    /// rows in place, as the watcher's read does, the list following the row
+    /// at its top. The rows' number stays, so nothing else moved the list,
+    /// and the rows being read slid a row under the person.
+    #[gpui::test]
+    async fn a_refreshed_move_above_the_view_keeps_the_rows_being_read(cx: &mut TestAppContext) {
+        // [Staged 40, f00…f39, Unstaged 20, f40…f59]: f09 at row 10 leaves
+        // for the new files, below the rows shown, so f19, at the list's top
+        // on row 20, goes up to row 19.
+        let (fixture, app, cx) = long_list(cx, 40, 20).await;
+        let cursor_row = row(cx, 5).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        scroll_list(&app, cx, 20);
+        assert!(
+            !row_in_view(cx, 5) && row_in_view(cx, 20),
+            "scrolled away from the cursor, row 20 shown"
+        );
+        let (offset, height) = (list_offset(&app, cx), row(cx, 20).size.height);
+        fixture_git(
+            &fixture.path().join("narrow"),
+            &["reset", "--quiet", "--", "f09.txt"],
+        );
+        read_working(&app, cx, ReadBy::Refresh).await;
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 62);
+        assert_eq!(
+            position_of(&app, cx, "f19.txt", ChangeArea::Staged),
+            19,
+            "f19 went up a row"
+        );
+        assert_eq!(
+            list_offset(&app, cx),
+            offset + height,
+            "the list follows the row at its top up one row"
+        );
+        assert!(!row_in_view(cx, 5), "the list stayed away from the cursor");
+    }
+
+    /// The person scrolled the list away from the cursor's row, and its
+    /// file changes group outside the app: the file stays selected, and the
+    /// list stays where they put it, whichever read finds the change.
+    async fn a_move_of_a_file_scrolled_away_from_keeps_the_list(
+        cx: &mut TestAppContext,
+        read: ReadBy,
+    ) {
+        // [Staged 45, f00…f44, Unstaged 15, f45…f59]: f58 at row 60 goes to
+        // row 46, below the rows the list shows at its top.
+        let (fixture, app, cx) = long_list(cx, 45, 15).await;
+        scroll_list(&app, cx, 50);
+        let cursor_row = row(cx, 60).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        scroll_list(&app, cx, 0);
+        assert!(!row_in_view(cx, 60), "scrolled away from the cursor");
+        let offset = list_offset(&app, cx);
+        fixture_git(&fixture.path().join("narrow"), &["add", "f58.txt"]);
+        read_working(&app, cx, read).await;
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 62);
+        let landed = position_of(&app, cx, "f58.txt", ChangeArea::Staged);
+        assert_eq!(landed, 46, "f58 goes among the staged files");
+        assert!(!row_in_view(cx, landed), "and out of the rows shown");
+        assert_eq!(list_offset(&app, cx), offset, "the list stayed");
+        assert!(
+            drawn_selected(&app, cx, "f58.txt", ChangeArea::Staged),
+            "the file stays selected at its new row"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_passive_move_of_a_file_scrolled_away_from_keeps_the_list(cx: &mut TestAppContext) {
+        a_move_of_a_file_scrolled_away_from_keeps_the_list(cx, ReadBy::Watcher).await;
+    }
+
+    #[gpui::test]
+    async fn a_refreshed_move_of_a_file_scrolled_away_from_keeps_the_list(cx: &mut TestAppContext) {
+        a_move_of_a_file_scrolled_away_from_keeps_the_list(cx, ReadBy::Refresh).await;
+    }
+
+    /// The cursor's row in view, which the write moves above the view: the
     /// centres the row where it lands, with context around it, as it decided
     /// for a row the person could see.
     #[gpui::test]
@@ -1601,6 +1833,76 @@ mod tests {
         assert!(
             (landed.center().y - pane.center().y).abs() < landed.size.height,
             "centred: row {landed:?} in {pane:?}"
+        );
+    }
+
+    /// A write's own read keeps the selected file selected at its new row,
+    /// as a read from outside the app does, and a Shift range goes on from
+    /// there. Keyed by its group, the selection left with the row.
+    #[gpui::test]
+    async fn an_unstage_keeps_the_cursors_file_selected_where_it_lands(cx: &mut TestAppContext) {
+        // [Staged 50, f00…f49, Unstaged 10, f50…f59]: f01 at row 2 lands
+        // first among the new files, ahead of f50.
+        let (_fixture, app, cx) = long_list(cx, 50, 10).await;
+        let cursor_row = row(cx, 2).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        toggle(&app, cx, 2).await;
+        draw(cx);
+        advance(cx, ROW_TRAVEL.as_millis() as u64);
+        draw(cx);
+        assert!(cursor_stands_on(&app, cx, "f01.txt", ChangeArea::Unstaged));
+        assert!(
+            drawn_selected(&app, cx, "f01.txt", ChangeArea::Unstaged),
+            "the file stays selected at its new row"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.extend_working_selection(true, window, cx))
+        });
+        assert!(
+            drawn_selected(&app, cx, "f01.txt", ChangeArea::Unstaged)
+                && drawn_selected(&app, cx, "f50.txt", ChangeArea::Unstaged),
+            "the range starts at the file's new row"
+        );
+    }
+
+    /// The quiet read a write asks for as it ends moves the list no further
+    /// than it did: the rows being read stay in place, though the cursor's
+    /// file moves out of them, and only its selection goes with it. The
+    /// least move is for reads from outside the app.
+    #[gpui::test]
+    async fn a_writes_quiet_read_leaves_the_list_on_the_rows_being_read(cx: &mut TestAppContext) {
+        // [Staged 30, f00…f29, Unstaged 30, f30…f59]: f56 at row 58 goes to
+        // row 31, above the rows shown once the list has scrolled to it.
+        let (fixture, app, cx) = long_list(cx, 30, 30).await;
+        scroll_list(&app, cx, 50);
+        let cursor_row = row(cx, 58).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        let (offset, height) = (list_offset(&app, cx), row(cx, 58).size.height);
+        fixture_git(&fixture.path().join("narrow"), &["add", "f56.txt"]);
+        quietly_read(
+            &app,
+            cx,
+            crate::local_refresh::LocalChange {
+                worktree: true,
+                after_write: true,
+                ..Default::default()
+            },
+        );
+        draw(cx);
+        draw(cx);
+        let landed = position_of(&app, cx, "f56.txt", ChangeArea::Staged);
+        assert!(
+            drawn_selected(&app, cx, "f56.txt", ChangeArea::Staged),
+            "the file stays selected at its new row"
+        );
+        assert!(!row_in_view(cx, landed), "the list did not go to the row");
+        assert!(
+            (list_offset(&app, cx) - offset).abs() <= height,
+            "it stayed on the rows being read"
         );
     }
 
@@ -5830,16 +6132,26 @@ mod tests {
     /// which moves focus to the list. The read runs on the window's reader,
     /// a thread `run_until_parked` cannot wait for.
     fn quietly_refreshed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        quietly_read(
+            app,
+            cx,
+            crate::local_refresh::LocalChange {
+                worktree: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    /// Runs the quiet read `change` asks for and draws the frame after its
+    /// rows land.
+    fn quietly_read(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        change: crate::local_refresh::LocalChange,
+    ) {
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                app.queue_automatic_refresh(
-                    crate::local_refresh::LocalChange {
-                        worktree: true,
-                        ..Default::default()
-                    },
-                    window,
-                    cx,
-                )
+                app.queue_automatic_refresh(change, window, cx)
             })
         });
         for _ in 0..8 {
@@ -7367,6 +7679,7 @@ mod tests {
                 app.schedule_working_filter(
                     None,
                     false,
+                    None,
                     crate::working_selection::Preparation::Status,
                     window,
                     cx,
@@ -7433,6 +7746,7 @@ mod tests {
                     app.schedule_working_filter(
                         None,
                         false,
+                        None,
                         crate::working_selection::Preparation::Status,
                         window,
                         cx,
@@ -7581,6 +7895,7 @@ mod tests {
                 app.schedule_working_filter(
                     None,
                     false,
+                    None,
                     crate::working_selection::Preparation::Status,
                     window,
                     cx,
@@ -7786,7 +8101,7 @@ mod tests {
             let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
             cx.update(|window, cx| {
                 app.update(cx, |app, cx| {
-                    app.schedule_working_filter(None, false, preparation, window, cx)
+                    app.schedule_working_filter(None, false, None, preparation, window, cx)
                 })
             });
             next_frame(cx);
@@ -7949,6 +8264,7 @@ mod tests {
                 app.schedule_working_filter(
                     None,
                     false,
+                    None,
                     crate::working_selection::Preparation::Status,
                     window,
                     cx,

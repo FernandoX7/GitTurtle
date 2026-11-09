@@ -2802,7 +2802,8 @@ impl GitTurtle {
                 this.status_task = None;
                 match result {
                     Ok(state) => {
-                        this.apply_worktree_state(state, false, requested, window, cx);
+                        let from_write = this.status_after_write == Some(generation);
+                        this.apply_worktree_state(state, false, from_write, requested, window, cx);
                     }
                     Err(error) => {
                         this.work_status = None;
@@ -2858,11 +2859,13 @@ impl GitTurtle {
 
     /// Applies a working-state read asked for as the `requested`th
     /// ([`Self::request_status_read`]), and returns whether its entries
-    /// differ from those shown.
+    /// differ from those shown. `from_write` says a write asked for it as
+    /// it ended, rather than Refresh or the local watcher.
     pub(super) fn apply_worktree_state(
         &mut self,
         state: worker::WorkingState,
         quiet: bool,
+        from_write: bool,
         requested: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2918,7 +2921,10 @@ impl GitTurtle {
             .work_status
             .as_ref()
             .is_none_or(|previous| previous.entries != status.entries);
-        let working_anchor = if entries_changed && quiet {
+        // The rows being read hold their place through a read from outside
+        // the app and a write's quiet one. A write's own read centres its
+        // row as it lands instead.
+        let working_anchor = if entries_changed && (quiet || !from_write) {
             self.working_scroll_anchor(window)
         } else {
             None
@@ -2994,6 +3000,7 @@ impl GitTurtle {
             self.schedule_working_filter(
                 working_anchor,
                 !quiet,
+                working_follow(quiet, from_write),
                 crate::working_selection::Preparation::Status,
                 window,
                 cx,
@@ -3624,7 +3631,7 @@ impl GitTurtle {
     }
 
     /// The selected row's place among the shown rows.
-    fn shown_cursor_row(&self) -> Option<usize> {
+    pub(super) fn shown_cursor_row(&self) -> Option<usize> {
         let (index, area) = self.shown_working_cursor()?;
         self.working_rows
             .iter()
@@ -7829,6 +7836,21 @@ fn action_field_label(label: &'static str, color: u32) -> impl IntoElement {
         .text_color(rgb(color))
         .font_weight(FontWeight::MEDIUM)
         .child(label)
+}
+
+/// How the Working list brings the selected file's row into view, where it
+/// was in view, as the rows of a read that changed them land. A write's own
+/// read centres it where the write moved it out of view, so it lands with
+/// context around it, and the quiet read a write asks for leaves the list on
+/// the rows being read. A read from outside the app, Refresh's or the local
+/// watcher's, moves the list only as far as shows the row, whether or not
+/// the rows' number changed: one file leaving Unstaged for Staged keeps it.
+pub(super) fn working_follow(quiet: bool, from_write: bool) -> Option<ScrollStrategy> {
+    match (from_write, quiet) {
+        (false, _) => Some(ScrollStrategy::Nearest),
+        (true, false) => Some(ScrollStrategy::Center),
+        (true, true) => None,
+    }
 }
 
 pub(super) fn retained_area(
