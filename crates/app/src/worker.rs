@@ -1311,6 +1311,50 @@ fn ensure_found_at_path(repo: &GitRepository) -> Result<()> {
     .into())
 }
 
+/// An open of `requested` that core refused, as the reader reports it: a
+/// repository that changed while it was opened is [`RepositoryGone`], and so
+/// is a tab's root whose work tree now lies outside its folder, where an
+/// explicit open of such a layout says so in its own words. One that Git
+/// still reports at its path, only the capture having failed, stays
+/// [`gitturtle_core::ChangedWhileOpening`]: it once read "is gone. Git now
+/// finds the repository at P there", the one path twice, of a healthy
+/// repository.
+fn refused_open(requested: &Path, passive: bool, error: anyhow::Error) -> anyhow::Error {
+    let error = match error.downcast::<gitturtle_core::ChangedWhileOpening>() {
+        Ok(changed) if changed.found.as_ref() == Some(&changed.path) => return changed.into(),
+        Ok(changed) => {
+            return RepositoryGone {
+                path: requested.to_owned(),
+                found: changed.found,
+            }
+            .into();
+        }
+        Err(error) => error,
+    };
+    match error.downcast::<gitturtle_core::WorkTreeOutside>() {
+        Ok(outside) if passive => RepositoryGone {
+            path: requested.to_owned(),
+            found: Some(outside.work_tree),
+        }
+        .into(),
+        Ok(outside) => outside.into(),
+        Err(error) => error,
+    }
+}
+
+/// What a failed open says: `repository_access::explain`'s reasons, but for
+/// a refusal that says what happened in its own words.
+fn worded_open_failure(path: &Path, error: anyhow::Error) -> anyhow::Error {
+    if error.is::<RepositoryGone>()
+        || error.is::<gitturtle_core::WorkTreeOutside>()
+        || error.is::<gitturtle_core::ChangedWhileOpening>()
+    {
+        error
+    } else {
+        crate::repository_access::explain(path, error)
+    }
+}
+
 /// A read of `repo` that failed as "not a git repository", as
 /// [`RepositoryGone`]: its commands are confined to it, so that is how a
 /// read fails once its `.git` went away, and the diagnosis names what Git
@@ -1485,32 +1529,11 @@ impl RepositorySession {
         // existing root, in which case keep the original persistent reader.
         // Git finding no repository there fails as it always has, with the
         // reasons `repository_access::explain` gives a folder that is not
-        // one; only another repository found is `RepositoryGone`, as is a
-        // repository that changed while it was opened, its open refused,
-        // and a tab's root whose work tree now lies outside its folder. An
-        // explicit open of such a layout says so in its own words.
+        // one; only another repository found is `RepositoryGone` (see
+        // `refused_open`).
         let passive = captured.is_some();
-        let discovered = GitRepository::open(&canonical).map_err(|error| {
-            let error = match error.downcast::<gitturtle_core::ChangedWhileOpening>() {
-                Ok(changed) => {
-                    return RepositoryGone {
-                        path: requested.to_owned(),
-                        found: changed.found,
-                    }
-                    .into();
-                }
-                Err(error) => error,
-            };
-            match error.downcast::<gitturtle_core::WorkTreeOutside>() {
-                Ok(outside) if passive => RepositoryGone {
-                    path: requested.to_owned(),
-                    found: Some(outside.work_tree),
-                }
-                .into(),
-                Ok(outside) => outside.into(),
-                Err(error) => error,
-            }
-        })?;
+        let discovered = GitRepository::open(&canonical)
+            .map_err(|error| refused_open(requested, passive, error))?;
         let canonical_root = discovered.path().canonicalize()?;
         if captured
             .as_ref()
@@ -2211,13 +2234,7 @@ fn execute(
                 cancellation,
                 session,
             )
-            .map_err(|error| {
-                if error.is::<RepositoryGone>() || error.is::<gitturtle_core::WorkTreeOutside>() {
-                    error
-                } else {
-                    crate::repository_access::explain(&path, error)
-                }
-            })?;
+            .map_err(|error| worded_open_failure(&path, error))?;
             cancellation.check()?;
             snapshot.elapsed = start.elapsed();
             Ok(Output::Snapshot(snapshot))
@@ -6622,6 +6639,34 @@ mod image_tests {
                 .unwrap()
                 .path(),
             root
+        );
+    }
+
+    /// An open refused because only the capture failed, Git still
+    /// reporting the repository at its path, says what is true in core's
+    /// words: not gone, and the one path not named twice. One that Git now
+    /// finds elsewhere is the repository gone, as before.
+    #[test]
+    fn an_open_refused_at_its_own_path_is_not_the_repository_gone() {
+        let root = PathBuf::from("/repository");
+        let refused = |found: Option<PathBuf>| {
+            let error = anyhow::Error::from(gitturtle_core::ChangedWhileOpening {
+                path: root.clone(),
+                found,
+            });
+            worded_open_failure(&root, refused_open(&root, false, error))
+        };
+        let same = refused(Some(root.clone()));
+        assert!(same.is::<gitturtle_core::ChangedWhileOpening>(), "{same:#}");
+        assert_eq!(
+            format!("{same:#}"),
+            "The repository at /repository changed while it was opened. Open it again."
+        );
+        let elsewhere = refused(Some(PathBuf::from("/other")));
+        assert!(elsewhere.is::<RepositoryGone>(), "{elsewhere:#}");
+        assert!(
+            format!("{elsewhere:#}").contains("Git now finds the repository at /other there"),
+            "{elsewhere:#}"
         );
     }
 

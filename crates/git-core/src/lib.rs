@@ -159,7 +159,9 @@ pub struct TextPreviewWithSources {
 pub struct ChangedWhileOpening {
     /// The work-tree root (a bare repository's Git directory) Git reported.
     pub path: PathBuf,
-    /// What Git finds there now, if anything.
+    /// What Git finds there now, if anything: [`Self::path`] itself where
+    /// Git still reports the same repository, only the capture having
+    /// failed.
     pub found: Option<PathBuf>,
 }
 
@@ -171,6 +173,7 @@ impl std::fmt::Display for ChangedWhileOpening {
             self.path.display()
         )?;
         match &self.found {
+            Some(found) if *found == self.path => write!(f, "."),
             Some(found) => write!(f, ": Git now finds {} there.", found.display()),
             None => write!(f, ": Git now finds no repository there."),
         }?;
@@ -1034,6 +1037,10 @@ impl GitRepository {
                 }
                 .into());
             }
+            // A decoy `.git` directory that Git skips, nearer the root than the real
+            // one, leaves no holder either, so that handle asks Git at each
+            // check. Accepted: it costs one process, lets no write through,
+            // and refusing would risk a healthy layout.
             FoundAtPath::Same => return Ok(repository),
             FoundAtPath::Other(found) => Some(found),
             FoundAtPath::None => None,
@@ -3145,7 +3152,13 @@ mod tests {
                 std::fs::write(&back, &gitfile).unwrap();
             });
             GITFILE_CHECKPOINT.with_borrow_mut(|hook| *hook = None);
-            opened.is_err_and(|error| error.is::<ChangedWhileOpening>())
+            let said = format!(
+                "The repository at {} changed while it was opened. Open it again.",
+                root.display()
+            );
+            opened.is_err_and(|error| {
+                error.is::<ChangedWhileOpening>() && format!("{error:#}") == said
+            })
         });
         let answered = answer.recv_timeout(LIMIT);
         if answered.is_err() {
