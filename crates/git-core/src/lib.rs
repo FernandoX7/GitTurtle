@@ -307,6 +307,11 @@ thread_local! {
     /// file descriptors does: a test reaches the error only this process
     /// meets, Git's own open succeeding.
     static OPEN_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Fails every [`WorkTreeSettings::read`] on this thread as Git fails a
+    /// read it could not finish: a test reaches the one failed read a guard
+    /// has to survive, every other Git command still succeeding.
+    #[cfg(unix)]
+    static SETTINGS_READ_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// What Git finds at an opened repository's path now
@@ -731,9 +736,13 @@ struct WorkTreeSettings {
 
 impl WorkTreeSettings {
     /// What `file` says: nothing where it cannot name either setting
-    /// ([`may_name_a_work_tree`]), starting no process, or is not one Git
-    /// can read, so it is not one Git read them from either. One process
-    /// reads a file's settings.
+    /// ([`may_name_a_work_tree`]), starting no process, or where Git says it
+    /// sets none of them ([`sets_none_of_the_keys`]). Any other failure of
+    /// Git's read is an error, so a guard is never built from it: one failed
+    /// read taken for "no keys" once stored no `core.worktree` guard, the
+    /// handle answered that it was the repository at its path for its whole
+    /// life, and a link re-pointed later took a write to the other work
+    /// tree. One process reads a file's settings.
     fn read(git_dir: &Path, file: &Path) -> Result<Self> {
         let mut settings = Self::default();
         if !may_name_a_work_tree(file).with_context(|| format!("Read {}", file.display()))? {
@@ -748,7 +757,24 @@ impl WorkTreeSettings {
                 r"^(core\.repositoryformatversion|core\.worktree|extensions\.worktreeconfig)$",
             ]);
         let output = bounded_output(command, GIT_TIMEOUT)?;
+        #[cfg(all(test, unix))]
+        let output = if SETTINGS_READ_FAILS.get() {
+            use std::os::unix::process::ExitStatusExt;
+            Output {
+                status: std::process::ExitStatus::from_raw(128 << 8),
+                stdout: Vec::new(),
+                stderr: b"fatal: unable to read config file\n".to_vec(),
+            }
+        } else {
+            output
+        };
         if !output.status.success() {
+            ensure!(
+                sets_none_of_the_keys(&output),
+                "Git could not read {}: {}",
+                file.display(),
+                reported(&output.stderr).trim()
+            );
             return Ok(settings);
         }
         // Each entry is its key, then a line feed and its value if it has
@@ -809,6 +835,16 @@ impl WorkTreeSettings {
             }
         }
     }
+}
+
+/// Whether a failed `git config --get-regexp` said only that the file sets
+/// none of the keys: exit 1 with nothing on its error stream. Git also exits
+/// 1 for a file it could not read, with `warning: unable to access …`, and
+/// 128 for one it could not parse, and neither says what the file sets.
+/// Silence means no keys only as far as Git can tell: a read fault after a
+/// successful open, which Git does not report, is out of reach here.
+fn sets_none_of_the_keys(output: &Output) -> bool {
+    output.status.code() == Some(1) && output.stderr.is_empty()
 }
 
 /// A configuration boolean Git spells plainly, as Git reads it: no value at
@@ -3129,6 +3165,107 @@ mod tests {
                 assert_eq!(ours, by_git, "{lines:?}");
             }
         }
+    }
+
+    /// A settings read Git could not finish is an error; only Git saying
+    /// nothing at exit 1 means the file sets none of the keys. Each output
+    /// is Git's own, for a file that names the word and so reaches Git.
+    #[cfg(unix)]
+    #[test]
+    fn only_git_saying_nothing_means_a_file_sets_no_keys() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let read_by_git = |file: &Path| {
+            Command::new("git")
+                .args(["config", "--null", "--file"])
+                .arg(file)
+                .args(["--get-regexp", r"^core\.worktree$"])
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+        };
+        let none = fixture.path().join("none");
+        std::fs::write(&none, "[foo]\n\tworktree = 1\n").unwrap();
+        assert!(sets_none_of_the_keys(&read_by_git(&none)));
+        let settings = WorkTreeSettings::read(fixture.path(), &none).unwrap();
+        assert!(settings.value.is_none() && settings.version.is_none());
+
+        let malformed = fixture.path().join("malformed");
+        std::fs::write(&malformed, "[core\n\tworktree = x\n").unwrap();
+        let by_git = read_by_git(&malformed);
+        assert_eq!(by_git.status.code(), Some(128));
+        assert!(!sets_none_of_the_keys(&by_git));
+        let error = WorkTreeSettings::read(fixture.path(), &malformed)
+            .err()
+            .expect("Git could not parse it");
+        assert!(
+            format!("{error:#}").starts_with("Git could not read "),
+            "{error:#}"
+        );
+
+        // Root reads a mode-000 file, so only a normal user gets the warning.
+        if !rustix::process::geteuid().is_root() {
+            let denied = fixture.path().join("denied");
+            std::fs::write(&denied, "[core]\n\tworktree = x\n").unwrap();
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let by_git = read_by_git(&denied);
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(by_git.status.code(), Some(1), "Git exits 1 for it too");
+            assert!(!by_git.stderr.is_empty());
+            assert!(!sets_none_of_the_keys(&by_git));
+        }
+    }
+
+    /// One failed read of the settings, after a configuration file's stamp
+    /// changed, is an error and leaves the `core.worktree` guard as it was:
+    /// the link on the way to the work tree re-pointed later is still seen,
+    /// and the write refused. Taken for "no keys", that read confirmed a
+    /// guard with nothing on it, the check answered `Same` from then on, and
+    /// the write reached the other work tree.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_settings_read_keeps_the_work_tree_guard() {
+        use std::os::unix::fs::symlink;
+        let fixture = tempfile::tempdir().unwrap();
+        let holder = fixture.path().canonicalize().unwrap();
+        let real_sub = holder.join("real/sub");
+        let other_sub = holder.join("other/sub");
+        std::fs::create_dir_all(&real_sub).unwrap();
+        std::fs::create_dir_all(&other_sub).unwrap();
+        git(&holder, &["init", "-q", "-b", "main"]);
+        std::fs::write(real_sub.join("reviewed.txt"), "reviewed\n").unwrap();
+        std::fs::write(other_sub.join("other.txt"), "other tree\n").unwrap();
+        symlink("real", holder.join("link")).unwrap();
+        git(&holder, &["config", "core.worktree", "../link/sub"]);
+        git(&real_sub, &["add", "reviewed.txt"]);
+        git(&real_sub, &["commit", "-q", "-m", "first"]);
+        let handle = GitRepository::open(&real_sub).unwrap();
+        assert_eq!(handle.verify_at_path().unwrap(), FoundAtPath::Same);
+
+        // A stamp change: the file grows by a line feed.
+        let config = holder.join(".git/config");
+        let mut bytes = std::fs::read(&config).unwrap();
+        bytes.push(b'\n');
+        std::fs::write(&config, bytes).unwrap();
+        SETTINGS_READ_FAILS.set(true);
+        let failed = handle.verify_at_path();
+        SETTINGS_READ_FAILS.set(false);
+        let error = failed.expect_err("the read's failure, no answer");
+        assert!(
+            format!("{error:#}").starts_with("Git could not read "),
+            "{error:#}"
+        );
+
+        // The link re-pointed; no Git file touched.
+        std::fs::remove_file(holder.join("link")).unwrap();
+        symlink("other", holder.join("link")).unwrap();
+        assert_ne!(handle.verify_at_path().unwrap(), FoundAtPath::Same);
+        let index = std::fs::read(holder.join(".git/index")).unwrap();
+        handle
+            .execute(&WriteCommand::StageAll)
+            .expect_err("a write to the other work tree is refused");
+        assert_eq!(std::fs::read(holder.join(".git/index")).unwrap(), index);
     }
 
     /// `work` on a thread of its own, its answer arriving on the channel:
