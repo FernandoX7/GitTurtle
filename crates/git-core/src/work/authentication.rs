@@ -128,7 +128,7 @@ impl OperationControl {
             id,
             secret: !confirmation && !lower.starts_with("username"),
             confirmation,
-            message: self.redact(&message),
+            message: self.redact_prompt(&message),
         };
         let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
         state.prompt = Some(prompt);
@@ -156,12 +156,20 @@ impl OperationControl {
         answer
     }
     fn redact(&self, input: &str) -> String {
+        redact_diagnostic(&self.without_answers(input))
+    }
+    /// What the authentication dialog shows of `prompt`, its only reader;
+    /// progress, failures and diagnostics take [`Self::redact`].
+    fn redact_prompt(&self, prompt: &str) -> String {
+        shown_prompt(&self.without_answers(prompt))
+    }
+    fn without_answers(&self, input: &str) -> String {
         let state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut output = input.to_owned();
         for secret in &state.secrets {
             output = output.replace(secret, "[redacted]");
         }
-        redact_diagnostic(&output)
+        output
     }
 }
 
@@ -524,6 +532,106 @@ fn url_authority_len(text: &str) -> usize {
         .find(['/', '?', '#', '\'', '"', ' ', '\n'])
         .unwrap_or(text.len());
     end - usize::from(text[..end].ends_with(':') && text[end..].starts_with("//"))
+}
+
+/// `prompt` as the dialog shows it: as [`redact_diagnostic`] reads it, with
+/// the username restored in Git's own password prompt, so a person can tell
+/// which account is being asked for. Nothing else differs.
+fn shown_prompt(prompt: &str) -> String {
+    let shown = redact_diagnostic(prompt);
+    match git_prompt_username(prompt) {
+        Some(name) => shown.replacen("://[redacted]@", &format!("://{name}@"), 1),
+        None => shown,
+    }
+}
+
+/// The username `prompt` names, if `prompt` is exactly what Git asks,
+/// `Password for '<url>': `, for one URL on one line, and its userinfo reads
+/// as an account name.
+fn git_prompt_username(prompt: &str) -> Option<&str> {
+    let url = prompt.strip_prefix("Password for '")?.strip_suffix("': ")?;
+    if url.contains(|c: char| c.is_whitespace() || c.is_control() || c == '\'' || c == '"') {
+        return None;
+    }
+    let (_, rest) = url.split_once("://")?;
+    if rest.contains("://") {
+        return None;
+    }
+    let (name, _) = rest.split(['/', '?', '#']).next()?.rsplit_once('@')?;
+    reads_as_account_name(name).then_some(name)
+}
+
+/// Whether `name`, a whole userinfo, reads as an account name. What does not
+/// stays hidden: a second part (`user:secret`) and every credential marker,
+/// each of which holds a `:` or an `=`, written as Git prints them with its
+/// default `credential.sanitizePrompt`, `%3A` and `%3D`, or literally with it
+/// off, and a token, which Git asks with in the username's place when a URL
+/// holds one in it (`https://ghp_…@github.com`): one its issuer's prefix
+/// names, or whose words, or letters and digits taken together, read as
+/// random text.
+fn reads_as_account_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let parts = with_email_separators(name);
+    let joined = parts
+        .bytes()
+        .filter(u8::is_ascii_alphanumeric)
+        .collect::<Vec<_>>();
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-+@%".contains(&byte))
+        && !["%3a", "%3d"].iter().any(|encoded| lower.contains(encoded))
+        && !has_issuer_prefix(name)
+        && parts.split(['.', '_', '-', '+', '@']).all(reads_as_a_word)
+        && (joined.len() < 20 || !reads_as_random(&joined))
+}
+
+/// `name` with each `%40`, as Git prints an email's `@`, written as the `@`
+/// it separates by: only where the part after it holds a `.`, as a domain
+/// does and a percent-encoded password need not.
+fn with_email_separators(name: &str) -> String {
+    let mut parts = name.split("%40");
+    let mut written = parts.next().unwrap_or_default().to_owned();
+    for part in parts {
+        written.push_str(if part.contains('.') { "@" } else { "%40" });
+        written.push_str(part);
+    }
+    written
+}
+
+/// Whether `name` starts as an issuer writes its tokens, which a separator
+/// further on cannot make a name: GitHub's `ghp_` family and `github_pat_`,
+/// GitLab's `glpat-`, `gldt-` and `glrt-`, and Docker's `dckr_pat_`.
+fn has_issuer_prefix(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["github_pat_", "glpat-", "gldt-", "glrt-", "dckr_pat_"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+        || matches!(name.as_bytes(), [b'g', b'h', letter, b'_', ..] if letter.is_ascii_lowercase())
+}
+
+/// Whether `word`, a run between a name's separators, reads as part of a
+/// name. Any word under 12 bytes does. From there it must not read as random
+/// text, and no name has an unbroken run of 20 bytes. A token's separators
+/// can cut it into words that each pass, so a word passing proves nothing of
+/// the whole name, which [`reads_as_account_name`] judges joined as well.
+fn reads_as_a_word(word: &str) -> bool {
+    word.len() < 12 || (word.len() < 20 && !reads_as_random(word.as_bytes()))
+}
+
+/// Whether `bytes` read as random text rather than a name, whose digits
+/// trail its letters and whose case changes rarely.
+fn reads_as_random(bytes: &[u8]) -> bool {
+    let letter_after_digit = bytes
+        .iter()
+        .skip_while(|byte| !byte.is_ascii_digit())
+        .any(u8::is_ascii_alphabetic);
+    let case_changes = bytes
+        .windows(2)
+        .filter(|pair| pair[0].is_ascii_uppercase() != pair[1].is_ascii_uppercase())
+        .count();
+    letter_after_digit || case_changes * 3 > bytes.len()
 }
 
 pub(super) fn validate_clone_address(source: &str) -> Result<()> {
@@ -937,10 +1045,10 @@ mod tests {
     }
 
     /// What OpenSSH 10.6 and Git 2.56 hand an askpass program, and what the
-    /// dialog shows of it. Every prompt reads as its program wrote it, but
-    /// for Git's password prompt: it names a URL, whose userinfo is hidden
-    /// wherever it appears.
-    const PROMPTS: [(&str, &str); 10] = [
+    /// dialog shows of it. Every prompt reads as its program wrote it: Git's
+    /// password prompt names its account, so the person can recognise it,
+    /// unless what stands there is not a plain username (the rows below it).
+    const PROMPTS: [(&str, &str); 56] = [
         ("user@host's password: ", "user@host's password: "),
         ("(user@host) Password: ", "(user@host) Password: "),
         (
@@ -963,9 +1071,209 @@ mod tests {
             "Username for 'https://example.com': ",
             "Username for 'https://example.com': ",
         ),
+        // Git's password prompt shows the one username it names.
         (
             "Password for 'https://u@example.com': ",
+            "Password for 'https://u@example.com': ",
+        ),
+        (
+            "Password for 'https://git@github.com': ",
+            "Password for 'https://git@github.com': ",
+        ),
+        (
+            "Password for 'https://x-access-token@github.com': ",
+            "Password for 'https://x-access-token@github.com': ",
+        ),
+        (
+            "Password for 'https://fernando.ramirez@example.com/org/repo.git': ",
+            "Password for 'https://fernando.ramirez@example.com/org/repo.git': ",
+        ),
+        // An email as a username, whose `@` Git prints as `%40`.
+        (
+            "Password for 'https://fernando.ramirez%40example.com@git.example.com': ",
+            "Password for 'https://fernando.ramirez%40example.com@git.example.com': ",
+        ),
+        // And as Git prints it with credential.sanitizePrompt=false.
+        (
+            "Password for 'https://me@example.org@git.example.com': ",
+            "Password for 'https://me@example.org@git.example.com': ",
+        ),
+        (
+            "Password for 'https://Jos%C3%A9@example.com:8443': ",
+            "Password for 'https://Jos%C3%A9@example.com:8443': ",
+        ),
+        (
+            "Password for 'https://fernando1987@example.com': ",
+            "Password for 'https://fernando1987@example.com': ",
+        ),
+        (
+            "Password for 'https://FernandoRamirez@example.com': ",
+            "Password for 'https://FernandoRamirez@example.com': ",
+        ),
+        (
+            "Password for 'https://j0hn@example.com': ",
+            "Password for 'https://j0hn@example.com': ",
+        ),
+        (
+            "Password for 'https://first.last@example.com': ",
+            "Password for 'https://first.last@example.com': ",
+        ),
+        (
+            "Password for 'https://me%40corp.com@example.com': ",
+            "Password for 'https://me%40corp.com@example.com': ",
+        ),
+        (
+            "Password for 'https://user-at-123456789012@example.com': ",
+            "Password for 'https://user-at-123456789012@example.com': ",
+        ),
+        (
+            "Password for 'https://fernando.ramirez.contractor@example.com': ",
+            "Password for 'https://fernando.ramirez.contractor@example.com': ",
+        ),
+        // A second part stays hidden, and with it the first: a colon says
+        // this is not one username.
+        (
+            "Password for 'https://user:secret@example.com': ",
             "Password for 'https://[redacted]@example.com': ",
+        ),
+        // A credential marker, however it is spelt.
+        (
+            "Password for 'https://token=abc@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        (
+            "Password for 'https://password:hunter2@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        // Those two as Git prints them by default (credential.sanitizePrompt).
+        (
+            "Password for 'https://token%3Dabc@host.example/': ",
+            "Password for 'https://[redacted]@host.example/': ",
+        ),
+        (
+            "Password for 'https://u%3Asecret1@host.example': ",
+            "Password for 'https://[redacted]@host.example': ",
+        ),
+        (
+            "Password for 'https://token%3dabc@host.example': ",
+            "Password for 'https://[redacted]@host.example': ",
+        ),
+        (
+            "Password for 'https://u%3asecret1@host.example': ",
+            "Password for 'https://[redacted]@host.example': ",
+        ),
+        // A token in the username's place.
+        (
+            "Password for 'https://ghp_16C7e42F292c6912E7710c838347Ae178B4a@github.com': ",
+            "Password for 'https://[redacted]@github.com': ",
+        ),
+        (
+            "Password for 'https://github_pat_11ABCDE0Y0abcdefghijkl_mnopqrstuvwxyzABCDEFGH@github.com': ",
+            "Password for 'https://[redacted]@github.com': ",
+        ),
+        (
+            "Password for 'https://glpat-xY7zQ2mN8pR4tL6v@gitlab.com': ",
+            "Password for 'https://[redacted]@gitlab.com': ",
+        ),
+        (
+            "Password for 'https://e72e16c7e42f292c6912e7710c838347ae178b4a@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        (
+            "Password for 'https://AKIAIOSFODNN7EXAMPLE@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        (
+            "Password for 'https://f47ac10b-58cc-4372-a567-0e02b2c3d479@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        // A token an allowed separator splits is still one, whether its
+        // issuer's prefix or its letters and digits together give it away.
+        (
+            "Password for 'https://glpat-xY7z-Q2mN8pR4_tL6v@gitlab.com/': ",
+            "Password for 'https://[redacted]@gitlab.com/': ",
+        ),
+        (
+            "Password for 'https://gldt-abc@gitlab.com': ",
+            "Password for 'https://[redacted]@gitlab.com': ",
+        ),
+        (
+            "Password for 'https://glrt-abc@gitlab.com': ",
+            "Password for 'https://[redacted]@gitlab.com': ",
+        ),
+        (
+            "Password for 'https://dckr_pat_abc@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        (
+            "Password for 'https://ghs_abc@github.com': ",
+            "Password for 'https://[redacted]@github.com': ",
+        ),
+        (
+            "Password for 'https://GHP_abc@github.com': ",
+            "Password for 'https://[redacted]@github.com': ",
+        ),
+        (
+            "Password for 'https://github_pat_abc@github.com': ",
+            "Password for 'https://[redacted]@github.com': ",
+        ),
+        (
+            "Password for 'https://xY7z-Q2mN8pR4_tL6v-Ab3D@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        // `%40` separates an email's parts, each still judged as a word.
+        (
+            "Password for 'https://k7gNU3sdo4T9%40example.com@git.example.com': ",
+            "Password for 'https://[redacted]@git.example.com': ",
+        ),
+        // A `%40` with no `.` after it is no email's: a password can hold one.
+        (
+            "Password for 'https://Tr0ub4dor%403xY@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        // Shorter, but with digits through its letters or case changing
+        // throughout.
+        (
+            "Password for 'https://K7gNU3sdo4T9@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        (
+            "Password for 'https://KjHgFdSaQwErTyUi@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        // No userinfo to show, or not one name.
+        (
+            "Password for 'https://@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        (
+            "Password for 'https://a\tb@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        (
+            "Password for 'https://aaaaaaaaaaa.aaaaaaaaaaa.aaaaaaaaaaa.aaaaaaaaaaa.aaaaaaaaaaa.aaaaaaaaaaa@example.com': ",
+            "Password for 'https://[redacted]@example.com': ",
+        ),
+        // Nothing but Git's own prompt, whole, shows a username.
+        (
+            "Username for 'https://u@example.com': ",
+            "Username for 'https://[redacted]@example.com': ",
+        ),
+        (
+            "password for 'https://u@example.com': ",
+            "password for 'https://[redacted]@example.com': ",
+        ),
+        (
+            "Password for 'https://u@example.com': more",
+            "Password for 'https://[redacted]@example.com': more",
+        ),
+        (
+            "Password for 'https://u@one.example,https://v@two.example': ",
+            "Password for 'https://[redacted]@one.example,https://[redacted]@two.example': ",
+        ),
+        (
+            "Note\nPassword for 'https://u@example.com': ",
+            "Note\nPassword for 'https://[redacted]@example.com': ",
         ),
         (
             "The authenticity of host 'example.com (192.0.2.1)' can't be established.\nED25519 key fingerprint is: SHA256://b+c\nThis key is not known by any other names.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ",
@@ -1030,9 +1338,76 @@ mod tests {
 
     #[test]
     fn a_prompt_reads_as_written_and_a_failure_loses_only_its_secrets() {
-        for (written, shown) in PROMPTS.into_iter().chain(FAILURES) {
+        for (written, shown) in PROMPTS {
+            assert_eq!(shown_prompt(written), shown, "{written:?}");
+        }
+        for (written, shown) in FAILURES {
             assert_eq!(redact_diagnostic(written), shown, "{written:?}");
         }
+    }
+
+    /// Only the dialog's prompt shows the username: the same words reaching
+    /// a diagnostic, a failure or progress keep it hidden, and an account
+    /// name equal to an answer already given is hidden in the prompt too.
+    #[test]
+    fn only_the_dialogs_prompt_shows_a_username() {
+        let prompt = "Password for 'https://alice@example.com': ";
+        let hidden = "Password for 'https://[redacted]@example.com': ";
+        let control = OperationControl::default();
+        assert_eq!(control.redact_prompt(prompt), prompt);
+        assert_eq!(control.redact(prompt), hidden);
+        assert_eq!(redact_diagnostic(prompt), hidden);
+        assert_eq!(redact_current(prompt), hidden);
+        control
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .secrets
+            .push("alice".to_owned());
+        assert_eq!(control.redact_prompt(prompt), hidden);
+    }
+
+    /// The dialog's reading of any text differs from a diagnostic's only
+    /// where the text is Git's own prompt for one account name, and then
+    /// only by that name: so what `no_generated_diagnostic_shows_what_the_earlier_redaction_hid`
+    /// holds of a diagnostic holds of a prompt, but for that one username.
+    #[test]
+    fn no_generated_prompt_shows_more_than_its_username() {
+        const CASES: usize = 20_000;
+        let mut generated = Generated {
+            state: 0x2545_F491_4F6C_DD1D,
+            words: 0,
+        };
+        let mut shown_names = 0;
+        for _ in 0..CASES {
+            let line = generated.line();
+            let name = generated.word("name");
+            for written in [
+                line.clone(),
+                format!("Password for '{line}': "),
+                format!("Password for 'https://{line}@example.com': "),
+                format!("Password for 'https://{name}@example.com/{line}': "),
+                format!("Username for 'https://{name}@example.com': "),
+            ] {
+                let (diagnostic, prompt) = (redact_diagnostic(&written), shown_prompt(&written));
+                let Some(username) = git_prompt_username(&written) else {
+                    assert_eq!(prompt, diagnostic, "{written:?}");
+                    continue;
+                };
+                shown_names += 1;
+                assert!(
+                    !username.contains(':') && reads_as_account_name(username),
+                    "{written:?}"
+                );
+                assert_eq!(
+                    prompt,
+                    diagnostic.replacen("[redacted]", username, 1),
+                    "{written:?}"
+                );
+            }
+        }
+        assert!(shown_names > 0, "no generated prompt named an account");
     }
 
     /// The same prompts over the askpass socket, the path by which they
@@ -1353,7 +1728,10 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         };
         assert!(prompt.secret);
-        assert!(!prompt.message.contains("fixture@"));
+        assert_eq!(
+            prompt.message,
+            "Password for 'https://fixture@example.invalid/repo': "
+        );
         assert!(!control.answer(prompt.id + 1, Some("wrong prompt".into())));
         assert!(control.answer(prompt.id, Some("ephemeral-fixture-token".into())));
         assert_eq!(helper.join().unwrap(), b"ephemeral-fixture-token");
