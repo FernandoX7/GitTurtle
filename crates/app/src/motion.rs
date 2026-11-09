@@ -1805,7 +1805,44 @@ mod tests {
         a_move_of_a_file_scrolled_away_from_keeps_the_list(cx, ReadBy::Refresh).await;
     }
 
-    /// The cursor's row in view, which the write moves above the view: the
+    /// The person scrolled the list away from the cursor's row and Refresh
+    /// finds nothing new: the list stays where they put it, the cursor stays
+    /// on its file, and Refresh still reports what it read. A Refresh with
+    /// unchanged entries centred the cursor's row.
+    #[gpui::test]
+    async fn a_refresh_that_finds_nothing_new_scrolls_nothing(cx: &mut TestAppContext) {
+        // [Staged 40, f00…f39, Unstaged 20, f40…f59]
+        let (_fixture, app, cx) = long_list(cx, 40, 20).await;
+        let cursor_row = row(cx, 5).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        let cursor = app.read_with(cx, |app, _| app.working_selected);
+        assert!(cursor.is_some(), "the cursor on row 5");
+        scroll_list(&app, cx, 45);
+        assert!(
+            !row_in_view(cx, 5) && row_in_view(cx, 45),
+            "scrolled away from the cursor, row 45 shown"
+        );
+        let offset = list_offset(&app, cx);
+        app.update(cx, |app, _| app.status = "Before the read".into());
+        read_working(&app, cx, ReadBy::Refresh).await;
+        assert_eq!(list_offset(&app, cx), offset, "the list stayed");
+        assert!(!row_in_view(cx, 5), "away from the cursor");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_selected),
+            cursor,
+            "the cursor stayed on its file"
+        );
+        let (status, summary) =
+            app.read_with(cx, |app, _| (app.status.clone(), app.working_summary()));
+        assert!(
+            status.starts_with(&summary),
+            "Refresh reports what it read: {status:?}, {summary:?}"
+        );
+    }
+
+    /// The cursor's row in view, which the write moves out of it: the list
     /// centres the row where it lands, with context around it, as it decided
     /// for a row the person could see.
     #[gpui::test]

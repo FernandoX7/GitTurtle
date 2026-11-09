@@ -3017,12 +3017,6 @@ impl GitTurtle {
             self.invalidate_read();
             if let Some((index, area)) = self.working_selected {
                 self.select_working(index, area, window, cx);
-                if let Some(position) = self.actionable_working_rows().iter().position(
-                    |row| matches!(row, WorkingRow::File(i, a) if *i == index && *a == area),
-                ) {
-                    self.working_scroll
-                        .scroll_to_item(position, ScrollStrategy::Center);
-                }
             } else {
                 self.clear_preview();
                 self.files.clear();
