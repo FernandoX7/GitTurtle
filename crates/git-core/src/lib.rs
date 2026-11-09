@@ -2825,7 +2825,13 @@ mod tests {
             let ours = work_tree_git_reads(&git_dir, &git_dir)
                 .map(|value| value.is_some())
                 .ok();
-            assert_eq!(ours, by_git, "{name}");
+            // Which spellings Git refuses is its C library's: macOS's Git
+            // refuses the repository for `-0b1`. It then never opens, and a
+            // check that meets the value asks Git and is refused, so nothing
+            // relies on our answer for it.
+            if by_git.is_some() {
+                assert_eq!(ours, by_git, "{name}");
+            }
         }
     }
 
