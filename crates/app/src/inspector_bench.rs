@@ -1,7 +1,8 @@
 //! Opt-in release benchmark of a frame of History with the commit inspector
 //! drawn ([`commit_inspector_frame_release_benchmark`]), for a commit with
-//! one parent and for an octopus merge with 128, whose metadata's row the
-//! message list paints in every frame.
+//! one parent, for an octopus merge with 128, whose metadata's row the
+//! message list paints in every frame, and for that merge under a long
+//! message, whose row lies below what the list draws.
 //!
 //! The driver uses only what the app had before the inspector's message took
 //! a focus reveal (`0551e16a`), so the same module, picked onto that base,
@@ -16,10 +17,14 @@ use std::time::Instant;
 const WINDOW: (f32, f32) = (1_480., 980.);
 /// The most parents the metadata lists, and the octopus merge's count.
 const PARENTS: usize = 128;
+/// The body of the long message: far more lines than the inspector shows, so
+/// the metadata's row below it is not drawn.
+const LONG_MESSAGE_LINES: usize = 400;
 
 /// A `git fast-import` stream of [`PARENTS`] root commits and their octopus
-/// merge, the newest commit on `main`.
-fn octopus_script() -> String {
+/// merge, the newest commit on `main`, its message `lines` lines of body
+/// long.
+fn octopus_script(lines: usize) -> String {
     let mut input = String::new();
     for parent in 1..=PARENTS {
         let message = format!("parent {parent}");
@@ -29,7 +34,13 @@ fn octopus_script() -> String {
             message.len(),
         ));
     }
-    let message = "octopus merge";
+    let mut message = "octopus merge".to_owned();
+    if lines > 0 {
+        message.push_str("\n\n");
+        for line in 1..=lines {
+            message.push_str(&format!("Body line {line}\n"));
+        }
+    }
     input.push_str(&format!(
         "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\nfrom :1\n",
         1_700_000_000 + PARENTS + 1,
@@ -50,9 +61,10 @@ fn frame_us(cx: &mut VisualTestContext) -> f64 {
     started.elapsed().as_secs_f64() * 1e6
 }
 
-/// Times a redraw of History with the newest commit selected, for one parent
-/// and for 128: render, layout, prepaint and paint on the test platform, no
-/// GPU, compositor or display link, with nothing changed but the frame.
+/// Times a redraw of History with the newest commit selected, for one parent,
+/// for 128, and for 128 under a long message with the metadata's row undrawn:
+/// render, layout, prepaint and paint on the test platform, no GPU,
+/// compositor or display link, with nothing changed but the frame.
 #[gpui::test]
 #[ignore = "Opt-in release benchmark: set GITTURTLE_INSPECTOR_FRAME_BENCH_OUTPUT and run with --release --ignored"]
 async fn commit_inspector_frame_release_benchmark(cx: &mut TestAppContext) {
@@ -70,7 +82,11 @@ async fn commit_inspector_frame_release_benchmark(cx: &mut TestAppContext) {
     );
     let warmups = (samples / 10).max(1);
     let mut series = Vec::new();
-    for (parents, script) in [(1, history_script(2, 1)), (PARENTS, octopus_script())] {
+    for (parents, script, row_drawn) in [
+        (1, history_script(2, 1), true),
+        (PARENTS, octopus_script(0), true),
+        (PARENTS, octopus_script(LONG_MESSAGE_LINES), false),
+    ] {
         let (_fixture, app, window) = history_window_from(&mut *cx, &script).await;
         window.simulate_resize(size(px(WINDOW.0), px(WINDOW.1)));
         window.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
@@ -81,15 +97,16 @@ async fn commit_inspector_frame_release_benchmark(cx: &mut TestAppContext) {
                 .map(|commit| commit.parents.len())
         });
         assert_eq!(drawn, Some(parents), "the selected commit's parents");
-        assert!(
+        assert_eq!(
             window.debug_bounds("commit-parent-0").is_some(),
-            "the metadata's row is painted"
+            row_drawn,
+            "whether the metadata's row is painted"
         );
         for _ in 0..warmups {
             frame_us(window);
         }
         let us: Vec<f64> = (0..samples).map(|_| frame_us(window)).collect();
-        series.push(serde_json::json!({ "parents": parents, "us": us }));
+        series.push(serde_json::json!({ "parents": parents, "row_drawn": row_drawn, "us": us }));
     }
     let result = serde_json::json!({
         "schema": 1,
@@ -97,7 +114,7 @@ async fn commit_inspector_frame_release_benchmark(cx: &mut TestAppContext) {
         "samples": samples,
         "warmups": warmups,
         "window": [WINDOW.0, WINDOW.1],
-        "boundary": "One `Window::refresh` on the UI thread and every frame drawn as its effects flush, until the executor parks: render, layout, prepaint and paint of History with the newest commit selected and its metadata's row painted, on the test platform, with no GPU, compositor or display link. The whole window's frame, so a change to the inspector is the difference between builds, not a share of it.",
+        "boundary": "One `Window::refresh` on the UI thread and every frame drawn as its effects flush, until the executor parks: render, layout, prepaint and paint of History with the newest commit selected and its metadata's row painted, or in a series with `row_drawn` false lying below what the message list draws, on the test platform, with no GPU, compositor or display link. The whole window's frame, so a change to the inspector is the difference between builds, not a share of it.",
         "series": series,
     });
     std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
