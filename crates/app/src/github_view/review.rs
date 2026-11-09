@@ -218,9 +218,10 @@ pub(super) struct ReviewState {
     /// handle no owner keeps any more is no control to give focus back to.
     pub held: Option<WeakFocusHandle>,
     /// The innermost part of the body holding [`ReviewState::held`] as the panel last closed,
-    /// by its name, which the frame that first draws the reopened panel reveals
-    /// ([`Reopening::hold`]): its place is that frame's, never one recorded at close.
-    pub held_part: Option<SharedString>,
+    /// by its key ([`PART`], or [`PULL`] for a PR row) and name, which the frame that first
+    /// draws the reopened panel reveals ([`Reopening::hold`]): its place is that frame's, never
+    /// one recorded at close.
+    pub held_part: Option<(&'static str, SharedString)>,
     /// How the reopened panel settles its focus ([`Reopening`]).
     pub reopening: std::rc::Rc<Reopening>,
     /// The focus handles of the body's Buttons ([`Buttons`]).
@@ -415,6 +416,8 @@ pub(super) struct BodyFrame {
     pub parts: Vec<(SharedString, Bounds<Pixels>)>,
     /// The conversation list's view, where the frame draws the list.
     pub list: Option<Bounds<Pixels>>,
+    /// The PR list's view as the frame drew it, stale where the frame draws no PR list.
+    pub pulls: Bounds<Pixels>,
     /// What held the window's focus as the frame drew.
     pub focused: Option<FocusHandle>,
 }
@@ -424,6 +427,7 @@ pub(super) struct BodyFrame {
 pub(super) fn record_body_frame(
     scroll: &ScrollHandle,
     list: &ScrollHandle,
+    pulls: &ScrollHandle,
     window: &Window,
     cx: &App,
 ) {
@@ -440,6 +444,7 @@ pub(super) fn record_body_frame(
                 view: scroll.bounds(),
                 parts,
                 list,
+                pulls: pulls.bounds(),
                 focused,
             });
         }
@@ -512,7 +517,10 @@ fn focus_in_body(window: &Window) -> bool {
 /// draws the reopened panel lays the body out and reveals the part holding that control from
 /// its own layout before the body's content prepaints ([`Reopened`]), so it draws the part
 /// whole: revealed once a later frame had found it, the part came into view in the third or
-/// fourth frame, cut by the body's edge in the frames before.
+/// fourth frame, cut by the body's edge in the frames before. A held PR row is shown whole in
+/// its own list that way first, and a section's first stop the reopen falls to, focused by no
+/// frame yet, is revealed from that first frame's layout too ([`Reopening::reveal_laid_out`]):
+/// whatever a reopen focuses is whole in its first painted frame.
 #[derive(Default)]
 pub(super) struct Reopening {
     phase: std::cell::Cell<Reopen>,
@@ -522,10 +530,35 @@ pub(super) struct Reopening {
     /// The part holding the control focus is back on, by its name, until a frame has found that
     /// control or the frames that would have found it have passed ([`Reopening::marks`],
     /// [`Reopening::settle`]).
-    part: std::cell::RefCell<Option<SharedString>>,
-    /// That part's layout node in the frame being drawn, whether it draws focus as a ring on
-    /// its own edge, and the room its reveal keeps clear of the body's edges ([`HeldMark`]).
-    laid_out: std::cell::Cell<Option<(LayoutId, bool, Pixels)>>,
+    part: std::cell::RefCell<Option<(&'static str, SharedString)>>,
+    /// What the frame being drawn reveals from its layout before the body's content prepaints
+    /// ([`Reopened`]): the held part, the held PR row, the section's first stop or the outbound
+    /// confirmation, as its mark laid it out ([`RevealMark`]).
+    laid_out: std::cell::Cell<Option<LaidOut>>,
+    /// The layout node of the PR list holding the held row, in the frame being drawn
+    /// ([`Reopening::holds_row`]).
+    list_laid_out: std::cell::Cell<Option<LayoutId>>,
+}
+/// What a frame reveals from its layout ([`Reopening::laid_out`]): a mark's layout node, whether
+/// it draws focus as a ring on its own edge, and the room its reveal keeps clear.
+#[derive(Clone, Copy)]
+struct LaidOut {
+    node: LayoutId,
+    ringed: bool,
+    inset: Pixels,
+    kind: LaidOutKind,
+}
+/// How a frame reveals what its layout holds ([`Reopening::reveal_laid_out`]).
+#[derive(Clone, Copy, PartialEq)]
+enum LaidOutKind {
+    /// The part holding the control a reopen keeps focus on, by the least that shows it where
+    /// this frame lays it out at least partly in view.
+    Held,
+    /// That part as a row of the PR list, whose own scroll shows its title first.
+    Row,
+    /// The focus a reopen falls to or a confirmation takes, as a reveal after paint decides it
+    /// ([`to_reveal`]) and lands it ([`landed_edge`]).
+    Reveal,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Reopen {
@@ -536,8 +569,10 @@ enum Reopen {
     /// that layout ([`Reopened`]), reveals it until one has, which decides whether it stays.
     /// The count is the body's frames drawn since.
     Held(u8),
-    /// Focus stays where it is: the body's parts and forms reveal it whatever input came last,
-    /// until a frame finds it drawn. The count is the body's frames drawn since.
+    /// Focus stays where it is: the frame's layout reveals the shown section's first stop
+    /// before its content prepaints ([`RevealMark`]), and the body's parts and forms reveal it
+    /// after that frame whatever input came last, until a frame finds it drawn. The count is
+    /// the body's frames drawn since.
     Reveal(u8),
 }
 impl Reopening {
@@ -546,7 +581,7 @@ impl Reopening {
     /// read, is the page's beneath the dialog, so the second is the first to find it.
     const FRAMES: u8 = 2;
     /// Focus is back on the control that held it, inside the part of the body called `part`.
-    pub(super) fn hold(&self, part: Option<SharedString>) {
+    pub(super) fn hold(&self, part: Option<(&'static str, SharedString)>) {
         self.phase.set(Reopen::Held(0));
         self.part.replace(part);
     }
@@ -558,58 +593,164 @@ impl Reopening {
     pub(super) fn begin_frame(&self) {
         self.focused.set(None);
         self.laid_out.set(None);
+        self.list_laid_out.set(None);
+    }
+    /// Whether the control focus is back on lies in a row of the PR list, which the frame
+    /// being rendered reveals in its list as well ([`Reopening::reveal_laid_out`]).
+    pub(super) fn holds_row(&self) -> bool {
+        self.waits()
+            && self
+                .part
+                .borrow()
+                .as_ref()
+                .is_some_and(|(part, _)| *part == PULL)
     }
     /// Whether the part of the body called `name` holds the control focus is back on, which
-    /// no frame has found yet: the frame being rendered marks it ([`HeldMark`]).
-    fn marks(&self, name: &SharedString) -> bool {
-        self.waits() && self.part.borrow().as_ref() == Some(name)
+    /// no frame has found yet: the frame being rendered marks it ([`RevealMark`]).
+    fn marks(&self, key: &str, name: &SharedString) -> bool {
+        self.waits()
+            && self
+                .part
+                .borrow()
+                .as_ref()
+                .is_some_and(|(part, part_name)| *part == key && part_name == name)
     }
-    /// In each frame that lays out the part holding the control focus is back on while reveals
-    /// wait, before the body's content prepaints ([`Reopened`]). The second can differ from the
-    /// first: after a width change while the panel was closed, Files lays the patch's box out
-    /// from the height the first frame measured above it ([`FilesFit`]), 43.5 px taller at 18 pt
-    /// in a 380 × 490 window, and the box revealed in the first frame was cut in the second.
-    /// Where this frame's layout puts the part at
-    /// least partly inside `scroll`'s view, so focus stays there ([`Reopening::settle`]),
-    /// scrolls the body by the least that shows it whole with its ring's room, as the body's
-    /// reveals bring a control into view; a part taller than the view shows its top where it
-    /// lies above the view or draws its ring on its own edge, and otherwise its bottom. Returns
-    /// where the part then lies, whether it draws its ring on its edge, that room, and how far
-    /// the body moved its content, if it moved.
+    /// Reveals what the frame being drawn laid out to reveal ([`Reopening::laid_out`]), before
+    /// the body's content prepaints ([`Reopened`]), so that frame draws it whole: whatever a
+    /// reopen or an opening confirmation focuses is whole in its first painted frame.
+    ///
+    /// [`LaidOutKind::Held`], the part holding the control focus is back on while reveals
+    /// wait: where this frame's layout puts it at least partly inside `body`'s view, so focus
+    /// stays there ([`Reopening::settle`]), the body scrolls by the least that shows it whole
+    /// with its ring's room, as the body's reveals bring a control into view; a part taller than
+    /// the view shows its top where it lies above the view or draws its ring on its own edge,
+    /// and otherwise its bottom. The second frame of a reopen can differ from the first: after
+    /// a width change while the panel was closed, Files lays the patch's box out from the height
+    /// the first frame measured above it ([`FilesFit`]), 43.5 px taller at 18 pt in a 380 × 490
+    /// window, and the box revealed in the first frame was cut in the second.
+    /// [`LaidOutKind::Row`], a held PR row, is that with the row's title shown whole in its
+    /// list first ([`Reopening::reveal_row`]). [`LaidOutKind::Reveal`], what a reopen falls to
+    /// and an opening confirmation's region, is the reveal the frame would run after paint
+    /// ([`reveal`]), decided by the same [`to_reveal`] and [`landed_edge`], so a live drag's
+    /// every step is a first frame too.
+    ///
+    /// Returns where it then lies, whether it draws its ring on its edge, that room, and how
+    /// far the body moved its content, if it moved.
+    #[allow(clippy::too_many_arguments)]
     fn reveal_laid_out(
         &self,
-        scroll: &ScrollHandle,
+        body: &ScrollHandle,
+        blocks: &Blocks,
+        list: &ScrollHandle,
+        list_blocks: &Blocks,
+        revealed: &std::cell::RefCell<FocusObservation>,
         window: &mut Window,
+        cx: &App,
     ) -> Option<(Bounds<Pixels>, bool, Pixels, Pixels)> {
-        let (layout, ringed, inset) = self.laid_out.take()?;
-        let part = window.layout_bounds(layout);
-        let view = scroll.bounds();
-        if part.bottom() <= view.top() || part.top() >= view.bottom() {
-            return None;
+        let LaidOut {
+            node,
+            ringed,
+            inset,
+            kind,
+        } = self.laid_out.take()?;
+        let mut part = window.layout_bounds(node);
+        if kind == LaidOutKind::Row {
+            part = self.reveal_row(part, inset, list, list_blocks, window, cx)?;
         }
+        let view = body.bounds();
         let (top, bottom) = (part.top() - inset, part.bottom() + inset);
-        let height = view.size.height;
-        let edge = if bottom - top > height {
-            if ringed || top < view.top() {
-                top
-            } else {
-                bottom - height
+        let offset = body.offset();
+        let edge = match kind {
+            LaidOutKind::Reveal => {
+                // As the frame's reveal after paint decides it: only a change of focus or of the
+                // body's size reveals, so a manual scroll stays where it is.
+                to_reveal(body, revealed, None, window, cx)?;
+                if top >= view.top() && bottom <= view.bottom() {
+                    return None;
+                }
+                landed_edge(
+                    body,
+                    blocks,
+                    view,
+                    offset,
+                    (top, bottom),
+                    inset,
+                    ringed,
+                    false,
+                    cx,
+                )
             }
-        } else if top < view.top() {
-            top
-        } else if bottom > view.bottom() {
-            bottom - height
-        } else {
-            return None;
+            LaidOutKind::Held | LaidOutKind::Row => {
+                if part.bottom() <= view.top() || part.top() >= view.bottom() {
+                    return None;
+                }
+                let height = view.size.height;
+                if bottom - top > height {
+                    if ringed || top < view.top() {
+                        top
+                    } else {
+                        bottom - height
+                    }
+                } else if top < view.top() {
+                    top
+                } else if bottom > view.bottom() {
+                    bottom - height
+                } else {
+                    return None;
+                }
+            }
         };
-        let offset = scroll.offset();
-        let y = (offset.y + view.top() - edge).clamp(-scroll.max_offset().y, Pixels::ZERO);
+        let y = (offset.y + view.top() - edge).clamp(-body.max_offset().y, Pixels::ZERO);
         let moved = y - offset.y;
         if moved == Pixels::ZERO {
             return None;
         }
-        scroll.set_offset(point(offset.x, y));
+        body.set_offset(point(offset.x, y));
         Some((part + point(Pixels::ZERO, moved), ringed, inset, moved))
+    }
+    /// Where the held PR row, whose title `part` is laid out before its list has prepainted,
+    /// lies in the body once its list shows it: the list, like the body, scrolls the least that
+    /// shows the title with its ring's room, its rows' lines whole at the list's edges where a
+    /// place allows ([`landed_edge`]), in the frame's layout, before the rows prepaint.
+    /// Returns none where the list's own view shows none of it, so focus goes on as the rest of
+    /// the reopen decides ([`Reopening::settle`]).
+    fn reveal_row(
+        &self,
+        part: Bounds<Pixels>,
+        inset: Pixels,
+        list: &ScrollHandle,
+        blocks: &Blocks,
+        window: &mut Window,
+        cx: &App,
+    ) -> Option<Bounds<Pixels>> {
+        let view = window.layout_bounds(self.list_laid_out.take()?);
+        let offset = list.offset();
+        // Laid out before the list has prepainted, so its own scroll is not in the place.
+        let mut row = part + point(Pixels::ZERO, offset.y);
+        if row.bottom() <= view.top() || row.top() >= view.bottom() {
+            return None;
+        }
+        let (top, bottom) = (row.top() - inset, row.bottom() + inset);
+        if top < view.top() || bottom > view.bottom() {
+            let edge = landed_edge(
+                list,
+                blocks,
+                view,
+                offset,
+                (top, bottom),
+                inset,
+                false,
+                false,
+                cx,
+            );
+            let y = (offset.y + view.top() - edge).clamp(-list.max_offset().y, Pixels::ZERO);
+            let moved = y - offset.y;
+            if moved != Pixels::ZERO {
+                list.set_offset(point(offset.x, y));
+                row = row + point(Pixels::ZERO, moved);
+            }
+        }
+        Some(row)
     }
     /// Records `bounds`, the children of what holds focus, as where focus lies in this frame.
     fn note(&self, bounds: &[Bounds<Pixels>]) {
@@ -1623,23 +1764,53 @@ fn show_then(
         if !still(window, cx) || scroll.offset() != previous || scroll.bounds() != viewport {
             return;
         }
-        let start = viewport.top() + previous.y;
-        let end = start + scroll.max_offset().y;
-        let starts = blocks.at(&scroll);
-        let edge = if in_view {
-            viewport.top()
-        } else {
-            landing(viewport, top, bottom, &starts, inset, end, ringed)
-        };
-        let starts: Vec<_> = starts.into_iter().map(|start| start - inset).collect();
-        let lines = blocks.lines(cx);
-        let edge = clear_of_lines(viewport, edge, (top, bottom), &lines, &starts, (start, end));
+        let edge = landed_edge(
+            &scroll,
+            &blocks,
+            viewport,
+            previous,
+            (top, bottom),
+            inset,
+            ringed,
+            in_view,
+            cx,
+        );
         scroll_edge_to(&scroll, viewport, previous, edge, window);
         if let Some(landed) = landed {
             let moved = scroll.offset().y - previous.y;
             landed(bounds + point(px(0.), moved), window, cx);
         }
     });
+}
+
+/// Where the top edge of `viewport`, `scroll`'s view at `previous`, lands for a reveal of
+/// `top..bottom`, a part with its ring's room `inset` ([`landing`]), clear of the lines
+/// `blocks` hold ([`clear_of_lines`]); with `in_view`, where it stands already. Read while the
+/// frame prepaints, `blocks` hold the last frame's starts and lines, which the place of what
+/// the reveal keeps whole never depends on ([`Reopening::reveal_laid_out`]).
+#[allow(clippy::too_many_arguments)]
+fn landed_edge(
+    scroll: &ScrollHandle,
+    blocks: &Blocks,
+    viewport: Bounds<Pixels>,
+    previous: Point<Pixels>,
+    (top, bottom): (Pixels, Pixels),
+    inset: Pixels,
+    ringed: bool,
+    in_view: bool,
+    cx: &App,
+) -> Pixels {
+    let start = viewport.top() + previous.y;
+    let end = start + scroll.max_offset().y;
+    let starts = blocks.at(scroll);
+    let edge = if in_view {
+        viewport.top()
+    } else {
+        landing(viewport, top, bottom, &starts, inset, end, ringed)
+    };
+    let starts: Vec<_> = starts.into_iter().map(|start| start - inset).collect();
+    let lines = blocks.lines(cx);
+    clear_of_lines(viewport, edge, (top, bottom), &lines, &starts, (start, end))
 }
 
 /// Scrolls `scroll`, at `previous` over `viewport`, so its top edge lies at `edge`, a place
@@ -1661,22 +1832,55 @@ fn scroll_edge_to(
     }
 }
 
-/// An element laid over a part of the body, absolutely placed so it takes no room, in the
-/// frame that first draws the panel reopened onto a control inside the part: it keeps the
-/// part's layout node for that frame's reveal ([`Reopened`]), and whether the part draws
-/// focus as a ring on its own edge (`edge`), with the room its reveal keeps clear (`inset`).
-struct HeldMark {
+/// Why a [`RevealMark`] marks what it is laid over.
+enum MarkKind {
+    /// The part of the body holding the control a reopen keeps focus on.
+    Held,
+    /// A PR row, for the same reveal in its own list ([`Reopening::holds_row`]).
+    Row,
+    /// The PR list holding such a row, whose layout gives the list's view.
+    List,
+    /// What `FocusHandle` focuses while a reopen reveals it, the section's first stop.
+    FirstStop(FocusHandle),
+    /// The outbound confirmation, while its region holds focus.
+    Confirmation(FocusHandle),
+}
+/// An element laid over a part of the body, absolutely placed so it takes no room, `pad` in
+/// from its top and bottom edges where the part has padding of its own: it keeps the part's
+/// layout node for the frame's reveal before the body's content prepaints ([`Reopened`]), and
+/// whether the part draws focus as a ring on its own edge (`edge`), with the room its reveal
+/// keeps clear (`inset`).
+pub(super) struct RevealMark {
     reopening: std::rc::Rc<Reopening>,
     edge: Option<FocusHandle>,
+    /// The room its reveal keeps clear, or, with `room`, the window's room for it.
     inset: Pixels,
+    room: Option<fn(&Window, &App) -> Pixels>,
+    pad: gpui::Length,
+    kind: MarkKind,
 }
-impl IntoElement for HeldMark {
+/// The room a focus ring needs, for a [`RevealMark`] ([`appearance::button_ring_room`]).
+pub(super) fn ring_room(_: &Window, cx: &App) -> Pixels {
+    appearance::button_ring_room(cx)
+}
+/// A mark over the PR list holding the held row ([`Reopening::holds_row`]).
+pub(super) fn list_mark(reopening: std::rc::Rc<Reopening>) -> RevealMark {
+    RevealMark {
+        reopening,
+        edge: None,
+        inset: Pixels::ZERO,
+        room: None,
+        pad: px(0.).into(),
+        kind: MarkKind::List,
+    }
+}
+impl IntoElement for RevealMark {
     type Element = Self;
     fn into_element(self) -> Self {
         self
     }
 }
-impl Element for HeldMark {
+impl Element for RevealMark {
     type RequestLayoutState = ();
     type PrepaintState = ();
     fn id(&self) -> Option<ElementId> {
@@ -1694,7 +1898,12 @@ impl Element for HeldMark {
     ) -> (LayoutId, ()) {
         let style = Style {
             position: Position::Absolute,
-            inset: Edges::all(px(0.).into()),
+            inset: Edges {
+                top: self.pad,
+                bottom: self.pad,
+                left: px(0.).into(),
+                right: px(0.).into(),
+            },
             ..Style::default()
         };
         let layout = window.request_layout(style, [], cx);
@@ -1702,9 +1911,27 @@ impl Element for HeldMark {
             .edge
             .as_ref()
             .is_some_and(|edge| edge.is_focused(window));
-        self.reopening
-            .laid_out
-            .set(Some((layout, ringed, self.inset)));
+        let kind = match &self.kind {
+            MarkKind::Held => Some(LaidOutKind::Held),
+            MarkKind::Row => Some(LaidOutKind::Row),
+            MarkKind::List => {
+                self.reopening.list_laid_out.set(Some(layout));
+                None
+            }
+            MarkKind::FirstStop(focus) => (self.reopening.reveals() && focus.is_focused(window))
+                .then_some(LaidOutKind::Reveal),
+            MarkKind::Confirmation(focus) => {
+                (!self.reopening.waits() && focus.is_focused(window)).then_some(LaidOutKind::Reveal)
+            }
+        };
+        if let Some(kind) = kind {
+            self.reopening.laid_out.set(Some(LaidOut {
+                node: layout,
+                ringed,
+                inset: self.room.map_or(self.inset, |room| room(window, cx)),
+                kind,
+            }));
+        }
         (layout, ())
     }
     fn prepaint(
@@ -1731,9 +1958,9 @@ impl Element for HeldMark {
 }
 
 /// The body's content, which `scroll` scrolls, laid out for the frame being drawn: in the
-/// frame that first draws the reopened panel, the part holding the control focus went back to
-/// is revealed whole from that frame's layout before the content prepaints, as the rebase
-/// form fits its sequence (`interactive_rebase::Fitted`), so that frame draws it whole
+/// frame that first draws what a reopen or an opening confirmation focuses, it is revealed
+/// whole from that frame's layout before the content prepaints, as the rebase form fits its
+/// sequence (`interactive_rebase::Fitted`), so that frame draws it whole
 /// ([`Reopening::reveal_laid_out`]). Revealed only once a frame had found the control drawn,
 /// the part came into view in the third or fourth frame. Where the reveal moved the body and
 /// one of its edges cuts a line this frame draws, the body then moves to the nearest place that
@@ -1743,6 +1970,9 @@ pub(super) struct Reopened {
     reopening: std::rc::Rc<Reopening>,
     scroll: ScrollHandle,
     blocks: Blocks,
+    revealed: std::rc::Rc<std::cell::RefCell<FocusObservation>>,
+    list: ScrollHandle,
+    list_blocks: Blocks,
 }
 /// `content` as the body's content ([`Reopened`]).
 pub(super) fn reopened(
@@ -1750,12 +1980,18 @@ pub(super) fn reopened(
     reopening: std::rc::Rc<Reopening>,
     scroll: ScrollHandle,
     blocks: Blocks,
+    revealed: std::rc::Rc<std::cell::RefCell<FocusObservation>>,
+    list: ScrollHandle,
+    list_blocks: Blocks,
 ) -> Reopened {
     Reopened {
         content: content.into_any_element(),
         reopening,
         scroll,
         blocks,
+        revealed,
+        list,
+        list_blocks,
     }
 }
 impl IntoElement for Reopened {
@@ -1793,9 +2029,15 @@ impl Element for Reopened {
     ) {
         // The body has placed its content at its offset already: content the reveal moves is
         // prepainted where the new offset puts it.
-        let Some((part, ringed, inset, moved)) =
-            self.reopening.reveal_laid_out(&self.scroll, window)
-        else {
+        let Some((part, ringed, inset, moved)) = self.reopening.reveal_laid_out(
+            &self.scroll,
+            &self.blocks,
+            &self.list,
+            &self.list_blocks,
+            &self.revealed,
+            window,
+            cx,
+        ) else {
             self.content.prepaint(window, cx);
             return;
         };
@@ -1856,12 +2098,15 @@ fn revealing(
     context.set(key, name.clone());
     let part = name.clone();
     // Its first child, in the frame that first draws the panel reopened onto a control in it.
-    let marked = key == PART && reopening.marks(&name);
+    let marked = key == PART && reopening.marks(key, &name);
     let element = if marked {
-        element.child(HeldMark {
+        element.child(RevealMark {
             reopening: reopening.clone(),
             edge: edge.clone(),
             inset,
+            room: None,
+            pad: px(0.).into(),
+            kind: MarkKind::Held,
         })
     } else {
         element
@@ -2053,6 +2298,44 @@ fn own(bounds: &mut Vec<Bounds<Pixels>>, owned: &Owned, scroll: &ScrollHandle, i
 }
 
 impl Panel {
+    /// The mark over what the shown section's first stop reveals as a reopen lands on it, as
+    /// tall as what `focus` holds, `room` clear of the body's edges in that frame's own layout
+    /// ([`Reopening::reveal_laid_out`]), `ringed` where it draws focus as a ring on its own
+    /// edge, and inside the padding of a pane it stands in (`padded`).
+    pub(super) fn stop_mark(
+        &self,
+        focus: &FocusHandle,
+        room: fn(&Window, &App) -> Pixels,
+        ringed: bool,
+        padded: bool,
+    ) -> RevealMark {
+        RevealMark {
+            reopening: self.review.reopening.clone(),
+            edge: ringed.then(|| focus.clone()),
+            inset: Pixels::ZERO,
+            room: Some(room),
+            pad: if padded {
+                rems(0.75).into()
+            } else {
+                px(0.).into()
+            },
+            kind: MarkKind::FirstStop(focus.clone()),
+        }
+    }
+    /// The mark over the outbound confirmation, inside its pane's padding, while its region
+    /// `focus` holds focus: revealed from its frame's own layout with `inset` clear of the
+    /// body's edges, its top first where it is taller than the body, as the region's ring is
+    /// on its own edge ([`Reopening::reveal_laid_out`]).
+    pub(super) fn confirmation_mark(&self, focus: &FocusHandle, inset: Pixels) -> RevealMark {
+        RevealMark {
+            reopening: self.review.reopening.clone(),
+            edge: Some(focus.clone()),
+            inset,
+            room: None,
+            pad: rems(0.75).into(),
+            kind: MarkKind::Confirmation(focus.clone()),
+        }
+    }
     /// For the `on_children_prepainted` of the element holding a form that `focus` tracks,
     /// such as the reply composer, or holding its stop, as the outbound confirmation holds its
     /// region ([`Panel::reveal_ringed_on_focus`]), which report the content inside their
@@ -2244,13 +2527,35 @@ impl Panel {
         );
         let reopening = self.review.reopening.clone();
         let inset = appearance::button_ring_room(cx);
+        // Marked, in the frame that first draws the panel reopened onto this row.
+        let marked = reopening.marks(PULL, &name);
+        let element = if marked {
+            element.child(RevealMark {
+                reopening: reopening.clone(),
+                edge: None,
+                inset,
+                room: None,
+                pad: px(0.).into(),
+                kind: MarkKind::Row,
+            })
+        } else {
+            element
+        };
         element
             .key_context(context)
             // Where tests find the part (`github_view::tests::over_wide`).
             .debug_selector(move || format!("github-part-{part}"))
-            .on_children_prepainted(move |bounds, window, cx| {
+            .on_children_prepainted(move |mut bounds, window, cx| {
+                // The marker over the row is none of its children.
+                if marked && !bounds.is_empty() {
+                    bounds.remove(0);
+                }
                 #[cfg(test)]
                 PARTS_DRAWN.with(|parts| parts.borrow_mut().push((name.clone(), None)));
+                #[cfg(test)]
+                if let Some(union) = bounds.iter().copied().reduce(|a, b| a.union(&b)) {
+                    PART_BOUNDS.with_borrow_mut(|parts| parts.push((name.clone(), union)));
+                }
                 let innermost = window
                     .context_stack()
                     .iter()
@@ -2390,7 +2695,7 @@ impl Panel {
     /// Puts focus back as the panel reopens: on the control that held it inside the body's
     /// view as the panel closed ([`ReviewState::held`]), where it still exists, or otherwise
     /// on the shown section's first stop ([`Panel::focus_visible_section`]). Either is
-    /// revealed whole, whatever input came last, once a frame has drawn it, and the held
+    /// revealed whole, whatever input came last, from the first frame's layout, and the held
     /// control keeps focus only where that frame draws it inside the body's view; elsewhere,
     /// as after a text size change while the panel was closed moved it out of view, focus
     /// goes to the section's first stop ([`Reopening`]).
@@ -2457,11 +2762,12 @@ impl Panel {
             .map(|focus| focus.downgrade());
         // The innermost part on the focus path of the frame the window last drew, the panel's.
         self.review.held_part = self.review.held.as_ref().and_then(|_| {
-            window
-                .context_stack()
-                .iter()
-                .rev()
-                .find_map(|context| context.get(PART).cloned())
+            window.context_stack().iter().rev().find_map(|context| {
+                context
+                    .get(PART)
+                    .map(|name| (PART, name.clone()))
+                    .or_else(|| context.get(PULL).map(|name| (PULL, name.clone())))
+            })
         });
     }
     pub(super) fn focus_visible_section(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3114,6 +3420,12 @@ impl Panel {
             .on_children_prepainted(
                 self.reveal_on_focus(self.review.input.read(cx).focus_handle(cx)),
             )
+            .child(self.stop_mark(
+                &self.review.input.read(cx).focus_handle(cx),
+                reveal_room,
+                false,
+                true,
+            ))
             .map(super::bordered_pane)
             .rounded(px(7.))
             .bg(rgb(p.subtle))
@@ -3197,8 +3509,11 @@ impl Panel {
             // The list's box is a part of its own, so Tab onto the list shows the box with its
             // ring's room and leaves its pager, a stop of its own, to its own reveal.
             .child(
-                self.part("file-rows", div(), cx).flex().flex_col().child(
-                    crate::native_accessibility::clips_children(
+                self.part("file-rows", div(), cx)
+                    .child(self.stop_mark(&self.review.file_focus, ring_room, false, false))
+                    .flex()
+                    .flex_col()
+                    .child(crate::native_accessibility::clips_children(
                         div()
                             .id("github-file-focus")
                             .debug_selector(|| "github-file-focus".into())
@@ -3366,8 +3681,7 @@ impl Panel {
                                 .debug_selector(|| "github-file-rows".into())
                                 .size_full(),
                             ),
-                    ),
-                ),
+                    )),
             )
             .child(
                 self.part("file-pager", div(), cx)

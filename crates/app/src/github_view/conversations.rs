@@ -1168,10 +1168,15 @@ impl Panel {
             }
         };
         let reveal = self.reveal_ringed_on_focus(focus.clone());
+        // Laid out before any of the confirmation's children prepaint, so the frame that first
+        // draws it reveals it whole ([`super::review::Reopening::reveal_laid_out`]).
+        let mark = self.confirmation_mark(focus, super::review::reveal_room(window, cx));
         div()
             .debug_selector(|| "github-confirmation".into())
             .flex_shrink_0()
-            .on_children_prepainted(move |children, window, cx| {
+            .on_children_prepainted(move |mut children, window, cx| {
+                // The mark over the confirmation is none of what its reveals show.
+                children.remove(0);
                 #[cfg(test)]
                 record(&children);
                 measure(&children, window, cx);
@@ -1184,6 +1189,7 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_2()
+            .child(mark)
             .child(
                 div()
                     .debug_selector(|| "github-confirm-ring".into())
@@ -1330,6 +1336,7 @@ impl Panel {
             .iter()
             .any(|thread| reply_matches(thread, target, self.account.as_deref()));
         div().debug_selector(||"github-reply-composer".into()).on_children_prepainted(self.reveal_on_focus(self.conversations.input.read(cx).focus_handle(cx)))
+            .child(self.stop_mark(&self.conversations.input.read(cx).focus_handle(cx),super::review::reveal_room,false,true))
             .min_w_0().map(super::bordered_pane).rounded(px(7.)).border_1().border_color(rgb(p.border)).bg(rgb(p.subtle)).flex().flex_col().gap_2()
             .child(label("github-reply-heading", format!("Reply to conversation · {}", target.path)).font_weight(FontWeight::SEMIBOLD))
             .child(label("github-reply-context", format!("{} · #{} · {} · captured head {}",target.account,target.pull.number,target.pull.repository.label(),target.pull.head.sha)).text_color(rgb(p.muted)))
@@ -1381,7 +1388,7 @@ impl Panel {
         let next = self.conversations.next_cursor.clone();
         // The pane is a part of the body, and so are its header, its list and its pager:
         // Tab into one shows that one, and onto the pane itself shows the whole pane.
-        self.ringed_part("conversations", div(), &self.review.section_focus, cx).min_w_0().child(crate::native_accessibility::clips_children(div()
+        self.ringed_part("conversations", div(), &self.review.section_focus, cx).child(self.stop_mark(&self.review.section_focus,super::review::ring_room,true,false)).min_w_0().child(crate::native_accessibility::clips_children(div()
             .on_children_prepainted(move |bounds, window, cx| {
                 // Everything but the list, the second child: the pane's padding and border
                 // around the span of its children, less the list.
