@@ -386,7 +386,8 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
             .push("Literal UTF-8 source. The filename does not change its encoding.".into());
     } else if !ext.is_empty() {
         result.details.push(format!(
-            "Filename hint: .{ext}; content signature is unrecognized or corrupt."
+            "Filename hint: .{}; content signature is unrecognized or corrupt.",
+            visible(ext.as_bytes())
         ));
     }
     result
@@ -567,6 +568,36 @@ mod tests {
         assert!(is_svg(b"<?xml version='1.0'?><svg/>"));
         assert!(!is_svg(b"<html><script>test</script></html>"));
     }
+    /// A file's extension is a repository's text, and a detail is read aloud
+    /// and drawn on a label: control characters show as their escapes and
+    /// its length is bounded, as every other detail read from a file is.
+    #[test]
+    fn a_filename_hint_shows_its_extension_as_visible_text() {
+        let hint = |name: &str| {
+            inspect(&[0; 8], Path::new(name))
+                .details
+                .into_iter()
+                .find(|detail| detail.starts_with("Filename hint: ."))
+                .unwrap_or_else(|| panic!("{name:?} has a filename hint"))
+        };
+        assert_eq!(
+            hint("plain.dat"),
+            "Filename hint: .dat; content signature is unrecognized or corrupt."
+        );
+        assert_eq!(
+            hint("a.b\u{1b}[31m\nc"),
+            "Filename hint: .b\\u{1b}[31m\\nc; content signature is unrecognized or corrupt."
+        );
+        let long = format!("a.{}", "x".repeat(400));
+        assert_eq!(
+            hint(&long),
+            format!(
+                "Filename hint: .{}; content signature is unrecognized or corrupt.",
+                "x".repeat(160)
+            )
+        );
+    }
+
     #[test]
     fn checks_iso_brands_and_declared_box_bounds() {
         let bytes = b"\0\0\0\x18ftypmif1\0\0\0\0mif1avif";
