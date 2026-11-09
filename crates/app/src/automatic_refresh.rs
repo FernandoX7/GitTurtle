@@ -19,6 +19,14 @@ pub struct State {
     inflight: Option<LocalChange>,
     epoch: u64,
     pub retained_commit: Option<usize>,
+    /// The "Local refresh:" banner a failed quiet read put in the window's
+    /// shared error slot, as written ([`Self::report_failure`]): the next
+    /// quiet read that succeeds takes that banner and no other, and a slot
+    /// that says anything else, a write's or an explicit operation's
+    /// failure in whatever words, stays. The text a person could read does
+    /// not tell them apart, so the whole failure is kept and compared, its
+    /// report and its banner line. A tab left keeps it with the slot.
+    failure: Option<crate::views::OperationFailure>,
     /// Test-only: quiet reads wait to start while set, as a busy reader
     /// holds them ([`Self::hold_quiet_reads`]).
     #[cfg(test)]
@@ -54,6 +62,37 @@ impl State {
     }
     pub(super) fn watch_warning(&self) -> Option<&str> {
         self.watch_warning.as_deref()
+    }
+    /// Says a quiet read failed in the window's shared error slot, where
+    /// that slot is free: a write's failure or an explicit operation's
+    /// stays, and nothing of it is taken for this read's.
+    fn report_failure(
+        &mut self,
+        failure: crate::views::OperationFailure,
+        operation_error: &mut Option<crate::views::OperationFailure>,
+    ) {
+        if operation_error.is_none() {
+            *operation_error = Some(failure.clone());
+            self.failure = Some(failure);
+        }
+    }
+    /// Takes the banner a failed quiet read left ([`Self::report_failure`])
+    /// as the next one succeeds, where the slot still says it.
+    fn clear_failure(&mut self, operation_error: &mut Option<crate::views::OperationFailure>) {
+        if let Some(failure) = self.failure.take()
+            && operation_error.as_ref() == Some(&failure)
+        {
+            *operation_error = None;
+        }
+    }
+    /// The banner to carry away with a tab left ([`Self::restore_failure`]),
+    /// which `reset` forgets with the rest of the repository's quiet reads.
+    pub(super) fn take_failure(&mut self) -> Option<crate::views::OperationFailure> {
+        self.failure.take()
+    }
+    /// The banner of a tab shown again, retained with its error slot.
+    pub(super) fn restore_failure(&mut self, failure: Option<crate::views::OperationFailure>) {
+        self.failure = failure;
     }
     /// Whether a rescan waits to run, for tests in other modules.
     #[cfg(test)]
@@ -433,6 +472,9 @@ impl GitTurtle {
                 }
                 match result {
                     Ok(Ok(Output::QuietRefresh(refresh))) => {
+                        // Before it lands, so a banner this read writes
+                        // finds the slot free.
+                        this.automatic.clear_failure(&mut this.operation_error);
                         // Read whole, the repository is readable again: a
                         // tab marked by a failed Open states that, as an
                         // explicit Refresh's accepted snapshot does. A read
@@ -467,16 +509,7 @@ impl GitTurtle {
                         }
                     }
                     Ok(Ok(_)) => {}
-                    // Gone from its root, the repository is read as Refresh
-                    // reads it, which marks the tab and says why.
-                    Ok(Err(error)) if error.is::<worker::RepositoryGone>() => {
-                        this.tab_repository_gone(window, cx);
-                    }
-                    Ok(Err(error)) => {
-                        this.operation_error.get_or_insert_with(|| {
-                            crate::views::OperationFailure::of_read("Local refresh", &error)
-                        });
-                    }
+                    Ok(Err(error)) => this.quiet_read_failed(error, window, cx),
                     Err(_) => {
                         this.automatic.pending.merge(changed);
                     }
@@ -491,6 +524,32 @@ impl GitTurtle {
                 }
             });
         }));
+    }
+
+    /// What a quiet read's failure says. Gone from its root, the repository
+    /// is read as Refresh reads it, whose failed Open marks the tab and says
+    /// why. Changed while the read opened it, at its own path, a marked
+    /// tab's mark says that already: a banner saying the same beside it once
+    /// stayed after the next good read cleared the mark. Anything else, an
+    /// unmarked tab's such change among it, is the "Local refresh:" banner
+    /// the next read that succeeds takes away; no Open runs for it, which
+    /// would cancel an open form and leave Changes for a passing failure.
+    pub(super) fn quiet_read_failed(
+        &mut self,
+        error: anyhow::Error,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if error.is::<worker::RepositoryGone>() {
+            self.tab_repository_gone(window, cx);
+        } else if !(error.is::<gitturtle_core::ChangedWhileOpening>()
+            && self.shown_tab_unavailable())
+        {
+            self.automatic.report_failure(
+                crate::views::OperationFailure::of_read("Local refresh", &error),
+                &mut self.operation_error,
+            );
+        }
     }
 
     /// Whether a quiet read found what the window shows, as its landing

@@ -937,6 +937,9 @@ struct WarmTab {
     working_selection: working_selection::Selection,
     operation_notice: Option<String>,
     operation_error: Option<crate::views::OperationFailure>,
+    /// Which of [`Self::operation_error`] a quiet read wrote
+    /// (`automatic_refresh::State::failure`).
+    local_refresh_failure: Option<crate::views::OperationFailure>,
     /// The places a comparison restored with the tab waited to restore as
     /// the tab was left (`State::document_restore`), which its return
     /// restores ([`GitTurtle::resume_tab_documents`]).
@@ -1196,6 +1199,8 @@ impl GitTurtle {
         markdown_view::pause(self.content.as_deref());
         self.image_drag = None;
         let retained_commit = self.automatic.retained_commit;
+        // Goes with the error slot the tab retains below.
+        let local_refresh_failure = self.automatic.take_failure();
         self.automatic.reset();
         // The tab keeps the shown rows with their counts. Rows kept from an
         // earlier status while a newer one's were prepared index a status
@@ -1271,6 +1276,7 @@ impl GitTurtle {
             working_selection: std::mem::take(&mut self.working_selection),
             operation_notice: self.operation_notice.take(),
             operation_error: self.operation_error.take(),
+            local_refresh_failure,
             document_restore,
         };
         self.repository_tabs.tabs[index].saved = bookmark;
@@ -1376,6 +1382,7 @@ impl GitTurtle {
         self.working_selection = warm.working_selection;
         self.operation_notice = warm.operation_notice;
         self.operation_error = warm.operation_error;
+        self.automatic.restore_failure(warm.local_refresh_failure);
         warm.inputs.restore(self.tab_inputs(), window, cx);
         self.observe_tab_panels(cx);
         if let Some(index) = self.repository_tabs.active {
@@ -4479,6 +4486,215 @@ mod tests {
                 "{after}: nothing beside it"
             );
         }
+    }
+
+    /// `operation_error` as the window holds it.
+    fn operation_error(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<String> {
+        app.read_with(cx, |app, _| app.operation_error_text())
+    }
+
+    /// Has the shown tab's quiet read fail with `error`, as its reply lands.
+    fn quiet_read_fails(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        error: impl Into<anyhow::Error>,
+    ) {
+        let error = error.into();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.quiet_read_failed(error, window, cx)));
+    }
+
+    /// A History window whose first reads have landed, quiet reads free to
+    /// start, and the root of its repository.
+    async fn settled_history_window(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        PathBuf,
+    ) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
+        (fixture, app, cx, root)
+    }
+
+    /// A quiet read that finds the marked tab's repository changed as it
+    /// reopened it, at its own path, writes no banner: the mark says it,
+    /// and such a banner once outlived the mark.
+    #[gpui::test]
+    async fn a_quiet_read_that_finds_it_changed_while_opening_writes_no_banner_beside_the_mark(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _root, _third_git) = marked_by_a_swapped_git(cx).await;
+        let (path, generation) = app.read_with(cx, |app, _| {
+            (app.path.clone().expect("a repository"), app.generation)
+        });
+        quiet_read_fails(
+            &app,
+            cx,
+            gitturtle_core::ChangedWhileOpening {
+                found: Some(path.clone()),
+                path,
+            },
+        );
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(operation_error(&app, cx), None, "the mark says it");
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.tabs[0].error.is_some(), "still marked");
+            assert_eq!(app.generation, generation, "a marked tab asks for no Open");
+        });
+    }
+
+    /// The same read of an unmarked tab has no mark to say it: it keeps the
+    /// banner, which the next quiet read that succeeds takes away, and runs
+    /// no Open, which would leave Changes and cancel an open form for a
+    /// failure that may pass.
+    #[gpui::test]
+    async fn a_quiet_read_that_finds_it_changed_while_opening_keeps_the_banner_on_an_unmarked_tab(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, root) = settled_history_window(cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        let generation = app.read_with(cx, |app, _| app.generation);
+        quiet_read_fails(
+            &app,
+            cx,
+            gitturtle_core::ChangedWhileOpening {
+                found: Some(root.clone()),
+                path: root.clone(),
+            },
+        );
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(
+            operation_error(&app, cx),
+            Some(format!(
+                "Local refresh: The repository at {} changed while it was opened. Open it again.",
+                root.display()
+            )),
+            "nothing else says it"
+        );
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.generation, generation, "no Open");
+            assert!(app.mode == WorkspaceMode::Working, "still in Changes");
+            assert!(app.repository_tabs.tabs[0].error.is_none(), "not marked");
+        });
+        quiet_read_landed(&app, cx);
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(operation_error(&app, cx), None, "the next good read");
+    }
+
+    /// The next quiet read that succeeds takes a "Local refresh:" banner
+    /// away, and a banner a write put in that slot, however it is worded,
+    /// stays: a passive read never clears a write's failure.
+    #[gpui::test]
+    async fn the_next_quiet_read_takes_only_its_own_banner(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, root) = settled_history_window(cx).await;
+        let settle_read = async |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            quiet_read_landed(app, cx);
+            crate::views::tests::settle(app, cx).await;
+        };
+
+        quiet_read_fails(&app, cx, anyhow::anyhow!("the read stopped"));
+        let banner = "Local refresh: the read stopped".to_owned();
+        assert_eq!(operation_error(&app, cx), Some(banner), "the banner");
+        settle_read(&app, cx).await;
+        assert_eq!(operation_error(&app, cx), None, "the next good read clears it");
+
+        // A write's failure in the same words stays, whichever read lands.
+        let written = "Local refresh: a hook refused the commit".to_owned();
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.tab_operation_feedback(&root, None, Some(written.clone().into()), cx)
+            })
+        });
+        settle_read(&app, cx).await;
+        assert_eq!(operation_error(&app, cx), Some(written.clone()), "a write's stays");
+        quiet_read_fails(&app, cx, anyhow::anyhow!("the read stopped"));
+        assert_eq!(
+            operation_error(&app, cx),
+            Some(written.clone()),
+            "a read does not replace a write's failure"
+        );
+        settle_read(&app, cx).await;
+        assert_eq!(operation_error(&app, cx), Some(written.clone()), "nor clear it");
+
+        // A write's failure over the read's banner stays too.
+        cx.update(|_, cx| app.update(cx, |app, _| app.operation_error = None));
+        quiet_read_fails(&app, cx, anyhow::anyhow!("the read stopped"));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.tab_operation_feedback(&root, None, Some(written.clone().into()), cx)
+            })
+        });
+        settle_read(&app, cx).await;
+        assert_eq!(operation_error(&app, cx), Some(written), "over the banner");
+    }
+
+    /// A quiet read's banner draws the line core typed for its failure, its
+    /// report whole behind Details…, and the next good read takes that
+    /// failure by the whole of it: another failure with the same report and
+    /// a line of its own is not the banner this read wrote, and stays.
+    #[gpui::test]
+    async fn a_quiet_read_s_banner_keeps_its_summary_and_goes_by_its_whole_failure(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _root) = settled_history_window(cx).await;
+        let report = "Local refresh: the whole report\nof what Git said";
+        quiet_read_fails(
+            &app,
+            cx,
+            gitturtle_core::NotARepository(
+                "the whole report\nof what Git said".into(),
+                Some("the line that says it".into()),
+            ),
+        );
+        app.read_with(cx, |app, _| {
+            let shown = app.operation_error.as_ref().expect("the banner");
+            assert_eq!(
+                shown.banner().as_ref(),
+                "Local refresh: the line that says it"
+            );
+            assert_eq!(&**shown, report, "its report whole");
+        });
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.operation_error = Some(crate::views::OperationFailure::summarized(
+                    report.to_owned(),
+                    Some("a write's own line".to_owned()),
+                ));
+            })
+        });
+        quiet_read_landed(&app, cx);
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let shown = app.operation_error.as_ref().expect("not the read's banner");
+            assert_eq!(shown.banner().as_ref(), "a write's own line");
+        });
+    }
+
+    /// A banner left behind by a tab switch comes back with its tab and
+    /// still goes with that tab's next good read.
+    #[gpui::test]
+    async fn a_local_refresh_banner_goes_with_its_tab(cx: &mut TestAppContext) {
+        let (fixture, app, cx, _root) = settled_history_window(cx).await;
+        let banner = "Local refresh: the read stopped".to_owned();
+        quiet_read_fails(&app, cx, anyhow::anyhow!("the read stopped"));
+        assert_eq!(operation_error(&app, cx), Some(banner), "the banner");
+        open_another_tab(&app, cx, &fixture.path().join("other")).await;
+        assert_eq!(operation_error(&app, cx), None, "another tab's slot");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        for _ in 0..4 {
+            app.read_with(cx, |app, _| app.operations.drain());
+            crate::views::tests::settle(&app, cx).await;
+        }
+        assert_eq!(operation_error(&app, cx), None, "its next good read clears it");
     }
 
     /// A folder's permissions taken away until this drops, so a test that
