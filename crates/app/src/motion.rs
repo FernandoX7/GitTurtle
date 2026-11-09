@@ -1036,6 +1036,63 @@ mod tests {
         );
     }
 
+    /// A double-click on a row menu's item writes once. The first press
+    /// unstages alpha, and the Unstaged heading that write moves arrives
+    /// under the pointer, where the second press, with the pointer still,
+    /// pressed Stage all and staged every other file. The menu's item now
+    /// holds the pointer as the row's own control does.
+    #[gpui::test]
+    async fn a_double_click_on_a_row_menus_item_writes_once(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+        let alpha = cx.debug_bounds("working-row-1").expect("alpha's row");
+        let column = cx
+            .debug_bounds("stage-all")
+            .expect("the Unstaged heading's Stage all")
+            .center()
+            .x;
+        // Low in the row, so the menu's first item reaches the heading's row.
+        let pressed = point(column - px(24.), alpha.bottom() - px(3.));
+        cx.simulate_mouse_move(pressed, None, Modifiers::default());
+        cx.simulate_mouse_down(pressed, gpui::MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(pressed, gpui::MouseButton::Right, Modifiers::default());
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        next_frame(cx);
+        let item = cx
+            .debug_bounds("menu-item: Unstage · MenuItem")
+            .expect("alpha's menu leads with Unstage");
+        // The foot of the item, where the heading's control arrives.
+        let pointer = point(column, item.bottom() - px(3.));
+        assert!(item.contains(&pointer), "{pointer:?} on the item {item:?}");
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        next_frame(cx);
+        counted_click(cx, pointer, 1);
+        press_lands(&app, cx).await;
+        assert_eq!(
+            staged_and_unstaged(&app, cx, "alpha.txt"),
+            Some((false, true)),
+            "the first press unstaged alpha"
+        );
+        let arrived = cx.debug_bounds("stage-all").expect("Stage all");
+        assert!(
+            arrived.contains(&pointer),
+            "Stage all {arrived:?} arrives under the pointer {pointer:?}"
+        );
+        counted_click(cx, pointer, 2);
+        press_lands(&app, cx).await;
+        for name in ["delta.txt", "epsilon.txt", "gamma.txt", "zeta.txt"] {
+            assert_eq!(
+                staged_and_unstaged(&app, cx, name),
+                Some((false, true)),
+                "the second press staged {name}, which nobody aimed at"
+            );
+        }
+    }
+
     /// One press of the Stage or Unstage of the row at `position`, whose
     /// write lands and puts a heading's `action` under the pointer, which
     /// has not moved since. Returns that pointer.
@@ -5203,11 +5260,11 @@ mod tests {
             })
         };
         open_row_menu(&app, cx, "gamma.txt", Opening::RightClick);
-        cx.simulate_keystrokes("down down");
+        cx.simulate_keystrokes("down down down");
         next_frame(cx);
         assert!(
             cursor_on(cx, "Delete untracked file…"),
-            "Down twice moved the cursor to Delete untracked file…"
+            "Down past Stage and Ignore… moved the cursor to Delete untracked file…"
         );
         let before = head(cx);
         commit_outside(&repository);
@@ -5678,11 +5735,12 @@ mod tests {
             next_frame(cx);
             assert_eq!(app.read_with(cx, |app, _| app.working_selected), delta);
             for (turn, selector) in rows.iter().enumerate() {
-                // The first right-click where `right_click` presses; a later
-                // one beside the open menu's leading edge, which starts at
-                // the pointer before, so that it lands on the row.
+                // The first right-click where `right_click` presses; each
+                // later one left of the open menu's leading edge, which
+                // starts at the pointer before, so that it lands on the row
+                // and not on a menu tall enough to reach it.
                 let bounds = cx.debug_bounds(selector).expect(selector);
-                let inset = if turn == 0 { px(16.) } else { px(6.) };
+                let inset = px([16., 9., 3.][turn]);
                 let pointer = point(bounds.left() + inset, bounds.center().y);
                 cx.simulate_mouse_move(pointer, None, Modifiers::default());
                 cx.simulate_mouse_down(pointer, gpui::MouseButton::Right, Modifiers::default());
@@ -6608,10 +6666,10 @@ mod tests {
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         open_row_menu(&app, cx, "gamma.txt", opening);
         // A right-click's menu opens with no cursor, a keyboard's with it
-        // on Ignore….
+        // on Stage, the first of its items.
         cx.simulate_keystrokes(match opening {
-            Opening::RightClick => "down down",
-            Opening::Keyboard => "down",
+            Opening::RightClick => "down down down",
+            Opening::Keyboard => "down down",
         });
         next_frame(cx);
         assert_eq!(

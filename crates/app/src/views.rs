@@ -30951,13 +30951,117 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A Working row's menu reads the same at every width (one responsive
+    /// order), whichever way it opens: Stage, or Unstage on a staged row,
+    /// leads it, then Ignore… and Discard changes…, at 13 pt in 1480 × 973,
+    /// where the row draws that control beside its name, and at 18 pt in
+    /// 461 × 490, where it does not. It once led with the action only where
+    /// the row drew no control, so the same row's menu read differently as
+    /// the window narrowed.
+    #[gpui::test]
+    async fn a_working_rows_menu_reads_the_same_at_every_width(cx: &mut TestAppContext) {
+        const STAGE: &str = "menu-item: Stage · MenuItem";
+        const UNSTAGE: &str = "menu-item: Unstage · MenuItem";
+        const IGNORE: &str = "menu-item: Ignore…, untracked files only · MenuItem disabled";
+        const DISCARD: &str = "menu-item: Discard changes… · MenuItem";
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+        });
+        let index_of = |cx: &mut VisualTestContext, name: &str| {
+            app.read_with(cx, |app, _| {
+                app.work_status
+                    .as_ref()
+                    .unwrap()
+                    .entries
+                    .iter()
+                    .position(|entry| entry.path == std::path::Path::new(name))
+                    .unwrap()
+            })
+        };
+        let notes = index_of(cx, "notes.txt");
+        let alpha = index_of(cx, "alpha.txt");
+        for (text, width, height, row_control) in [(13, 1480., 973., true), (18, 461., 490., false)]
+        {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            for (index, area, lead) in [
+                (notes, gitturtle_core::ChangeArea::Unstaged, STAGE),
+                (alpha, gitturtle_core::ChangeArea::Staged, UNSTAGE),
+            ] {
+                for keyboard in [false, true] {
+                    let at = format!(
+                        "{text} pt in {width} × {height}, {lead}, {}",
+                        if keyboard { "keyboard" } else { "right-click" }
+                    );
+                    choose_working_row(&app, index, area, cx).await;
+                    let position = app.read_with(cx, |app, _| {
+                        app.working_rows
+                            .iter()
+                            .position(|row| {
+                                matches!(row, crate::workspace::WorkingRow::File(i, a)
+                                    if *i == index && *a == area)
+                            })
+                            .unwrap()
+                    });
+                    // Choosing a row scrolls nothing; a narrow list may not
+                    // draw it yet.
+                    app.update(cx, |app, _| {
+                        app.working_scroll
+                            .scroll_to_item(position, ScrollStrategy::Nearest)
+                    });
+                    draw(cx);
+                    assert_eq!(
+                        cx.debug_bounds(format!("working-stage-{position}").leak())
+                            .is_some(),
+                        row_control,
+                        "{at}: the row's own control"
+                    );
+                    if keyboard {
+                        cx.simulate_keystrokes("shift-f10");
+                    } else {
+                        let row = cx
+                            .debug_bounds(format!("working-row-{position}").leak())
+                            .unwrap_or_else(|| panic!("{at}: the row"));
+                        let pointer = point(row.left() + px(16.), row.center().y);
+                        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+                        cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+                        cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+                    }
+                    cx.run_until_parked();
+                    draw(cx);
+                    draw(cx);
+                    let tops: Vec<_> = [lead, IGNORE, DISCARD]
+                        .into_iter()
+                        .map(|item| {
+                            cx.debug_bounds(item)
+                                .unwrap_or_else(|| panic!("{at}: the menu's {item}"))
+                                .top()
+                        })
+                        .collect();
+                    assert!(
+                        tops.is_sorted() && tops[0] < tops[1] && tops[1] < tops[2],
+                        "{at}: the items, in order, at {tops:?}"
+                    );
+                    cx.simulate_keystrokes("escape");
+                    draw(cx);
+                    assert!(cx.debug_bounds(DISCARD).is_none(), "{at}: Escape closed it");
+                }
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Shift-F10 and the Menu key open the Working Changes cursor row's
-    /// menu, the one a right-click opens, below the row: Ignore and Discard
-    /// beside the row's Stage control, and at 18 pt in a 461 × 490 window,
-    /// where the row has no room for the control, led by Stage. Escape
-    /// closes it and returns focus to the list; it opens on its first
-    /// action, so Enter alone stages the file. The menu, and with it a
-    /// narrow row's Stage, once opened only on a right-click.
+    /// menu, the one a right-click opens, below the row: Stage, Ignore and
+    /// Discard, at 13 pt in a 1480 × 973 window and at 18 pt in 461 × 490,
+    /// where the row has no room for its own control. Escape closes it and
+    /// returns focus to the list; it opens on its first action, so Enter
+    /// alone stages the file. The menu, and with it a narrow row's Stage,
+    /// once opened only on a right-click.
     #[gpui::test]
     async fn working_row_menu_opens_from_the_keyboard(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working_window(cx).await;
@@ -30980,7 +31084,7 @@ pub(crate) mod tests {
         const STAGE: &str = "menu-item: Stage · MenuItem";
         const IGNORE: &str = "menu-item: Ignore…, untracked files only · MenuItem disabled";
         const DISCARD: &str = "menu-item: Discard changes… · MenuItem";
-        for (text, width, height, narrow) in [(13, 1480., 980., false), (18, 461., 490., true)] {
+        for (text, width, height, narrow) in [(13, 1480., 973., false), (18, 461., 490., true)] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
@@ -31014,8 +31118,8 @@ pub(crate) mod tests {
             assert!(cx.debug_bounds(DISCARD).is_none(), "{at}: no menu yet");
             cx.simulate_keystrokes("shift-f10");
             draw(cx);
-            for (item, shown) in [(STAGE, narrow), (IGNORE, true), (DISCARD, true)] {
-                assert_eq!(cx.debug_bounds(item).is_some(), shown, "{at}: {item}");
+            for item in [STAGE, IGNORE, DISCARD] {
+                assert!(cx.debug_bounds(item).is_some(), "{at}: {item}");
             }
             // A tracked file's Ignore reads as the command, its condition
             // apart from it at the row's end in secondary text: it read as
@@ -31040,9 +31144,7 @@ pub(crate) mod tests {
             // Below the cursor row, from its leading edge where the menu
             // fits there, and kept inside the window where it does not, as
             // beside the 156 px inspector at 18 pt.
-            let first = cx
-                .debug_bounds(if narrow { STAGE } else { IGNORE })
-                .unwrap();
+            let first = cx.debug_bounds(STAGE).unwrap();
             assert!(
                 first.top() >= row.bottom()
                     && first.top() < row.bottom() + row.size.height
@@ -31056,7 +31158,7 @@ pub(crate) mod tests {
             assert!(cx.debug_bounds(DISCARD).is_none(), "{at}: Escape closed it");
             assert!(focused(cx), "{at}: Escape returned focus to the list");
         }
-        // The menu opens on Stage, the narrow row's first action.
+        // The menu opens on Stage, its first action.
         cx.simulate_keystrokes(MENU_KEY);
         draw(cx);
         assert!(

@@ -4746,7 +4746,7 @@ impl GitTurtle {
             )
             .on_action(cx.listener(
                 move |this, _: &native_accessibility::RowActions, window, cx| {
-                    this.open_working_row_menu(forms.file_action, window, cx)
+                    this.open_working_row_menu(window, cx)
                 },
             ))
             // Enter on the list chooses the selected row's file, as a click
@@ -6356,7 +6356,6 @@ impl GitTurtle {
                             entry: (*ignore_entry).clone(),
                             staged,
                         },
-                        forms.file_action,
                         wait,
                         waiting,
                     )
@@ -6381,15 +6380,8 @@ impl GitTurtle {
     }
 
     /// Opens the Working Changes cursor row's menu beside the row, from
-    /// Shift-F10 or the Menu key: the menu a right-click on the row opens,
-    /// which leads with Stage or Unstage where the row has no room for that
-    /// control (`stage_control`, the rows' form when the list was drawn).
-    fn open_working_row_menu(
-        &mut self,
-        stage_control: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// Shift-F10 or the Menu key: the menu a right-click on the row opens.
+    fn open_working_row_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.file_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
         }
@@ -6428,7 +6420,6 @@ impl GitTurtle {
                 entry,
                 staged: area == ChangeArea::Staged,
             },
-            stage_control,
             wait: None,
             waiting: None,
         });
@@ -6467,18 +6458,8 @@ impl GitTurtle {
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let followed = self.file_menu_row.as_mut()?;
         (followed.wait, followed.waiting) = (wait, waiting);
-        let (target, stage_control) = (followed.target.clone(), followed.stage_control);
-        Some(move |menu| {
-            working_row_menu(
-                menu,
-                owner,
-                repository,
-                target,
-                stage_control,
-                wait,
-                waiting,
-            )
-        })
+        let target = followed.target.clone();
+        Some(move |menu| working_row_menu(menu, owner, repository, target, wait, waiting))
     }
 
     /// Why a Working row's menu refuses every item while the rows are
@@ -7426,8 +7407,6 @@ pub(super) struct WorkingMenu {
     /// Its file as the menu's items were last built from it, by path and
     /// group.
     pub(super) target: MenuRow,
-    /// Whether the row had its Stage or Unstage control.
-    pub(super) stage_control: bool,
     /// Why a write refused the items as they were last built, which each
     /// states (`GitTurtle::menu_wait`), or `None` where none did: built
     /// again as that changes, so an ended write is named no more once its
@@ -7516,9 +7495,10 @@ pub(super) const REFRESHING_ROWS_REASON: &str = "Wait for the file list to refre
 pub(super) const FILTERING_ROWS_REASON: &str = "Wait for the filter to finish";
 
 /// A Working Changes file row's menu, which a right-click on the row and
-/// Shift-F10 or the Menu key on the list's cursor row open alike. Without its
-/// Stage or Unstage control (`stage_control`) the row's menu leads with that
-/// action. Each item acts only on the repository the menu was built for, and
+/// Shift-F10 or the Menu key on the list's cursor row open alike. It leads
+/// with Stage or Unstage at every width, whether or not the row draws that
+/// control, so one row's menu reads the same however wide the window is.
+/// Each item acts only on the repository the menu was built for, and
 /// on its file by path: a Stage or Unstage departs from where the file's row
 /// stands when it acts, which rows coming or going before it may have moved
 /// since the menu opened. `wait`, a write or what it reads after it
@@ -7535,7 +7515,6 @@ pub(super) fn working_row_menu(
     owner: WeakEntity<GitTurtle>,
     repository: Option<PathBuf>,
     target: MenuRow,
-    stage_control: bool,
     wait: Option<native_accessibility::MenuWait>,
     waiting: Option<&'static str>,
 ) -> PopupMenu {
@@ -7553,30 +7532,35 @@ pub(super) fn working_row_menu(
     let discard_owner = owner.clone();
     let discard_repository = repository.clone();
     let discard_entry = entry.clone();
-    let menu = if stage_control {
-        menu
-    } else {
-        let (owner, repository) = (owner.clone(), repository.clone());
-        let paths = entry.paths();
-        let path = entry.path.clone();
-        menu.item(
-            item(if staged { "Unstage" } else { "Stage" }, false).on_click(move |_, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    if this.path == repository {
-                        let area = if staged {
-                            ChangeArea::Staged
-                        } else {
-                            ChangeArea::Unstaged
-                        };
-                        if let Some(row) = this.working_row_position(&path, area) {
-                            this.depart_working_row(row, window, cx);
+    let stage_owner = owner.clone();
+    let stage_repository = repository.clone();
+    let paths = entry.paths();
+    let path = entry.path.clone();
+    let menu = menu.item(
+        item(if staged { "Unstage" } else { "Stage" }, false).on_click(move |_, window, cx| {
+            let _ = stage_owner.update(cx, |this, cx| {
+                if this.path == stage_repository {
+                    let area = if staged {
+                        ChangeArea::Staged
+                    } else {
+                        ChangeArea::Unstaged
+                    };
+                    if let Some(row) = this.working_row_position(&path, area) {
+                        // A double-click's second press lands where this
+                        // write moves a row or a heading under the pointer,
+                        // as on a row's own control. Held on every confirm:
+                        // for a keyboard's it costs only hover staying off
+                        // until the pointer moves.
+                        if this.operation_busy.is_none() {
+                            this.hold_still_pointer(row, window);
                         }
-                        this.stage_working_paths(paths.clone(), &path, staged, window, cx);
+                        this.depart_working_row(row, window, cx);
                     }
-                });
-            }),
-        )
-    };
+                    this.stage_working_paths(paths.clone(), &path, staged, window, cx);
+                }
+            });
+        }),
+    );
     // An action the row cannot take reads as its command with the condition
     // it waits for apart from it, not as one phrase, and the menu keys rest
     // on it, so that condition is heard; while the rows are prepared, that
