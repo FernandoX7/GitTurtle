@@ -159,6 +159,17 @@ consumer is the component Switch's focus ring
 Remove it when upstream Switch accepts a caller focus handle or exposes its
 focus state.
 
+The swatch focus-handle patch also modifies `src/color_picker.rs`. Upstream
+ColorSwatch keeps its focus handle in keyed state under its id, which a
+picker cannot reach to move focus from one swatch to another.
+`ColorSwatch::track_focus` now takes a caller-owned handle, as
+`Switch::track_focus` does, and the swatch uses it in place of its keyed
+state; without one nothing changes. The consumer is the component
+ColorPicker's palette ([component patch](../gpui-component/GITTURTLE-PATCH.md)),
+covered by `cargo test --locked -p gitturtle the_colour_pickers_arrow_keys_walk_its_one_stop_of_swatches`.
+Remove it when upstream ColorSwatch accepts a caller focus handle or moves
+focus among swatches itself.
+
 The popup-inset patch modifies `src/popup.rs`, `src/positioner.rs` and
 `src/lib.rs`. Upstream keeps every popup inside its window less a margin and
 offers no way to keep one clear of anything else at the window's foot, such

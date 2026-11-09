@@ -455,25 +455,25 @@ pub(super) fn init(cx: &mut App) {
 
 /// Tab (`forward`) or Shift-Tab in a row's open colour picker, whose
 /// `trigger` holds its popover: focus moves to the popover's next or
-/// previous stop, a swatch or its hex field, and wraps at either end, so
-/// it never rests behind the drawn popover (decided 2026-11-07, `DESIGN.md`'s
-/// focus rules), which closes only on Escape, a choice or a click outside.
-/// The popover is drawn after the dialog, and GPUI's order reaches the
-/// dialog's stops past either end of the popover's, so Tab steps on round
-/// that order until it is back inside the popover. Shift-Tab goes once round
-/// it forward, to the popover's stop that Tab would have come from: the
-/// kit's featured swatches repeat palette colours and share their focus
-/// handles, and GPUI steps back from a shared handle at its later place, so
-/// steps back circled among swatches and never reached the hex field. With
-/// no other stop in the popover, focus stays where it was.
+/// previous stop, its swatches (one stop, which the arrow keys move inside)
+/// or its hex field, and wraps at either end, so it never rests behind the
+/// drawn popover (decided 2026-11-07, `DESIGN.md`'s focus rules), which
+/// closes only on Escape, a choice or a click outside. The popover is drawn
+/// after the dialog, and GPUI's order reaches the dialog's stops past either
+/// end of the popover's, so each key steps on round that order until it is
+/// back inside the popover. With no other stop in the popover, focus stays
+/// where it was.
 fn step_in_picker(trigger: &FocusHandle, forward: bool, window: &mut Window, cx: &mut App) {
     let Some(start) = window.focused(cx) else {
         return;
     };
     let mut passed = Vec::new();
-    let mut before = None;
     loop {
-        window.focus_next(cx);
+        if forward {
+            window.focus_next(cx);
+        } else {
+            window.focus_prev(cx);
+        }
         let Some(reached) = window.focused(cx) else {
             break;
         };
@@ -481,14 +481,11 @@ fn step_in_picker(trigger: &FocusHandle, forward: bool, window: &mut Window, cx:
             break;
         }
         if trigger.contains_focused(window, cx) && !trigger.is_focused(window) {
-            if forward {
-                return;
-            }
-            before = Some(reached.clone());
+            return;
         }
         passed.push(reached);
     }
-    window.focus(before.as_ref().unwrap_or(&start), cx);
+    window.focus(&start, cx);
 }
 
 /// `Instant::now()` when the edit-frame trace runs: under `GITTURTLE_TRACE`,
@@ -3968,15 +3965,15 @@ pub(crate) mod tests {
     /// A row's colour picker, opened from its trigger by Enter, keeps focus
     /// in its popover while the popover is drawn (decided 2026-11-07,
     /// `DESIGN.md`'s focus rules): Tab and Shift+Tab cycle through the
-    /// popover's own stops, its swatches and its hex field, each met once a
-    /// cycle and wrapping at both ends; the hex field's ring lies whole inside
-    /// it, and Escape from the field closes it with focus back on the
+    /// popover's own two stops, its swatches and its hex field, each met once
+    /// a cycle and wrapping at both ends; the hex field's ring lies whole
+    /// inside it, and Escape from the field closes it with focus back on the
     /// trigger. At 13 pt in 1480 × 973 and at 18 pt in 461 × 490. The
     /// popover does not close on blur, and Tab past its last swatch moved
-    /// focus to the editor's rows behind it while it stayed drawn. The stops
-    /// are those GPUI's order holds inside the popover ([`popover_order`]);
-    /// the kit's featured swatches share their palette twins' focus handles,
-    /// so that order steps over some swatches.
+    /// focus to the editor's rows behind it while it stayed drawn. Each
+    /// swatch once took a stop of its own, and the featured row's handles,
+    /// keyed by colour, were its palette twins': Tab reached 83 of the 112
+    /// and Shift+Tab looped among them.
     #[gpui::test]
     fn tab_and_shift_tab_cycle_inside_the_open_colour_picker(cx: &mut TestAppContext) {
         let (app, cx) = open_at_rest(cx);
@@ -4043,6 +4040,11 @@ pub(crate) mod tests {
             assert!(forward.contains(&hex), "{at}: Tab reaches the hex field");
             assert_eq!(forward, stops, "{at}: Tab meets every stop, in order");
             assert_eq!(
+                forward.len(),
+                2,
+                "{at}: the swatches are one stop and the hex field the other"
+            );
+            assert_eq!(
                 backward,
                 forward.iter().rev().cloned().collect::<Vec<_>>(),
                 "{at}: Shift+Tab meets the same stops in the reverse order"
@@ -4069,6 +4071,268 @@ pub(crate) mod tests {
             assert!(
                 cx.update(|window, _| trigger.is_focused(window)),
                 "{at}: Escape gives focus back to the trigger"
+            );
+        }
+    }
+
+    /// The first row's picker, focus on its trigger, at 13 pt in 1480 × 973:
+    /// the form, the picker, its trigger and its popover's hex field.
+    fn first_picker(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+    ) -> (
+        Entity<ThemeForm>,
+        Entity<ColorPickerState>,
+        FocusHandle,
+        FocusHandle,
+    ) {
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        settle(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        let form = form(cx, app);
+        let picker = cx.read(|cx| form.read(cx).row(TokenKind::ALL[0]).picker.clone());
+        let trigger = cx.read(|cx| picker.focus_handle(cx));
+        let hex = cx.read(|cx| picker.read(cx).hex_input().read(cx).focus_handle(cx));
+        cx.update(|window, cx| trigger.focus(window, cx));
+        settle(cx);
+        (form, picker, trigger, hex)
+    }
+
+    /// The handle holding focus.
+    fn focused_stop(cx: &mut VisualTestContext) -> FocusHandle {
+        cx.update(|window, cx| window.focused(cx).expect("a stop holds focus"))
+    }
+
+    /// Whether focus lies inside the popover `trigger` holds.
+    fn in_popover(cx: &mut VisualTestContext, trigger: &FocusHandle) -> bool {
+        cx.update(|window, cx| trigger.contains_focused(window, cx) && !trigger.is_focused(window))
+    }
+
+    /// The open picker's swatches, the palette under its featured row, are
+    /// one Tab stop and the hex field the other, and the arrow keys walk
+    /// every swatch: Right and Left along a row, Down and Up between rows,
+    /// the same column or the last of a shorter row, stopping at the
+    /// palette's edges. Each swatch has its own focus handle, the swatch
+    /// walked to is the one Tab comes back to, and each previews its colour
+    /// as hovering it does; Escape closes the picker, chooses nothing and
+    /// puts the preview back. Before this, each swatch took a stop of its
+    /// own and the arrows did nothing.
+    #[gpui::test]
+    fn the_colour_pickers_arrow_keys_walk_its_one_stop_of_swatches(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (_, picker, trigger, hex) = first_picker(cx, &app);
+        let value = cx.read(|cx| picker.read(cx).value());
+        press(cx, "enter");
+        assert!(cx.read(|cx| picker.read(cx).is_open()), "Enter opens it");
+
+        press(cx, "tab");
+        let stop = focused_stop(cx);
+        assert!(in_popover(cx, &trigger), "Tab enters the swatches");
+        assert_ne!(stop, hex, "the swatches come before the hex field");
+        press(cx, "tab");
+        assert_eq!(focused_stop(cx), hex, "the hex field is the next stop");
+        press(cx, "tab");
+        assert_eq!(focused_stop(cx), stop, "and the swatches the one after");
+
+        // To the palette's first swatch, past its edges.
+        for key in ["up", "left"] {
+            for _ in 0..12 {
+                press(cx, key);
+            }
+        }
+        // Along each row, turning at its end.
+        let mut met = vec![focused_stop(cx)];
+        let mut lengths = Vec::new();
+        let walked = ["right", "left"].into_iter().cycle();
+        for key in walked.take(12) {
+            let mut length = 1;
+            loop {
+                let from = focused_stop(cx);
+                press(cx, key);
+                let reached = focused_stop(cx);
+                if reached == from {
+                    break;
+                }
+                assert!(in_popover(cx, &trigger), "{key} stays in the popover");
+                assert!(
+                    !met.contains(&reached),
+                    "{key}: every swatch has its own focus handle"
+                );
+                met.push(reached);
+                length += 1;
+            }
+            lengths.push(length);
+            let from = focused_stop(cx);
+            press(cx, "down");
+            let reached = focused_stop(cx);
+            if reached == from {
+                break;
+            }
+            assert!(!met.contains(&reached), "Down reaches a new swatch");
+            met.push(reached);
+        }
+        assert_eq!(
+            lengths,
+            [12, 11, 11, 11, 11, 11, 11, 11, 11, 11],
+            "the featured row over nine rows of shades"
+        );
+        assert_eq!(met.len(), 111, "every swatch is reached by the arrows");
+        let previewed = cx.read(|cx| picker.read(cx).preview());
+        assert_ne!(previewed, value, "the swatch walked to is previewed");
+        assert_eq!(
+            cx.read(|cx| picker.read(cx).value()),
+            value,
+            "walking chooses nothing"
+        );
+
+        // The swatch walked to is the stop Tab leaves and comes back to.
+        let walked_to = focused_stop(cx);
+        press(cx, "tab");
+        assert_eq!(
+            focused_stop(cx),
+            hex,
+            "Tab leaves the swatches for the field"
+        );
+        press(cx, "shift-tab");
+        assert_eq!(
+            focused_stop(cx),
+            walked_to,
+            "Shift+Tab comes back to the swatch walked to"
+        );
+
+        press(cx, "escape");
+        assert!(!cx.read(|cx| picker.read(cx).is_open()), "Escape closes it");
+        assert_eq!(focused_stop(cx), trigger, "with focus back on the trigger");
+        assert_eq!(cx.read(|cx| picker.read(cx).value()), value);
+        assert_eq!(
+            cx.read(|cx| picker.read(cx).preview()),
+            value,
+            "and the preview back on the committed colour"
+        );
+    }
+
+    /// Enter or Space on the focused swatch chooses it: once, as the key
+    /// comes up, however long the key is held, closing the picker with
+    /// focus back on the trigger. The dialog behind it takes neither key.
+    /// The popover's own binding took both keys and closed the picker with
+    /// nothing chosen.
+    #[gpui::test]
+    fn enter_and_space_choose_the_focused_swatch_once(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (_, picker, trigger, _) = first_picker(cx, &app);
+        for key in ["enter", "space"] {
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            press(cx, "enter");
+            assert!(cx.read(|cx| picker.read(cx).is_open()), "Enter opens it");
+            press(cx, "tab");
+            press(cx, "right");
+            let chosen = cx.read(|cx| picker.read(cx).preview());
+            let before = cx.read(|cx| picker.read(cx).value());
+            assert_ne!(chosen, before, "{key}: the arrow reached another colour");
+
+            let keystroke = Keystroke::parse(key).expect("a keystroke");
+            for is_held in [false, true, true] {
+                cx.simulate_event(KeyDownEvent {
+                    keystroke: keystroke.clone(),
+                    is_held,
+                    prefer_character_input: false,
+                });
+                settle(cx);
+            }
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{key}: nothing is chosen while the key is down"
+            );
+            assert_eq!(cx.read(|cx| picker.read(cx).value()), before);
+
+            cx.simulate_event(KeyUpEvent { keystroke });
+            settle(cx);
+            assert_eq!(
+                cx.read(|cx| picker.read(cx).value()),
+                chosen,
+                "{key}: the focused swatch is chosen as the key comes up"
+            );
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{key}: choosing closes the picker"
+            );
+            assert_eq!(
+                focused_stop(cx),
+                trigger,
+                "{key}: focus returns to the trigger"
+            );
+            cx.update(|window, cx| {
+                assert!(
+                    window.has_active_dialog(cx),
+                    "{key}: the editor stays open beneath"
+                );
+            });
+        }
+    }
+
+    /// The focused swatch draws the kit's ring, whole, in the gaps around
+    /// it, at the smallest text the gaps would narrow at and at the largest,
+    /// as the first swatch reached by Tab and the swatch beside it. A focused
+    /// swatch drew nothing that marked it.
+    #[gpui::test]
+    fn a_focused_swatch_draws_the_kit_ring_whole(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|_, cx| ThemeChoice::Midnight.apply(None, cx));
+        let (_, picker, trigger, _) = first_picker(cx, &app);
+        for (text, viewport) in [
+            (11, size(px(1480.), px(973.))),
+            (13, size(px(1480.), px(973.))),
+            (18, size(px(1480.), px(973.))),
+            (18, size(px(461.), px(490.))),
+        ] {
+            let at = format!(
+                "{text} pt in {} × {}",
+                f32::from(viewport.width),
+                f32::from(viewport.height)
+            );
+            cx.simulate_resize(viewport);
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            settle(cx);
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            press(cx, "enter");
+            press(cx, "tab");
+            assert!(in_popover(cx, &trigger), "{at}: Tab enters the swatches");
+            assert!(
+                kit_ring_whole_in_popover(cx),
+                "{at}: the swatch Tab reaches is ringed whole"
+            );
+            // Along a row of shades: each gap is laid out to whole pixels
+            // on its own, and the swatch to the right paints after the ring.
+            press(cx, "down");
+            for column in 0..11 {
+                assert!(
+                    kit_ring_whole_in_popover(cx),
+                    "{at}: the swatch in column {column} is ringed whole"
+                );
+                let (colour, width) = cx.read(|cx| {
+                    let theme = gpui_kit::component::Theme::global(cx);
+                    let ring = theme.button_focus_ring;
+                    (theme.ring.alpha(ring.opacity), ring.width)
+                });
+                let ring = crate::focus_ring::painted_outlines(cx, colour)
+                    .into_iter()
+                    .find(|outline| outline.width == width)
+                    .unwrap_or_else(|| panic!("{at}: column {column} draws its ring"));
+                assert_eq!(
+                    crate::focus_ring::painted_over(cx, &ring),
+                    Vec::new(),
+                    "{at}: no neighbour paints over the ring in column {column}"
+                );
+                press(cx, "right");
+            }
+            press(cx, "escape");
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: Escape closes the picker"
             );
         }
     }

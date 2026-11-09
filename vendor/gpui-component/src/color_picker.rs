@@ -1,8 +1,8 @@
 use gpui::{
-    Anchor, App, ElementId, Entity, FocusHandle, Focusable, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, TextAlign, Window, div, hsla, linear_color_stop, linear_gradient,
-    prelude::FluentBuilder as _,
+    Anchor, App, Context, ElementId, Entity, FocusHandle, Focusable, Hsla, InteractiveElement as _,
+    IntoElement, KeyBinding, NoAction, ParentElement, Pixels, RenderOnce, Role, SharedString,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Subscription, TextAlign, Window, div,
+    hsla, linear_color_stop, linear_gradient, prelude::FluentBuilder as _,
 };
 use rust_i18n::t;
 
@@ -10,42 +10,279 @@ use gpui_base::{ColorPicker as BaseColorPicker, ColorSwatch};
 pub use gpui_base::{ColorPickerEvent, ColorPickerState};
 
 use crate::{
-    ActiveTheme as _, Colorize as _, Icon, Selectable, Sizable, Size, StyleSized, h_flex,
+    ActiveTheme as _, Colorize as _, Icon, Selectable, Sizable, Size, StyleSized,
+    actions::{SelectDown, SelectLeft, SelectRight, SelectUp},
+    h_flex,
     input::Input,
     popover::Popover,
     separator::Separator,
     slider::Slider,
+    styled::apply_focus_ring,
     tab::{Tab, TabBar},
     tooltip::{ManagedTooltipExt as _, Tooltip},
     v_flex,
 };
 
-fn color_palettes() -> Vec<Vec<Hsla>> {
+/// GitTurtle patch: the key context around a palette's swatches, deeper than
+/// the popover's, whose Enter and Space ([`Confirm`](crate::actions::Confirm))
+/// close the picker without choosing anything.
+const SWATCHES_CONTEXT: &str = "ColorPickerSwatches";
+
+/// GitTurtle patch: the swatches are one stop of the picker's tab order that
+/// the arrow keys move inside. Enter and Space are bound to nothing here, so
+/// they pass the popover's and the dialog's bindings by and reach GPUI's own
+/// keyboard click on the focused swatch, which chooses it as the key comes
+/// up: once however long the key is held, and only for a press that went down
+/// on that swatch.
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", SelectUp, Some(SWATCHES_CONTEXT)),
+        KeyBinding::new("down", SelectDown, Some(SWATCHES_CONTEXT)),
+        KeyBinding::new("left", SelectLeft, Some(SWATCHES_CONTEXT)),
+        KeyBinding::new("right", SelectRight, Some(SWATCHES_CONTEXT)),
+        KeyBinding::new("enter", NoAction, Some(SWATCHES_CONTEXT)),
+        KeyBinding::new("space", NoAction, Some(SWATCHES_CONTEXT)),
+    ]);
+}
+
+/// GitTurtle patch: the gap between swatches, the kit's quarter rem, never
+/// narrower than the focus ring, so a focused swatch's ring lies whole in
+/// the gaps around it at every text size, clear of the neighbours drawn
+/// after it.
+fn swatch_gap(window: &Window, cx: &App) -> Pixels {
+    let ring = cx.theme().button_focus_ring;
+    (window.rem_size() * 0.25).max(ring.width + ring.gap)
+}
+
+/// GitTurtle patch: a color the palette draws and the name a screen reader
+/// reads for it, which says the color and gives its value.
+#[derive(Clone)]
+struct PaletteColor {
+    color: Hsla,
+    name: SharedString,
+}
+
+impl PaletteColor {
+    fn new(label: impl std::fmt::Display, color: Hsla) -> Self {
+        Self {
+            color,
+            name: format!("{label}, {}", color.to_hex()).into(),
+        }
+    }
+
+    /// A caller's color, for which the kit knows no name but its value.
+    fn unnamed(color: Hsla) -> Self {
+        Self {
+            color,
+            name: color.to_hex().into(),
+        }
+    }
+}
+
+/// The palette's rows of shades, each darkest first, as they are drawn.
+fn color_palettes() -> Vec<Vec<PaletteColor>> {
     use crate::theme::DEFAULT_COLORS;
     use itertools::Itertools as _;
 
     macro_rules! c {
-        ($color:tt) => {
+        ($color:tt, $name:literal) => {{
+            let name = t!($name);
             DEFAULT_COLORS
                 .$color
                 .keys()
                 .sorted()
-                .map(|k| DEFAULT_COLORS.$color.get(k).map(|c| c.hsla).unwrap())
+                .rev()
+                .map(|k| {
+                    PaletteColor::new(
+                        format!("{name} {k}"),
+                        DEFAULT_COLORS.$color.get(k).map(|c| c.hsla).unwrap(),
+                    )
+                })
                 .collect::<Vec<_>>()
-        };
+        }};
     }
 
     vec![
-        c!(stone),
-        c!(red),
-        c!(orange),
-        c!(yellow),
-        c!(green),
-        c!(cyan),
-        c!(blue),
-        c!(purple),
-        c!(pink),
+        c!(stone, "ColorPicker.Stone"),
+        c!(red, "ColorPicker.Red"),
+        c!(orange, "ColorPicker.Orange"),
+        c!(yellow, "ColorPicker.Yellow"),
+        c!(green, "ColorPicker.Green"),
+        c!(cyan, "ColorPicker.Cyan"),
+        c!(blue, "ColorPicker.Blue"),
+        c!(purple, "ColorPicker.Purple"),
+        c!(pink, "ColorPicker.Pink"),
     ]
+}
+
+/// The featured row a picker draws when its caller gives none: the theme's
+/// own colors, each and its light form.
+fn theme_colors(cx: &App) -> Vec<PaletteColor> {
+    let theme = cx.theme();
+    let light = |color: std::borrow::Cow<'_, str>| t!("ColorPicker.Light", color = color);
+    vec![
+        PaletteColor::new(t!("ColorPicker.Red"), theme.red),
+        PaletteColor::new(light(t!("ColorPicker.Red")), theme.red_light),
+        PaletteColor::new(t!("ColorPicker.Blue"), theme.blue),
+        PaletteColor::new(light(t!("ColorPicker.Blue")), theme.blue_light),
+        PaletteColor::new(t!("ColorPicker.Green"), theme.green),
+        PaletteColor::new(light(t!("ColorPicker.Green")), theme.green_light),
+        PaletteColor::new(t!("ColorPicker.Yellow"), theme.yellow),
+        PaletteColor::new(light(t!("ColorPicker.Yellow")), theme.yellow_light),
+        PaletteColor::new(t!("ColorPicker.Cyan"), theme.cyan),
+        PaletteColor::new(light(t!("ColorPicker.Cyan")), theme.cyan_light),
+        PaletteColor::new(t!("ColorPicker.Magenta"), theme.magenta),
+        PaletteColor::new(light(t!("ColorPicker.Magenta")), theme.magenta_light),
+    ]
+}
+
+/// Whether two colors are the same one to the eye: a value kept as RGB comes
+/// back through `Hsla` a rounding away from the palette's own.
+fn same_color(a: Hsla, b: Hsla) -> bool {
+    let channels = |color: Hsla| {
+        let rgb = color.to_rgb();
+        [rgb.r, rgb.g, rgb.b, rgb.a].map(|channel| (channel * 255.) as u32)
+    };
+    channels(a) == channels(b)
+}
+
+/// An arrow key's direction in the palette.
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// A place in the palette: its row and its swatch along that row.
+type Place = (usize, usize);
+
+/// Where `step` moves from `from` in rows of `lengths` swatches, or `None`
+/// past the palette's edge, which keeps the cursor where it is. Up and Down
+/// keep the column, the last of a shorter row where the row ends before it:
+/// the featured row is one swatch longer than the shades under it.
+fn step_from(lengths: &[usize], (row, column): Place, step: Step) -> Option<Place> {
+    let to_row = |row: usize| (row, column.min(lengths[row] - 1));
+    match step {
+        Step::Left => column.checked_sub(1).map(|column| (row, column)),
+        Step::Right => (column + 1 < lengths[row]).then_some((row, column + 1)),
+        Step::Up => (0..row).rev().find(|row| lengths[*row] > 0).map(to_row),
+        Step::Down => (row + 1..lengths.len())
+            .find(|row| lengths[*row] > 0)
+            .map(to_row),
+    }
+}
+
+/// GitTurtle patch: the keyboard's place in an open picker's palette, kept
+/// for as long as the palette is drawn (`ColorPicker::render_palette_panel`
+/// reads it only while the picker is open, so a picker opened again starts
+/// over on its current color).
+///
+/// Every swatch has its own focus handle, which the arrow keys move focus
+/// among, and only the swatch at `cursor` is a tab stop: the palette is one
+/// stop of the popover's order and the hex field the other.
+struct SwatchGrid {
+    state: Entity<ColorPickerState>,
+    rows: Vec<Vec<(FocusHandle, Hsla)>>,
+    cursor: Option<Place>,
+    /// While the palette is drawn, the picker closing by any route puts the
+    /// preview back on the committed color, so one the arrows or a hover
+    /// left does not outlast the picker.
+    _closing: Subscription,
+}
+
+impl SwatchGrid {
+    fn new(state: Entity<ColorPickerState>, window: &mut Window, cx: &mut App) -> Self {
+        let closing = window.observe(&state, cx, |state, window, cx| {
+            if !state.read(cx).is_open() {
+                state.update(cx, |state, cx| state.clear_preview(window, cx));
+            }
+        });
+        Self {
+            state,
+            rows: Vec::new(),
+            cursor: None,
+            _closing: closing,
+        }
+    }
+
+    /// Fits the grid to the colors of this frame and returns each swatch's
+    /// focus handle. The cursor follows whichever swatch holds focus, as a
+    /// press focuses one; drawn first, it starts on the first swatch of the
+    /// current color, or the palette's first where the color is not in it.
+    fn sync(
+        &mut self,
+        colors: &[Vec<PaletteColor>],
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Vec<FocusHandle>> {
+        self.rows.resize_with(colors.len(), Vec::new);
+        for (row, colors) in self.rows.iter_mut().zip(colors) {
+            row.truncate(colors.len());
+            for (ix, color) in colors.iter().enumerate() {
+                match row.get_mut(ix) {
+                    Some(swatch) => swatch.1 = color.color,
+                    None => row.push((cx.focus_handle(), color.color)),
+                }
+            }
+        }
+
+        let kept = self
+            .cursor
+            .filter(|(row, ix)| self.rows.get(*row).is_some_and(|row| *ix < row.len()));
+        self.cursor = self
+            .focused(window)
+            .or(kept)
+            .or_else(|| self.start(self.state.read(cx).value()));
+
+        self.rows
+            .iter()
+            .map(|row| row.iter().map(|(focus, _)| focus.clone()).collect())
+            .collect()
+    }
+
+    /// The first swatch of `value`, or the palette's first swatch.
+    fn start(&self, value: Option<Hsla>) -> Option<Place> {
+        let places = || {
+            self.rows.iter().enumerate().flat_map(|(row, swatches)| {
+                swatches
+                    .iter()
+                    .enumerate()
+                    .map(move |(ix, swatch)| ((row, ix), swatch.1))
+            })
+        };
+        value
+            .and_then(|value| places().find(|(_, color)| same_color(*color, value)))
+            .or_else(|| places().next())
+            .map(|(place, _)| place)
+    }
+
+    fn focused(&self, window: &Window) -> Option<Place> {
+        self.rows.iter().enumerate().find_map(|(row, swatches)| {
+            swatches
+                .iter()
+                .position(|(focus, _)| focus.is_focused(window))
+                .map(|ix| (row, ix))
+        })
+    }
+
+    /// Moves focus one swatch by `step`, previewing the swatch it reaches as
+    /// the pointer's hover does. At the palette's edge nothing moves.
+    fn step(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
+        let lengths: Vec<usize> = self.rows.iter().map(Vec::len).collect();
+        let Some(to) = self
+            .focused(window)
+            .and_then(|from| step_from(&lengths, from, step))
+        else {
+            return;
+        };
+        let (focus, color) = self.rows[to.0][to.1].clone();
+        self.cursor = Some(to);
+        focus.focus(window, cx);
+        self.state
+            .update(cx, |state, cx| state.preview_color(color, window, cx));
+    }
 }
 
 /// A color picker element.
@@ -124,37 +361,52 @@ impl ColorPicker {
         self
     }
 
-    fn render_item(&self, color: Hsla, cx: &mut App) -> ColorSwatch {
-        let selected = self.state.read(cx).value() == Some(color);
+    fn render_item(
+        &self,
+        id: ElementId,
+        item: &PaletteColor,
+        focus: &FocusHandle,
+        is_stop: bool,
+        window: &Window,
+        cx: &mut App,
+    ) -> ColorSwatch {
+        let color = item.color;
+        let selected = self
+            .state
+            .read(cx)
+            .value()
+            .is_some_and(|value| same_color(value, color));
         let hover_state = self.state.clone();
         let click_state = self.state.clone();
 
-        ColorSwatch::new(
-            SharedString::from(format!("color-{}", color.to_hex())),
-            color,
-        )
-        .selected(selected)
-        .h_5()
-        .w_5()
-        .bg(color)
-        .border_1()
-        .border_color(color.darken(0.1))
-        .hover(|this| this.border_color(color.darken(0.3)).bg(color.lighten(0.1)))
-        .active(|this| this.border_color(color.darken(0.5)).bg(color.darken(0.2)))
-        .on_hover(move |color, entered, window, cx| {
-            if entered {
-                hover_state.update(cx, |state, cx| state.preview_color(color, window, cx));
-            }
-        })
-        .on_click(move |color, _, window, cx| {
-            click_state.update(cx, |state, cx| state.select_color(color, window, cx));
-        })
+        ColorSwatch::new(id, color)
+            .track_focus(focus)
+            .tab_stop(is_stop)
+            .accessibility_label(item.name.clone())
+            .selected(selected)
+            .h_5()
+            .w_5()
+            .bg(color)
+            .border_1()
+            .border_color(color.darken(0.1))
+            .hover(|this| this.border_color(color.darken(0.3)).bg(color.lighten(0.1)))
+            .active(|this| this.border_color(color.darken(0.5)).bg(color.darken(0.2)))
+            .on_hover(move |color, entered, window, cx| {
+                if entered {
+                    hover_state.update(cx, |state, cx| state.preview_color(color, window, cx));
+                }
+            })
+            .on_click(move |color, _, window, cx| {
+                click_state.update(cx, |state, cx| state.select_color(color, window, cx));
+            })
+            // GitTurtle patch: the ring the kit's other controls draw, whole
+            // in the gaps around the swatch ([`swatch_gap`]).
+            .when(focus.is_focused(window), |this| {
+                apply_focus_ring(this, cx.theme().button_focus_ring, window, cx)
+            })
     }
 
     fn render_colors(&self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        self.state
-            .update(cx, |state, cx| state.sync_pending_value(window, cx));
-
         let active_tab = self.state.read(cx).active_tab();
         let (slider_color, hovered_color) = {
             let state = self.state.read(cx);
@@ -179,7 +431,7 @@ impl ColorPicker {
                     .child(Tab::new().flex_1().label(t!("ColorPicker.HSLA"))),
             )
             .child(match active_tab {
-                0 => self.render_palette_panel(cx).into_any_element(),
+                0 => self.render_palette_panel(window, cx).into_any_element(),
                 _ => self
                     .render_slider_tab_panel(slider_color, cx)
                     .into_any_element(),
@@ -203,44 +455,75 @@ impl ColorPicker {
             })
     }
 
-    fn render_palette_panel(&self, cx: &mut App) -> impl IntoElement {
-        let featured_colors = self.featured_colors.clone().unwrap_or(vec![
-            cx.theme().red,
-            cx.theme().red_light,
-            cx.theme().blue,
-            cx.theme().blue_light,
-            cx.theme().green,
-            cx.theme().green_light,
-            cx.theme().yellow,
-            cx.theme().yellow_light,
-            cx.theme().cyan,
-            cx.theme().cyan_light,
-            cx.theme().magenta,
-            cx.theme().magenta_light,
-        ]);
+    /// The swatches, the featured row above the palette's rows of shades,
+    /// each with a place in [`SwatchGrid`] and an id of its own: the same
+    /// color can be drawn in both, and swatches sharing an id share its
+    /// element state.
+    fn render_palette_panel(&self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let featured = match &self.featured_colors {
+            Some(colors) => colors.iter().copied().map(PaletteColor::unnamed).collect(),
+            None => theme_colors(cx),
+        };
+        let mut colors = vec![featured];
+        colors.extend(color_palettes());
+
+        let grid = window.use_keyed_state(("color-picker-swatches", self.state.entity_id()), cx, {
+            let state = self.state.clone();
+            move |window, cx| SwatchGrid::new(state, window, cx)
+        });
+        let handles = grid.update(cx, |grid, cx| grid.sync(&colors, window, cx));
+        let cursor = grid.read(cx).cursor;
+        let gap = swatch_gap(window, cx);
+
+        let mut rows = colors
+            .iter()
+            .zip(&handles)
+            .enumerate()
+            .map(|(row, (colors, handles))| {
+                let swatches = colors
+                    .iter()
+                    .zip(handles)
+                    .enumerate()
+                    .map(|(ix, (item, focus))| {
+                        let id = ElementId::NamedInteger("color".into(), (row * 100 + ix) as u64);
+                        self.render_item(id, item, focus, cursor == Some((row, ix)), window, cx)
+                    })
+                    .collect::<Vec<_>>();
+                h_flex().gap(gap).children(swatches)
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        let featured_row = rows.next().expect("the featured row");
 
         v_flex()
+            .id("swatches")
+            .key_context(SWATCHES_CONTEXT)
+            .role(Role::RadioGroup)
+            .aria_label(SharedString::from(t!("ColorPicker.Palette").to_string()))
+            .on_action(
+                window.listener_for(&grid, |grid, _: &SelectUp, window, cx| {
+                    grid.step(Step::Up, window, cx)
+                }),
+            )
+            .on_action(
+                window.listener_for(&grid, |grid, _: &SelectDown, window, cx| {
+                    grid.step(Step::Down, window, cx)
+                }),
+            )
+            .on_action(
+                window.listener_for(&grid, |grid, _: &SelectLeft, window, cx| {
+                    grid.step(Step::Left, window, cx)
+                }),
+            )
+            .on_action(
+                window.listener_for(&grid, |grid, _: &SelectRight, window, cx| {
+                    grid.step(Step::Right, window, cx)
+                }),
+            )
             .gap_3()
-            .child(
-                h_flex().gap_1().children(
-                    featured_colors
-                        .iter()
-                        .map(|color| self.render_item(*color, cx)),
-                ),
-            )
+            .child(featured_row)
             .child(Separator::horizontal())
-            .child(
-                v_flex()
-                    .gap_1()
-                    .children(color_palettes().iter().map(|sub_colors| {
-                        h_flex().gap_1().children(
-                            sub_colors
-                                .iter()
-                                .rev()
-                                .map(|color| self.render_item(*color, cx)),
-                        )
-                    })),
-            )
+            .child(v_flex().gap(gap).children(rows))
     }
 
     fn render_slider_tab_panel(&self, slider_color: Hsla, cx: &mut App) -> impl IntoElement {
@@ -472,6 +755,8 @@ impl RenderOnce for ColorPicker {
         let focus_handle = self.state.focus_handle(cx);
         let open_state = self.state.clone();
         let popover_state = self.state.clone();
+        self.state
+            .update(cx, |state, cx| state.sync_pending_value(window, cx));
 
         BaseColorPicker::new(self.id.clone())
             .open(open)
@@ -505,7 +790,10 @@ impl RenderOnce for ColorPicker {
                         icon: self.icon.clone(),
                         selected: false,
                     })
-                    .child(self.render_colors(window, cx)),
+                    // GitTurtle patch: built only while it is drawn, so the
+                    // swatches' focus handles and the cursor last no longer
+                    // than the open popover ([`SwatchGrid`]).
+                    .when(open, |this| this.child(self.render_colors(window, cx))),
             )
     }
 }
@@ -515,6 +803,120 @@ mod tests {
     use gpui::{AppContext as _, TestAppContext};
 
     use super::*;
+
+    /// One step of an arrow key: along the row, or to the same column of
+    /// the row above or below, the last of a shorter one; past the edge of
+    /// the palette the cursor stays, and a row with no swatches is passed
+    /// over.
+    #[test]
+    fn an_arrow_moves_one_swatch_and_stops_at_the_palettes_edge() {
+        let lengths = [12, 11, 11];
+        assert_eq!(step_from(&lengths, (0, 0), Step::Left), None);
+        assert_eq!(step_from(&lengths, (0, 0), Step::Up), None);
+        assert_eq!(step_from(&lengths, (0, 11), Step::Right), None);
+        assert_eq!(step_from(&lengths, (2, 10), Step::Down), None);
+        assert_eq!(step_from(&lengths, (1, 3), Step::Right), Some((1, 4)));
+        assert_eq!(step_from(&lengths, (1, 3), Step::Left), Some((1, 2)));
+        assert_eq!(step_from(&lengths, (1, 3), Step::Up), Some((0, 3)));
+        assert_eq!(
+            step_from(&lengths, (0, 11), Step::Down),
+            Some((1, 10)),
+            "the featured row is a swatch longer than the shades under it"
+        );
+        assert_eq!(step_from(&[0, 3], (1, 2), Step::Up), None);
+        assert_eq!(step_from(&[0, 3], (1, 2), Step::Down), None);
+    }
+
+    /// Every palette swatch's name says its color, family and shade, and
+    /// gives its value, and every default featured swatch's says its color
+    /// and light form; a color a caller supplies is named by its value.
+    #[gpui::test]
+    fn every_swatch_says_its_color(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        cx.update(|cx| {
+            let palette = color_palettes();
+            assert_eq!(palette.len(), 9);
+            let mut names: Vec<&SharedString> = palette
+                .iter()
+                .flatten()
+                .inspect(|item| {
+                    assert!(
+                        item.name.ends_with(item.color.to_hex().as_str()),
+                        "{} gives its value",
+                        item.name
+                    )
+                })
+                .map(|item| &item.name)
+                .collect();
+            assert_eq!(names.len(), 99);
+            assert_eq!(palette[1][0].name.split(',').next(), Some("Red 950"));
+            assert_eq!(palette[1][10].name.split(',').next(), Some("Red 50"));
+            names.sort();
+            names.dedup();
+            assert_eq!(names.len(), 99, "no two shades share a name");
+
+            let featured = theme_colors(cx);
+            assert_eq!(featured.len(), 12);
+            assert!(featured[0].name.starts_with("Red, #"));
+            assert!(featured[1].name.starts_with("Light Red, #"));
+            assert!(featured[11].name.starts_with("Light Magenta, #"));
+
+            let caller = PaletteColor::unnamed(hsla(0., 1., 0.5, 1.));
+            assert_eq!(caller.name.as_ref(), hsla(0., 1., 0.5, 1.).to_hex());
+        });
+    }
+
+    /// A palette's cursor starts on the first swatch of the picker's color,
+    /// or the palette's first where that color is not in it, and from then
+    /// on keeps the swatch focus last left, surviving a row that shrinks.
+    #[gpui::test]
+    fn the_cursor_starts_on_the_pickers_color_and_follows_focus(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let red = hsla(0., 1., 0.5, 1.);
+            let blue = hsla(0.66, 1., 0.5, 1.);
+            let other = hsla(0.3, 0.2, 0.7, 1.);
+            let rows = vec![
+                vec![PaletteColor::unnamed(blue), PaletteColor::unnamed(other)],
+                vec![PaletteColor::unnamed(red), PaletteColor::unnamed(blue)],
+            ];
+
+            let at = |value: Hsla, window: &mut Window, cx: &mut App| {
+                let state = cx.new(|cx| ColorPickerState::new(window, cx).default_value(value));
+                let grid = cx.new(|cx| SwatchGrid::new(state, window, cx));
+                grid.update(cx, |grid, cx| grid.sync(&rows, window, cx));
+                grid
+            };
+            let on_red = at(red, window, cx);
+            assert_eq!(on_red.read(cx).cursor, Some((1, 0)));
+            let on_blue = at(blue, window, cx);
+            assert_eq!(
+                on_blue.read(cx).cursor,
+                Some((0, 0)),
+                "the first swatch of a color drawn twice"
+            );
+            let elsewhere = at(hsla(0.1, 0.3, 0.3, 1.), window, cx);
+            assert_eq!(elsewhere.read(cx).cursor, Some((0, 0)));
+
+            let focus = on_red.read(cx).rows[0][1].0.clone();
+            focus.focus(window, cx);
+            on_red.update(cx, |grid, cx| {
+                grid.sync(&rows, window, cx);
+            });
+            assert_eq!(
+                on_red.read(cx).cursor,
+                Some((0, 1)),
+                "the cursor follows focus"
+            );
+
+            window.blur(cx);
+            on_red.update(cx, |grid, cx| {
+                grid.sync(&rows[..1], window, cx);
+            });
+            assert_eq!(on_red.read(cx).cursor, Some((0, 1)), "kept once focus left");
+        });
+    }
 
     #[gpui::test]
     fn an_explicit_accessibility_label_replaces_the_visible_one(cx: &mut TestAppContext) {

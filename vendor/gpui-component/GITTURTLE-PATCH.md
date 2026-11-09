@@ -2542,3 +2542,36 @@ once while `App::reduce_motion` is set (`gpui-pre` `elements/animation.rs`),
 whichever input opened it, as a dialog's slide and fade do, so a click
 needed no runtime change. Remove the test with the dropdown motion, or when
 upstream tests its popups under reduced motion.
+
+The colour-picker keyboard patch modifies `src/color_picker.rs`, `src/lib.rs`
+(its bindings) and `locales/ui.yml` (the swatches' color names), and uses
+gpui-base's `ColorSwatch::track_focus`. Upstream every swatch of the styled
+ColorPicker's palette was its own tab stop, the featured row's keyed by color
+and so sharing their palette twins' element state and focus handles: Tab
+reached 83 of the 112 stops and Shift+Tab looped among them. Enter and Space on
+a focused swatch took the popover's binding and closed the picker with nothing
+chosen, a focused swatch drew nothing that marked it, and a swatch's name was
+its value alone. Patched, a palette is one stop of the popover's tab order
+(`SwatchGrid`, read only while the picker is open, so a picker opened again
+starts over on its color), with a focus handle per swatch under positional ids
+and only the swatch at its cursor a tab stop. The arrow keys, in the
+`ColorPickerSwatches` context, move focus along a row or to the same column of
+the next, or the last of a shorter one, stopping at the palette's edges, and
+preview each color as a hover does; the preview goes back as the picker
+closes. Enter and Space, bound to `NoAction` in that context, reach GPUI's
+keyboard click, so the focused swatch is chosen once as the key comes up,
+however long it is held, only for a press that went down on it. The focused
+swatch draws `Theme::button_focus_ring` in gaps at least the ring's footprint
+wide at every text size (`swatch_gap`). Palette swatches are named by family,
+shade and value ("Red 500, #EF4444"), the theme's featured colors by name and
+value, and a caller's `featured_colors` by value. The popover's content is built
+only while the picker is open, so a closed picker builds no swatches and no
+focus handles; `ColorPickerState::sync_pending_value` moved to `render` with
+it. `scripts/vendor-crate-test.sh vendor/gpui-component color_picker::` covers
+the arrows' geometry, the names and the cursor, and `cargo test --locked -p
+gitturtle theme_editor::` drives the theme editor's real picker
+(`tab_and_shift_tab_cycle_inside_the_open_colour_picker`,
+`the_colour_pickers_arrow_keys_walk_its_one_stop_of_swatches`,
+`enter_and_space_choose_the_focused_swatch_once`,
+`a_focused_swatch_draws_the_kit_ring_whole`). Remove it when upstream gives a
+palette roving focus, names its swatches and lets Enter and Space choose one.

@@ -630,6 +630,7 @@ pub struct ColorSwatch {
     tab_index: isize,
     tab_stop: bool,
     role: RoleOverride,
+    provided_focus_handle: Option<FocusHandle>,
 }
 
 impl ColorSwatch {
@@ -649,7 +650,16 @@ impl ColorSwatch {
             tab_index: 0,
             tab_stop: true,
             role: RoleOverride::Implicit,
+            provided_focus_handle: None,
         }
+    }
+
+    /// GitTurtle patch: uses a caller-owned focus handle instead of creating
+    /// keyed state, as [`crate::Switch::track_focus`] does, so a picker can
+    /// move focus among its swatches with the arrow keys.
+    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
+        self.provided_focus_handle = Some(focus_handle.clone());
+        self
     }
 
     /// The color this swatch represents.
@@ -740,10 +750,12 @@ impl RenderOnce for ColorSwatch {
         let label = self
             .accessibility_label
             .unwrap_or_else(|| hex_string(color).into());
-        let focus_handle = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+        let focus_handle = self.provided_focus_handle.clone().unwrap_or_else(|| {
+            window
+                .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        });
 
         self.base
             .when_some(self.role.resolve(|| Role::RadioButton), |this, role| {

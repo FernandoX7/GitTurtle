@@ -221,6 +221,72 @@ ColorPicker:
     zh-HK: 透明度
     zh-TW: 透明度
     it: Alfa
+  Stone:
+    en: Stone
+    zh-CN: 石色
+    zh-HK: 石色
+    zh-TW: 石色
+    it: Pietra
+  Red:
+    en: Red
+    zh-CN: 红色
+    zh-HK: 紅色
+    zh-TW: 紅色
+    it: Rosso
+  Orange:
+    en: Orange
+    zh-CN: 橙色
+    zh-HK: 橙色
+    zh-TW: 橙色
+    it: Arancione
+  Yellow:
+    en: Yellow
+    zh-CN: 黄色
+    zh-HK: 黃色
+    zh-TW: 黃色
+    it: Giallo
+  Green:
+    en: Green
+    zh-CN: 绿色
+    zh-HK: 綠色
+    zh-TW: 綠色
+    it: Verde
+  Cyan:
+    en: Cyan
+    zh-CN: 青色
+    zh-HK: 青色
+    zh-TW: 青色
+    it: Ciano
+  Blue:
+    en: Blue
+    zh-CN: 蓝色
+    zh-HK: 藍色
+    zh-TW: 藍色
+    it: Blu
+  Purple:
+    en: Purple
+    zh-CN: 紫色
+    zh-HK: 紫色
+    zh-TW: 紫色
+    it: Viola
+  Pink:
+    en: Pink
+    zh-CN: 粉色
+    zh-HK: 粉色
+    zh-TW: 粉色
+    it: Rosa
+  Magenta:
+    en: Magenta
+    zh-CN: 品红色
+    zh-HK: 品紅色
+    zh-TW: 洋紅色
+    it: Magenta
+  Light:
+    en: "Light %{color}"
+    zh-CN: "浅%{color}"
+    zh-HK: "淺%{color}"
+    zh-TW: "淺%{color}"
+    it: "%{color} chiaro"
 Dialog:
   ok:
     en: OK
