@@ -754,10 +754,9 @@ cover current upstream x86-64 Omarchy.
        - (S) A restored tab on a filesystem without stable inode numbers (FAT, exFAT, some FUSE mounts) is marked unavailable at each launch, and an Open adopts it only until the next one (`crates/app/src/worker.rs:1225`, FU34-C): skip saving the inodes on those filesystems if it proves common.
        - (S) A first-side LFS pointer over 32 MiB or a corrupt first-side object fails the whole preview instead of showing the pointer (`crates/git-core/src/lib.rs:1215`, via `crates/git-core/src/work/lfs_download.rs:55`; found by FU35-A's reviews).
        - (S) A Markdown file with any pointer side has no Rendered view, so a mixed `.md` shows only text and Diagrams (`crates/app/src/markdown_view.rs:243`; found by FU35-A's review).
-       - (S) Stashes opens with focus on its shell (found by FU35-B). The commit metadata's parent links get no reveal as they take focus, so Tab lands on a control the frame does not show (`crates/app/src/views.rs:2735`, pinned at `crates/app/src/tab_order_tests.rs:739`; found by FU35-C's review).
        - (S) A Clone or Create at eight tabs writes the repository and then refuses the tab, where the limit could refuse first (found by FU35-C's review).
        - (S, nit) A quiet read that hits `ChangedWhileOpening` at its own path leaves a "Local refresh:" banner the next good read does not clear, beside a mark that says the same (`crates/app/src/automatic_refresh.rs:469`; found by FU34-C's review).
-       - (S, nit) Stashes speaks "Saved stashes 41 to 41" for a page of one; "Saved stash 41" reads better (`crates/app/src/recovery.rs:2298`). `stash_page` re-reads the whole reflog per page, where one core call could return a stash's position (`crates/app/src/recovery.rs:1836`).
+       - (S, nit) `stash_page` re-reads the whole reflog per page, where one core call could return a stash's position (`crates/app/src/recovery.rs:1836`).
        - (S) "`.mmd` changed from a link" reads "no Mermaid diagrams" over real Mermaid text, the pointer case included (`crates/app/src/rich_preview.rs:245`, in flight `FU31-B8`).
        - (S) "Ctrl+T at eight tabs": refused after the picker (`crates/app/src/repository_tabs.rs:1586`). Refuse before asking.
        - (S) "commit description's hint" (`crates/app/src/workspace.rs:4565`, kit `9c231582` unused). Orca users hear no hint.
