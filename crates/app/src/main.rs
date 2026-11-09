@@ -42,6 +42,8 @@ mod image_compare;
 mod image_helper;
 mod image_lifetime;
 mod in_frame;
+#[cfg(test)]
+mod inspector_bench;
 mod integration;
 mod interactive_rebase;
 #[cfg(test)]
