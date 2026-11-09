@@ -2054,6 +2054,14 @@ pub(crate) mod tests {
     use super::*;
     use core::prelude::v1::test;
 
+    /// Opens Go to page, the dialog a PDF's header opens, for a document of
+    /// three pages no page of which is prepared.
+    pub(crate) fn go_to_page(window: &mut Window, cx: &mut App) {
+        let bytes: Arc<[u8]> = Arc::from(&b"%PDF-"[..]);
+        let document = Document::new(bytes, 3, None, || Ok(())).expect("a document");
+        page_picker(Arc::new(document), None, "Before", window, cx);
+    }
+
     /// Waits until every page requested so far has answered; drawing then
     /// handles the answers.
     #[cfg(target_os = "linux")]

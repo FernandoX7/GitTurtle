@@ -81,6 +81,9 @@ fn restore_said(answer: &str) -> SharedString {
 }
 
 const STASH_PAGE_SIZE: usize = 40;
+/// How many saved stashes one read of the list looks through for a stash
+/// that has left the page shown ([`stash_page`]), the most the core gives.
+const STASH_SEEK_SIZE: usize = 500;
 /// What the Stashes detail says while the list is read.
 const READING_LIST: &str = "Reading stashes…";
 /// What it says while the chosen stash's saved changes are read.
@@ -957,7 +960,41 @@ impl GitTurtle {
                     move |content, _, _| content.min_h_0().child(browser.clone())
                 })
         });
+        // The dialog took focus on its own handle as it opened.
+        let dialog_focus = window.focused(cx);
+        opened.update(cx, |browser, _| browser.dialog_focus = dialog_focus);
         Some(opened)
+    }
+
+    /// The window's Refresh under a dialog: the open Stashes reads its saved
+    /// stashes again ([`StashBrowser::refresh_saved_stashes`]), and any other
+    /// modal keeps the key from the page beneath it. Returns whether Stashes
+    /// took the key. Answered here, at the window, so it works from the
+    /// dialog's footer and shell as from the browser's own controls. Drop…
+    /// and Review restore… close Stashes before their confirmation opens,
+    /// and the dialog held the browser's only handle, so under either the
+    /// browser is gone, the key finds nothing to read, and no list renumbers
+    /// behind an alert holding a `stash@{n}`. A dialog opened over a live
+    /// Stashes, as a rich preview's Go to page is, holds focus itself and
+    /// keeps the key: it acts only while focus lies inside the Stashes
+    /// dialog ([`StashBrowser::dialog_focus`]).
+    pub(super) fn refresh_open_stashes(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if window.has_active_sheet(cx) || !window.has_active_dialog(cx) {
+            return false;
+        }
+        let Some(browser) = self.recovery.browser.as_ref().and_then(WeakEntity::upgrade) else {
+            return false;
+        };
+        let dialog = browser.read(cx).dialog_focus.clone();
+        if !dialog.is_some_and(|focus| focus.contains_focused(window, cx)) {
+            return false;
+        }
+        browser.update(cx, |browser, cx| browser.refresh_saved_stashes(window, cx));
+        true
     }
 
     pub(super) fn finish_recovery_write(
@@ -1188,6 +1225,15 @@ fn amended_message(original: &str, initial: &CommitDraft, draft: &CommitDraft) -
     } else {
         draft.message()
     }
+}
+
+/// What a press of Refresh waits to say ([`StashBrowser::say_refreshed`]).
+#[derive(Clone, Copy, PartialEq)]
+enum SpokenRefresh {
+    /// What the landed page shows.
+    Pending,
+    /// The inspected stash is no longer listed.
+    Gone,
 }
 
 /// A saved stash's row ID: its stash commit, rather than its `stash@{n}`,
@@ -1621,6 +1667,14 @@ pub(crate) struct StashBrowser {
     /// Refresh's answer never landed.
     list_task: Option<Task<()>>,
     list_generation: u64,
+    /// Whether the list's running read is the Refresh key's
+    /// ([`Self::refresh_saved_stashes`]), which leaves the browser as it is and
+    /// so does not count as reading ([`Self::reading`]).
+    list_quiet: bool,
+    /// What a press of Refresh waits to say once its read has landed
+    /// ([`Self::say_refreshed`]), once per press; any other read of the list
+    /// says nothing.
+    spoken_refresh: Option<SpokenRefresh>,
     preview_task: Option<Task<()>>,
     page: Option<StashPage>,
     offset: usize,
@@ -1640,6 +1694,10 @@ pub(crate) struct StashBrowser {
     detail: crate::focus_reveal::FocusReveal,
     file_scroll: UniformListScrollHandle,
     stash_focus: FocusHandle,
+    /// The Stashes dialog's own focus, which holds everything drawn in it,
+    /// its body, footer and shell, and none of a dialog opened over it
+    /// ([`GitTurtle::refresh_open_stashes`]).
+    dialog_focus: Option<FocusHandle>,
     file_focus: FocusHandle,
     /// Tracked, never a Tab stop, by the column that holds the chosen
     /// stash's inspection, the detail with its footer: whether focus lies
@@ -1781,6 +1839,40 @@ pub(crate) async fn open_selected_stash(app: &Entity<GitTurtle>, cx: &mut gpui::
     );
 }
 
+/// The page at `offset` of the saved stashes; or, where `sought` is the stash
+/// the inspection shows and that page no longer holds it, the page that does,
+/// looked for on the same bounded reader, so a stash a save elsewhere pushed
+/// onto the next page is followed there and only one truly gone reads as
+/// gone. A stash no page holds has gone, and `offset`'s page answers for it.
+/// Answers the offset it read with the page, which is where the list now
+/// stands. Reads at most `3 + total / STASH_SEEK_SIZE` lists, each bounded by
+/// the core's own read of the stash reflog.
+fn stash_page(
+    repo: &GitRepository,
+    offset: usize,
+    sought: Option<&str>,
+) -> anyhow::Result<(usize, StashPage)> {
+    let page = repo.stash_list(offset, STASH_PAGE_SIZE)?;
+    let Some(sought) = sought else {
+        return Ok((offset, page));
+    };
+    if page.entries.iter().any(|stash| stash.oid == sought) {
+        return Ok((offset, page));
+    }
+    let mut from = 0;
+    loop {
+        let wide = repo.stash_list(from, STASH_SEEK_SIZE)?;
+        if let Some(row) = wide.entries.iter().position(|stash| stash.oid == sought) {
+            let holding = (from + row) / STASH_PAGE_SIZE * STASH_PAGE_SIZE;
+            return Ok((holding, repo.stash_list(holding, STASH_PAGE_SIZE)?));
+        }
+        match wide.next_offset {
+            Some(next) => from = next,
+            None => return Ok((offset, page)),
+        }
+    }
+}
+
 /// Why the open Stashes last refused Review restore…, the line its footer
 /// note says, for tests in other modules.
 #[cfg(test)]
@@ -1853,6 +1945,8 @@ impl StashBrowser {
             metadata_task: None,
             list_task: None,
             list_generation: 0,
+            list_quiet: false,
+            spoken_refresh: None,
             preview_task: None,
             page: None,
             offset: 0,
@@ -1872,6 +1966,7 @@ impl StashBrowser {
             // one left the list out of the Tab order, whatever the element
             // asked.
             stash_focus: cx.focus_handle().tab_stop(true),
+            dialog_focus: None,
             // The saved files likewise: Tab passed them by.
             file_focus: cx.focus_handle().tab_stop(true),
             inspection_focus: cx.focus_handle(),
@@ -1957,8 +2052,6 @@ impl StashBrowser {
         // the stash it held.
         self.generation = self.generation.wrapping_add(1);
         self.metadata_task = None;
-        self.list_generation = self.list_generation.wrapping_add(1);
-        let generation = self.list_generation;
         self.clear_preview();
         self.release_inspection_focus(window, cx);
         self.snapshot = None;
@@ -1975,10 +2068,62 @@ impl StashBrowser {
         self.error = None;
         self.forget_restore_line(cx);
         self.forget_read_alert(cx);
+        self.list_quiet = false;
+        self.read_list(offset, kept, window, cx);
+    }
+
+    /// Refresh in Stashes, its control and the window's key under the dialog
+    /// alike ([`GitTurtle::refresh_open_stashes`]): reads the page shown again by
+    /// the list's bounded read and leaves everything else as it is until it
+    /// answers, so the selected stash keeps its selection, its inspection
+    /// and focus inside that inspection, wherever a stash saved or dropped
+    /// elsewhere has renumbered it, and nothing dims for the moment it
+    /// takes. The list scrolls only to keep in view a row that was in view
+    /// before the read. A stash that has gone is no longer selected
+    /// ([`Self::select_none`]). With no inspection drawn, or one that failed,
+    /// there is nothing to keep and the list is read as a page turn reads
+    /// it. A read already running brings the list, as the control is
+    /// disabled for it.
+    pub(super) fn refresh_saved_stashes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.metadata_task.is_some() || self.list_task.is_some() {
+            return;
+        }
+        self.spoken_refresh = Some(SpokenRefresh::Pending);
+        if self.snapshot.is_none() || self.error.is_some() {
+            self.load_page(self.offset, window, cx);
+            return;
+        }
+        self.list_quiet = true;
+        self.read_list(self.offset, None, window, cx);
+    }
+
+    /// Reads the page at `offset` of the saved stashes, replacing any read
+    /// of the list still running, and shows it as it lands, keeping
+    /// selected the stash chosen meanwhile, else `kept`.
+    fn read_list(
+        &mut self,
+        offset: usize,
+        kept: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.list_generation = self.list_generation.wrapping_add(1);
+        let generation = self.list_generation;
         let repo = self.repository.clone();
+        // A quiet read looks for the inspected stash wherever it stands now:
+        // a stash saved elsewhere can push it onto the next page, which is
+        // not gone (`stash_page`).
+        let sought = self
+            .list_quiet
+            .then(|| {
+                self.snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.stash.oid.clone())
+            })
+            .flatten();
         let response = self
             .metadata
-            .submit_read(move || repo.stash_list(offset, STASH_PAGE_SIZE));
+            .submit_read(move || stash_page(&repo, offset, sought.as_deref()));
         self.list_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| {
                 Err(anyhow::anyhow!(
@@ -1990,8 +2135,10 @@ impl StashBrowser {
                     return;
                 }
                 this.list_task = None;
+                let quiet = std::mem::replace(&mut this.list_quiet, false);
                 this.loading = this.reading();
                 if !this.is_current(cx) {
+                    this.spoken_refresh = None;
                     this.read_alert = Some(crate::tags::alert_error_line(
                         &mut this.error,
                         "The repository changed. Close this inspector and open Stashes again.",
@@ -2001,8 +2148,18 @@ impl StashBrowser {
                     cx.notify();
                     return;
                 }
+                let asked = offset;
                 match result {
-                    Ok(page) => {
+                    // Stashes dropped elsewhere can leave the page read again
+                    // past the end of the list, the sought stash gone with
+                    // them (`stash_page`): the first page stands in.
+                    Ok((offset, page)) if page.entries.is_empty() && offset > 0 => {
+                        if quiet {
+                            this.spoken_refresh = this.spoken_refresh.map(|_| SpokenRefresh::Gone);
+                        }
+                        this.load_page(0, window, cx);
+                    }
+                    Ok((offset, page)) => {
                         // A stash saved since, from a terminal or the
                         // Actions menu, renumbers the list above the one
                         // selected, and a dropped one below it: the stash
@@ -2019,6 +2176,21 @@ impl StashBrowser {
                             .selected
                             .and_then(|index| this.page.as_ref()?.entries.get(index))
                             .cloned();
+                        // A stash chosen from the old rows while this looked
+                        // for the inspected one on another page: the page
+                        // found is not the one being browsed, so the one
+                        // asked for is read again, keeping what was chosen.
+                        if offset != asked
+                            && chosen.as_ref().is_some_and(|stash| {
+                                !page.entries.iter().any(|entry| entry.oid == stash.oid)
+                            })
+                        {
+                            let chosen = chosen.map(|stash| stash.oid);
+                            this.read_list(asked, chosen, window, cx);
+                            this.loading = this.reading();
+                            cx.notify();
+                            return;
+                        }
                         let index = chosen
                             .as_ref()
                             .map(|stash| &stash.oid)
@@ -2029,6 +2201,37 @@ impl StashBrowser {
                         let unchanged = chosen.as_ref().is_some_and(|stash| {
                             index.is_some_and(|index| page.entries[index] == *stash)
                         });
+                        // The Refresh key's read found the stash shown, on
+                        // this page or, pushed there by a stash saved
+                        // elsewhere, on the next (`stash_page`). What a stash
+                        // holds is read by its objects, which never change,
+                        // so its inspection, focus inside it and a Review
+                        // restore… being prepared stay however the list
+                        // renumbered it. It takes the entry the list names it
+                        // by now, which Drop… and Review restore… hand the
+                        // core, which refuses one from an older list.
+                        if quiet
+                            && let Some(index) = index
+                            && let Some(snapshot) = this.snapshot.as_mut()
+                            && snapshot.stash.oid == page.entries[index].oid
+                        {
+                            Arc::make_mut(snapshot).stash = page.entries[index].clone();
+                            let in_view =
+                                this.selected.is_some_and(|row| this.stash_row_in_view(row));
+                            this.selected = Some(index);
+                            this.page = Some(page);
+                            this.offset = offset;
+                            // The row keeps in view as it moves, where it was
+                            // there; a person who scrolled away from it is
+                            // not pulled back.
+                            if in_view {
+                                this.stash_scroll
+                                    .scroll_to_item(index, ScrollStrategy::Nearest);
+                            }
+                            this.say_refreshed(window, cx);
+                            cx.notify();
+                            return;
+                        }
                         this.page = Some(page);
                         this.offset = offset;
                         match index {
@@ -2044,6 +2247,8 @@ impl StashBrowser {
                             }
                             None => {
                                 if chosen.is_some() {
+                                    this.spoken_refresh =
+                                        this.spoken_refresh.map(|_| SpokenRefresh::Gone);
                                     this.select_none(window, cx);
                                 }
                                 this.stash_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -2051,6 +2256,7 @@ impl StashBrowser {
                         }
                     }
                     Err(error) => {
+                        this.spoken_refresh = None;
                         this.read_alert = Some(crate::tags::alert_error_line(
                             &mut this.error,
                             format!("{error:#}"),
@@ -2059,10 +2265,58 @@ impl StashBrowser {
                         ));
                     }
                 }
+                // Once its own read has ended: a page past the end reads the
+                // first page before it answers.
+                if this.list_task.is_none() {
+                    this.say_refreshed(window, cx);
+                }
                 cx.notify();
             });
         }));
         cx.notify();
+    }
+
+    /// Says what one press of Refresh found, once, when its read has landed:
+    /// the saved stashes and the one selected, or that it is no longer
+    /// listed. A read of the list no press asked for says nothing.
+    fn say_refreshed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(spoken) = self.spoken_refresh.take() else {
+            return;
+        };
+        let Some(page) = self.page.as_ref() else {
+            return;
+        };
+        let text = if spoken == SpokenRefresh::Gone {
+            "Saved stash no longer listed".to_owned()
+        } else {
+            let count = page.entries.len();
+            let stashes = match (self.offset, page.next_offset, count) {
+                (_, _, 0) => "No saved stashes".to_owned(),
+                (0, None, 1) => "1 saved stash".to_owned(),
+                (0, None, count) => format!("{count} saved stashes"),
+                (offset, _, count) => {
+                    format!("Saved stashes {} to {}", offset + 1, offset + count)
+                }
+            };
+            match self.selected.and_then(|index| page.entries.get(index)) {
+                Some(stash) => format!("{stashes}, {} selected", stash.selector),
+                None => stashes,
+            }
+        };
+        crate::copy_feedback::announce(window, cx, text);
+    }
+
+    /// Whether row `row` of the saved stashes lay at all in the list's
+    /// viewport as it was last drawn.
+    fn stash_row_in_view(&self, row: usize) -> bool {
+        let rows = self.page.as_ref().map_or(0, |page| page.entries.len());
+        let state = self.stash_scroll.0.borrow();
+        let Some(size) = state.last_item_size.filter(|_| rows > 0) else {
+            return false;
+        };
+        let height = size.contents.height / rows as f32;
+        let top = height * row as f32 + state.base_handle.offset().y;
+        top < size.item.height && top + height > px(0.)
     }
 
     /// What the detail says is being read: the chosen stash's saved changes,
@@ -2070,7 +2324,7 @@ impl StashBrowser {
     fn reading(&self) -> Option<&'static str> {
         if self.metadata_task.is_some() {
             Some(READING_STASH)
-        } else if self.list_task.is_some() {
+        } else if self.list_task.is_some() && !self.list_quiet {
             Some(READING_LIST)
         } else {
             None
@@ -3523,7 +3777,7 @@ impl Render for StashBrowser {
                 .when(!detail, |element| element.w_full().flex_1())
                 .child(div().h(crate::appearance::ui_size(38.)).flex().items_center().px_2().gap_1().border_b_1().border_color(rgb(p.border))
                     .child(native_accessibility::text("stash-list-heading", heading).flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD))
-                    .child(button("refresh-stashes", "", "refresh", false).accessibility_label("Refresh saved stashes").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.load_page(0, window, cx)))))
+                    .child(button("refresh-stashes", "", "refresh", false).debug_selector(|| "refresh-stashes".into()).accessibility_label("Refresh saved stashes").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.refresh_saved_stashes(window, cx)))))
                 .child(crate::native_accessibility::clips_children(div().id("stash-list-focus").debug_selector(|| "stash-list".into()).role(Role::ListBox).aria_label("Saved stashes").tab_stop(true).track_focus(&self.stash_focus).relative().flex_1().min_h_0().flex().flex_col()
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected, this.page.as_ref().map_or(0, |page| page.entries.len())) {
@@ -5081,6 +5335,534 @@ mod tests {
         });
         landed(&app, cx, drawn);
         (browser, cx)
+    }
+
+    /// Stashes opened over `messages` saved in order, the last at the top of
+    /// the list, with the window's keys bound.
+    fn stashes_saved<'a>(
+        cx: &'a mut gpui_kit::TestAppContext,
+        fixture: &std::path::Path,
+        messages: &[&str],
+    ) -> (
+        GitRepository,
+        Entity<StashBrowser>,
+        &'a mut VisualTestContext,
+    ) {
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let repo = tagged_repository(fixture);
+        for message in messages {
+            save_stash(&repo, message);
+        }
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+        landed(&app, cx, "saved-stash-row-0");
+        let browser = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("the Stashes dialog opens");
+        (repo, browser, cx)
+    }
+
+    /// Saves a stash named `message`, from outside the app, as a terminal does.
+    fn save_stash(repo: &GitRepository, message: &str) {
+        std::fs::write(repo.path().join("notes.txt"), message).unwrap();
+        crate::tags::tests::git(
+            repo.path(),
+            &["stash", "push", "--include-untracked", "-m", message],
+        );
+    }
+
+    /// Presses the window's Refresh key.
+    fn press_refresh(cx: &mut VisualTestContext) {
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-r"
+        } else {
+            "ctrl-r"
+        });
+    }
+
+    /// Selects `row` of the open Stashes and lets its inspection land.
+    fn select_row(browser: &Entity<StashBrowser>, row: usize, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.select_stash(row, window, cx)));
+        StashBrowser::lands(browser, cx);
+    }
+
+    /// The row selected in the open Stashes and its stash's commit.
+    fn selected_stash(
+        browser: &Entity<StashBrowser>,
+        cx: &mut VisualTestContext,
+    ) -> (Option<usize>, Option<String>) {
+        browser.read_with(cx, |this, _| {
+            let stash = this
+                .selected
+                .and_then(|index| this.page.as_ref()?.entries.get(index));
+            (this.selected, stash.map(|stash| stash.oid.clone()))
+        })
+    }
+
+    /// Stashes honours the window's Refresh key: with a stash dropped
+    /// elsewhere, below the one selected, the list reads again while the
+    /// selected stash, its inspection and focus inside it stay, through the
+    /// read and after it, and nothing looks busy meanwhile. The key reached
+    /// no one under the dialog.
+    #[gpui::test]
+    async fn the_refresh_key_keeps_the_stash_its_inspection_and_focus(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git};
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first", "second"]);
+        select_row(&browser, 0, cx);
+        let (row, oid) = selected_stash(&browser, cx);
+        assert_eq!(row, Some(0));
+        let files = browser.read_with(cx, |this, _| this.file_focus.clone());
+        cx.update(|window, cx| window.focus(&files, cx));
+        draw(cx);
+
+        git(repo.path(), &["stash", "drop", "stash@{1}"]);
+        let held = browser.read_with(cx, |this, _| this.metadata.hold());
+        press_refresh(cx);
+        draw(cx);
+        browser.read_with(cx, |this, _| {
+            assert!(this.list_task.is_some(), "the key reads the list");
+            assert!(this.snapshot.is_some(), "the inspection stays meanwhile");
+            assert!(this.reading().is_none(), "nothing looks busy meanwhile");
+        });
+        assert!(
+            cx.update(|window, _| files.is_focused(window)),
+            "focus stays in the inspection while the list is read"
+        );
+        drop(held);
+        StashBrowser::lands(&browser, cx);
+
+        browser.read_with(cx, |this, _| {
+            assert_eq!(this.page.as_ref().map(|page| page.entries.len()), Some(1));
+            assert!(this.snapshot.is_some(), "the inspection stays");
+        });
+        assert_eq!(selected_stash(&browser, cx), (Some(0), oid));
+        assert!(
+            cx.update(|window, _| files.is_focused(window)),
+            "focus stays where it was"
+        );
+    }
+
+    /// A stash saved elsewhere renumbers the one selected: the key keeps it
+    /// selected by its commit one row down with its inspection and focus
+    /// inside it, nothing read again, and the inspection takes the entry the
+    /// list names it by now, which Drop… and Review restore… hand the core.
+    #[gpui::test]
+    async fn the_refresh_key_follows_a_renumbered_stash(cx: &mut gpui_kit::TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first", "second"]);
+        select_row(&browser, 0, cx);
+        let (_, oid) = selected_stash(&browser, cx);
+        let files = browser.read_with(cx, |this, _| this.file_focus.clone());
+        cx.update(|window, cx| window.focus(&files, cx));
+        crate::tags::tests::draw(cx);
+
+        save_stash(&repo, "third");
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+
+        assert_eq!(selected_stash(&browser, cx), (Some(1), oid));
+        browser.read_with(cx, |this, _| {
+            let shown = this.snapshot.as_ref().expect("the inspection stays");
+            let listed = &this.page.as_ref().expect("the list").entries[1];
+            assert_eq!(shown.stash, *listed, "it takes the list's entry");
+            assert_eq!(shown.stash.selector, "stash@{1}");
+        });
+        assert!(
+            cx.update(|window, _| files.is_focused(window)),
+            "focus stays in the inspection"
+        );
+    }
+
+    /// The key reaches Stashes from where the dialog opens, its shell,
+    /// outside the browser's own controls, and leaves focus there.
+    #[gpui::test]
+    async fn the_refresh_key_reaches_stashes_from_the_dialog_itself(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first"]);
+        let focused = cx.update(|window, cx| window.focused(cx));
+
+        save_stash(&repo, "second");
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+
+        assert_eq!(
+            browser.read_with(cx, |this, _| this.page.as_ref().map(|p| p.entries.len())),
+            Some(2),
+            "the saved stashes are read again"
+        );
+        assert_eq!(cx.update(|window, cx| window.focused(cx)), focused);
+    }
+
+    /// The key reads the page shown, so a stash selected on a later page
+    /// stays selected there; the Refresh control's first page would have
+    /// lost it.
+    #[gpui::test]
+    async fn the_refresh_key_reads_the_page_shown(cx: &mut gpui_kit::TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (_repo, browser, cx) = stashes_saved(cx, fixture.path(), &["one", "two", "three"]);
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.load_page(1, window, cx)));
+        StashBrowser::lands(&browser, cx);
+        select_row(&browser, 0, cx);
+        let (_, oid) = selected_stash(&browser, cx);
+
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+
+        assert_eq!(browser.read_with(cx, |this, _| this.offset), 1);
+        assert_eq!(selected_stash(&browser, cx), (Some(0), oid));
+    }
+
+    /// A page read again past the end of a list that has shrunk elsewhere
+    /// falls back to the first page rather than an empty list.
+    #[gpui::test]
+    async fn the_refresh_key_past_the_end_shows_the_first_page(cx: &mut gpui_kit::TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (_repo, browser, cx) = stashes_saved(cx, fixture.path(), &["one", "two"]);
+        browser.update(cx, |this, _| this.offset = 5);
+
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+
+        browser.read_with(cx, |this, _| {
+            assert_eq!(this.offset, 0);
+            assert_eq!(this.page.as_ref().map(|page| page.entries.len()), Some(2));
+        });
+    }
+
+    /// A stash a save elsewhere pushed onto the next page is followed there:
+    /// the quiet read keeps its inspection, focus inside it and a Review
+    /// restore… being prepared, on the page that now holds it. Only a stash
+    /// truly gone clears them: it was treated as gone from row 40 on, the
+    /// inspection cleared, focus moved to the list and the preparation
+    /// cancelled.
+    #[gpui::test]
+    async fn the_refresh_key_follows_a_stash_across_pages(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, git};
+        let fixture = tempfile::tempdir().unwrap();
+        let names: Vec<String> = (0..STASH_PAGE_SIZE).map(|n| format!("stash {n}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &names);
+        // Row 39, the page's last and the oldest stash.
+        select_row(&browser, STASH_PAGE_SIZE - 1, cx);
+        let (_, oid) = selected_stash(&browser, cx);
+        let files = browser.read_with(cx, |this, _| this.file_focus.clone());
+        cx.update(|window, cx| window.focus(&files, cx));
+        draw(cx);
+        // Review restore…'s preparation, held on the operation executor.
+        let app = browser
+            .read_with(cx, |this, _| this.owner.clone())
+            .upgrade()
+            .expect("the window");
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.restore(window, cx)));
+        assert!(browser.read_with(cx, |this, _| this.restoring.is_some()));
+
+        save_stash(&repo, "pushes it over");
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+
+        browser.read_with(cx, |this, _| {
+            assert_eq!(this.offset, STASH_PAGE_SIZE, "the page that holds it now");
+            assert!(this.snapshot.is_some(), "the inspection stays");
+            assert_eq!(
+                this.snapshot
+                    .as_ref()
+                    .map(|shown| shown.stash.selector.clone()),
+                Some(format!("stash@{{{STASH_PAGE_SIZE}}}")),
+                "it takes the name the list gives it now"
+            );
+            assert!(this.restoring.is_some(), "the preparation is not cancelled");
+        });
+        assert_eq!(selected_stash(&browser, cx), (Some(0), oid.clone()));
+        assert!(
+            cx.update(|window, _| files.is_focused(window)),
+            "focus stays in the inspection"
+        );
+        draw(cx);
+        assert_eq!(
+            crate::copy_feedback::tests::announced(cx)
+                .map(|(_, text)| text)
+                .as_deref(),
+            Some("Saved stashes 41 to 41, stash@{40} selected"),
+            "a page past the first says its range in words"
+        );
+
+        // Truly gone, it is no longer selected.
+        cx.update(|_, cx| browser.update(cx, |this, cx| this.cancel_restore(cx)));
+        drop(held);
+        git(
+            repo.path(),
+            &["stash", "drop", &format!("stash@{{{STASH_PAGE_SIZE}}}")],
+        );
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+        browser.read_with(cx, |this, _| {
+            assert_eq!(this.selected, None, "gone, nothing is selected");
+            assert!(this.snapshot.is_none(), "its inspection goes");
+        });
+    }
+
+    /// The selected stash stays in view as a stash saved elsewhere moves its
+    /// row, where the row was in view; a person who scrolled away from it is
+    /// not pulled back. The list moved its selection without scrolling, so a
+    /// row at the list's foot went below it.
+    #[gpui::test]
+    async fn the_refresh_key_keeps_the_selected_stash_in_view(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let names: Vec<String> = (0..30).map(|n| format!("stash {n}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &names);
+        draw(cx);
+        let row_height = browser.read_with(cx, |this, _| {
+            let state = this.stash_scroll.0.borrow();
+            let size = state.last_item_size.expect("the list is laid out");
+            size.contents.height / 30.
+        });
+        let last = browser.read_with(cx, |this, _| {
+            (0..30)
+                .take_while(|row| this.stash_row_in_view(*row))
+                .last()
+        });
+        let last = last.expect("rows in view");
+        assert!(last + 1 < 30, "the list scrolls");
+        select_row(&browser, last, cx);
+        draw(cx);
+        let offset = |cx: &mut VisualTestContext| {
+            browser.read_with(cx, |this, _| {
+                this.stash_scroll.0.borrow().base_handle.offset().y
+            })
+        };
+        assert_eq!(offset(cx), px(0.), "resting at the top");
+
+        save_stash(&repo, "pushes it down");
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        assert_eq!(
+            browser.read_with(cx, |this, _| this.selected),
+            Some(last + 1),
+            "the selection follows its stash"
+        );
+        assert!(
+            browser.read_with(cx, |this, _| this.stash_row_in_view(last + 1)),
+            "and the row stays in view"
+        );
+        assert!(offset(cx) < px(0.), "the list scrolled to keep it");
+
+        // Scrolled away from the selected row, a refresh leaves the list alone.
+        let away = point(px(0.), row_height * -3.);
+        browser.update(cx, |this, _| {
+            this.stash_scroll.0.borrow().base_handle.set_offset(away)
+        });
+        select_row(&browser, 0, cx);
+        draw(cx);
+        assert!(!browser.read_with(cx, |this, _| this.stash_row_in_view(0)));
+        save_stash(&repo, "another");
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        assert_eq!(browser.read_with(cx, |this, _| this.selected), Some(1));
+        assert_eq!(offset(cx), away.y, "not pulled back");
+    }
+
+    /// One press of Refresh speaks one result, politely, when its read has
+    /// landed, whatever the press changed: the list, the selected stash by
+    /// the name the list gives it now, or that it is no longer listed. A
+    /// read of the list no press asked for says nothing.
+    #[gpui::test]
+    async fn the_refresh_key_says_what_it_found_once(cx: &mut gpui_kit::TestAppContext) {
+        use crate::copy_feedback::tests::announced;
+        use crate::tags::tests::{draw, git};
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["one", "two", "three"]);
+        select_row(&browser, 1, cx);
+        draw(cx);
+
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        let said = announced(cx).expect("the result is said");
+        assert_eq!(said.1, "3 saved stashes, stash@{1} selected");
+        draw(cx);
+        assert_eq!(
+            announced(cx).map(|said| said.0),
+            Some(said.0.clone()),
+            "once per landing"
+        );
+
+        // A read of the list no press asked for says nothing.
+        cx.executor()
+            .advance_clock(crate::copy_feedback::RESTORE_AFTER);
+        draw(cx);
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.load_page(0, window, cx)));
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        assert_eq!(announced(cx), None, "an automatic read is silent");
+
+        // Gone, it says so.
+        select_row(&browser, 1, cx);
+        git(repo.path(), &["stash", "drop", "stash@{1}"]);
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        assert_eq!(
+            announced(cx).map(|(_, text)| text).as_deref(),
+            Some("Saved stash no longer listed")
+        );
+    }
+
+    /// The Stashes Refresh control does what the key does: it reads the
+    /// page shown and keeps the selected stash, its inspection and focus
+    /// inside it. It read the first page and blanked the detail.
+    #[gpui::test]
+    async fn the_refresh_control_does_what_the_key_does(cx: &mut gpui_kit::TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (_repo, browser, cx) = stashes_saved(cx, fixture.path(), &["one", "two", "three"]);
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.load_page(1, window, cx)));
+        StashBrowser::lands(&browser, cx);
+        select_row(&browser, 0, cx);
+        let (_, oid) = selected_stash(&browser, cx);
+        let files = browser.read_with(cx, |this, _| this.file_focus.clone());
+        cx.update(|window, cx| window.focus(&files, cx));
+        crate::tags::tests::draw(cx);
+
+        crate::copy_feedback::tests::click(cx, "refresh-stashes");
+        StashBrowser::lands(&browser, cx);
+
+        browser.read_with(cx, |this, _| {
+            assert_eq!(this.offset, 1, "the page shown is read again");
+            assert!(this.snapshot.is_some(), "the inspection stays");
+        });
+        assert_eq!(selected_stash(&browser, cx), (Some(0), oid));
+        assert!(cx.update(|window, _| files.is_focused(window)));
+    }
+
+    /// The Refresh key under an open stash confirmation: `app`'s Stashes has
+    /// closed and its browser gone, so the key reads no list, as a stash
+    /// saved elsewhere would otherwise renumber the rows behind the alert.
+    #[track_caller]
+    fn refresh_key_stays_out(
+        app: &Entity<GitTurtle>,
+        repo: &GitRepository,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("operation-consequences").is_some(),
+            "the confirmation is open"
+        );
+        let browser = app.read_with(cx, |app, _| app.recovery.browser.clone());
+        assert!(
+            browser.and_then(|browser| browser.upgrade()).is_none(),
+            "Stashes closed before the confirmation opened, its browser with it"
+        );
+        save_stash(repo, "saved elsewhere");
+        press_refresh(cx);
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_open_stashes(window, cx))),
+            "the key finds no Stashes to read"
+        );
+        assert!(
+            cx.debug_bounds("operation-consequences").is_some(),
+            "and the confirmation stays"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.loading.is_none()),
+            "and the page beneath reads nothing"
+        );
+    }
+
+    /// Ctrl+R does nothing under Drop…'s confirmation, which Stashes closes
+    /// to open: the list cannot renumber behind its `stash@{n}`.
+    #[gpui::test]
+    async fn the_refresh_key_does_nothing_under_the_drop_confirmation(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first", "second"]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        select_row(&browser, 0, cx);
+        draw(cx);
+        let app = browser
+            .read_with(cx, |this, _| this.owner.upgrade())
+            .expect("the window");
+        crate::copy_feedback::tests::click(cx, "drop-saved-stash");
+        // The test's handle goes: in the app the dialog held the only one.
+        drop(browser);
+        refresh_key_stays_out(&app, &repo, cx);
+    }
+
+    /// Ctrl+R does nothing under Review restore…'s confirmation, which opens
+    /// in place of Stashes once the core has prepared it.
+    #[gpui::test]
+    async fn the_refresh_key_does_nothing_under_the_restore_review(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first", "second"]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        select_row(&browser, 0, cx);
+        draw(cx);
+        let app = browser
+            .read_with(cx, |this, _| this.owner.upgrade())
+            .expect("the window");
+        crate::copy_feedback::tests::click(cx, "restore-saved-stash");
+        recovery_lands(&app, cx);
+        drop(browser);
+        refresh_key_stays_out(&app, &repo, cx);
+    }
+
+    /// Ctrl+R stays with the dialog that holds focus. A rich preview's dialog
+    /// opens over a live Stashes, whose browser stays: with a PDF's Go to page
+    /// open the key reads no list behind it and says nothing over it, and
+    /// back in Stashes it works again.
+    #[gpui::test]
+    async fn the_refresh_key_stays_with_a_dialog_over_stashes(cx: &mut gpui_kit::TestAppContext) {
+        use crate::copy_feedback::tests::announced;
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first"]);
+        cx.update(crate::pdf_view::tests::go_to_page);
+        draw(cx);
+        save_stash(&repo, "second");
+
+        press_refresh(cx);
+        draw(cx);
+        browser.read_with(cx, |this, _| {
+            assert!(this.list_task.is_none(), "the list behind it is not read");
+            assert!(this.spoken_refresh.is_none(), "and no result is waiting");
+        });
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        assert_eq!(
+            browser.read_with(cx, |this, _| this.page.as_ref().map(|p| p.entries.len())),
+            Some(1),
+            "the rows behind it stay"
+        );
+        assert_eq!(announced(cx), None, "nothing is said over it");
+
+        cx.update(|window, cx| window.close_dialog(cx));
+        draw(cx);
+        press_refresh(cx);
+        StashBrowser::lands(&browser, cx);
+        assert_eq!(
+            browser.read_with(cx, |this, _| this.page.as_ref().map(|p| p.entries.len())),
+            Some(2),
+            "back in Stashes the key reads it"
+        );
     }
 
     /// Lets every read the open Stashes has started land and draws it, then

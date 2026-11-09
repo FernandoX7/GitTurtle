@@ -10240,6 +10240,9 @@ impl Render for GitTurtle {
                 }
             }))
             .on_action(cx.listener(|this, action: &Refresh, window, cx| {
+                if this.refresh_open_stashes(window, cx) {
+                    return;
+                }
                 if !window.has_active_dialog(cx)
                     && !window.has_active_sheet(cx)
                     && this.page == AppPage::Repository
