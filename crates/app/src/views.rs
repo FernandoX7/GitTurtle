@@ -33716,6 +33716,7 @@ pub(crate) mod tests {
         cx: &mut TestAppContext,
     ) {
         let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
         cx.update(|_, cx| {
             crate::appearance::ThemeChoice::Midnight.apply(None, cx);
             cx.set_reduce_motion(true);
@@ -33780,6 +33781,7 @@ pub(crate) mod tests {
     #[gpui::test]
     async fn tab_reveals_the_selected_rows_stage_whole_with_its_ring(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
         cx.update(|_, cx| {
             crate::appearance::ThemeChoice::Midnight.apply(None, cx);
             cx.set_reduce_motion(true);
@@ -33845,6 +33847,7 @@ pub(crate) mod tests {
     #[gpui::test]
     async fn the_working_lists_roving_stop_moves_with_the_selection(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
         cx.update(|_, cx| {
             shortcuts::bind_keys(cx);
             cx.set_reduce_motion(true);
@@ -33896,6 +33899,7 @@ pub(crate) mod tests {
         cx: &mut TestAppContext,
     ) {
         let (fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
         cx.update(|_, cx| cx.set_reduce_motion(true));
         cx.simulate_resize(size(px(1480.), px(973.)));
         draw(cx);
@@ -34688,6 +34692,179 @@ pub(crate) mod tests {
             "its ring is whole in the frame it takes focus"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Controls that cannot take focus are left out of the list's stops: with
+    /// a write looking busy, Tab from the list reaches neither the selected
+    /// row's control nor a heading's, which the busy look has dimmed.
+    #[gpui::test]
+    async fn the_lists_stops_leave_out_controls_the_busy_look_has_dimmed(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        select_working_notes(&app, cx).await;
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        draw(cx);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "the title",
+            "Tab goes on from the list past the dimmed controls"
+        );
+    }
+
+    /// A control a selection has left behind counts as standing in the list:
+    /// Shift+Tab from it reaches the list, and Tab from there the control of
+    /// the row now selected.
+    #[gpui::test]
+    async fn shift_tab_from_another_rows_control_reaches_the_list(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        let notes = select_working_notes(&app, cx).await;
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(working_stop(&app, cx), format!("working-stage-{notes}"));
+        // [Staged 2, alpha, beta, Unstaged 1, notes]: the selection moves to
+        // alpha.txt with focus left on notes.txt's Stage, as a read that
+        // selects another row leaves it.
+        app.update(cx, |app, cx| {
+            app.working_selected = Some((0, gitturtle_core::ChangeArea::Staged));
+            cx.notify();
+        });
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            format!("working-stage-{notes}"),
+            "the control keeps focus as the selection leaves it"
+        );
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "the list",
+            "Shift+Tab reaches the list"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "working-stage-1",
+            "Tab from there reaches the row now selected"
+        );
+    }
+
+    /// The roving stop follows the selection on Shift+arrow as on a plain
+    /// arrow: with the selected row's control holding focus, Shift+Up extends
+    /// the selection and focus moves to the control of the row it reached.
+    #[gpui::test]
+    async fn the_roving_stop_follows_a_shift_arrow(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        let notes = select_working_notes(&app, cx).await;
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(working_stop(&app, cx), format!("working-stage-{notes}"));
+        cx.simulate_keystrokes("shift-up");
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "working-stage-2",
+            "focus moves to the control of the row Shift+Up reached"
+        );
+        let selected = |position: usize, cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| match app.working_rows[position] {
+                crate::workspace::WorkingRow::File(index, area) => {
+                    app.working_is_selected(index, area)
+                }
+                _ => panic!("row {position} is a file's"),
+            })
+        };
+        assert!(
+            selected(2, cx) && selected(notes, cx),
+            "Shift+Up extends the selection to beta.txt, keeping notes.txt"
+        );
+    }
+
+    /// No key route writes on a row other than the one drawn selected: Enter
+    /// after an arrow on the control acts on the row the arrow selected, and
+    /// on no other. Staged 2, alpha and beta, with notes.txt unstaged; Up
+    /// from notes.txt's Stage selects beta.txt, whose Unstage Enter presses,
+    /// leaving notes.txt as it was.
+    #[gpui::test]
+    async fn enter_after_an_arrow_on_the_control_acts_on_the_row_now_selected(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        let notes = select_working_notes(&app, cx).await;
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(working_stop(&app, cx), format!("working-stage-{notes}"));
+        cx.simulate_keystrokes("up");
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            working_stop(&app, cx),
+            "working-stage-2",
+            "beta.txt's Unstage"
+        );
+        let enter = gpui::Keystroke::parse("enter").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: enter.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+        draw(cx);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("Enter runs the row's Unstage");
+        write.await;
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        let state = |name: &str| {
+            app.read_with(cx, |app, _| {
+                let status = app.work_status.as_ref().expect("a status");
+                let entry = status
+                    .entries
+                    .iter()
+                    .find(|entry| entry.path == std::path::Path::new(name))
+                    .unwrap_or_else(|| panic!("{name} still listed"));
+                (
+                    entry.staged.is_some(),
+                    entry.unstaged.is_some() || entry.untracked,
+                )
+            })
+        };
+        assert_eq!(state("beta.txt"), (false, true), "Enter unstaged beta.txt");
+        assert_eq!(state("notes.txt"), (false, true), "notes.txt is untouched");
+        assert!(state("alpha.txt").0, "alpha.txt is untouched");
     }
 
     /// A row's Stage that stages its file leaves no focus behind it: at 13 pt
