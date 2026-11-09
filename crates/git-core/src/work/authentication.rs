@@ -254,18 +254,48 @@ pub(super) fn configure_askpass(command: &mut Command, configured_git_askpass: b
     let executable =
         std::env::current_exe().context("Cannot locate GitTurtle authentication helper")?;
     command.env(SOCKET_ENV, socket);
-    if std::env::var_os("GIT_ASKPASS").is_none() && !configured_git_askpass {
-        command.env("GIT_ASKPASS", &executable);
+    route_askpass(command, configured_git_askpass, &executable, |name| {
+        std::env::var_os(name)
+    });
+    Ok(())
+}
+
+/// Points Git and SSH at GitTurtle's own prompts, `executable`, unless a
+/// program of the user's is theirs: `core.askPass`, or a value in `inherited`,
+/// the environment `command` starts from.
+///
+/// An empty `GIT_ASKPASS` or `SSH_ASKPASS` names no program and counts as
+/// unset, as Git's `if (askpass && *askpass)` reads it: kept, a Push from a
+/// shell that exports them empty failed at once with no dialog. Git reads an
+/// empty `GIT_ASKPASS` before `core.askPass` and stops there, so where that
+/// setting is configured the empty value is taken away for Git to reach it.
+/// An empty `SSH_ASKPASS_REQUIRE` names no policy, since OpenSSH reads only
+/// `force`, `prefer` and `never`, so SSH is told to use the prompts as where
+/// it is unset: kept, a desktop launch with no display left SSH no prompt
+/// and a Push failed with no dialog. A policy of the user's stays theirs.
+fn route_askpass(
+    command: &mut Command,
+    configured_git_askpass: bool,
+    executable: &Path,
+    inherited: impl Fn(&str) -> Option<std::ffi::OsString>,
+) {
+    // An empty value is no value, a program or a policy alike.
+    let set = |name| inherited(name).is_some_and(|value| !value.is_empty());
+    if !set("GIT_ASKPASS") {
+        if configured_git_askpass {
+            command.env_remove("GIT_ASKPASS");
+        } else {
+            command.env("GIT_ASKPASS", executable);
+        }
     }
-    if std::env::var_os("SSH_ASKPASS").is_none() {
-        command.env("SSH_ASKPASS", &executable);
+    if !set("SSH_ASKPASS") {
+        command.env("SSH_ASKPASS", executable);
     }
     // Askpass supplies the UI in a GUI process with no controlling terminal.
     // Existing programs and host-verification policy remain in charge.
-    if std::env::var_os("SSH_ASKPASS_REQUIRE").is_none() {
+    if !set("SSH_ASKPASS_REQUIRE") {
         command.env("SSH_ASKPASS_REQUIRE", "force");
     }
-    Ok(())
 }
 
 /// Call before starting the GUI. None denotes a normal application launch.
@@ -1993,6 +2023,221 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// Which program answers Git's prompts, and which SSH is told to run and
+    /// when, for each state a launching shell can leave the three variables
+    /// in: real Git runs the prompts, from the environment a process would
+    /// have inherited. An empty value is no program, so the app's prompts are
+    /// used, or `core.askPass` where it is configured; a program in either
+    /// still wins, each variable read on its own. An empty
+    /// `SSH_ASKPASS_REQUIRE` is no policy, as OpenSSH reads it, so SSH is
+    /// told to use its askpass as where the variable is unset: kept, it left
+    /// SSH with no prompt in a desktop launch with no display. A policy of
+    /// the user's, `never` or `prefer`, stays theirs.
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_askpass_in_the_environment_counts_as_unset() {
+        use std::ffi::{OsStr, OsString};
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let program = |name: &str| {
+            let path = directory.path().join(name);
+            std::fs::write(
+                &path,
+                format!(
+                    "#!/bin/sh\ncase \"$1\" in Username*) printf '{name}-user' ;; \
+                     *) printf '{name}-password' ;; esac\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            path
+        };
+        let (app, theirs, configured) = (program("app"), program("theirs"), program("configured"));
+        let global_config = directory.path().join("gitconfig");
+        std::fs::write(&global_config, "").unwrap();
+        let empty = || Some(OsString::new());
+        let named = || Some(theirs.clone().into_os_string());
+        let policy = |policy: &str| Some(OsString::from(policy));
+        // What `GIT_ASKPASS`, `SSH_ASKPASS` and `SSH_ASKPASS_REQUIRE` hold,
+        // whether `core.askPass` is set, who answers Git, what SSH is told to
+        // run and when.
+        let cases = [
+            (
+                "both empty",
+                [empty(), empty(), None],
+                false,
+                "app",
+                &app,
+                "force",
+            ),
+            (
+                "both unset",
+                [None, None, None],
+                false,
+                "app",
+                &app,
+                "force",
+            ),
+            (
+                "both empty beside core.askPass",
+                [empty(), empty(), None],
+                true,
+                "configured",
+                &app,
+                "force",
+            ),
+            (
+                "both unset beside core.askPass",
+                [None, None, None],
+                true,
+                "configured",
+                &app,
+                "force",
+            ),
+            (
+                "both name a program",
+                [named(), named(), None],
+                false,
+                "theirs",
+                &theirs,
+                "force",
+            ),
+            (
+                "both name a program beside core.askPass",
+                [named(), named(), None],
+                true,
+                "theirs",
+                &theirs,
+                "force",
+            ),
+            (
+                "GIT_ASKPASS empty, SSH_ASKPASS a program",
+                [empty(), named(), None],
+                false,
+                "app",
+                &theirs,
+                "force",
+            ),
+            (
+                "GIT_ASKPASS empty, SSH_ASKPASS a program, beside core.askPass",
+                [empty(), named(), None],
+                true,
+                "configured",
+                &theirs,
+                "force",
+            ),
+            (
+                "GIT_ASKPASS a program, SSH_ASKPASS empty",
+                [named(), empty(), None],
+                false,
+                "theirs",
+                &app,
+                "force",
+            ),
+            (
+                "GIT_ASKPASS a program, SSH_ASKPASS empty, beside core.askPass",
+                [named(), empty(), None],
+                true,
+                "theirs",
+                &app,
+                "force",
+            ),
+            (
+                "SSH_ASKPASS_REQUIRE empty",
+                [None, None, empty()],
+                false,
+                "app",
+                &app,
+                "force",
+            ),
+            (
+                "SSH_ASKPASS_REQUIRE never",
+                [None, None, policy("never")],
+                false,
+                "app",
+                &app,
+                "never",
+            ),
+            (
+                "SSH_ASKPASS_REQUIRE prefer",
+                [empty(), empty(), policy("prefer")],
+                false,
+                "app",
+                &app,
+                "prefer",
+            ),
+        ];
+        for (at, values, core_askpass, answers, ssh, required) in cases {
+            let inherited = ["GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"]
+                .into_iter()
+                .zip(values)
+                .collect::<Vec<_>>();
+            let told = run_controlled(OperationControl::default(), || {
+                let mut command = normal_command(crate::GitTarget::unconfined(directory.path()));
+                command.args(["-c", "credential.helper="]);
+                if core_askpass {
+                    command
+                        .arg("-c")
+                        .arg(format!("core.askPass={}", configured.display()));
+                }
+                command
+                    .args(["credential", "fill"])
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .env_remove("GIT_CONFIG_PARAMETERS")
+                    .env_remove("GIT_CONFIG_COUNT")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_CONFIG_GLOBAL", &global_config);
+                for (name, value) in &inherited {
+                    match value {
+                        Some(value) => command.env(name, value),
+                        None => command.env_remove(name),
+                    };
+                }
+                route_askpass(&mut command, core_askpass, &app, |name| {
+                    inherited
+                        .iter()
+                        .find(|(variable, _)| *variable == name)
+                        .and_then(|(_, value)| value.clone())
+                });
+                let told = |name| {
+                    command
+                        .get_envs()
+                        .find(|(variable, _)| *variable == OsStr::new(name))
+                        .and_then(|(_, value)| value.map(OsString::from))
+                };
+                let told = (told("SSH_ASKPASS"), told("SSH_ASKPASS_REQUIRE"));
+                let output = bounded_write_output(
+                    command,
+                    Some(b"protocol=https\nhost=fixture.invalid\n\n".to_vec()),
+                    Duration::from_secs(3),
+                )?;
+                ensure!(
+                    output.status.success(),
+                    "{at}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let values = String::from_utf8(output.stdout)?;
+                ensure!(
+                    values.contains(&format!("username={answers}-user"))
+                        && values.contains(&format!("password={answers}-password")),
+                    "{at}: {answers} did not answer: {values}"
+                );
+                Ok(told)
+            })
+            .unwrap();
+            assert_eq!(
+                told.0.as_deref(),
+                Some(ssh.as_os_str()),
+                "{at}: what SSH is told to run"
+            );
+            assert_eq!(
+                told.1.as_deref(),
+                Some(OsStr::new(required)),
+                "{at}: when SSH is told to run it"
+            );
+        }
     }
 
     #[cfg(unix)]
