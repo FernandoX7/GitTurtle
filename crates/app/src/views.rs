@@ -11866,6 +11866,71 @@ pub(crate) mod tests {
         });
     }
 
+    /// A Download row is one of the 0.75 rem bars whose padding cannot hold
+    /// a ghost Button's pull and its ring (DESIGN.md, "One left edge"): its
+    /// Buttons stand their frames on the failure line's text edge above it,
+    /// at 13 and 18 pt, in Diff and Split, the icon and label their own
+    /// padding in.
+    #[gpui::test]
+    async fn a_download_button_s_frame_stands_on_the_failure_line_s_text_edge(
+        cx: &mut TestAppContext,
+    ) {
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let missing = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let input = file_commits(&[
+            ("before", &[("notes.txt", oversize.as_bytes())]),
+            ("after", &[("notes.txt", missing.as_bytes())]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for (width, height) in [(461., 490.), (1000., 680.)] {
+                for scale in [2.0f32, 1.2] {
+                    cx.simulate_resize(size(px(width), px(height)));
+                    for mode in [TextMode::Unified, TextMode::Split] {
+                        let name = if mode == TextMode::Split { "Split" } else { "Diff" };
+                        let at = format!("{text} pt, {width} × {height}, scale {scale}, {name}");
+                        cx.update(|window, cx| {
+                            window.set_scale_factor(scale);
+                            app.update(cx, |app, cx| {
+                                app.text_mode = mode;
+                                app.ensure_editor(window, cx);
+                                cx.notify();
+                            })
+                        });
+                        settle(&app, cx).await;
+                        draw(cx);
+                        let edge = cx.update(|window, _| window.rem_size() * 0.75);
+                        let line = cx
+                            .debug_bounds("lfs-preview-failure-region")
+                            .expect("the line is drawn");
+                        let button = cx
+                            .debug_bounds("download-lfs-side-1")
+                            .expect("After offers its download");
+                        assert!(
+                            (button.left() - (line.left() + edge)).abs() <= px(0.5 / scale),
+                            "{at}: {button:?} stands its frame on the line's text edge, \
+                             {edge:?} into {line:?}"
+                        );
+                    }
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
     /// The `(path, bytes)` files a fixture commit writes.
     type Files<'a> = &'a [(&'a str, &'a [u8])];
 
