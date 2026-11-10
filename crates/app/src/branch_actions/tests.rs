@@ -1310,3 +1310,89 @@ async fn the_branch_picker_builds_its_text_only_when_what_it_shows_changes(
     at_rest("the compact row in 461 × 490", cx);
     size_to(cx, 13, 1480., 800.);
 }
+
+/// Until an Open's status is read, the branch picker's menu lists the
+/// branch the accepted snapshot found checked out, the one the picker
+/// names, as the current branch: ticked, "topic, current branch", with
+/// "Current branch settings…", which opens it, and never as a branch to
+/// switch to. It listed it unticked among the branches to switch to, with
+/// no current branch and no settings for it, while the picker named it.
+#[gpui::test]
+async fn the_branch_menu_names_the_current_branch_until_the_status_is_read(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let topic = fixture_repository(fixture.path().join("topic"));
+    fixture_git(
+        topic.path(),
+        &["commit", "-q", "--allow-empty", "-m", "Topic"],
+    );
+    fixture_git(topic.path(), &["switch", "-q", "-c", "topic"]);
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(topic.path().to_owned(), window, cx)
+        })
+    });
+    for _ in 0..16 {
+        let installed = app.read_with(cx, |app, _| {
+            app.repository.as_ref().map(|repo| repo.git_dir()) == Some(topic.git_dir())
+        });
+        if installed {
+            break;
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+    }
+    draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.working_status_unread()),
+        "its status read waits"
+    );
+    assert_eq!(
+        PICKER_LABEL.with(|label| label.borrow().clone()).as_deref(),
+        Some("topic"),
+        "the picker names it"
+    );
+    PICKER_ITEMS.with(|items| items.borrow_mut().clear());
+    let picker = rendered(cx, "current-branch");
+    cx.simulate_click(picker.center(), gpui::Modifiers::default());
+    draw(cx);
+    let items = PICKER_ITEMS.with(|items| items.borrow().clone());
+    let topic_items: Vec<_> = (items.iter())
+        .filter(|item| item.label == "topic")
+        .collect();
+    assert_eq!(topic_items.len(), 1, "listed once: {items:?}");
+    assert_eq!(topic_items[0].checked, Some(true), "ticked");
+    assert_eq!(
+        topic_items[0].name.as_deref(),
+        Some("topic, current branch"),
+        "as the current branch"
+    );
+    assert!(
+        (items.iter()).any(|item| item.label == "main" && item.checked == Some(false)),
+        "main to switch to: {items:?}"
+    );
+    let settings = (items.iter())
+        .position(|item| item.label == "Current branch settings…")
+        .expect("its settings offered");
+    assert!(!items[settings].disabled, "its settings offered");
+    assert!(
+        !(items.iter()).any(|item| item.label == "Merge a branch…"),
+        "no integration before the read says none is in progress"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.branch_menu_action(MenuAction::ManageCurrent, window, cx)
+        })
+    });
+    assert!(
+        app.read_with(cx, |app, _| app.branch_actions.task.is_some()),
+        "its settings read the branch"
+    );
+    drop(held);
+    crate::views::tests::settle(&app, cx).await;
+}

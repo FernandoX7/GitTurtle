@@ -489,10 +489,15 @@ impl GitTurtle {
                 // writes does (`native_accessibility::waiting_item`). They
                 // once refused with nothing to say why.
                 let wait = this.menu_wait();
+                // The branch the picker names: while the status is not read
+                // yet, the one the accepted snapshot found checked out. The
+                // menu once offered it as a branch to switch to, with no
+                // current branch and no settings for it.
                 let current = this
                     .work_status
                     .as_ref()
-                    .and_then(|status| status.branch.as_deref());
+                    .and_then(|status| status.branch.as_deref())
+                    .or_else(|| this.unread_branch());
                 let query = this.branch_name.read(cx).value().trim().to_lowercase();
                 menu = menu
                     .label(if query.is_empty() {
@@ -628,7 +633,12 @@ impl GitTurtle {
                     &path,
                     wait,
                 );
-                if current.is_some() && this.integration_state.is_none() {
+                // Whether an operation is in progress is the status read's
+                // to say.
+                if current.is_some()
+                    && !this.working_status_unread()
+                    && this.integration_state.is_none()
+                {
                     menu = add_menu_action(
                         menu.separator(),
                         "Merge a branch…",
@@ -724,10 +734,10 @@ impl GitTurtle {
     ) {
         match action {
             MenuAction::ManageCurrent => {
-                if let Some(name) = self
-                    .work_status
-                    .as_ref()
-                    .and_then(|status| status.branch.clone())
+                if let Some(name) = (self.work_status.as_ref())
+                    .and_then(|status| status.branch.as_deref())
+                    .or_else(|| self.unread_branch())
+                    .map(str::to_owned)
                 {
                     self.open_contextual_branch(name, false, window, cx);
                 }
