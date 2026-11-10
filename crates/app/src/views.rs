@@ -34528,6 +34528,11 @@ pub(crate) mod tests {
             (body.bottom() - padding - button.bottom()).abs() < px(0.5),
             "Commit {button:?} at the body's foot {body:?}"
         );
+        // The title typed saves the draft on the preference writer's thread,
+        // which drawing does not wait for; the save's success clears the
+        // note, so it answers before the note comes. A loaded host once
+        // answered in the note's draw, and the composer grew by nothing.
+        crate::theme_editor::tests::drain_preference_writer(cx, &app);
         let composer = cx.debug_bounds("commit-composer").expect("the composer");
         // The draft-save note and its Retry come above it: Commit stays
         // whole in every frame drawn, where it once lay below the body's
