@@ -104,7 +104,11 @@ shorter than its parts' least heights (`file_history::PanelLeast`, which counts
 a failed page's notice and the message panel's whole share, so the revisions
 keep one whole row) scrolls as a whole, cued by `tags::ScrollCue`, and while it scrolls the toolbar, the message
 and the top row are laid out in the width its gutter leaves
-(`GitTurtle::file_history_gutter`). Its `file_history::Reveals` reveal every
+(`GitTurtle::file_history_gutter`); where it fits, Copy message and Hash keep
+only their icons where their labelled rows alone would make it scroll
+(`GitTurtle::message_toolbar`), so the gutter and the toolbar's form never
+decide each other, and a test's cue that keeps contradicting its frame fails
+rather than draws without end (`tags::settling`). Its `file_history::Reveals` reveal every
 Tab stop whole: a control in the header's, the failure's or the footer's own
 scroll there first and then in the panel (`FocusReveal::control_within`), and
 the message panel, whose controls keep their own focus handles, as one region

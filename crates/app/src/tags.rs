@@ -611,7 +611,10 @@ impl ScrollCue {
         let (rows, cued) = (self.rows.clone(), self.cued);
         move |bounds, window, cx| {
             prepainted(bounds, window, cx);
-            if cues(&rows) != cued {
+            let settled = cues(&rows) == cued;
+            #[cfg(test)]
+            settling::observed(&rows, settled);
+            if !settled {
                 window.defer(cx, |window, _| window.refresh());
             }
         }
@@ -842,6 +845,57 @@ impl ScrollbarHandle for RowColumn {
         let viewport = self.viewport_bounds().size;
         let reach = self.scroll.max_offset();
         size(viewport.width + reach.x, viewport.height + reach.y)
+    }
+}
+
+/// A cue whose layout keeps cueing otherwise than the frame assumed, frame
+/// after frame, fails the test drawing it rather than hanging it: where
+/// what overflows follows the gutter (a list that overflows only without
+/// it, as File History's panel once did while its toolbar's form followed
+/// the gutter), each frame asks for another, and GPUI's test platform
+/// draws a dirty window until nothing is left to do, so the draw never
+/// returned. In an application the window draws every frame instead.
+#[cfg(test)]
+pub(crate) mod settling {
+    use super::RowColumn;
+    use std::{cell::RefCell, collections::HashMap};
+
+    /// The frames running a cue may find its layout cued otherwise.
+    const FRAMES: usize = 16;
+
+    thread_local! {
+        /// The frames running each list, by where it was laid out, has
+        /// found its layout cued otherwise than the frame assumed.
+        static RUNS: RefCell<HashMap<String, usize>> = RefCell::default();
+    }
+
+    /// Forgets every list's run, as a test's draw begins: a run is the
+    /// frames one draw runs, and a list's count, kept under bounds no later
+    /// frame settled it at, survived on the thread into the next test, so
+    /// `file_history::tests` under `ITERATIONS=20` failed after seeds that
+    /// had passed (5 and 15).
+    pub(crate) fn reset() {
+        RUNS.with(|runs| runs.borrow_mut().clear());
+    }
+
+    /// Notes whether the list `rows` reads, as its frame prepainted it, was
+    /// cued as that frame assumed.
+    pub(super) fn observed(rows: &RowColumn, settled: bool) {
+        let at = format!("{:?}", rows.scroll.bounds());
+        RUNS.with(|runs| {
+            let mut runs = runs.borrow_mut();
+            if settled {
+                runs.remove(&at);
+                return;
+            }
+            let run = runs.entry(at.clone()).or_default();
+            *run += 1;
+            assert!(
+                *run < FRAMES,
+                "the scroll cue of the list at {at} cued otherwise than its frame assumed \
+                 {run} frames running: what overflows follows its gutter"
+            );
+        });
     }
 }
 
@@ -1739,6 +1793,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn draw(cx: &mut VisualTestContext) {
+        crate::tags::settling::reset();
         for _ in 0..3 {
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);

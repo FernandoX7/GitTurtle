@@ -60,7 +60,9 @@ struct PanelLeast {
 const MESSAGE_SHARE: f32 = 0.45;
 
 impl PanelLeast {
-    fn of(app: &GitTurtle, message: bool, failed: bool, window: &Window) -> Self {
+    /// The least heights for a panel whose message panel, where a revision
+    /// is shown, keeps at least `message` (`Toolbar::revision_message_least`).
+    fn of(message: Option<Pixels>, failed: bool, window: &Window) -> Self {
         let rem = window.rem_size();
         let edge = window.pixel_snap(px(1.)) + rem * 1.5;
         let line = |size: f32| {
@@ -77,11 +79,7 @@ impl PanelLeast {
             px(0.)
         };
         let below = failure + row;
-        let body = if message {
-            let least = app
-                .inspector_message
-                .revision_message_least()
-                .unwrap_or_default();
+        let body = if let Some(least) = message {
             // A body taller than its least gives the message panel up to its
             // share, which a long message takes, so the room below it grows
             // by the rest alone: at 18 pt in a 461 × 420 window a failed
@@ -98,6 +96,11 @@ impl PanelLeast {
             row,
             footer: edge + line(10.),
         }
+    }
+
+    /// The panel's least height: its header's, its body's and its footer's.
+    fn total(&self) -> Pixels {
+        self.header + self.body + self.footer
     }
 }
 
@@ -525,6 +528,59 @@ impl GitTurtle {
             crate::tags::ScrollCue::gutter()
         } else {
             Pixels::ZERO
+        }
+    }
+
+    /// The inspector's message toolbar for an inspector `width` wide and
+    /// `tall` (`commit_message::Toolbar::within`), which the window lays out
+    /// before it draws one. File History's panel lays it out in the room its
+    /// overflow cue's gutter leaves while it scrolls (`file_history_gutter`),
+    /// and where it fits, its Copy message and Hash keep only their icons
+    /// where their labelled rows would leave the panel shorter than its
+    /// parts and their icons would not (DESIGN.md's responsive order:
+    /// actions become icons before the content gives way). Laid out in the
+    /// room the gutter left, the controls kept their icons, and the panel,
+    /// fitting, dropped the gutter; laid out in the room without it, they
+    /// took their labels on two rows, and the panel, too short for that
+    /// second row, kept the gutter again, so at 18 pt in a 511 × 490 window
+    /// the window drew every frame, the controls changing form in each.
+    pub(super) fn message_toolbar(
+        &self,
+        width: Pixels,
+        tall: Pixels,
+        pinned: bool,
+        window: &Window,
+    ) -> commit_message::Toolbar {
+        let gutter = self.file_history_gutter();
+        let toolbar = commit_message::Toolbar::within(width - gutter, tall, pinned, window);
+        let lineage = self
+            .file_history
+            .lineage
+            .as_ref()
+            .filter(|lineage| self.file_history.is_active() && lineage.entry().is_some());
+        let (Some(lineage), true) = (lineage, gutter == Pixels::ZERO) else {
+            return toolbar;
+        };
+        let Some(icons) = toolbar.with_icon_copies() else {
+            return toolbar;
+        };
+        // The panel's height does not follow the toolbar's form.
+        let panel = self
+            .file_history
+            .reveals
+            .panel
+            .scroll()
+            .bounds()
+            .size
+            .height;
+        let failed = lineage.error.is_some();
+        let least = |toolbar: &commit_message::Toolbar| {
+            PanelLeast::of(Some(toolbar.revision_message_least()), failed, window).total()
+        };
+        if least(&toolbar) > panel && least(&icons) <= panel {
+            icons
+        } else {
+            toolbar
         }
     }
 
@@ -1084,7 +1140,12 @@ impl GitTurtle {
         let path = copy_path.clone();
         let path_mark = copy_feedback::Mark::new("copy-history-path", &lineage.path);
         let path_copy = path_mark.clone();
-        let least = PanelLeast::of(self, entry.is_some(), lineage.error.is_some(), window);
+        let message = entry.map(|_| {
+            self.inspector_message
+                .revision_message_least()
+                .unwrap_or_default()
+        });
+        let least = PanelLeast::of(message, lineage.error.is_some(), window);
         let reveals = &self.file_history.reveals;
         let room = crate::appearance::button_ring_room(cx);
         // Each region reveals the control focus moves onto in its own rows;
@@ -2937,6 +2998,69 @@ pub(crate) mod tests {
             );
         }
         cx.update(|_, cx| cx.set_reduce_motion(false));
+    }
+
+    /// File History's panel settles at every width from 500 to 560 px at
+    /// 18 pt in a 490 px tall window: where Copy message's label fits the
+    /// toolbar but Hash's does not fit beside it, their two labelled rows
+    /// would leave the panel shorter than its parts, so they keep only their
+    /// icons on one row, and the panel fits, draws no scrollbar and is laid
+    /// out for the room it is drawn in. At 511 px the controls took their
+    /// labels where the panel kept no gutter and their icons where it did,
+    /// and the panel kept the gutter in every other frame: the window drew
+    /// without end, which hung the test's draw.
+    #[gpui::test]
+    async fn file_historys_panel_settles_where_its_gutter_would_decide_the_copy_controls(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let reveals = app.read_with(cx, |app, _| app.file_history.reveals.clone());
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        let slack = px(0.5);
+        for width in 500..=560 {
+            let at = format!("18 pt in {width} × 490");
+            cx.simulate_resize(size(px(width as f32), px(490.)));
+            draw(cx);
+            assert_eq!(
+                reveals.panel.scroll().max_offset().y,
+                px(0.),
+                "{at}: the panel fits"
+            );
+            assert!(
+                cx.debug_bounds("file-history-panel-scrollbar").is_none(),
+                "{at}: no scrollbar"
+            );
+            let copy = cx.debug_bounds("copy-message").expect("Copy message");
+            let hash = cx.debug_bounds("copy-commit").expect("Hash");
+            assert!(
+                (copy.top() - hash.top()).abs() <= slack,
+                "{at}: Copy message {copy:?} and Hash {hash:?} share one row"
+            );
+            let room = app
+                .read_with(cx, |app, _| app.inspector_message.details_room())
+                .expect("a laid-out toolbar");
+            let toolbar = cx
+                .debug_bounds("commit-message-toolbar")
+                .expect("the toolbar");
+            let drawn = toolbar.size.width - cx.update(|window, _| window.rem_size()) * 1.5;
+            assert!(
+                (room - drawn).abs() <= px(1.),
+                "{at}: laid out for {room:?}, drawn in {drawn:?}"
+            );
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
     }
 
     /// A failed page's notice leaves nothing in its reveal once no notice

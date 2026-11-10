@@ -210,6 +210,9 @@ fn parent_handle(handles: &RefCell<Vec<FocusHandle>>, index: usize, cx: &mut App
 pub(super) struct Toolbar {
     /// File History's toolbar, which has no Actions.
     plain: Form,
+    /// File History's with Copy message and Hash keeping only their icons
+    /// ([`Self::with_icon_copies`]).
+    icons: Form,
     /// History's and Compare's, with the commit's Actions.
     actions: Form,
     /// Whether the window pins the inspector, so the panel reserves the rows.
@@ -327,6 +330,11 @@ impl Toolbar {
             labelled_actions: false,
             height: height(copy_rows),
         };
+        let icons = Form {
+            compact: true,
+            labelled_actions: false,
+            height: height(rows(&[square, square])),
+        };
         let actions = if rows(&[copy, hash, actions]) == copy_rows {
             Form {
                 labelled_actions: true,
@@ -343,12 +351,32 @@ impl Toolbar {
         };
         Self {
             plain,
+            icons,
             actions,
             reserve: pinned,
             room,
             viewport: width - px(1.),
             cap: tall * MESSAGE_SHARE,
         }
+    }
+
+    /// The least height File History's message panel keeps with this
+    /// toolbar: its rows and the message's first line
+    /// (`GitTurtle::render_commit_message`).
+    pub(super) fn revision_message_least(&self) -> Pixels {
+        self.plain.height + first_line()
+    }
+
+    /// This toolbar with File History's Copy message and Hash keeping only
+    /// their icons on one row, where labelled they take more rows: for a
+    /// panel the labelled controls' rows would leave shorter than its parts
+    /// while their icons would not (`GitTurtle::message_toolbar`). `None`
+    /// where they keep their icons already or share one row labelled.
+    pub(super) fn with_icon_copies(self) -> Option<Self> {
+        (self.icons.height < self.plain.height).then_some(Self {
+            plain: self.icons,
+            ..self
+        })
     }
 
     /// The form File History's toolbar takes, without Actions, or History's
@@ -384,9 +412,7 @@ impl State {
     /// (`GitTurtle::render_commit_message`); `None` where no window lays
     /// the inspector out.
     pub(super) fn revision_message_least(&self) -> Option<Pixels> {
-        self.1
-            .get()
-            .map(|toolbar| toolbar.plain.height + first_line())
+        self.1.get().map(|toolbar| toolbar.revision_message_least())
     }
 
     /// The height the presented message and metadata were last measured at
@@ -1381,6 +1407,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn draw(cx: &mut VisualTestContext) {
+        crate::tags::settling::reset();
         for _ in 0..3 {
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);

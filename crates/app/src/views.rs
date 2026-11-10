@@ -9555,10 +9555,11 @@ impl GitTurtle {
         // it reserves the rows they take there.
         let inspector_width = self.drawn_inspector_width(width, &columns, cx);
         // File History's panel lays them out in the room its overflow cue's
-        // gutter leaves while it scrolls.
+        // gutter leaves while it scrolls, and as icons where their labels'
+        // rows alone would make it scroll (`GitTurtle::message_toolbar`).
         self.inspector_message
-            .lay_out_toolbar(Some(commit_message::Toolbar::within(
-                inspector_width - self.file_history_gutter(),
+            .lay_out_toolbar(Some(self.message_toolbar(
+                inspector_width,
                 height,
                 columns.pinned,
                 window,
@@ -11005,6 +11006,7 @@ pub(crate) mod tests {
     use core::prelude::v1::test;
 
     pub(crate) fn draw(cx: &mut VisualTestContext) {
+        crate::tags::settling::reset();
         for _ in 0..3 {
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);
