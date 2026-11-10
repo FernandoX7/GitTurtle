@@ -45,8 +45,8 @@ struct PanelLeast {
     /// The message's toolbar and first line, where a revision is shown, a
     /// failed page's notice, where one shows, and one revision row; or,
     /// where taller, the body whose rest beside the message panel's whole
-    /// share (`MESSAGE_SHARE`), which a long message takes, still holds the
-    /// notice and the row.
+    /// share (`commit_message::MESSAGE_SHARE`), which a long message
+    /// takes, still holds the notice and the row.
     body: Pixels,
     /// A failed page's notice: its padding, a line of its message and Retry
     /// page; none where no page failed.
@@ -56,10 +56,6 @@ struct PanelLeast {
     /// The footer's padding and its status line, with its top border.
     footer: Pixels,
 }
-
-/// The share of File History's body its message panel takes at most, as
-/// the commit inspector draws it (`commit_message::MESSAGE_SHARE`).
-const MESSAGE_SHARE: f32 = 0.45;
 
 impl PanelLeast {
     /// The least heights for a panel whose message panel, where a revision
@@ -87,7 +83,7 @@ impl PanelLeast {
             // by the rest alone: at 18 pt in a 461 × 420 window a failed
             // page's notice made the body tall enough to give the message
             // more than its least, which the revisions gave up.
-            (least + below).max(below / (1. - MESSAGE_SHARE))
+            (least + below).max(below / (1. - commit_message::MESSAGE_SHARE))
         } else {
             below
         };

@@ -20,8 +20,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 const PIECE_BYTES: usize = 1024;
 /// The most of the inspector's height History's and Compare's message panel
-/// takes.
-const MESSAGE_SHARE: f32 = 0.45;
+/// takes, and of File History's body its message panel takes
+/// (`file_history::PanelLeast`).
+pub(crate) const MESSAGE_SHARE: f32 = 0.45;
 const PIECE_LINES: usize = 16;
 
 struct Piece {
