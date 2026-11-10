@@ -492,12 +492,397 @@ pub(super) struct OpenRefusal {
     /// How many presses have been refused, so each is announced again with a fresh node.
     turns: usize,
     note: Option<OpenRefusalNote>,
+    /// Where Pull requests was last laid out, full or compact, which a keyboard press's answer
+    /// stands beside as its tooltip does ([`GitTurtle::github_refusal_announcement`]), read as
+    /// the answer is prepainted, after the button in the same frame.
+    button: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    /// Where the header's and the tab strip's other controls were prepainted in the frame being
+    /// drawn, each where its clip leaves it shown, which the reason's popup at Pull requests
+    /// stands clear of ([`pull_requests_answer_side`]): the return action, the repository
+    /// identity, History and Changes, a running write's status and Cancel, Projects, the
+    /// profile and Settings, each repository tab with its close button, Menu, Open repository
+    /// tab and Workspaces ([`GitTurtle::header_control`]). Forgotten as each frame's tab strip,
+    /// the first of those rows, is built ([`GitTurtle::begin_header_controls`]).
+    controls: std::rc::Rc<std::cell::RefCell<Vec<Bounds<Pixels>>>>,
+    /// [`Self::controls`] as the frame before recorded them, which decides ahead of their
+    /// recording whether a frame lays out the reason's popup to choose its side
+    /// ([`PlacedAnswer`]).
+    last_controls: std::rc::Rc<std::cell::RefCell<Vec<Bounds<Pixels>>>>,
+    /// The side of Pull requests the reason's popup took as it was last prepainted while the
+    /// panel was refused, which the pointer's tooltip takes there ([`PlacedAnswer`]); none
+    /// where nothing refuses the panel. The kit reads it as it places that tooltip, later in
+    /// the same frame (`Button::tooltip_view_at`).
+    side: std::rc::Rc<std::cell::Cell<Option<gpui_kit::base::Placement>>>,
+    /// While the panel is refused and no keyboard press's answer is kept, the reason's popup,
+    /// never drawn, laid out to choose the side the pointer's tooltip takes in a frame whose
+    /// inputs to that side changed ([`AnswerSide`]); built once for each reason.
+    measure: std::cell::RefCell<Option<KeptAnswer>>,
+    /// The side the reason's popup last took, with what it was chosen from, kept for the
+    /// window, so a frame that changes none of that lays out no popup to choose it again and
+    /// asks for no frame more ([`PlacedAnswer`]).
+    placed: std::rc::Rc<std::cell::RefCell<Option<AnswerSide>>>,
+    /// Whether Pull requests was last laid out with a keyboard press's answer kept, so the
+    /// button offers no pointer tooltip from that answer's second frame
+    /// ([`GitTurtle::refusing_pull_requests`]).
+    answered: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Whether the kit's tooltip overlay built the button's pointer tooltip in the last frame
+    /// drawn as the empty view it builds for a request the button made while a keyboard press's
+    /// answer stood: the overlay then held the button's own request, and no other control's,
+    /// which the button's prepaint later in that frame hides unless the pointer rests on the
+    /// button ([`GitTurtle::refusing_pull_requests`]). Cleared as the header is built in each
+    /// frame, before the overlay builds, so it reflects the last frame drawn alone, and only
+    /// that frame's prepaint reads it: the answer's end, between frames, reads none of it, so a
+    /// neighbour's hover that took the overlay since is never hidden for a request it no
+    /// longer holds.
+    built_empty: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The key of a keyboard press of Pull requests the panel refused as it went down, until
+    /// it comes up: its repeats answer nothing more and its key-up presses nothing, also once
+    /// the write has ended ([`GitTurtle::pull_requests_key_down`]). This latch is the
+    /// button's own, not the kit's: a key-up lost while focus and the window's activation
+    /// stay as they were, as X11 drops one within 20 ms of the next press, leaves it set, and
+    /// that key's next press then opens nothing, which a second press does; it never makes a
+    /// write. Focus leaving the button and the window turning inactive clear it.
+    held: Option<&'static str>,
+    /// For a press by Return or Space, the tooltip that answers it at the button, as the
+    /// pointer's tooltip answers a click there, for as long as the button keeps focus and the
+    /// panel stays refused ([`GitTurtle::answer_pull_requests_at_button`]).
+    at_button: Option<KeptAnswer>,
+    /// Takes the answer at the button, and the held press, away as focus leaves the button.
+    _blur: Option<Subscription>,
+    /// Builds the answer at the button again as the reason the panel is refused changes, and
+    /// takes it away as what refused the panel ends.
+    _spell: Option<Subscription>,
+}
+/// The answer a keyboard press of Pull requests stands at the button, and the reason it says.
+struct KeptAnswer {
+    reason: &'static str,
+    view: AnyView,
 }
 struct OpenRefusalNote {
     turn: usize,
+    /// The reason the press was refused for, which another reason refusing the panel, or none,
+    /// drops the note for ([`GitTurtle::say_github_open_refused`]).
+    cause: &'static str,
     /// What it says, in the words the button's tooltip gives ([`open_refused_sentence`]).
     reason: SharedString,
     _expiry: Task<()>,
+    /// Drops the note as the panel's refusal changes from `cause`.
+    _watch: Subscription,
+}
+/// The tooltip Pull requests gives, `text`, as the pointer's tooltip and a keyboard press's
+/// answer draw it, its text drawn as `pull-requests/tooltip/‹text›` for tests.
+fn pull_requests_tooltip(text: SharedString, cx: &mut App) -> AnyView {
+    cx.new(|_| {
+        Tooltip::element(move |_, _| {
+            let probe = text.clone();
+            div()
+                .debug_selector(move || format!("pull-requests/tooltip/{probe}"))
+                .child(text.clone())
+        })
+    })
+    .into()
+}
+/// Whether the pointer rests on Pull requests, laid out at `bounds`: inside it, and the last
+/// input the pointer's, since GPUI takes a key press as ending a hover until the pointer moves.
+fn pointer_rests(window: &Window, bounds: Bounds<Pixels>) -> bool {
+    !window.last_input_was_keyboard() && bounds.contains(&window.mouse_position())
+}
+/// The kit tooltip's margin around its popup inside the element its positioner places, in rems
+/// (`POPUP_MARGIN` in the kit's `tooltip.rs`, private there): the popup's drawn edge, its 1 px
+/// border, stands this far inside that element.
+const TOOLTIP_POPUP_MARGIN: f32 = 0.75;
+/// The side of Pull requests, laid out at `button`, on which the reason's popup, the element of
+/// `size` the kit's tooltip positioner places beside the button as it places the pointer's
+/// tooltip, centred on it and clamped into the window's 4 px margin, covers the least of the
+/// other controls of the header and the tab strip, `controls`, and of the button itself: above
+/// where its drawn edge covers none of them, else below where it covers none, else the side
+/// where it covers less of them, by area. Its drawn edge stands the popup's margin inside the
+/// element, and the button's focus ring's room clear of the ring above or below it. Placed
+/// above wherever it fitted, at 13 pt in a 1,480 × 973 window the answer covered the tab strip
+/// over the repository tabs, and in a 461 × 490 one the Changes tab too, so their names were
+/// lost for the whole write.
+fn pull_requests_answer_side(
+    button: Bounds<Pixels>,
+    controls: &[Bounds<Pixels>],
+    size: Size<Pixels>,
+    window: &Window,
+) -> gpui_kit::base::Placement {
+    use gpui_kit::base::Placement;
+    let inset = window.rem_size() * TOOLTIP_POPUP_MARGIN;
+    // The positioner's margin, outside the client inset of client-side decorations.
+    let margin = px(4.) + window.client_inset().unwrap_or(px(0.));
+    let viewport = window.viewport_size();
+    let (right, foot) = (
+        (viewport.width - margin).max(margin),
+        (viewport.height - margin).max(margin),
+    );
+    let covered = |placement: Placement| -> f32 {
+        let y = match placement {
+            Placement::Top => button.top() - size.height,
+            _ => button.bottom(),
+        };
+        let mut placed = Bounds::new(point(button.center().x - size.width / 2., y), size);
+        if placed.right() > right {
+            placed.origin.x -= placed.right() - right;
+        }
+        placed.origin.x = placed.origin.x.max(margin);
+        if placed.bottom() > foot {
+            placed.origin.y -= placed.bottom() - foot;
+        }
+        placed.origin.y = placed.origin.y.max(margin);
+        let drawn = Bounds::from_corners(
+            placed.origin + point(inset, inset),
+            placed.bottom_right() - point(inset, inset),
+        );
+        controls
+            .iter()
+            .chain([&button])
+            .map(|control| {
+                let overlap = drawn.intersect(control);
+                let (width, height) = (
+                    f32::from(overlap.size.width),
+                    f32::from(overlap.size.height),
+                );
+                // A popup that meets a control's edge on a pixel's rounding covers nothing.
+                if width > 0.5 && height > 0.5 {
+                    width * height
+                } else {
+                    0.
+                }
+            })
+            .sum()
+    };
+    if covered(Placement::Bottom) < covered(Placement::Top) {
+        Placement::Bottom
+    } else {
+        Placement::Top
+    }
+}
+/// What the side of Pull requests the reason's popup takes is chosen from
+/// ([`pull_requests_answer_side`]): the reason, whose sentence sizes the popup, where the button
+/// and the header's and the tab strip's other controls lie in the frame, the interface font and
+/// its sizes, and the window's scale, size and client inset; with the side they gave. A frame
+/// that changes none of them takes that side again without laying the popup
+/// out: chosen in every frame, a write's steady frames each laid out a tooltip view never drawn.
+struct AnswerSide {
+    reason: &'static str,
+    button: Bounds<Pixels>,
+    controls: Vec<Bounds<Pixels>>,
+    font: SharedString,
+    font_size: Pixels,
+    rem: Pixels,
+    scale: f32,
+    viewport: Size<Pixels>,
+    inset: Option<Pixels>,
+    side: gpui_kit::base::Placement,
+}
+impl AnswerSide {
+    /// Whether the side was chosen from what this frame would choose it from.
+    fn holds(
+        &self,
+        reason: &'static str,
+        button: Bounds<Pixels>,
+        controls: &[Bounds<Pixels>],
+        window: &Window,
+        cx: &App,
+    ) -> bool {
+        let theme = gpui_kit::component::Theme::global(cx);
+        self.reason == reason
+            && self.button == button
+            && self.controls == controls
+            && self.font == theme.font_family
+            && self.font_size == theme.font_size
+            && self.rem == window.rem_size()
+            && self.scale == window.scale_factor()
+            && self.viewport == window.viewport_size()
+            && self.inset == window.client_inset()
+    }
+}
+#[cfg(test)]
+thread_local! {
+    /// How many times the reason's popup at Pull requests was laid out to choose its side.
+    static ANSWER_SIDE_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// The reason's popup at Pull requests, placed on the side [`pull_requests_answer_side`] takes in
+/// its own prepaint, which runs, as a deferred draw's does, once the rest of the frame has been
+/// prepainted, so the button and the other controls have recorded where this frame lays them
+/// out: a side chosen from the frame before could swing back and forth as the popup's side
+/// moved what it was weighed against. Drawn where a keyboard press's answer is kept, by the
+/// positioner the kit places the pointer's tooltip with, so the two stand on the same pixels;
+/// otherwise laid out only, to choose the side the pointer's tooltip takes, which the kit's tooltip
+/// overlay, registered after it at the same priority, reads as it places that tooltip later in
+/// the same frame, so the frame that changes the side draws the tooltip there, also one shown
+/// since before the panel was refused. The side is chosen again only in a frame that changes
+/// what it is chosen from ([`AnswerSide`]); in any other the popup, unless drawn, is not laid
+/// out at all.
+struct PlacedAnswer {
+    /// The popup, until it is laid out inside [`Self::positioned`].
+    popup: Option<AnyElement>,
+    /// The popup inside the kit's tooltip positioner: where it is drawn, the positioner the
+    /// kit's tooltip overlay places the pointer's tooltip with, beside the button as this frame
+    /// lays it out and on the side chosen, laid out and placed in this element's prepaint as
+    /// the overlay's is, so the two stand at the same place by construction; otherwise laid
+    /// out with the frame to size it alone, where the side is chosen again.
+    positioned: Option<AnyElement>,
+    /// The reason it says.
+    reason: &'static str,
+    button: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    controls: std::rc::Rc<std::cell::RefCell<Vec<Bounds<Pixels>>>>,
+    /// Where they lay in the frame before, which the popup's layout, ahead of their recording
+    /// in this frame, is decided from.
+    last_controls: std::rc::Rc<std::cell::RefCell<Vec<Bounds<Pixels>>>>,
+    side: std::rc::Rc<std::cell::Cell<Option<gpui_kit::base::Placement>>>,
+    placed: std::rc::Rc<std::cell::RefCell<Option<AnswerSide>>>,
+    drawn: bool,
+}
+impl IntoElement for PlacedAnswer {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl Element for PlacedAnswer {
+    /// Whether the popup was laid out with the rest of the frame.
+    type RequestLayoutState = bool;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui_kit::GlobalElementId>,
+        _: Option<&gpui_kit::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui_kit::LayoutId, bool) {
+        // Laid out with the rest of the frame, before this frame's controls record where they
+        // lie: a popup not drawn is left out where the side held for the last frame's.
+        let held = self.placed.borrow().as_ref().is_some_and(|placed| {
+            placed.holds(
+                self.reason,
+                self.button.get(),
+                &self.last_controls.borrow(),
+                window,
+                cx,
+            )
+        });
+        // A drawn popup is laid out as it is placed, once the button has recorded where this
+        // frame lays it out. Its node stands out of the flow, as the positioner does, so it
+        // takes no room and no gap among the status bar's parts it is drawn among: in the flow,
+        // it took a gap from the status line in each of a write's steady frames.
+        if held || self.drawn {
+            return (
+                window.request_layout(
+                    gpui::Style {
+                        position: gpui::Position::Absolute,
+                        ..gpui::Style::default()
+                    },
+                    None,
+                    cx,
+                ),
+                false,
+            );
+        }
+        let mut sized = gpui_kit::base::TooltipPositioner::new(self.button.get())
+            .children(self.popup.take())
+            .into_any_element();
+        let laid = sized.request_layout(window, cx);
+        self.positioned = Some(sized);
+        (laid, true)
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui_kit::GlobalElementId>,
+        _: Option<&gpui_kit::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        laid_out: &mut bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let button = self.button.get();
+        let held = self.placed.borrow().as_ref().and_then(|placed| {
+            placed
+                .holds(self.reason, button, &self.controls.borrow(), window, cx)
+                .then_some(placed.side)
+        });
+        // The drawn popup in the positioner the kit places the pointer's tooltip with, which
+        // reads the side as it is placed below, laid out as the overlay lays its own out.
+        let drawn = self.drawn.then(|| {
+            let mut positioned = gpui_kit::base::TooltipPositioner::new(button)
+                .placement_following(self.side.clone())
+                .children(self.popup.take())
+                .into_any_element();
+            let size = positioned.layout_as_root(
+                window.viewport_size().map(gpui::AvailableSpace::Definite),
+                window,
+                cx,
+            );
+            (positioned, size)
+        });
+        let side = match held {
+            Some(side) => side,
+            None => {
+                // This frame's controls moved since the last: a popup left out is laid out now,
+                // to choose from; one not drawn is never placed, so where it would stand does
+                // not matter.
+                let size = match (&drawn, *laid_out) {
+                    (Some((_, size)), _) => *size,
+                    (None, true) => bounds.size,
+                    (None, false) => gpui_kit::base::TooltipPositioner::new(button)
+                        .children(self.popup.take())
+                        .into_any_element()
+                        .layout_as_root(gpui::AvailableSpace::min_size(), window, cx),
+                };
+                let controls = self.controls.borrow();
+                let side = pull_requests_answer_side(button, &controls, size, window);
+                #[cfg(test)]
+                ANSWER_SIDE_LAYOUTS.with(|layouts| layouts.set(layouts.get() + 1));
+                let theme = gpui_kit::component::Theme::global(cx);
+                *self.placed.borrow_mut() = Some(AnswerSide {
+                    reason: self.reason,
+                    button,
+                    controls: controls.clone(),
+                    font: theme.font_family.clone(),
+                    font_size: theme.font_size,
+                    rem: window.rem_size(),
+                    scale: window.scale_factor(),
+                    viewport: window.viewport_size(),
+                    inset: window.client_inset(),
+                    side,
+                });
+                side
+            }
+        };
+        self.side.set(Some(side));
+        // Laid out where the kit's tooltip overlay lays its positioner out, after the window's
+        // content, at its foot: the positioner moves the popup by whole pixels from there, so
+        // the two stand on the same pixels. Laid out at the window's top, the answer stood a
+        // pixel below the pointer's tooltip where the popup's place fell on a half pixel.
+        let origin = point(px(0.), window.viewport_size().height);
+        self.positioned = drawn.map(|(mut positioned, _)| {
+            positioned.prepaint_at(origin, window, cx);
+            positioned
+        });
+    }
+    fn paint(
+        &mut self,
+        _: Option<&gpui_kit::GlobalElementId>,
+        _: Option<&gpui_kit::InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut bool,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if self.drawn
+            && let Some(positioned) = &mut self.positioned
+        {
+            positioned.paint(window, cx);
+        }
+    }
 }
 /// What a refused press of Pull requests says, in its tooltip, the status line and the live
 /// region alike: the panel's name as its subject, so it means something heard alone, and what
@@ -534,15 +919,64 @@ impl GitTurtle {
     /// colour is the label's alone, so the focus ring stays whole. A refused press also answers
     /// on the button itself: the tooltip says the reason ([`open_refused_sentence`]) and stays
     /// through the press, since the status line is at the window's foot, 900 px from a pointer
-    /// on the header. At rest a press opens the panel, and the tooltip goes with it. `compact` is the short header form, whose tooltip names the control; the
-    /// tooltip is formatted only as it shows, so a frame copies none of it.
+    /// on the header, and Return or Space on the focused button stand the same tooltip there
+    /// for the rest of the spell ([`Self::pull_requests_key_down`]). At rest a press opens the
+    /// panel, and the tooltip goes with it. `compact` is the short header form, whose tooltip
+    /// names the control; the tooltip is formatted only as it shows, so a frame copies none
+    /// of it.
+    ///
+    /// While a keyboard press's answer is kept the button offers no pointer tooltip, which
+    /// would say the same sentence over it: the answer stays drawn under a pointer that rests
+    /// on the button, crosses it or leaves it. The answer's first frame still offers it, so
+    /// GPUI, which tells a hover only to a listener drawn, tells the button the key press ended
+    /// any hover it last reported, and none is left standing to end once the answer has gone,
+    /// hiding whatever tooltip the overlay then holds, a neighbour's among them. A pointer that
+    /// meets the button before the next frame asks for a tooltip that GPUI then never tells
+    /// the pointer has left: whenever the overlay builds it, while the answer stands or once
+    /// it has gone, it draws nothing, and the button's prepaint in the same frame hides it,
+    /// unless the pointer rests on the button, where once the answer has gone the button's
+    /// own tooltip is built in its place, so no tooltip is drawn at a button the pointer has
+    /// left, a show still waiting out its delay as the answer ends included, and the next
+    /// hover elsewhere waits out its own delay. The kit's overlay is hidden from here only
+    /// while it holds the button's request, never another control's. Offered from the answer's
+    /// second frame, an empty tooltip under a pointer resting on the button left the overlay
+    /// holding the button's request, and a hover on another control took its tooltip at once,
+    /// without the show delay, sliding from Pull requests.
+    ///
+    /// While the panel is refused the pointer's tooltip stands on the side of the button the
+    /// reason's popup takes as it is placed in the same frame ([`PlacedAnswer`]), clear of the
+    /// header's and the tab strip's other controls where a side leaves them clear, in every
+    /// frame it is drawn, a hover that began before the refusal or before the side changed
+    /// included: the kit reads the side as it places the tooltip, after the popup has chosen
+    /// it, never as the hover begins. Read as the hover began, a tooltip kept the side of that
+    /// frame for the whole write, over the tab strip's tabs where the answer stood below, and
+    /// even a hover that began during the refusal took the side a frame late.
     pub(super) fn refusing_pull_requests(
         &self,
         open: Button,
         compact: bool,
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Button {
-        let refused = self.github_open_refusal().is_some();
+        let reason = self.github_open_refusal();
+        let refused = reason.is_some();
+        // The reason's popup, measured to choose the pointer's side while no answer is kept.
+        {
+            let mut measure = self.github_refusal.measure.borrow_mut();
+            match reason.filter(|_| self.github_refusal_kept().is_none()) {
+                Some(reason) if measure.as_ref().is_some_and(|kept| kept.reason == reason) => {}
+                Some(reason) => {
+                    *measure = Some(KeptAnswer {
+                        reason,
+                        view: pull_requests_tooltip(open_refused_sentence(reason), cx),
+                    })
+                }
+                None => *measure = None,
+            }
+        }
+        if !refused {
+            self.github_refusal.side.set(None);
+        }
+        let side = self.github_refusal.side.clone();
         let dimmed = refused && self.operation_shown().is_some();
         #[cfg(test)]
         crate::workspace::refusals::record("pull-requests".into(), refused, dimmed);
@@ -552,30 +986,214 @@ impl GitTurtle {
             "Discover pull requests and review captured changes"
         };
         let owner = cx.entity().downgrade();
+        // Where it lies, for the answer a keyboard press gets beside it, which the answer reads
+        // as it is placed later in the same frame, and whether that answer was kept as it was
+        // last laid out, which a frame drawn next takes its pointer tooltip away for.
+        let (laid, answered, answering, app) = (
+            self.github_refusal.button.clone(),
+            self.github_refusal.answered.clone(),
+            self.github_refusal_kept().is_some(),
+            cx.entity_id(),
+        );
+        let pointer_tooltip = !(answering && answered.get());
+        let built_empty = self.github_refusal.built_empty.clone();
+        built_empty.set(false);
+        let (resting, held) = (laid.clone(), built_empty.clone());
+        let open = gpui_kit::base::ElementExt::on_prepaint(open, move |bounds, window, cx| {
+            laid.set(bounds);
+            let began = answered.replace(answering) != answering;
+            if answering && began {
+                cx.notify(app);
+            }
+            // The overlay built the button's request, made while an answer stood, as nothing in
+            // this frame, under a pointer that has left the button: hand the overlay back.
+            if held.get() && !pointer_rests(window, bounds) {
+                gpui_kit::component::Root::hide_tooltip(window, cx);
+            }
+        });
         open.accessibility_disabled(refused)
             .when(dimmed, |open| {
                 open.text_color(gpui_kit::component::Theme::global(cx).disabled_foreground())
             })
             .when(refused, |open| open.tooltip_through_press())
-            .tooltip_view(move |window, cx| {
-                let refusal = owner
-                    .upgrade()
-                    .and_then(|app| app.read(cx).github_open_refusal());
-                let text = refusal.map_or(SharedString::new_static(idle), open_refused_sentence);
-                Tooltip::element(move |_, _| {
-                    let probe = text.clone();
-                    div()
-                        .debug_selector(move || format!("pull-requests/tooltip/{probe}"))
-                        .child(text.clone())
-                })
-                .build(window, cx)
+            .capture_key_down(cx.listener(Self::pull_requests_key_down))
+            .capture_key_up(cx.listener(Self::pull_requests_key_up))
+            .on_action(cx.listener(Self::pull_requests_escape))
+            .when(pointer_tooltip, |open| {
+                let build = move |window: &mut Window, cx: &mut App| {
+                    let (kept, refusal) = owner.upgrade().map_or((false, None), |app| {
+                        let app = app.read(cx);
+                        (
+                            app.github_refusal_kept().is_some(),
+                            app.github_open_refusal(),
+                        )
+                    });
+                    // A pointer that met the button in the answer's first frame asked for this
+                    // tooltip: an empty view, drawn as nothing beside the answer, and once the
+                    // answer has gone, under a pointer that has left the button since.
+                    if kept || (answering && !pointer_rests(window, resting.get())) {
+                        built_empty.set(true);
+                        return cx.new(|_| gpui::EmptyView).into();
+                    }
+                    let text =
+                        refusal.map_or(SharedString::new_static(idle), open_refused_sentence);
+                    pull_requests_tooltip(text, cx)
+                };
+                open.tooltip_view_at(side, build)
             })
+    }
+
+    /// Return or Space going down on the focused Pull requests while the panel cannot open is
+    /// answered at once and at the button, as a click is under the pointer
+    /// ([`Self::answer_pull_requests_at_button`]), once for the press: its repeats, marked held
+    /// or, under X11, sent as fresh presses with no key-up between them, answer nothing more.
+    /// The button's own press, which GPUI arms on any Enter or Space key-down and makes as the
+    /// key comes up, is never armed for it, so a press held until the write has ended opens
+    /// nothing as it comes up. Any other key ends the press, as it ends a held key's repeats.
+    fn pull_requests_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        if self.github_refusal.held == Some(key) {
+            window.prevent_default();
+            return;
+        }
+        self.github_refusal.held = None;
+        let key = match key {
+            "enter" => "enter",
+            "space" => "space",
+            _ => return,
+        };
+        if event.keystroke.modifiers.modified() || self.page != AppPage::Repository {
+            return;
+        }
+        let Some(reason) = self.github_open_refusal() else {
+            return;
+        };
+        window.prevent_default();
+        self.github_refusal.held = Some(key);
+        self.answer_pull_requests_at_button(reason, window, cx);
+    }
+
+    /// The key-up that ends a press [`Self::pull_requests_key_down`] answered presses nothing.
+    fn pull_requests_key_up(
+        &mut self,
+        event: &KeyUpEvent,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        if self.github_refusal.held == Some(event.keystroke.key.as_str()) {
+            self.github_refusal.held = None;
+            window.prevent_default();
+        }
+    }
+
+    /// Escape on the focused Pull requests takes away the answer a keyboard press stands at
+    /// the button ([`Self::answer_pull_requests_at_button`]), and does nothing else while it
+    /// is drawn, wherever the pointer rests; otherwise it goes on to the window's Escape.
+    /// Escape is bound across the window
+    /// ([`crate::ClearSearch`]), and GPUI gives a key's binding the press before any key-down
+    /// listener, so [`Self::pull_requests_key_down`] never hears it.
+    fn pull_requests_escape(
+        &mut self,
+        _: &crate::ClearSearch,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.github_refusal_kept().is_none() {
+            cx.propagate();
+            return;
+        }
+        self.end_pull_requests_answer(cx);
+    }
+
+    /// Answers a keyboard press of Pull requests the panel refuses as the pointer's tooltip
+    /// answers a click: the reason stands at the button in its tooltip, said again as the
+    /// reason changes, until what refused the panel ends, focus leaves the button or Escape;
+    /// the status line says it for [`crate::copy_feedback::RESTORE_AFTER`]
+    /// ([`Self::say_github_open_refused`]), and its live region speaks it once for the press,
+    /// so the tooltip is drawn out of the accessibility tree. The press hides any tooltip the
+    /// pointer brought, as a key press ends a pointer's hover, and the button offers its own
+    /// again only once the answer has gone ([`Self::refusing_pull_requests`]), so the two
+    /// never stand one over the other. The press once answered only in the status line,
+    /// 900 px from the button, and then at the button only as long as the status line, too
+    /// briefly to read.
+    fn answer_pull_requests_at_button(
+        &mut self,
+        reason: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.say_github_open_refused(reason, cx);
+        gpui_kit::component::Root::hide_tooltip(window, cx);
+        self.github_refusal.at_button = Some(KeptAnswer {
+            reason,
+            view: pull_requests_tooltip(open_refused_sentence(reason), cx),
+        });
+        self.github_refusal._blur =
+            Some(
+                cx.on_blur(&self.pull_requests_focus, window, |this, _, cx| {
+                    this.github_refusal.held = None;
+                    this.end_pull_requests_answer(cx);
+                }),
+            );
+        let app = cx.entity();
+        self.github_refusal._spell = Some(cx.observe_in(&app, window, |this, _, window, cx| {
+            this.follow_pull_requests_refusal(window, cx)
+        }));
+    }
+
+    /// Keeps the answer at Pull requests saying why the panel is refused: built again for a
+    /// reason that changed, as a write gives way to an outbound action, and taken away once
+    /// nothing refuses the panel. It once kept the sentence of the spell it began in.
+    fn follow_pull_requests_refusal(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(reason) = self.github_open_refusal() else {
+            self.end_pull_requests_answer(cx);
+            return;
+        };
+        if let Some(kept) = self.github_refusal.at_button.as_mut()
+            && kept.reason != reason
+        {
+            *kept = KeptAnswer {
+                reason,
+                view: pull_requests_tooltip(open_refused_sentence(reason), cx),
+            };
+            cx.notify();
+        }
+    }
+
+    /// Takes away the answer a keyboard press stands at the button, if any. The kit's overlay is
+    /// left as it is: a request the button made while the answer stood is built as nothing and
+    /// hidden in the next frame the overlay builds it under a pointer that has left the button
+    /// ([`Self::refusing_pull_requests`]), and under a pointer resting there it becomes the
+    /// button's own tooltip. Hidden here while the overlay had last built the button's request,
+    /// a pointer resting on the button lost its tooltip as the write ended, and a show still
+    /// waiting out its delay drew the button's tooltip at a button the pointer had left.
+    fn end_pull_requests_answer(&mut self, cx: &mut Context<Self>) {
+        self.github_refusal._spell = None;
+        if self.github_refusal.at_button.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The answer a keyboard press of Pull requests stands at the button while the panel is
+    /// still refused ([`Self::answer_pull_requests_at_button`]), drawn wherever the pointer
+    /// rests, in the words of the reason that refuses it now.
+    fn github_refusal_kept(&self) -> Option<&AnyView> {
+        self.github_refusal
+            .at_button
+            .as_ref()
+            .filter(|_| self.github_open_refusal().is_some())
+            .map(|kept| &kept.view)
     }
 
     /// Says why a press could not open the panel, as the status line's text while it is
     /// fresh, for [`crate::copy_feedback::RESTORE_AFTER`], as a write's outcome is, and in the
     /// button's tooltip. Nothing else on screen changes.
-    fn say_github_open_refused(&mut self, reason: &str, cx: &mut Context<Self>) {
+    fn say_github_open_refused(&mut self, reason: &'static str, cx: &mut Context<Self>) {
         self.github_refusal.turns = self.github_refusal.turns.wrapping_add(1);
         let expiry = cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -586,12 +1204,34 @@ impl GitTurtle {
                 cx.notify();
             });
         });
+        // Dropped, not set aside, as the refusal changes: a reason going back to this one
+        // within the note's time once brought the first press's sentence back.
+        let watch = cx.observe(&cx.entity(), |this, _, cx| {
+            if let Some(note) = &this.github_refusal.note
+                && this.github_open_refusal() != Some(note.cause)
+            {
+                this.github_refusal.note = None;
+                cx.notify();
+            }
+        });
         self.github_refusal.note = Some(OpenRefusalNote {
             turn: self.github_refusal.turns,
+            cause: reason,
             reason: open_refused_sentence(reason),
             _expiry: expiry,
+            _watch: watch,
         });
         cx.notify();
+    }
+
+    /// The note a refused press leaves while it is fresh, dropped, not renamed, once another
+    /// reason refuses the panel, as an outbound action follows a write, or none does: the press
+    /// was refused for the reason it says ([`Self::say_github_open_refused`]). Kept, it went on
+    /// saying the write's for up to [`crate::copy_feedback::RESTORE_AFTER`] while the answer at
+    /// the button said the action's; set aside instead, it came back as the write's reason did
+    /// within that time, and while nothing refused the panel its live region stayed drawn.
+    fn github_refusal_note(&self) -> Option<&OpenRefusalNote> {
+        self.github_refusal.note.as_ref()
     }
 
     /// The refusal the status line reads while it is fresh and the panel is still refused: a
@@ -599,7 +1239,7 @@ impl GitTurtle {
     /// ([`Self::github_refusal_announcement`]). A "Wait for…" could otherwise stay up for
     /// [`crate::copy_feedback::RESTORE_AFTER`] after the write it waited for had ended.
     pub(super) fn github_refusal_line(&self) -> Option<&str> {
-        let note = self.github_refusal.note.as_ref()?;
+        let note = self.github_refusal_note()?;
         (self.page == AppPage::Repository
             && self.error.is_none()
             && self.fresh_outcome().is_none()
@@ -610,26 +1250,124 @@ impl GitTurtle {
     /// The status live region that says why a press could not open the panel, a fresh node
     /// for each press, as the narrow rail's refusal is: nothing else on screen changes, and
     /// a repeated refusal would otherwise go unheard. Its text is the node's name and its
-    /// value, which AT-SPI and macOS announce respectively. It draws nothing.
-    pub(super) fn github_refusal_announcement(&self) -> Option<impl IntoElement> {
-        let note = self.github_refusal.note.as_ref()?;
-        Some(crate::native_accessibility::recorded(
-            div()
-                .id(("github-open-refused", note.turn))
-                .debug_selector(|| "github-open-refused".into())
-                .role(Role::Status)
-                .polite()
-                .aria_label(note.reason.clone())
-                .aria_value(note.reason.clone())
-                .absolute()
-                .size(px(1.))
-                .overflow_hidden(),
-        ))
+    /// value, which AT-SPI and macOS announce respectively. It draws nothing. Beside it, out
+    /// of the button's node, whose name it would otherwise join, stands the tooltip that
+    /// answers a keyboard press at the button ([`Self::answer_pull_requests_at_button`]),
+    /// placed by the positioner the kit places the pointer's with, on the side of the button
+    /// [`pull_requests_answer_side`] takes ([`PlacedAnswer`]), and left out
+    /// of the accessibility tree with all it holds, the kit's tooltip node among them: the
+    /// live region has spoken it, and a reader that reached it would say it a second time.
+    pub(super) fn github_refusal_announcement(&self) -> Vec<AnyElement> {
+        /// The kit's tooltip overlay's priority, so the answer stands where the pointer's would.
+        const TOOLTIP_PRIORITY: usize = 200;
+        let mut drawn = Vec::new();
+        if let Some(note) = self.github_refusal_note() {
+            drawn.push(
+                crate::native_accessibility::recorded(
+                    div()
+                        .id(("github-open-refused", note.turn))
+                        .debug_selector(|| "github-open-refused".into())
+                        .role(Role::Status)
+                        .polite()
+                        .aria_label(note.reason.clone())
+                        .aria_value(note.reason.clone())
+                        .absolute()
+                        .size(px(1.))
+                        .overflow_hidden(),
+                )
+                .into_any_element(),
+            );
+        }
+        let kept = self.github_refusal_kept().cloned();
+        let measure = self.github_refusal.measure.borrow();
+        let measured = self.github_open_refusal().and_then(|reason| {
+            measure
+                .as_ref()
+                .filter(|measured| measured.reason == reason)
+                .map(|measured| measured.view.clone())
+        });
+        let reason = self.github_open_refusal();
+        let popup = match (kept, measured) {
+            (Some(answer), _) => Some((
+                crate::native_accessibility::hidden_from_assistive_technology(
+                    div()
+                        .id("pull-requests-answer")
+                        .debug_selector(|| "pull-requests-answer".into())
+                        .child(answer),
+                    true,
+                )
+                .into_any_element(),
+                true,
+            )),
+            (None, Some(measured)) => Some((div().child(measured).into_any_element(), false)),
+            (None, None) => None,
+        };
+        if let (Some((popup, kept)), Some(reason)) = (
+            popup.filter(|_| self.page == AppPage::Repository && self.repository.is_some()),
+            reason,
+        ) {
+            drawn.push(
+                deferred(PlacedAnswer {
+                    popup: Some(popup),
+                    positioned: None,
+                    reason,
+                    button: self.github_refusal.button.clone(),
+                    controls: self.github_refusal.controls.clone(),
+                    last_controls: self.github_refusal.last_controls.clone(),
+                    side: self.github_refusal.side.clone(),
+                    placed: self.github_refusal.placed.clone(),
+                    drawn: kept,
+                })
+                .with_priority(TOOLTIP_PRIORITY)
+                .into_any_element(),
+            );
+        }
+        drawn
+    }
+
+    /// Forgets where the header's and the tab strip's controls lay in the frame before, as the
+    /// tab strip, the first of their rows, is built for a frame ([`OpenRefusal::controls`]).
+    pub(super) fn begin_header_controls(&self) {
+        let mut controls = self.github_refusal.controls.borrow_mut();
+        let mut last = self.github_refusal.last_controls.borrow_mut();
+        std::mem::swap(&mut *last, &mut *controls);
+        controls.clear();
+    }
+
+    /// `control`, one of the header's or the tab strip's, recording where it is prepainted in
+    /// this frame, where its clip leaves it shown, which the reason's popup at Pull requests
+    /// stands clear of ([`OpenRefusal::controls`]). For an element whose own children decide
+    /// nothing of its size; [`Self::framed_header_control`] for any other.
+    pub(super) fn header_control<E: ParentElement>(&self, control: E) -> E {
+        let controls = self.github_refusal.controls.clone();
+        gpui_kit::base::ElementExt::on_prepaint(control, move |bounds, window, _| {
+            let shown = bounds.intersect(&window.content_mask().bounds);
+            if shown.size.width > px(0.) && shown.size.height > px(0.) {
+                controls.borrow_mut().push(shown);
+            }
+        })
+    }
+
+    /// [`Self::header_control`] for a control a child of its own would change, such as a
+    /// Button with no label, which the kit sizes as a square only while it holds no child, or
+    /// one that takes no child: a frame around it, as wide and as tall as it, records it.
+    pub(super) fn framed_header_control(&self, control: impl IntoElement) -> Div {
+        self.header_control(div().flex().flex_shrink_0().child(control))
     }
 
     /// Open the panel from the header's Pull requests button, full or
     /// compact, which closing returns focus to.
+    /// A press by Return or Space that went down while the panel could open and comes up
+    /// refused is answered at the button too, as [`Self::pull_requests_key_down`] answers one
+    /// refused as it goes down.
     pub(super) fn open_github_from_header(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page == AppPage::Repository
+            && window.last_input_was_keyboard()
+            && let Some(reason) = self.github_open_refusal()
+        {
+            self.answer_pull_requests_at_button(reason, window, cx);
+            return;
+        }
         let opener = self.pull_requests_focus.clone();
         self.open_github_returning_to(Some(opener), window, cx);
     }
@@ -17666,6 +18404,1710 @@ mod tests {
             open_refused_sentence(BUSY_REASON),
             "a stale refusal never outlasts the write"
         );
+    }
+
+    fn key_down(cx: &mut VisualTestContext, key: &str, is_held: bool) {
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            is_held,
+            prefer_character_input: false,
+        });
+    }
+
+    fn key_up(cx: &mut VisualTestContext, key: &str) {
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+        });
+    }
+
+    /// The live regions that have said why a press of Pull requests could not open the panel.
+    fn refusals_heard() -> Vec<String> {
+        crate::native_accessibility::written::announced_from("github-open-refused")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    const REFUSED_SENTENCE: &str = "Pull requests: wait for the current Git operation to finish";
+    /// The text of Pull requests' tooltip as it says why the panel cannot open, the pointer's
+    /// and a keyboard press's answer alike.
+    const REFUSED_TOOLTIP: &str =
+        "pull-requests/tooltip/Pull requests: wait for the current Git operation to finish";
+
+    /// The window with Pull requests reached by Tab and a write running, the window active, so
+    /// focus changes are reported and a blur heard.
+    fn refused_by_tab(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        FocusHandle,
+        &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (fixture, app, cx) = repository_window(cx);
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        let opener = app.read_with(cx, |app, _| app.pull_requests_focus.clone());
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "Tab reaches Pull requests"
+        );
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        draw(cx);
+        (fixture, app, opener, cx)
+    }
+
+    /// Whether the answer a keyboard press of Pull requests stands at the button is drawn.
+    fn answer_drawn(cx: &mut VisualTestContext) -> bool {
+        cx.debug_bounds("pull-requests-answer").is_some()
+    }
+
+    /// The kit's tooltip popups the last frame drew, in the window's logical pixels: the fill
+    /// each tooltip draws, in the kit's popover fill with the theme's rounded corners, its 1 px
+    /// border drawn inside it, so its bounds are the popup's drawn edge, wherever it stands and
+    /// on as many lines as it takes. The window's raised surfaces share the fill but are square.
+    fn kit_tooltip_popups(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+        let popover = cx.read(|cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).tokens.popover)
+        });
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: gpui::ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    quad.background == popover && logical(quad.corner_radii.top_left) > px(0.)
+                })
+                .map(|quad| {
+                    Bounds::from_corners(
+                        point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                        point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// The popups that say why Pull requests is refused, the pointer's tooltip and a keyboard
+    /// press's answer alike, at their drawn edges: each a kit tooltip popup
+    /// ([`kit_tooltip_popups`]) the popup's padding and its 1 px border larger than the reason's
+    /// text on every side, so a popup above the button or below it, wrapped at 18 pt, is
+    /// counted, and two that say it are both counted wherever each stands. Kept only where
+    /// wholly above the button and under 60 px tall, a popup below the button or wrapped went
+    /// uncounted.
+    fn tooltip_popups(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+        let Some(text) = cx.debug_bounds(REFUSED_TOOLTIP) else {
+            return Vec::new();
+        };
+        // The kit's tooltip popup: `px_2` and `py_0p5` inside its 1 px border.
+        let (across, down) = cx.update(|window, _| {
+            let rem = window.rem_size();
+            (rem * 0.5 + px(1.), rem * 0.125 + px(1.))
+        });
+        let near = |a: Pixels, b: Pixels| (a - b).abs() <= px(1.);
+        kit_tooltip_popups(cx)
+            .into_iter()
+            .filter(|popup| {
+                near(popup.size.width, text.size.width + across * 2.)
+                    && near(popup.size.height, text.size.height + down * 2.)
+            })
+            .collect()
+    }
+
+    /// Asserts that the answer a keyboard press stands at Pull requests is one popup, the one
+    /// the answer's own element holds inside the kit's margin around the popup, whole in the
+    /// window 4 px clear of its edges, just above or just below the button, its drawn edge,
+    /// not its text, clear of the button's focus ring by the ring's room, and centred on the
+    /// button unless a side of the window holds it in. Returns the popup.
+    fn assert_answer_beside_button(cx: &mut VisualTestContext, at: &str) -> Bounds<Pixels> {
+        let (room, window, margin) = cx.update(|window, cx| {
+            (
+                appearance::button_ring_room(cx),
+                window.viewport_size(),
+                // The popup's own margin inside the element the kit's positioner places.
+                window.rem_size() * 0.75,
+            )
+        });
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        let popups = tooltip_popups(cx);
+        assert_eq!(popups.len(), 1, "{at}: one popup says why: {popups:?}");
+        let popup = popups[0];
+        let held = cx
+            .debug_bounds("pull-requests-answer")
+            .unwrap_or_else(|| panic!("{at}: the answer is drawn"));
+        let inside = Bounds::from_corners(
+            held.origin + point(margin, margin),
+            held.bottom_right() - point(margin, margin),
+        );
+        assert!(
+            (inside.origin.x - popup.origin.x).abs() <= px(0.5)
+                && (inside.origin.y - popup.origin.y).abs() <= px(0.5)
+                && (inside.size.width - popup.size.width).abs() <= px(0.5)
+                && (inside.size.height - popup.size.height).abs() <= px(0.5),
+            "{at}: the popup {popup:?} is the answer's, inside its element {held:?}"
+        );
+        let above = popup.bottom() + room <= button.top() - room
+            && popup.bottom() >= button.top() - px(32.);
+        let below = popup.top() - room >= button.bottom() + room
+            && popup.top() <= button.bottom() + px(32.);
+        assert!(
+            above || below,
+            "{at}: the answer {popup:?} stands just above or just below the button {button:?}, \
+             its drawn edge clear of the ring by the ring's {room:?}"
+        );
+        assert!(
+            popup.left() >= px(4.)
+                && popup.top() >= px(4.)
+                && popup.right() <= window.width - px(4.)
+                && popup.bottom() <= window.height - px(4.),
+            "{at}: the answer {popup:?} lies whole in the {window:?} window"
+        );
+        let centred = (popup.center().x - button.center().x).abs() <= px(0.5);
+        let side = px(4.) + margin + px(0.5);
+        let held_in = popup.left() <= side || popup.right() >= window.width - side;
+        assert!(
+            centred || held_in,
+            "{at}: the answer {popup:?} is centred on the button {button:?}"
+        );
+        popup
+    }
+
+    /// Return and Space on the focused Pull requests answer a refused press at the button, as a
+    /// click is answered under the pointer: reached by Tab, a write running, each pressed and
+    /// released before the spell looks busy and once it does, the reason stands in the button's
+    /// tooltip above it, clear of its ring, as the key goes down and through its release, focus
+    /// staying on the button; a fresh live region speaks it once for each press, and the key-up
+    /// says nothing more. The status line's note lapses after its 1.5 s and the answer stays,
+    /// focus still on the button, until Escape takes it away; that Escape does nothing else,
+    /// and the next goes on to the window's, which takes focus back to History. Return once
+    /// answered only in the status line at the window's foot, 900 px away, and then at the
+    /// button only for the status line's 1.5 s, too briefly to read.
+    #[gpui::test]
+    async fn a_refused_keyboard_press_of_pull_requests_answers_on_the_button(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        use crate::workspace::BUSY_LOOK_DELAY;
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        // Escape as the app binds it across the window, ahead of any key-down listener.
+        cx.update(|_, cx| {
+            cx.bind_keys([gpui::KeyBinding::new(
+                "escape",
+                crate::ClearSearch,
+                Some("GitTurtle"),
+            )])
+        });
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| opener.is_focused(window));
+        let mut last: Option<String> = None;
+        for phase in ["before the busy look", "once it looks busy"] {
+            if phase == "once it looks busy" {
+                cx.executor().advance_clock(BUSY_LOOK_DELAY);
+                cx.run_until_parked();
+                draw(cx);
+                assert!(
+                    app.read_with(cx, |app, _| app.operation_shown().is_some()),
+                    "past the delay the spell looks busy"
+                );
+            }
+            for key in ["enter", "space"] {
+                let at = format!("{key} {phase}");
+                assert!(
+                    !answer_drawn(cx) && cx.debug_bounds(REFUSED_TOOLTIP).is_none(),
+                    "{at}: nothing stands at the button before the press"
+                );
+                key_down(cx, key, false);
+                draw(cx);
+                let button = cx.debug_bounds("pull-requests").expect("the button");
+                assert!(answer_drawn(cx), "{at}: the reason stands at the button");
+                let answer = assert_answer_beside_button(cx, &at);
+                assert!(
+                    answer.bottom() <= button.top()
+                        && (answer.center().x - button.center().x).abs() <= px(0.5),
+                    "{at}: the reason {answer:?} stands above the button {button:?}, centred on it"
+                );
+                let said = refusals_heard();
+                assert_eq!(said.len(), 1, "{at}: {said:?}");
+                assert_ne!(Some(&said[0]), last.as_ref(), "{at}: a fresh node");
+                key_up(cx, key);
+                draw(cx);
+                assert!(
+                    !cx.update(|window, cx| window.has_active_dialog(cx)),
+                    "{at}: stays refused"
+                );
+                assert_eq!(refusals_heard(), said, "{at}: the key-up says nothing more");
+                assert!(
+                    answer_drawn(cx),
+                    "{at}: the reason stays through the release"
+                );
+                assert!(focused(cx), "{at}: focus stays on the button");
+                last = Some(said[0].clone());
+
+                cx.executor()
+                    .advance_clock(crate::copy_feedback::RESTORE_AFTER + Duration::from_millis(50));
+                draw(cx);
+                assert!(
+                    refusals_heard().is_empty()
+                        && app.read_with(cx, |app, _| app.github_refusal_line().is_none()),
+                    "{at}: the status line's note lapses"
+                );
+                assert!(
+                    answer_drawn(cx),
+                    "{at}: the reason stays at the button past the status line's note"
+                );
+                assert!(focused(cx), "{at}: focus stays on the button");
+
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+                assert!(!answer_drawn(cx), "{at}: Escape takes the reason away");
+                assert!(focused(cx), "{at}: and does nothing else");
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+                assert!(
+                    !focused(cx),
+                    "{at}: the next Escape is the window's, which takes focus to History"
+                );
+                cx.update(|window, cx| window.focus(&opener, cx));
+                draw(cx);
+            }
+        }
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// The answer a keyboard press stands at Pull requests keeps its drawn edge clear of the
+    /// button's focus ring at both ends of the sizes the app is checked at: at 13 pt in a
+    /// 1,480 × 973 window and at 18 pt in a 461 × 490 one, where the header wraps, Return on
+    /// the focused button draws one popup, just above or just below the button, whole in the
+    /// window, its edge, not its text, the ring's room clear of the ring
+    /// ([`assert_answer_beside_button`]). Measured at the text, which stands the popup's
+    /// padding and border inside that edge, a popup over the ring went unseen.
+    #[gpui::test]
+    async fn a_keyboard_answer_at_pull_requests_stands_clear_of_its_ring(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+            // Escape as the app binds it across the window, ahead of any key-down listener.
+            cx.bind_keys([gpui::KeyBinding::new(
+                "escape",
+                crate::ClearSearch,
+                Some("GitTurtle"),
+            )]);
+        });
+        for (interface, width, height) in [(13, 1480., 973.), (18, 461., 490.)] {
+            let at = format!("{interface} pt, {width} × {height}");
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            cx.update(|window, cx| window.focus(&opener, cx));
+            draw(cx);
+            key_down(cx, "enter", false);
+            key_up(cx, "enter");
+            draw(cx);
+            assert_answer_beside_button(cx, &at);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(!answer_drawn(cx), "{at}: Escape ends the answer");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// `app`'s tab strip holding `count` repository tabs, its own repository's first and folders
+    /// beside it after, as a restored session holds them.
+    fn hold_tabs(
+        app: &Entity<GitTurtle>,
+        root: &std::path::Path,
+        count: usize,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::repository_tabs::{SavedPath, SavedTab, Session, State};
+        app.update(cx, |app, cx| {
+            let tabs = (0..count)
+                .map(|index| SavedTab {
+                    path: SavedPath::Text(if index == 0 {
+                        root.display().to_string()
+                    } else {
+                        root.join(format!("held-{index}")).display().to_string()
+                    }),
+                    bookmark: Default::default(),
+                    unresolved: false,
+                    git_directories: None,
+                })
+                .collect();
+            app.repository_tabs = State::from_session(Session {
+                version: 1,
+                tabs,
+                active: 0,
+                library: Vec::new(),
+                groups: Vec::new(),
+            });
+            cx.notify();
+        });
+    }
+
+    /// The header's and the tab strip's controls besides Pull requests that the last frame
+    /// drew, by name, each where the tab list's clip leaves it shown.
+    fn header_controls(cx: &mut VisualTestContext) -> Vec<(String, Bounds<Pixels>)> {
+        let list = cx.debug_bounds("repository-tabs");
+        let mut names = [
+            "page-back",
+            "repository-heading",
+            "history-tab",
+            "changes-tab",
+            "cancel-git-operation",
+            "projects",
+            "profile-button",
+            "settings",
+            "main-menu",
+            "new-repository-tab",
+            "repository-workspaces",
+        ]
+        .map(String::from)
+        .to_vec();
+        for index in 0..8 {
+            names.push(format!("repository-tab-{index}"));
+            names.push(format!("repository-tab-close-{index}"));
+        }
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let bounds = cx.debug_bounds(name.clone().leak())?;
+                let bounds = match list.filter(|_| name.starts_with("repository-tab-")) {
+                    Some(list) => bounds.intersect(&list),
+                    None => bounds,
+                };
+                (bounds.size.width > px(0.) && bounds.size.height > px(0.))
+                    .then_some((name, bounds))
+            })
+            .collect()
+    }
+
+    /// The controls in `controls` that `popup` covers by more than a pixel's rounding.
+    fn covered_by(
+        popup: Bounds<Pixels>,
+        controls: &[(String, Bounds<Pixels>)],
+    ) -> Vec<(String, Bounds<Pixels>)> {
+        controls
+            .iter()
+            .filter(|(_, control)| {
+                let overlap = popup.intersect(control);
+                overlap.size.width > px(0.5) && overlap.size.height > px(0.5)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The reason a refused press of Pull requests stands at the button covers none of the
+    /// header's and the tab strip's other controls, above the button where that side covers
+    /// none: at 13 pt in a 1,480 × 973 window, at 13 pt in a 461 × 490 one and at 18 pt in a
+    /// 461 × 490 one, where the header wraps, each with one repository tab and with four, Return
+    /// on the focused button draws the answer, its drawn edge clear of the return action, the
+    /// repository identity, History, Changes, the write's Cancel, Projects, the profile,
+    /// Settings, every tab and its close button, Menu, Open repository tab and Workspaces,
+    /// above the button with one tab at 13 pt in the 1,480 × 973 window and below it in every
+    /// other case, where above covers a tab or Changes; the pointer resting on the button once
+    /// Escape has taken the answer away draws its tooltip at exactly the same place, since the
+    /// kit's positioner places both. Placed above the button wherever it fitted, it covered the
+    /// tab strip's tabs for the whole write; drawn at a corner the answer computed, it stood
+    /// half a pixel from the pointer's tooltip.
+    #[gpui::test]
+    async fn a_refused_pull_requests_answer_covers_no_other_header_control(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (fixture, app, opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+            cx.bind_keys([gpui::KeyBinding::new(
+                "escape",
+                crate::ClearSearch,
+                Some("GitTurtle"),
+            )]);
+        });
+        use gpui_kit::base::Placement;
+        let away = point(px(1.), px(1.));
+        for (interface, width, height) in [(13, 1480., 973.), (13, 461., 490.), (18, 461., 490.)] {
+            for tabs in [1, 4] {
+                let at = format!("{interface} pt, {width} × {height}, {tabs} tabs");
+                let side = if (interface, tabs) == (13, 1) && width == 1480. {
+                    Placement::Top
+                } else {
+                    Placement::Bottom
+                };
+                hold_tabs(&app, fixture.path(), tabs, cx);
+                crate::focus_ring::sweep::interface_size(cx, interface);
+                cx.simulate_resize(size(px(width), px(height)));
+                cx.simulate_mouse_move(away, None, Modifiers::default());
+                draw(cx);
+                cx.update(|window, cx| window.focus(&opener, cx));
+                draw(cx);
+                key_down(cx, "enter", false);
+                key_up(cx, "enter");
+                draw(cx);
+                let answer = assert_answer_beside_button(cx, &at);
+                let covered = covered_by(answer, &header_controls(cx));
+                assert!(
+                    covered.is_empty(),
+                    "{at}: the answer {answer:?} covers {covered:?}"
+                );
+                let button = cx.debug_bounds("pull-requests").expect("the button");
+                assert!(
+                    match side {
+                        Placement::Top => answer.bottom() <= button.top(),
+                        _ => answer.top() >= button.bottom(),
+                    },
+                    "{at}: the answer {answer:?} stands on the {side:?} side of the button \
+                     {button:?}"
+                );
+                assert_eq!(
+                    app.read_with(cx, |app, _| app.github_refusal.side.get()),
+                    Some(side),
+                    "{at}: the side the pointer's tooltip takes"
+                );
+
+                // The pointer's tooltip there once the answer has gone.
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+                assert!(!answer_drawn(cx), "{at}: Escape ends the answer");
+                let button = cx.debug_bounds("pull-requests").expect("the button");
+                cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+                draw(cx);
+                cx.executor()
+                    .advance_clock(TOOLTIP_DELAY + Duration::from_millis(150));
+                cx.run_until_parked();
+                draw(cx);
+                let pointer = tooltip_popups(cx);
+                assert_eq!(pointer.len(), 1, "{at}: the pointer's tooltip says why");
+                assert_eq!(
+                    pointer[0].origin, answer.origin,
+                    "{at}: the pointer's tooltip {:?} stands exactly where the answer stood \
+                     {answer:?}",
+                    pointer[0]
+                );
+                cx.simulate_mouse_move(away, None, Modifiers::default());
+                cx.executor().advance_clock(TOOLTIP_DELAY * 2);
+                cx.run_until_parked();
+                draw(cx);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// The pointer's tooltip at Pull requests takes the side the reason's popup takes in the
+    /// frame that chooses it, also where its hover began before the panel was refused: at 13 pt
+    /// in a 1,480 × 973 window holding four repository tabs, the pointer resting on the button
+    /// past the kit's 500 ms show delay, its idle tooltip above it, a write that starts then
+    /// draws, in its first frame, the reason's popup on the side chosen below, where above
+    /// covers the tab strip's tabs, and the pointer's tooltip there, saying why, wholly below
+    /// the button; the next frames keep it there. The kit placed the tooltip from the frame its
+    /// hover began in, so it stayed above, over the tabs, for the whole write, and a hover that
+    /// began during the write took the side a frame late.
+    #[gpui::test]
+    async fn a_pointer_tooltip_shown_before_the_refusal_takes_the_answers_side_at_once(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        use gpui_kit::base::Placement;
+        const IDLE: &str =
+            "pull-requests/tooltip/Discover pull requests and review captured changes";
+        let (fixture, app, cx) = repository_window(cx);
+        cx.update(|window, cx| {
+            window.activate_window();
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        hold_tabs(&app, fixture.path(), 4, cx);
+        crate::focus_ring::sweep::interface_size(cx, 13);
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+        draw(cx);
+        cx.executor()
+            .advance_clock(TOOLTIP_DELAY + Duration::from_millis(150));
+        cx.run_until_parked();
+        draw(cx);
+        let idle = cx.debug_bounds(IDLE).expect("the idle tooltip shows");
+        assert!(
+            idle.bottom() <= button.top(),
+            "the idle tooltip {idle:?} stands above the button {button:?}"
+        );
+
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        for frame in 0..3 {
+            one_frame(cx);
+            let side = app.read_with(cx, |app, _| app.github_refusal.side.get());
+            assert_eq!(
+                side,
+                Some(Placement::Bottom),
+                "frame {frame}: the reason's popup takes the side below, clear of the tabs"
+            );
+            let pointer = tooltip_popups(cx);
+            let button = cx.debug_bounds("pull-requests").expect("the button");
+            assert_eq!(
+                pointer.len(),
+                1,
+                "frame {frame}: the pointer's tooltip says why"
+            );
+            assert!(
+                pointer[0].top() >= button.bottom(),
+                "frame {frame}: the pointer's tooltip {:?} stands below the button {button:?}",
+                pointer[0]
+            );
+            let covered = covered_by(pointer[0], &header_controls(cx));
+            assert!(
+                covered.is_empty(),
+                "frame {frame}: the pointer's tooltip {:?} covers {covered:?}",
+                pointer[0]
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// Where both sides of Pull requests would cover another control, the reason's popup takes
+    /// the side covering less of them, by area: a 200 × 40 popup, its drawn edge 12 px inside
+    /// at the 16 px rem, beside a 100 × 28 button with a 40 × 10 control under the drawn edge
+    /// above it and an 80 × 10 one under the drawn edge below it takes the top, and with the
+    /// two swapped the bottom. Always below, or below on a tie, fails one of these or the
+    /// cases where nothing is covered above.
+    #[gpui::test]
+    async fn the_pull_requests_answer_takes_the_side_covering_less(cx: &mut TestAppContext) {
+        use gpui_kit::base::Placement;
+        let cx = cx.add_empty_window();
+        cx.update(|window, _| {
+            window.set_rem_size(px(16.));
+            let button = Bounds::new(point(px(400.), px(200.)), size(px(100.), px(28.)));
+            let popup = size(px(200.), px(40.));
+            // Centred on the button, in the drawn edge's rows above (172-188) or below (240-256).
+            let control = |top: f32, width: f32| {
+                Bounds::new(
+                    point(px(450. - width / 2.), px(top)),
+                    size(px(width), px(10.)),
+                )
+            };
+            assert_eq!(
+                pull_requests_answer_side(
+                    button,
+                    &[control(175., 40.), control(243., 80.)],
+                    popup,
+                    window
+                ),
+                Placement::Top,
+                "less covered above"
+            );
+            assert_eq!(
+                pull_requests_answer_side(
+                    button,
+                    &[control(175., 80.), control(243., 40.)],
+                    popup,
+                    window
+                ),
+                Placement::Bottom,
+                "less covered below"
+            );
+        });
+    }
+
+    /// The answer a keyboard press stands at Pull requests hands the kit's tooltip overlay back
+    /// as it ends: the pointer meeting the button as Return goes down, before the frame that
+    /// answers the press, and leaving once the button offers no tooltip, then the write ending
+    /// past the kit's 500 ms show delay, no frame in the next 400 ms draws a popup, the reason
+    /// or the button's idle sentence. The button's request, left standing in the overlay as an
+    /// empty view, once drew its idle tooltip as the write ended, at a button the pointer had
+    /// left.
+    #[gpui::test]
+    async fn a_keyboard_answer_at_pull_requests_hands_the_tooltip_overlay_back(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (_fixture, app, _opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        draw(cx);
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        let at_button = |cx: &mut VisualTestContext| {
+            [
+                REFUSED_TOOLTIP,
+                "pull-requests/tooltip/Discover pull requests and review captured changes",
+                "pull-requests/tooltip/Pull requests · Discover pull requests and review captured \
+                 changes",
+            ]
+            .into_iter()
+            .any(|tooltip| cx.debug_bounds(tooltip).is_some())
+        };
+        let tick = |cx: &mut VisualTestContext, by: Duration| {
+            cx.executor().advance_clock(by);
+            cx.run_until_parked();
+            one_frame(cx);
+        };
+
+        // The pointer meets the button as the key goes down, before any frame answers it, and
+        // leaves it once the button offers no tooltip.
+        key_down(cx, "enter", false);
+        cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+        key_up(cx, "enter");
+        one_frame(cx);
+        draw(cx);
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        draw(cx);
+        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+        draw(cx);
+        assert!(answer_drawn(cx), "the answer stands");
+        let popups = kit_tooltip_popups(cx);
+        assert_eq!(popups.len(), 1, "the answer's popup alone: {popups:?}");
+
+        // The write ends, and the answer with it.
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        one_frame(cx);
+        for step in 0..=8 {
+            let at = format!("{} ms after the write", step * 50);
+            assert!(!answer_drawn(cx), "{at}: the answer has gone");
+            assert!(!at_button(cx), "{at}: no tooltip stands at Pull requests");
+            let popups = kit_tooltip_popups(cx);
+            assert!(popups.is_empty(), "{at}: no popup: {popups:?}");
+            tick(cx, Duration::from_millis(50));
+        }
+    }
+
+    /// Return going down on the focused Pull requests and the pointer meeting the button at `at`
+    /// in the answer's first frame, the one that still offers a pointer tooltip, before the next
+    /// is drawn, then Return coming up. The harness draws a window again and again once it has
+    /// handled an event, until nothing more asks for a frame, so a move simulated after the key
+    /// lands on the answer's second frame, as a person's move after the first 16 ms does.
+    fn meet_in_the_answers_first_frame(cx: &mut VisualTestContext, at: Point<Pixels>) {
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position: at,
+                    modifiers: Modifiers::default(),
+                    pressed_button: None,
+                }),
+                cx,
+            );
+        });
+        key_up(cx, "enter");
+    }
+
+    /// The window at 13 pt and 461 × 490, where Pull requests and Settings share the header's
+    /// second row. Settings stands for the neighbour: the harness draws no tooltip for History
+    /// or Changes at any size, while it draws Settings' after its show delay.
+    fn compact_header(cx: &mut VisualTestContext) {
+        crate::focus_ring::sweep::interface_size(cx, 13);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        crate::tags::tests::draw(cx);
+    }
+
+    /// The kit tooltip popups the last frame drew besides the ones that say why Pull requests
+    /// is refused ([`tooltip_popups`]).
+    fn neighbour_popups(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+        let answers = tooltip_popups(cx);
+        kit_tooltip_popups(cx)
+            .into_iter()
+            .filter(|popup| !answers.contains(popup))
+            .collect()
+    }
+
+    /// Another control's tooltip keeps its own show delay beside a keyboard press's answer at
+    /// Pull requests and survives the answer's end: at 13 pt in a 461 × 490 window, the pointer
+    /// resting on the button, its tooltip saying why, as
+    /// Return goes down, resting there past the kit's 500 ms show delay while the answer
+    /// stands, then moving on to Settings, its tooltip shows beside the answer only once
+    /// its own delay has passed, and stays while the pointer rests there as the write ends and
+    /// takes the answer away. The button's leaving once hid whatever the kit's overlay held,
+    /// Settings' tooltip with it; an empty tooltip the button offered under the resting pointer
+    /// brought Settings' at once, sliding from Pull requests; and a button that offered no
+    /// tooltip from the answer's first frame kept the hover GPUI last told it of, which the
+    /// answer's end then ended, hiding Settings' tooltip.
+    #[gpui::test]
+    async fn a_neighbours_tooltip_survives_a_keyboard_answer_at_pull_requests(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        compact_header(cx);
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        let (button, settings) = (
+            cx.debug_bounds("pull-requests").expect("the button"),
+            cx.debug_bounds("settings").expect("Settings"),
+        );
+        let tick = |cx: &mut VisualTestContext, by: Duration| {
+            cx.executor().advance_clock(by);
+            cx.run_until_parked();
+            draw(cx);
+        };
+
+        // The pointer rests on the button, whose tooltip says why, and Return goes down.
+        cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+        draw(cx);
+        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+        assert_eq!(
+            tooltip_popups(cx).len(),
+            1,
+            "the pointer's tooltip says why"
+        );
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        draw(cx);
+        assert!(answer_drawn(cx), "the reason stands at the button");
+
+        // The pointer rests on the button past the show delay and the slide.
+        cx.simulate_mouse_move(
+            button.center() + point(px(2.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+        assert_eq!(tooltip_popups(cx).len(), 1, "the answer alone says why");
+        let beside = neighbour_popups(cx);
+        assert!(
+            beside.is_empty(),
+            "nothing stands beside the answer: {beside:?}"
+        );
+
+        // On to Settings.
+        cx.simulate_mouse_move(settings.center(), None, Modifiers::default());
+        draw(cx);
+        tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
+        assert!(answer_drawn(cx), "the answer stays");
+        let beside = neighbour_popups(cx);
+        assert!(
+            beside.is_empty(),
+            "Settings' tooltip waits its show delay: {beside:?}"
+        );
+        tick(cx, Duration::from_millis(100));
+        assert_eq!(
+            neighbour_popups(cx).len(),
+            1,
+            "then Settings' tooltip shows beside the answer"
+        );
+
+        // The write ends, and the answer with it.
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(!answer_drawn(cx), "the answer goes with the write");
+        for step in 0..=6 {
+            tick(cx, Duration::from_millis(100));
+            assert_eq!(
+                kit_tooltip_popups(cx).len(),
+                1,
+                "{} ms after the write: Settings' tooltip stays",
+                step * 100 + 100
+            );
+        }
+    }
+
+    /// An answer a keyboard press stands at Pull requests that ends within the kit's show delay
+    /// of the pointer meeting the button leaves no tooltip there: Return on the focused button,
+    /// the pointer meeting it in the answer's first frame, the one that still offers a tooltip,
+    /// and leaving it in the next, which offers none, then the write ending 200 ms after the
+    /// pointer met the button, no frame in the next 600 ms draws a popup, the reason or the
+    /// button's idle sentence, and a hover on Settings then waits out the whole show delay; and
+    /// in another write, the pointer meeting the button in the answer's first frame and leaving
+    /// it, the show coming due while the answer stands draws nothing, and a hover on Settings
+    /// still waits out the whole delay. The show the pointer asked for was still waiting as the
+    /// answer ended, and once its delay was up drew the button's idle tooltip at a button the
+    /// pointer had left; built as nothing and kept in the kit's overlay, it let the next hover
+    /// elsewhere take its tooltip at once.
+    #[gpui::test]
+    async fn an_answer_ending_within_the_show_delay_leaves_no_tooltip_at_pull_requests(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let away = point(px(1.), px(1.));
+        cx.simulate_mouse_move(away, None, Modifiers::default());
+        compact_header(cx);
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        let (button, settings) = (
+            cx.debug_bounds("pull-requests").expect("the button"),
+            cx.debug_bounds("settings").expect("Settings"),
+        );
+        let tick = |cx: &mut VisualTestContext, by: Duration| {
+            cx.executor().advance_clock(by);
+            cx.run_until_parked();
+            one_frame(cx);
+        };
+
+        // The pointer meets the button in the answer's first frame and leaves it in the next.
+        meet_in_the_answers_first_frame(cx, button.center());
+        assert!(answer_drawn(cx), "the answer stands");
+        cx.simulate_mouse_move(away, None, Modifiers::default());
+        one_frame(cx);
+        tick(cx, Duration::from_millis(200));
+        assert!(answer_drawn(cx), "the answer stands");
+
+        // The write ends within the show delay of the pointer meeting the button.
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        one_frame(cx);
+        for step in 0..=12 {
+            let at = format!("{} ms after the write", step * 50);
+            assert!(!answer_drawn(cx), "{at}: the answer has gone");
+            let popups = kit_tooltip_popups(cx);
+            assert!(popups.is_empty(), "{at}: no popup: {popups:?}");
+            assert!(
+                cx.debug_bounds(
+                    "pull-requests/tooltip/Pull requests · Discover pull requests and review \
+                     captured changes"
+                )
+                .is_none(),
+                "{at}: no tooltip stands at Pull requests"
+            );
+            tick(cx, Duration::from_millis(50));
+        }
+
+        // A hover on Settings waits out the show delay.
+        cx.simulate_mouse_move(settings.center(), None, Modifiers::default());
+        draw(cx);
+        tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
+        let popups = kit_tooltip_popups(cx);
+        assert!(
+            popups.is_empty(),
+            "Settings' tooltip waits its show delay: {popups:?}"
+        );
+        tick(cx, Duration::from_millis(100));
+        draw(cx);
+        assert_eq!(
+            kit_tooltip_popups(cx).len(),
+            1,
+            "then Settings' tooltip shows"
+        );
+
+        // Another write, the pointer meeting the button in the answer's first frame and leaving,
+        // and the show it asked for coming due while the answer stands: built as nothing, it
+        // is hidden at once, so a hover on Settings still waits out the whole show delay.
+        cx.simulate_mouse_move(away, None, Modifiers::default());
+        tick(cx, TOOLTIP_DELAY * 2);
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        draw(cx);
+        meet_in_the_answers_first_frame(cx, button.center());
+        assert!(answer_drawn(cx), "the second answer stands");
+        cx.simulate_mouse_move(away, None, Modifiers::default());
+        one_frame(cx);
+        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+        assert_eq!(tooltip_popups(cx).len(), 1, "the answer alone says why");
+        cx.simulate_mouse_move(settings.center(), None, Modifiers::default());
+        draw(cx);
+        tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
+        let beside = neighbour_popups(cx);
+        assert!(
+            beside.is_empty(),
+            "Settings' tooltip waits its show delay: {beside:?}"
+        );
+        tick(cx, Duration::from_millis(100));
+        assert_eq!(
+            neighbour_popups(cx).len(),
+            1,
+            "then Settings' tooltip shows"
+        );
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// The empty tooltip the kit's overlay builds for Pull requests beside a keyboard press's
+    /// answer never counts as a tooltip shown: Return on the focused button, the pointer meeting
+    /// it in the answer's first frame and resting there past the kit's show delay, then moving
+    /// on to Settings, Settings' tooltip waits out its whole show delay and then shows. Counted
+    /// as shown, the empty view let Settings' tooltip appear at once, sliding from Pull
+    /// requests.
+    #[gpui::test]
+    async fn a_neighbour_waits_its_delay_after_a_pointer_rested_on_the_answer(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        compact_header(cx);
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        let (button, settings) = (
+            cx.debug_bounds("pull-requests").expect("the button"),
+            cx.debug_bounds("settings").expect("Settings"),
+        );
+        let tick = |cx: &mut VisualTestContext, by: Duration| {
+            cx.executor().advance_clock(by);
+            cx.run_until_parked();
+            draw(cx);
+        };
+        meet_in_the_answers_first_frame(cx, button.center());
+        draw(cx);
+        assert!(answer_drawn(cx), "the answer stands");
+        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+        assert_eq!(tooltip_popups(cx).len(), 1, "the answer alone says why");
+        assert!(
+            neighbour_popups(cx).is_empty(),
+            "nothing stands beside the answer"
+        );
+        cx.simulate_mouse_move(settings.center(), None, Modifiers::default());
+        draw(cx);
+        tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
+        let beside = neighbour_popups(cx);
+        assert!(
+            beside.is_empty(),
+            "Settings' tooltip waits its show delay: {beside:?}"
+        );
+        tick(cx, Duration::from_millis(100));
+        assert_eq!(
+            neighbour_popups(cx).len(),
+            1,
+            "then Settings' tooltip shows"
+        );
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// The pointer resting on Pull requests through the end of the write a keyboard press's
+    /// answer stood for keeps the button's own tooltip: the pointer meeting the button in the
+    /// answer's first frame and resting there past the kit's show delay, the write ending
+    /// draws the button's idle tooltip there, still drawn 400 ms on. The answer's end once hid
+    /// the kit's overlay, and the resting pointer was left with no tooltip.
+    #[gpui::test]
+    async fn a_pointer_resting_on_pull_requests_keeps_its_tooltip_as_the_write_ends(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (_fixture, app, _opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        draw(cx);
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        const IDLE: &str =
+            "pull-requests/tooltip/Discover pull requests and review captured changes";
+        meet_in_the_answers_first_frame(cx, button.center());
+        draw(cx);
+        cx.executor()
+            .advance_clock(TOOLTIP_DELAY + Duration::from_millis(150));
+        cx.run_until_parked();
+        draw(cx);
+        assert!(
+            answer_drawn(cx),
+            "the answer stands under the resting pointer"
+        );
+        assert_eq!(kit_tooltip_popups(cx).len(), 1, "the answer alone");
+
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(!answer_drawn(cx), "the answer goes with the write");
+        for step in 0..=4 {
+            let at = format!("{} ms after the write", step * 100);
+            assert!(
+                cx.debug_bounds(IDLE).is_some(),
+                "{at}: the button's own tooltip is drawn under the resting pointer"
+            );
+            cx.executor().advance_clock(Duration::from_millis(100));
+            cx.run_until_parked();
+            draw(cx);
+        }
+    }
+
+    /// Forgets the side the reason's popup at Pull requests last took and how many times it was
+    /// laid out to choose one, so a test counts from a frame that chooses it afresh.
+    fn forget_answer_side(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.update(cx, |app, _| app.github_refusal.placed.borrow_mut().take());
+        ANSWER_SIDE_LAYOUTS.with(|layouts| layouts.set(0));
+    }
+
+    /// How many times the reason's popup at Pull requests was laid out to choose its side since
+    /// the count was last taken, which this starts again.
+    fn answer_side_layouts() -> usize {
+        ANSWER_SIDE_LAYOUTS.with(|layouts| layouts.replace(0))
+    }
+
+    /// The side of Pull requests the reason's popup takes is chosen again only as what it is
+    /// chosen from changes: at 13 pt in a 461 × 490 window with a write running, the frame after
+    /// the side was forgotten lays the popup out to choose it, and the next 20 frames lay out
+    /// none, with no answer kept, where the popup is never drawn, and with one kept; then
+    /// another repository tab, another reason, a larger interface size, another scale and a
+    /// wider window each lay it out again, and the 20 frames after each lay out none. Chosen in
+    /// every frame, each of a write's steady frames laid out a tooltip view never drawn.
+    #[gpui::test]
+    async fn the_pull_requests_answer_side_is_chosen_only_as_its_inputs_change(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (fixture, app, opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            cx.bind_keys([gpui::KeyBinding::new(
+                "escape",
+                crate::ClearSearch,
+                Some("GitTurtle"),
+            )])
+        });
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        compact_header(cx);
+        forget_answer_side(&app, cx);
+        one_frame(cx);
+        assert_eq!(answer_side_layouts(), 1, "the first frame chooses the side");
+        let steady = |cx: &mut VisualTestContext, at: &str| {
+            for _ in 0..20 {
+                one_frame(cx);
+            }
+            assert_eq!(
+                answer_side_layouts(),
+                0,
+                "{at}: 20 steady frames lay out none"
+            );
+        };
+        steady(cx, "no answer kept");
+
+        cx.update(|window, cx| window.focus(&opener, cx));
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        draw(cx);
+        assert!(answer_drawn(cx), "the answer stands");
+        answer_side_layouts();
+        steady(cx, "an answer kept");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        answer_side_layouts();
+
+        /// A change of one input to the side, named.
+        type Change<'a> = (&'a str, Box<dyn Fn(&mut VisualTestContext) + 'a>);
+        let changes: [Change; 5] = [
+            (
+                "another repository tab",
+                Box::new(|cx| hold_tabs(&app, fixture.path(), 2, cx)),
+            ),
+            (
+                "another reason",
+                Box::new(|cx| {
+                    app.update(cx, |app, cx| {
+                        app.operation_busy = Some(RequestKind::Send.label());
+                        cx.notify();
+                    })
+                }),
+            ),
+            (
+                "a larger interface size",
+                Box::new(|cx| crate::focus_ring::sweep::interface_size(cx, 15)),
+            ),
+            (
+                "another scale",
+                Box::new(|cx| {
+                    cx.update(|window, _| {
+                        let scale = if window.scale_factor() == 2. { 1.5 } else { 2. };
+                        window.set_scale_factor(scale)
+                    })
+                }),
+            ),
+            (
+                "a wider window",
+                Box::new(|cx| cx.simulate_resize(size(px(520.), px(490.)))),
+            ),
+        ];
+        for (at, change) in changes {
+            change(cx);
+            draw(cx);
+            assert!(answer_side_layouts() >= 1, "{at}: lays the popup out again");
+            steady(cx, at);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// The reason's popup at Pull requests, which the status bar holds among its parts, takes no
+    /// room there, laid out to choose the pointer's side or drawn as a keyboard press's answer:
+    /// Pull requests focused by Tab, the status line keeps the bounds it had before a write
+    /// began in the write's first frame and its steady frames, and with the reason standing at
+    /// the button once the status line's note has lapsed. Left in the bar's flow wherever its
+    /// side held or it was drawn, the popup's empty node took one of the bar's gaps from the
+    /// status line in each of those frames, and a write's status the bar carried lost its label.
+    #[gpui::test]
+    async fn the_pull_requests_answer_takes_no_room_in_the_status_bar(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        let opener = app.read_with(cx, |app, _| app.pull_requests_focus.clone());
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let line = |cx: &mut VisualTestContext| cx.debug_bounds("status-line").expect("the line");
+        let rest = line(cx);
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        for frame in 0..4 {
+            one_frame(cx);
+            assert_eq!(
+                line(cx),
+                rest,
+                "the write's frame {frame}: the line keeps its room"
+            );
+        }
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        draw(cx);
+        assert!(answer_drawn(cx), "the reason stands at the button");
+        cx.executor()
+            .advance_clock(crate::copy_feedback::RESTORE_AFTER + Duration::from_millis(50));
+        draw(cx);
+        assert!(
+            answer_drawn(cx) && app.read_with(cx, |app, _| app.github_refusal_line().is_none()),
+            "the reason stays at the button past the status line's note"
+        );
+        assert_eq!(line(cx), rest, "beside the reason the line keeps its room");
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// The answer a keyboard press of Pull requests stands at the button lasts the busy spell
+    /// while the button keeps focus, and ends with whichever comes first: the write ending,
+    /// focus leaving by Tab or by a click elsewhere, or the window turning inactive. Each
+    /// ending takes it away for good: a write that starts later, focus coming back or the
+    /// window turning active again brings back nothing no key asked for.
+    #[gpui::test]
+    async fn a_keyboard_answer_at_pull_requests_lasts_the_spell_on_the_button(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| opener.is_focused(window));
+        let busy = |cx: &mut VisualTestContext, busy: Option<&'static str>| {
+            app.update(cx, |app, cx| {
+                app.operation_busy = busy;
+                cx.notify();
+            });
+            draw(cx);
+        };
+        let answer = |cx: &mut VisualTestContext, at: &str| {
+            assert!(focused(cx), "{at}: Pull requests holds focus");
+            key_down(cx, "enter", false);
+            key_up(cx, "enter");
+            draw(cx);
+            cx.executor()
+                .advance_clock(crate::copy_feedback::RESTORE_AFTER + Duration::from_millis(50));
+            draw(cx);
+            assert!(answer_drawn(cx), "{at}: the reason stands at the button");
+        };
+
+        answer(cx, "the write ending");
+        busy(cx, None);
+        assert!(!answer_drawn(cx), "the reason goes as the write ends");
+        busy(cx, Some("Pushing…"));
+        assert!(focused(cx), "focus stays on the button");
+        assert!(
+            !answer_drawn(cx),
+            "a later write brings it back to no press"
+        );
+
+        answer(cx, "Tab");
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(!focused(cx), "Tab moves on");
+        // The button's blur, which the frame that moves focus reports as it ends, takes it in
+        // the next, as the pointer's tooltip outlasts the pointer by its grace period.
+        draw(cx);
+        assert!(!answer_drawn(cx), "the reason goes with focus");
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(focused(cx), "Shift+Tab comes back");
+        assert!(!answer_drawn(cx), "focus coming back brings nothing back");
+
+        answer(cx, "a click elsewhere");
+        let pane = cx.debug_bounds("history-pane").expect("History's pane");
+        cx.simulate_click(pane.center(), Modifiers::default());
+        draw(cx);
+        draw(cx);
+        assert!(!focused(cx), "the click takes focus to History");
+        assert!(!answer_drawn(cx), "the reason goes with focus");
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+
+        answer(cx, "the window turning inactive");
+        cx.deactivate_window();
+        draw(cx);
+        draw(cx);
+        assert!(
+            !answer_drawn(cx),
+            "the reason goes as the window turns inactive"
+        );
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        draw(cx);
+        assert!(focused(cx), "focus comes back with the window");
+        assert!(!answer_drawn(cx), "and brings nothing back");
+        busy(cx, None);
+    }
+
+    /// The popups the last frame drew, in the window's logical pixels: surfaces in the kit's
+    /// popover fill that lie inside the window clear of its sides and are no taller than a few
+    /// lines, as a tooltip's is. The window's raised surfaces, the header's and its panes',
+    /// share the fill, laid against a side of the window or taller.
+    fn popover_popups(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+        let popover = cx.read(|cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).tokens.popover)
+        });
+        cx.update(|window, _| {
+            let (scale, width) = (window.scale_factor(), window.viewport_size().width);
+            let logical = |value: gpui::ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background == popover)
+                .map(|quad| {
+                    Bounds::from_corners(
+                        point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                        point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                    )
+                })
+                .filter(|popup| {
+                    popup.left() > px(0.5)
+                        && popup.right() < width - px(0.5)
+                        && popup.size.height < px(160.)
+                })
+                .collect()
+        })
+    }
+
+    /// Draws one frame, as the window draws after an event, where [`crate::tags::tests::draw`]
+    /// draws three.
+    fn one_frame(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+
+    /// A keyboard press's answer at Pull requests stays drawn wherever the pointer goes, and
+    /// the button offers no tooltip of its own meanwhile, which would say the same sentence:
+    /// the pointer meeting the button before the frame that answers the press, crossing the
+    /// button a frame at each step, resting on it past the kit's 500 ms show delay and its
+    /// 150 ms slide, and leaving it, every frame draws the answer and one popup that says why.
+    /// The pointer resting there once took the answer away and drew the button's tooltip in
+    /// its place only after that delay and slide, so for up to 0.65 s nothing said why.
+    #[gpui::test]
+    async fn a_keyboard_answer_at_pull_requests_stays_drawn_under_the_pointer(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        draw(cx);
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        let says_why = |cx: &mut VisualTestContext, at: &str| {
+            assert!(answer_drawn(cx), "{at}: the answer is drawn");
+            assert_eq!(
+                tooltip_popups(cx).len(),
+                1,
+                "{at}: one popup says why, among {:?}",
+                popover_popups(cx)
+            );
+        };
+
+        // The pointer meets the button as the key goes down, before any frame answers it.
+        key_down(cx, "enter", false);
+        cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+        key_up(cx, "enter");
+        one_frame(cx);
+        says_why(cx, "the frame that answers the press");
+        draw(cx);
+        cx.executor()
+            .advance_clock(TOOLTIP_DELAY + Duration::from_millis(150));
+        draw(cx);
+        says_why(
+            cx,
+            "past the show delay of a pointer that met the button first",
+        );
+
+        // Across the button, a frame at each step, from outside its left edge to past its right.
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        draw(cx);
+        let steps = 8;
+        for step in 0..=steps {
+            let x = button.left() - px(8.)
+                + (button.size.width + px(16.)) * (step as f32 / steps as f32);
+            cx.simulate_mouse_move(point(x, button.center().y), None, Modifiers::default());
+            one_frame(cx);
+            says_why(cx, &format!("crossing it at {x:?}"));
+        }
+
+        // Resting on it, a frame every 50 ms past the show delay and the slide.
+        cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+        one_frame(cx);
+        says_why(cx, "coming to rest on it");
+        for tick in 1..=16 {
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.executor().run_until_parked();
+            one_frame(cx);
+            says_why(cx, &format!("resting on it for {} ms", tick * 50));
+        }
+
+        // Leaving it.
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        one_frame(cx);
+        says_why(cx, "leaving it");
+        cx.executor()
+            .advance_clock(TOOLTIP_DELAY + Duration::from_millis(150));
+        draw(cx);
+        says_why(cx, "once it has left");
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "focus stays on the button"
+        );
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// The answer a keyboard press stands at Pull requests says the reason that refuses the
+    /// panel now: a write giving way to an outbound action mid-spell builds it again in the
+    /// action's words, the status line dropping the write's sentence rather than go on saying
+    /// it for up to 1.5 s, and it goes once nothing refuses the panel. It once kept the words of
+    /// the spell it began in.
+    #[gpui::test]
+    async fn a_keyboard_answer_at_pull_requests_follows_a_changed_reason(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        draw(cx);
+        assert!(
+            cx.debug_bounds(REFUSED_TOOLTIP).is_some(),
+            "the answer says to wait for the write"
+        );
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some(RequestKind::Send.label());
+            cx.notify();
+        });
+        draw(cx);
+        let sending: &'static str = format!(
+            "pull-requests/tooltip/{}",
+            open_refused_sentence(RequestKind::Send.reason())
+        )
+        .leak();
+        assert!(answer_drawn(cx), "the answer stays as the reason changes");
+        assert!(
+            app.read_with(cx, |app, _| app.github_refusal_line().is_none())
+                && refusals_heard().is_empty(),
+            "the status line and its live region drop the write's sentence"
+        );
+        assert!(
+            cx.debug_bounds(sending).is_some() && cx.debug_bounds(REFUSED_TOOLTIP).is_none(),
+            "it says the outbound action's reason alone"
+        );
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "focus stays on the button"
+        );
+        // The write's reason coming back within the note's 1.5 s brings back no sentence.
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.github_refusal_line().is_none())
+                && refusals_heard().is_empty(),
+            "the status line and its live region keep the write's sentence dropped"
+        );
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            !answer_drawn(cx) && cx.debug_bounds(sending).is_none(),
+            "it goes once nothing refuses the panel"
+        );
+    }
+
+    /// Escape on Pull requests with the pointer resting on it ends the answer a keyboard press
+    /// stands there, which is drawn there, and does nothing else; the next Escape is the
+    /// window's. Kept but not drawn under the pointer, the answer once took an Escape that
+    /// changed nothing visible.
+    #[gpui::test]
+    async fn escape_ends_the_answer_at_pull_requests_under_a_resting_pointer(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            cx.bind_keys([gpui::KeyBinding::new(
+                "escape",
+                crate::ClearSearch,
+                Some("GitTurtle"),
+            )])
+        });
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| opener.is_focused(window));
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        draw(cx);
+        cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+        draw(cx);
+        cx.executor()
+            .advance_clock(TOOLTIP_DELAY + Duration::from_millis(150));
+        draw(cx);
+        assert!(
+            answer_drawn(cx),
+            "the answer stands under the resting pointer"
+        );
+
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!answer_drawn(cx), "Escape ends it");
+        assert!(focused(cx), "and does nothing else");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!focused(cx), "the next Escape is the window's");
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// A keyboard press's answer at Pull requests is said once, by the status line and its
+    /// live region: the tooltip drawn at the button, the kit's tooltip node with it, is out
+    /// of the accessibility tree, so the sentence reaches an assistive technology in the
+    /// status line's text and the live region only. Drawn in the tree, the tooltip node, a
+    /// third with the sentence, could be read again as it appeared.
+    #[gpui::test]
+    async fn a_keyboard_answer_at_pull_requests_is_spoken_by_the_live_region_alone(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::native_accessibility::{reachable, written};
+        use crate::tags::tests::draw;
+        let (_fixture, app, _opener, cx) = refused_by_tab(cx);
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        draw(cx);
+        assert!(answer_drawn(cx), "the reason stands at the button");
+        written::forget();
+        draw(cx);
+        let size = cx.update(|window, _| window.viewport_size());
+        let window = physical_rect(cx, Bounds::new(point(px(0.), px(0.)), size));
+        // The kit's tooltip writes a node of its own, named by its text, inside the element
+        // that holds it, as GPUI writes it: only the app's own wrappers record theirs.
+        let mut popup = gpui::accesskit::Node::new(Role::Tooltip);
+        popup.set_label(REFUSED_SENTENCE);
+        let holder = written::get("pull-requests-answer").map(|_| "pull-requests-answer");
+        let tree = written::Assembly::default()
+            .everything(None)
+            .node("tooltip-popup", popup, holder)
+            .tree(window, None);
+        let saying: Vec<Role> = reachable(tree)
+            .into_iter()
+            .filter(|node| node.name.as_deref() == Some(REFUSED_SENTENCE))
+            .map(|node| node.role)
+            .collect();
+        assert_eq!(
+            saying,
+            [Role::Label, Role::Status],
+            "the sentence reaches assistive technology in the status line and its live region"
+        );
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// A held Return or Space on a refused Pull requests answers once and opens nothing as the
+    /// write ends: its repeats, marked held as Wayland and macOS send them or sent as fresh
+    /// presses with no key-up between them as X11 sends them, before and after the write ends,
+    /// say nothing more, and its key-up once the write has ended opens no panel; the next press
+    /// opens it at once. GPUI arms a Button's press on any Enter or Space key-down and makes it
+    /// as the key comes up, so that key-up opened the panel the press had been refused.
+    #[gpui::test]
+    async fn a_held_refused_press_of_pull_requests_answers_once_and_opens_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let panel = closed_panel(&app, cx);
+        draw(cx);
+        let opener = app.read_with(cx, |app, _| app.pull_requests_focus.clone());
+        let open =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
+        for key in ["enter", "space"] {
+            cx.update(|window, cx| window.focus(&opener, cx));
+            app.update(cx, |app, _| app.operation_busy = Some("Fetching…"));
+            draw(cx);
+            key_down(cx, key, false);
+            draw(cx);
+            let said = refusals_heard();
+            assert_eq!(said.len(), 1, "{key}: answered as it goes down");
+            for is_held in [true, true, false, false] {
+                key_down(cx, key, is_held);
+                draw(cx);
+            }
+            assert_eq!(
+                refusals_heard(),
+                said,
+                "{key}: its repeats say nothing more"
+            );
+
+            app.update(cx, |app, _| app.operation_busy = None);
+            draw(cx);
+            for is_held in [true, false] {
+                key_down(cx, key, is_held);
+                draw(cx);
+            }
+            key_up(cx, key);
+            draw(cx);
+            cx.run_until_parked();
+            assert!(!open(cx), "{key}: its key-up after the write opens nothing");
+            assert_eq!(refusals_heard(), said, "{key}: nor says anything more");
+            assert!(
+                cx.update(|window, _| opener.is_focused(window)),
+                "{key}: focus stays on the button"
+            );
+
+            key_down(cx, key, false);
+            key_up(cx, key);
+            draw(cx);
+            assert!(open(cx), "{key}: the next press opens the panel at once");
+            cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+            settle_panel(&app, cx).await;
+            draw(cx);
+            assert!(!open(cx), "{key}: closed again");
+        }
+    }
+
+    /// A refused Return held on Pull requests while Space is pressed and released, the write
+    /// ending before Return comes up, opens nothing: the refused key-downs never arm the
+    /// button's press, which GPUI arms on any Enter or Space key-down and makes as the key
+    /// comes up, and Space took the latch that would have caught Return's key-up. Armed by
+    /// Return going down, that key-up opened the panel the press had been refused. The next
+    /// press opens it at once.
+    #[gpui::test]
+    async fn a_refused_return_held_across_a_space_opens_nothing(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let panel = closed_panel(&app, cx);
+        draw(cx);
+        let opener = app.read_with(cx, |app, _| app.pull_requests_focus.clone());
+        let open =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
+        cx.update(|window, cx| window.focus(&opener, cx));
+        app.update(cx, |app, _| app.operation_busy = Some("Fetching…"));
+        draw(cx);
+        key_down(cx, "enter", false);
+        draw(cx);
+        key_down(cx, "space", false);
+        draw(cx);
+        key_up(cx, "space");
+        draw(cx);
+        assert_eq!(refusals_heard().len(), 1, "each press is answered");
+        app.update(cx, |app, _| app.operation_busy = None);
+        draw(cx);
+        key_up(cx, "enter");
+        draw(cx);
+        cx.run_until_parked();
+        assert!(!open(cx), "Return's key-up after the write opens nothing");
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "focus stays on the button"
+        );
+
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        draw(cx);
+        assert!(open(cx), "the next press opens the panel at once");
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// Return that goes down on Pull requests while the panel can open and comes up once a write
+    /// has started is a press the write refuses: it opens nothing and is answered at the button
+    /// and in the status line, as one refused as it goes down is, focus staying on the button.
+    /// The button's press, armed as the key went down, would otherwise open the panel over
+    /// the write that refuses it.
+    #[gpui::test]
+    async fn a_return_released_after_a_write_starts_answers_at_the_button(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let _panel = closed_panel(&app, cx);
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        let opener = app.read_with(cx, |app, _| app.pull_requests_focus.clone());
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        key_down(cx, "enter", false);
+        draw(cx);
+        assert!(
+            refusals_heard().is_empty(),
+            "nothing refuses it as it goes down"
+        );
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        draw(cx);
+        key_up(cx, "enter");
+        draw(cx);
+        cx.run_until_parked();
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the press opens nothing"
+        );
+        assert!(answer_drawn(cx), "the reason stands at the button");
+        assert_eq!(refusals_heard().len(), 1, "and is spoken once");
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "focus stays on the button"
+        );
+        app.update(cx, |app, _| app.operation_busy = None);
     }
 
     /// A real cancelled read under a reopened panel: the read is submitted, the close cancels

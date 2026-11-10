@@ -3328,6 +3328,9 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
+        // The first of the rows whose controls the reason's popup at Pull requests stands
+        // clear of, so the frame before's are forgotten here.
+        self.begin_header_controls();
         let (left_controls, right_controls, drag_region) = {
             #[cfg(target_os = "linux")]
             {
@@ -3391,7 +3394,7 @@ impl GitTurtle {
                 .children(left_controls)
                 .when(cfg!(target_os = "linux"), |strip| {
                     #[cfg(target_os = "linux")]
-                    let strip = strip.child(self.primary_menu.clone());
+                    let strip = strip.child(self.framed_header_control(self.primary_menu.clone()));
                     strip
                 })
                 .child(crate::native_accessibility::clips_children(
@@ -3427,7 +3430,7 @@ impl GitTurtle {
                                 // pixels, so layout keeps the floor whole.
                                 let name_floor =
                                     insets + tab_label_widths(&label, pin, &line, window).1;
-                                div()
+                                self.header_control(div())
                                     .debug_selector(move || format!("repository-tab-frame-{index}"))
                                     .flex()
                                     .items_center()
@@ -3508,18 +3511,20 @@ impl GitTurtle {
                         .children(drag_region),
                 ))
                 .child(
-                    button("new-repository-tab", "", "plus", false)
-                        .debug_selector(|| "new-repository-tab".into())
-                        .accessibility_label("Open repository tab")
-                        .tooltip(format!(
-                            "Open a repository tab · {}",
-                            shortcuts::label(shortcuts::ShortcutId::NewTab)
-                        ))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.choose_repository(&OpenRepository, window, cx)
-                        })),
+                    self.framed_header_control(
+                        button("new-repository-tab", "", "plus", false)
+                            .debug_selector(|| "new-repository-tab".into())
+                            .accessibility_label("Open repository tab")
+                            .tooltip(format!(
+                                "Open a repository tab · {}",
+                                shortcuts::label(shortcuts::ShortcutId::NewTab)
+                            ))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose_repository(&OpenRepository, window, cx)
+                            })),
+                    ),
                 )
-                .child(self.repository_tabs_menu(labels.workspaces, cx))
+                .child(self.framed_header_control(self.repository_tabs_menu(labels.workspaces, cx)))
                 .children(right_controls)
                 .into_any_element();
         // A refusal is said beneath the strip it came from; at rest the

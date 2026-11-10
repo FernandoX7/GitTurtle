@@ -448,7 +448,7 @@ impl GitTurtle {
                 (OperationPlace::StatusBar, _) => status,
             })
             .child(self.render_operation_progress(label, form.named, false, cx))
-            .child(self.render_operation_cancel(form.icon, window, cx))
+            .child(self.framed_header_control(self.render_operation_cancel(form.icon, window, cx)))
             .into_any_element()
     }
 
@@ -554,12 +554,12 @@ impl GitTurtle {
             .pt(ring)
             .pb(ring)
             .bg(rgb(p.panel))
-            .child(self.render_back_button(false, cx))
+            .child(self.framed_header_control(self.render_back_button(false, cx)))
             .when(turtle, |header| {
                 header.child(app_icon(f32::from(appearance::ui_size(28.))))
             })
             .child(
-                self.repository_heading(&labels)
+                self.header_control(self.repository_heading(&labels))
                     .min_w_0()
                     .max_w(name)
                     .when(elided, |heading| heading.w(name))
@@ -573,7 +573,7 @@ impl GitTurtle {
             .when(self.repository.is_some(), |header| {
                 header
                     .child(
-                        div()
+                        self.header_control(div())
                             .flex()
                             .flex_shrink_0()
                             .items_center()
@@ -670,10 +670,10 @@ impl GitTurtle {
                     .gap_2()
                     .children(before)
                     .when(!back_to_projects, |trailing| {
-                        trailing.child(self.render_projects_button(cx))
+                        trailing.child(self.framed_header_control(self.render_projects_button(cx)))
                     })
-                    .child(self.render_profile_button(true, true, cx))
-                    .child(self.render_settings_button(cx)),
+                    .child(self.framed_header_control(self.render_profile_button(true, true, cx)))
+                    .child(self.framed_header_control(self.render_settings_button(cx))),
             )
             .into_any_element()
     }
@@ -778,7 +778,7 @@ impl GitTurtle {
             .border_b_1()
             .border_color(rgb(p.border))
             .child(
-                div()
+                self.header_control(div())
                     .flex_shrink_0()
                     .when(!compact, |slot| {
                         slot.w(self.labelled_width(widths.projects, true, window))
@@ -787,7 +787,7 @@ impl GitTurtle {
             )
             .child(app_icon(f32::from(appearance::ui_size(28.))))
             .child(
-                self.repository_heading(&labels)
+                self.header_control(self.repository_heading(&labels))
                     .flex_1()
                     .max_w(appearance::ui_size(200.))
                     .min_w(appearance::ui_size(100.))
@@ -810,7 +810,7 @@ impl GitTurtle {
             .when(self.repository.is_some(), |header| {
                 header
                     .child(
-                        div()
+                        self.header_control(div())
                             .flex()
                             .flex_shrink_0()
                             .items_center()
@@ -896,12 +896,12 @@ impl GitTurtle {
                 header.child(div().flex_shrink_0().size(appearance::ui_size(28.)))
             })
             .when(!back_to_projects && !own_row, |header| {
-                header.child(self.render_projects_button(cx))
+                header.child(self.framed_header_control(self.render_projects_button(cx)))
             })
-            .child(self.render_profile_button(compact, false, cx))
-            .child(self.render_settings_button(cx))
+            .child(self.framed_header_control(self.render_profile_button(compact, false, cx)))
+            .child(self.framed_header_control(self.render_settings_button(cx)))
             .when(!back_to_projects && own_row, |header| {
-                header.child(self.render_projects_button(cx))
+                header.child(self.framed_header_control(self.render_projects_button(cx)))
             })
             .children(after)
             .into_any_element()
