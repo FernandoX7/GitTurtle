@@ -1254,13 +1254,19 @@ pub struct GitDirectories {
     pub restored: bool,
 }
 
-/// The inodes of a tab's [`GitDirectories`]. `None` where a session saved
-/// none, as every older session, and where the platform has none: there is
-/// then nothing to compare.
+/// The inodes of a tab's [`GitDirectories`], each with its birth time where
+/// the filesystem records one ([`GitRepository::git_dir_birth`]), which
+/// tells a directory from one created after it was deleted that took its
+/// inode number. `None` where a session saved none, as every older session
+/// (one saved before birth times were kept has its inodes alone), and where
+/// the platform or filesystem has none: there is then nothing to compare,
+/// or the inode alone.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DirectoryInodes {
     pub git_dir: Option<u64>,
     pub common: Option<u64>,
+    pub git_dir_birth: Option<Duration>,
+    pub common_birth: Option<Duration>,
 }
 
 impl GitDirectories {
@@ -1271,25 +1277,36 @@ impl GitDirectories {
             inodes: DirectoryInodes {
                 git_dir: repository.git_dir_inode(),
                 common: repository.common_dir_inode(),
+                git_dir_birth: repository.git_dir_birth(),
+                common_birth: repository.common_dir_birth(),
             },
             restored: false,
         }
     }
 
     /// The directory of `repository` that differs from these, by its path
-    /// or, for a restored tab, by the inode it saved, the Git directory
-    /// before the common one; `None` where both match. Reads what the
-    /// repository's open captured, so it touches no filesystem.
+    /// or, for a restored tab, by the inode it saved or, where both the
+    /// session and the filesystem have one, the birth time, the Git
+    /// directory before the common one; `None` where both match. Reads what
+    /// the repository's open captured, so it touches no filesystem.
     fn mismatch(&self, repository: &GitRepository) -> Option<PathBuf> {
         let differs = |saved: Option<u64>, found: Option<u64>| {
             self.restored && saved.is_some_and(|saved| found != Some(saved))
         };
+        let born_apart = |saved: Option<Duration>, found: Option<Duration>| {
+            self.restored
+                && saved
+                    .zip(found)
+                    .is_some_and(|(saved, found)| saved != found)
+        };
         if repository.git_dir() != self.git_dir
             || differs(self.inodes.git_dir, repository.git_dir_inode())
+            || born_apart(self.inodes.git_dir_birth, repository.git_dir_birth())
         {
             Some(repository.git_dir().to_owned())
         } else if repository.common_dir() != self.common
             || differs(self.inodes.common, repository.common_dir_inode())
+            || born_apart(self.inodes.common_birth, repository.common_dir_birth())
         {
             Some(repository.common_dir().to_owned())
         } else {
@@ -7656,15 +7673,15 @@ mod image_tests {
         let git_dir = GitDirectories {
             inodes: DirectoryInodes {
                 git_dir: inode(captured.inodes.git_dir),
-                common: captured.inodes.common,
+                ..captured.inodes
             },
             restored: true,
             ..captured.clone()
         };
         let common = GitDirectories {
             inodes: DirectoryInodes {
-                git_dir: captured.inodes.git_dir,
                 common: inode(captured.inodes.common),
+                ..captured.inodes
             },
             restored: true,
             ..captured.clone()
@@ -7688,6 +7705,71 @@ mod image_tests {
                 .path(),
             root
         );
+    }
+
+    /// A saved birth time is compared beside the inode, each directory's on
+    /// its own, so a directory created after the saved one was deleted that
+    /// took its inode number (ext4 and XFS reuse them) is another
+    /// repository: here the same inodes with a later birth. A session saved
+    /// before birth times were kept, or a filesystem that records none, has
+    /// the inodes alone, which are still compared.
+    #[cfg(unix)]
+    #[test]
+    fn a_restored_tab_compares_each_directory_s_birth_time() {
+        let fixture = Fixture::new();
+        let mut session = RepositorySession::default();
+        let opened = session.open(&fixture.0, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let captured = GitDirectories::of(&opened);
+        if captured.inodes.git_dir_birth.is_none() {
+            // This filesystem records none: the inodes are all there is.
+            return;
+        }
+        let later =
+            |birth: Option<Duration>| Some(birth.expect("a birth time") + Duration::from_nanos(1));
+        let restored = |inodes: DirectoryInodes| GitDirectories {
+            inodes,
+            restored: true,
+            ..captured.clone()
+        };
+        let git_dir = restored(DirectoryInodes {
+            git_dir_birth: later(captured.inodes.git_dir_birth),
+            ..captured.inodes
+        });
+        let common = restored(DirectoryInodes {
+            common_birth: later(captured.inodes.common_birth),
+            ..captured.inodes
+        });
+        let older = restored(DirectoryInodes {
+            git_dir_birth: None,
+            common_birth: None,
+            ..captured.inodes
+        });
+        let older_elsewhere = restored(DirectoryInodes {
+            git_dir: captured.inodes.git_dir.map(|inode| inode + 1),
+            ..older.inodes
+        });
+        for (named, found) in [
+            (&git_dir, &captured.git_dir),
+            (&common, &captured.common),
+            (&older_elsewhere, &captured.git_dir),
+        ] {
+            let gone = session
+                .open(&root, Some(&root), Some(named))
+                .unwrap_err()
+                .downcast::<RepositoryGone>()
+                .expect("gone");
+            assert_eq!(gone.found.as_deref(), Some(found.as_path()), "{named:?}");
+        }
+        for named in [&restored(captured.inodes), &older] {
+            assert_eq!(
+                session
+                    .open(&root, Some(&root), Some(named))
+                    .unwrap_or_else(|error| panic!("{named:?}: {error:#}"))
+                    .path(),
+                root
+            );
+        }
     }
 
     /// A repository cloned again at the tab's path has new inodes, which

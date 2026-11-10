@@ -353,8 +353,13 @@ struct Identity {
     /// The inode of `git_dir` at capture, where the platform has one
     /// ([`GitRepository::git_dir_inode`]).
     git_dir_inode: Option<u64>,
+    /// When `git_dir` was created, where the filesystem records it
+    /// ([`GitRepository::git_dir_birth`]).
+    git_dir_birth: Option<Duration>,
     /// The inode of `common` at capture ([`GitRepository::common_dir_inode`]).
     common_inode: Option<u64>,
+    /// When `common` was created ([`GitRepository::common_dir_birth`]).
+    common_birth: Option<Duration>,
     /// The folder holding the `.git` entry (a directory or a gitfile) that
     /// leads Git from the root to `git_dir`: the root itself, or a folder
     /// above it whose repository sets `core.worktree` to a folder inside.
@@ -504,11 +509,11 @@ impl Identity {
         if common != git_dir {
             configs.push(common.join("config"));
         }
-        let git_dir_inode = directory_inode(&git_dir);
-        let common_inode = if common == git_dir {
-            git_dir_inode
+        let (git_dir_inode, git_dir_birth) = directory_identity(&git_dir);
+        let (common_inode, common_birth) = if common == git_dir {
+            (git_dir_inode, git_dir_birth)
         } else {
-            directory_inode(&common)
+            directory_identity(&common)
         };
         // The stored paths after the stamps, as every check takes them: a
         // file edited after the stamps is a changed stamp at the next check.
@@ -519,7 +524,9 @@ impl Identity {
             git_dir,
             common,
             git_dir_inode,
+            git_dir_birth,
             common_inode,
+            common_birth,
             holder,
             ceiling,
             confined,
@@ -590,20 +597,26 @@ impl Identity {
     }
 }
 
-/// `directory`'s inode, where the platform has one and it can be read.
-fn directory_inode(directory: &Path) -> Option<u64> {
+/// `directory`'s inode, where the platform has one, and its birth time
+/// since the Unix epoch, where the filesystem records one
+/// (`Metadata::created`: `statx` on Linux, `st_birthtime` on macOS), each
+/// where it can be read. An inode number can be taken again by a directory
+/// created after another was deleted (ext4 and XFS reuse them), which its
+/// birth time tells apart.
+fn directory_identity(directory: &Path) -> (Option<u64>, Option<Duration>) {
+    let Ok(metadata) = std::fs::metadata(directory) else {
+        return (None, None);
+    };
     #[cfg(unix)]
-    {
+    let inode = {
         use std::os::unix::fs::MetadataExt;
-        std::fs::metadata(directory)
-            .ok()
-            .map(|metadata| metadata.ino())
-    }
+        Some(metadata.ino())
+    };
     #[cfg(not(unix))]
-    {
-        let _ = directory;
-        None
-    }
+    let inode = None;
+    let birth = (metadata.created().ok())
+        .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok());
+    (inode, birth)
 }
 
 /// A linked worktree's common Git directory, from its `commondir` file
@@ -1211,6 +1224,21 @@ impl GitRepository {
     /// ([`Self::git_dir_inode`]).
     pub fn common_dir_inode(&self) -> Option<u64> {
         self.identity.common_inode
+    }
+
+    /// When [`Self::git_dir`] was created, since the Unix epoch, where the
+    /// filesystem records it (`statx` on Linux, `st_birthtime` on macOS):
+    /// read once by the open, with [`Self::git_dir_inode`], which it tells
+    /// apart from a directory deleted and created again that took the same
+    /// inode number. `None` where the filesystem gives none; the inode is
+    /// then all a comparison has.
+    pub fn git_dir_birth(&self) -> Option<Duration> {
+        self.identity.git_dir_birth
+    }
+
+    /// When [`Self::common_dir`] was created ([`Self::git_dir_birth`]).
+    pub fn common_dir_birth(&self) -> Option<Duration> {
+        self.identity.common_birth
     }
 
     /// Where this repository's commands run: at its root, confined to it.

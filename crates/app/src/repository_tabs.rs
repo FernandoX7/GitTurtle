@@ -252,9 +252,11 @@ where
     Ok(serde_json::from_value(serde_json::Value::deserialize(deserializer)?).ok())
 }
 /// [`worker::GitDirectories`] as a session saves them, byte-safe as a tab's
-/// path is, each with its inode at capture, which the tab restored from the
-/// session compares ([`worker::GitDirectories::restored`]). A session saved
-/// before they were kept has none and compares none.
+/// path is, each with its inode at capture and its birth time where the
+/// filesystem records one, which the tab restored from the session compares
+/// ([`worker::GitDirectories::restored`]). A session saved before they were
+/// kept has none and compares none; one saved before birth times were kept
+/// has the inodes alone and compares those.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedGitDirectories {
     pub git_dir: SavedPath,
@@ -263,6 +265,11 @@ pub struct SavedGitDirectories {
     pub git_dir_inode: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub common_inode: Option<u64>,
+    /// Since the Unix epoch ([`gitturtle_core::GitRepository::git_dir_birth`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_dir_birth: Option<std::time::Duration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub common_birth: Option<std::time::Duration>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryEntry {
@@ -659,6 +666,8 @@ impl State {
                             inodes: worker::DirectoryInodes {
                                 git_dir: directories.git_dir_inode,
                                 common: directories.common_inode,
+                                git_dir_birth: directories.git_dir_birth,
+                                common_birth: directories.common_birth,
                             },
                             restored: true,
                         }),
@@ -723,6 +732,8 @@ impl State {
                         common: SavedPath::new(&directories.common),
                         git_dir_inode: directories.inodes.git_dir,
                         common_inode: directories.inodes.common,
+                        git_dir_birth: directories.inodes.git_dir_birth,
+                        common_birth: directories.inodes.common_birth,
                     }),
                 })
                 .collect(),
@@ -1633,17 +1644,29 @@ impl GitTurtle {
 /// re-pointed leaves them (`worker::FoldersAbove`), only the inodes tell,
 /// so both must have captured them and they must match: the folder is the
 /// same repository only if its Git and common directories are, moved and
-/// linked back. Reads what the opens captured, so it touches no filesystem.
+/// linked back. Either way, where both opens read a directory's birth time
+/// (`GitRepository::git_dir_birth`), it must match too: ext4 and XFS can
+/// give a directory created after a delete the inode number of the one
+/// deleted. Where either read none, the inode alone tells, so a birth time
+/// unknown on both sides never makes two directories the same where an
+/// inode is unknown too. Reads what the opens captured, so it touches no
+/// filesystem.
 fn same_git_directories(shown: &worker::GitDirectories, found: &worker::GitDirectories) -> bool {
     let (shown_inodes, found_inodes) = (shown.inodes, found.inodes);
+    let born_together =
+        |shown: Option<std::time::Duration>, found| shown.zip(found).is_none_or(|(a, b)| a == b);
+    let births = born_together(shown_inodes.git_dir_birth, found_inodes.git_dir_birth)
+        && born_together(shown_inodes.common_birth, found_inodes.common_birth);
     if shown.git_dir == found.git_dir && shown.common == found.common {
         let same =
             |shown: Option<u64>, found: Option<u64>| shown.zip(found).is_none_or(|(a, b)| a == b);
-        same(shown_inodes.git_dir, found_inodes.git_dir)
+        births
+            && same(shown_inodes.git_dir, found_inodes.git_dir)
             && same(shown_inodes.common, found_inodes.common)
     } else {
         let known = |shown: Option<u64>, found: Option<u64>| shown.is_some() && shown == found;
-        known(shown_inodes.git_dir, found_inodes.git_dir)
+        births
+            && known(shown_inodes.git_dir, found_inodes.git_dir)
             && known(shown_inodes.common, found_inodes.common)
     }
 }
@@ -5799,6 +5822,8 @@ pub(crate) mod tests {
                         common: SavedPath::new(&captured.common),
                         git_dir_inode: captured.inodes.git_dir,
                         common_inode: captured.inodes.common,
+                        git_dir_birth: captured.inodes.git_dir_birth,
+                        common_birth: captured.inodes.common_birth,
                     }),
                 ),
             ],
@@ -5962,8 +5987,180 @@ pub(crate) mod tests {
             Some(worker::DirectoryInodes {
                 git_dir: Some(7),
                 common: Some(8),
+                ..Default::default()
             })
         );
+    }
+
+    /// Each Git directory's identity, as the window compares a capture
+    /// with the repository its status was read from: its inode and, where
+    /// both opens read one, its birth time, so an inode number taken again
+    /// after a delete is another repository and a filesystem that records
+    /// no birth time compares the inode alone. At other paths only these
+    /// tell, so both opens must have read the inodes: equal birth times
+    /// without them are not the same repository.
+    #[test]
+    fn a_git_directory_s_identity_is_its_inode_and_birth_time() {
+        let directories = |at: &str, inode: Option<u64>, birth: Option<u64>| {
+            let birth = birth.map(std::time::Duration::from_secs);
+            worker::GitDirectories {
+                git_dir: PathBuf::from(at).join(".git"),
+                common: PathBuf::from(at).join(".git"),
+                inodes: worker::DirectoryInodes {
+                    git_dir: inode,
+                    common: inode,
+                    git_dir_birth: birth,
+                    common_birth: birth,
+                },
+                restored: false,
+            }
+        };
+        let shown = directories("/x/repo", Some(7), Some(100));
+        for (found, same, what) in [
+            (
+                directories("/x/repo", Some(7), Some(100)),
+                true,
+                "unchanged",
+            ),
+            (
+                directories("/x/repo", Some(7), Some(200)),
+                false,
+                "an inode taken again",
+            ),
+            (
+                directories("/x/repo", Some(7), None),
+                true,
+                "no birth time read",
+            ),
+            (
+                directories("/x/repo", Some(8), Some(100)),
+                false,
+                "another inode",
+            ),
+            (
+                directories("/x/repo", None, None),
+                true,
+                "nothing read to compare",
+            ),
+            (
+                directories("/y/repo", Some(7), Some(100)),
+                true,
+                "moved and linked back",
+            ),
+            (
+                directories("/y/repo", Some(7), Some(200)),
+                false,
+                "elsewhere, born later",
+            ),
+            (
+                directories("/y/repo", Some(8), Some(100)),
+                false,
+                "another repository",
+            ),
+            (
+                directories("/y/repo", Some(7), None),
+                true,
+                "elsewhere, no birth time read",
+            ),
+            (
+                directories("/y/repo", None, None),
+                false,
+                "elsewhere, nothing read here",
+            ),
+        ] {
+            assert_eq!(same_git_directories(&shown, &found), same, "{what}");
+        }
+        let unknown = directories("/x/repo", None, None);
+        for (found, what) in [
+            (
+                directories("/y/repo", None, None),
+                "elsewhere, nothing read either side",
+            ),
+            (
+                directories("/y/repo", Some(7), Some(100)),
+                "elsewhere, nothing read there",
+            ),
+        ] {
+            assert!(!same_git_directories(&unknown, &found), "{what}");
+        }
+        let mut common_later = shown.clone();
+        common_later.inodes.common_birth = Some(std::time::Duration::from_secs(200));
+        assert!(
+            !same_git_directories(&shown, &common_later),
+            "the common directory's inode taken again"
+        );
+        assert!(
+            !same_git_directories(
+                &directories("/x/repo", None, Some(100)),
+                &directories("/y/repo", None, Some(100)),
+            ),
+            "elsewhere, a birth time without an inode"
+        );
+    }
+
+    /// A session saved before birth times were kept restores its tabs and
+    /// compares their inodes, as it did: the tab opens where its repository
+    /// is the one it saved, and is marked where a re-clone at its path took
+    /// another inode. The birth times a session saves now are optional
+    /// fields such a session lacks.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_session_saved_before_birth_times_compares_the_inodes(cx: &mut TestAppContext) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let repository = fixture_repository(base.join("repository"));
+        fixture_git(
+            repository.path(),
+            &["commit", "--allow-empty", "-m", "Before"],
+        );
+        let root = repository.path().to_owned();
+        let saved = saved_with_inodes(&repository, "before-births-saved.json");
+        let mut older = serde_json::to_value(&saved).unwrap();
+        let directories = &mut older["tabs"][0]["git_directories"];
+        let fields = directories.as_object_mut().expect("saved with the tab");
+        if repository.git_dir_birth().is_some() {
+            assert!(fields.contains_key("git_dir_birth"), "{fields:?}");
+        }
+        fields.remove("git_dir_birth");
+        fields.remove("common_birth");
+        let older: Session = serde_json::from_value(older).unwrap();
+        let directories = older.tabs[0].git_directories.as_ref().expect("loaded");
+        assert_eq!(
+            (directories.git_dir_birth, directories.common_birth),
+            (None, None),
+            "none saved"
+        );
+        assert_eq!(directories.git_dir_inode, repository.git_dir_inode());
+        let restore = |cx: &mut TestAppContext, name: &str| {
+            open_tab_window(
+                cx,
+                root.clone(),
+                older.clone(),
+                isolated_session(name),
+                size(px(1000.), px(680.)),
+            )
+        };
+
+        let (app, mut window_cx) = restore(cx, "before-births-first.json");
+        settle_tab_test(&app, &mut window_cx).await;
+        app.read_with(&window_cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            assert!(tab.error.is_none(), "{:?}", tab.error);
+            assert_eq!(app.commits[0].subject, "Before");
+        });
+
+        // Moved aside rather than deleted, which could free the inode for
+        // the new `.git` to take.
+        std::fs::rename(&root, base.join("before")).unwrap();
+        let cloned = fixture_repository(&root);
+        fixture_git(cloned.path(), &["commit", "--allow-empty", "-m", "After"]);
+        assert_ne!(cloned.git_dir_inode(), repository.git_dir_inode());
+        let (app, mut window_cx) = restore(cx, "before-births-second.json");
+        settle_tab_test(&app, &mut window_cx).await;
+        assert_marked_for(&app, &mut window_cx, &root, cloned.git_dir());
     }
 
     /// A syntax error inside `git_directories` is a malformed file, reported
@@ -6113,6 +6310,8 @@ pub(crate) mod tests {
             .expect("saved with the tab");
         assert_eq!(directories.git_dir_inode, captured.inodes.git_dir);
         assert_eq!(directories.common_inode, captured.inodes.common);
+        assert_eq!(directories.git_dir_birth, captured.inodes.git_dir_birth);
+        assert_eq!(directories.common_birth, captured.inodes.common_birth);
         saved
     }
 
@@ -6787,13 +6986,14 @@ pub(crate) mod tests {
                     app.automatic.quiet_read_requested() || app.status_task.is_some()
                 });
                 if !reading {
-                    break;
+                    return;
                 }
                 app.read_with(cx, |app, _| {
                     app.worker.wait_idle();
                     app.operations.drain();
                 });
             }
+            panic!("the quiet read and the status read it asked for never landed");
         })
         .await;
     }
@@ -7677,6 +7877,73 @@ pub(crate) mod tests {
             cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
         })
         .await;
+    }
+
+    /// A Refresh compares the repository it finds with the one the shown
+    /// working status and remotes were read from, never with the window's
+    /// handle: with the handle on a re-clone at the tab's path already, the
+    /// status and remotes shown still the replaced repository's, a Refresh
+    /// that finds the re-clone forgets them before the found one's status
+    /// lands. Compared with the handle, it compared the re-clone with itself
+    /// and kept them.
+    #[gpui::test]
+    async fn a_refresh_compares_the_status_s_repository_not_the_window_s_handle(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let base = fixture.path().to_owned();
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let remote = base.join("a.git");
+        fixture_git(
+            &root,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let read = app.read_with(cx, |app, _| {
+            assert_eq!(app.remotes.len(), 1, "the remote read");
+            app.working_identity.clone().expect("the status read")
+        });
+        let third = fixture_repository(base.join("third"));
+        fixture_git(
+            third.path(),
+            &["commit", "-q", "--allow-empty", "-m", "Third"],
+        );
+        std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+        std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+        let found = gitturtle_core::GitRepository::open(&root).unwrap();
+        assert!(!same_git_directories(
+            &read,
+            &worker::GitDirectories::of(&found)
+        ));
+        // The handle on the re-clone, the status shown the other's.
+        app.update(cx, |app, _| app.repository = Some(found));
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        for _ in 0..16 {
+            if app.read_with(cx, |app, _| app.loading.is_none()) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        app.read_with(cx, |app, _| {
+            let subjects = (app.commits.iter())
+                .map(|commit| commit.subject.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(subjects, ["Third"], "the snapshot installed");
+            assert!(app.remotes.is_empty(), "no remote from before");
+            assert!(app.work_status.is_none(), "no status from before");
+            assert!(app.status_task.is_some(), "its status read waits");
+        });
+        drop(held);
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.remotes.is_empty(), "the re-clone has none");
+            assert!(app.work_status.is_some(), "its own status read");
+        });
     }
 
     /// Show latest that finds a re-clone at the tab's path installs it in

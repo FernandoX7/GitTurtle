@@ -1497,6 +1497,39 @@ fn an_open_reads_each_git_directory_s_inode() {
     assert_ne!(linked.git_dir_inode(), linked.common_dir_inode());
 }
 
+/// An open reads each Git directory's birth time with its inode, where the
+/// filesystem records one (`statx` on Linux, `st_birthtime` on macOS), which
+/// tells a directory from one created after it was deleted that took its
+/// inode number: a linked worktree's private and common directories have
+/// their own, a plain repository's are the one directory's, and a
+/// filesystem that records none gives none.
+#[test]
+fn an_open_reads_each_git_directory_s_birth_time() {
+    let birth = |path: &Path| {
+        let created = fs::metadata(path).unwrap().created().ok()?;
+        Some(created.duration_since(std::time::UNIX_EPOCH).unwrap())
+    };
+    let f = Fixture::new();
+    f.write("file.txt", "base\n");
+    f.commit("base");
+    let plain = f.repo();
+    assert_eq!(plain.git_dir_birth(), birth(plain.git_dir()));
+    assert_eq!(plain.common_dir_birth(), plain.git_dir_birth());
+
+    let linked = f.temp.path().join("linked");
+    f.git(&[
+        "worktree",
+        "add",
+        "--quiet",
+        "-b",
+        "linked",
+        linked.to_str().unwrap(),
+    ]);
+    let linked = GitRepository::open(&linked).unwrap();
+    assert_eq!(linked.git_dir_birth(), birth(linked.git_dir()));
+    assert_eq!(linked.common_dir_birth(), birth(plain.git_dir()));
+}
+
 /// Points the existing link `link` at `target`.
 #[cfg(unix)]
 fn re_point(link: &Path, target: &Path) {
