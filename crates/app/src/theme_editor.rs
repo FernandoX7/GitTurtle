@@ -1960,10 +1960,21 @@ impl ThemeForm {
     /// Name submits, a hex field commits its value, a wrapped button activates
     /// (the toolkit's own Enter click never runs once the action is handled),
     /// and anything else (Base, a picker, the Readability list) does nothing.
+    ///
+    /// Return acts only for an Enter whose press began on the control it acts
+    /// on, as the rewrite review's list does: the dialog confirms each fresh
+    /// key-down, and under X11 a held Enter's repeats arrive as fresh
+    /// presses, so a repeat after focus moved onto Save, Cancel or Reset, as
+    /// a picker closed by Enter in its hex field once gave focus to Save,
+    /// saved the theme or closed the editor. Such a press acts on nothing
+    /// until its key-up and a new key-down.
     fn confirm_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(focused) = window.focused(cx) else {
             return;
         };
+        if !gpui_kit::base::enter_press_began_on(&focused, window, cx) {
+            return;
+        }
         if focused == self.name.read(cx).focus_handle(cx) {
             self.submit(window, cx);
         } else if let Some(kind) = self
@@ -3772,6 +3783,117 @@ pub(crate) mod tests {
             Preferences::load().custom_themes.is_empty(),
             "Return on Cancel saved the draft"
         );
+    }
+
+    /// Return acts only on the control its Enter press began on: Enter goes
+    /// down in a row's hex field, which commits it, and focus moves onto
+    /// Reset to base, Cancel or Save before the key's repeats arrive as GPUI
+    /// delivers them natively, a release and its press together (an input
+    /// method's repeat, or X11's split across a poll batch), GPUI's held
+    /// repeats, then X11's fresh presses. None of them resets the draft,
+    /// begins a save or closes the editor, and the store is unchanged; once
+    /// the key has come up, a new press acts on the button. The form routed
+    /// every fresh press the dialog confirmed to whatever held focus, so a
+    /// repeat after a picker had given focus to Save saved the theme, and one
+    /// on Cancel closed the editor (FU41-B's security review).
+    #[gpui::test]
+    fn a_held_return_acts_on_nothing_focus_moved_to(cx: &mut TestAppContext) {
+        fn enter(window: &mut Window, cx: &mut App, down: Option<bool>) {
+            let keystroke = Keystroke::parse("enter").expect("a keystroke");
+            let input = match down {
+                Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke,
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
+            };
+            window.dispatch_event(input, cx);
+        }
+        let (app, cx) = open_at_rest(cx);
+        first_picker(cx, &app);
+        let saved = cx.read(|cx| app.read(cx).custom_themes.len());
+        for target in ["Reset to base", "Cancel", "Save"] {
+            if cx.read(|cx| app.read(cx).theme_editor.form.is_none()) {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.open_theme_editor(None, window, cx))
+                });
+                settle(cx);
+            }
+            let form = form(cx, &app);
+            type_hex(cx, &form, TokenKind::Accent, "12AB34");
+            cx.update(|window, cx| enter(window, cx, Some(false)));
+            settle(cx);
+            assert_eq!(
+                cx.read(|cx| form.read(cx).row(TokenKind::Accent).hex.read(cx).value()),
+                "#12ab34",
+                "{target}: the press committed the field it began in"
+            );
+            let draft = cx.read(|cx| form.read(cx).draft);
+            assert_ne!(draft, cx.read(|cx| form.read(cx).base.palette()));
+            let button = cx.read(|cx| {
+                let form = form.read(cx);
+                match target {
+                    "Reset to base" => form.reset_focus.clone(),
+                    "Cancel" => form.cancel_focus.clone(),
+                    _ => form.save_focus.clone(),
+                }
+            });
+            cx.update(|window, cx| button.focus(window, cx));
+            settle(cx);
+            let unchanged = |cx: &mut VisualTestContext, step: &str| {
+                assert!(
+                    cx.update(|window, cx| window.has_active_dialog(cx))
+                        && cx.read(|cx| app.read(cx).theme_editor.form.is_some()),
+                    "{target}, {step}: the editor stays open"
+                );
+                assert!(
+                    !cx.read(|cx| form.read(cx).pending),
+                    "{target}, {step}: no save began"
+                );
+                assert_eq!(
+                    cx.read(|cx| form.read(cx).draft),
+                    draft,
+                    "{target}, {step}: the draft is unchanged"
+                );
+                assert_eq!(
+                    cx.read(|cx| app.read(cx).custom_themes.len()),
+                    saved,
+                    "{target}, {step}: the store is unchanged"
+                );
+            };
+            // Each its own event, with no idle pass between them.
+            cx.update(|window, cx| enter(window, cx, None));
+            cx.update(|window, cx| enter(window, cx, Some(false)));
+            settle(cx);
+            unchanged(cx, "a release and its press");
+            for (repeat, is_held) in [true, true, false, false, false].into_iter().enumerate() {
+                cx.update(|window, cx| enter(window, cx, Some(is_held)));
+                settle(cx);
+                unchanged(cx, &format!("repeat {repeat}, held {is_held}"));
+            }
+            cx.update(|window, cx| enter(window, cx, None));
+            settle(cx);
+            unchanged(cx, "the release");
+            drain_preference_writer(cx, &app);
+            unchanged(cx, "the writer drained");
+
+            press(cx, "enter");
+            match target {
+                "Reset to base" => assert_eq!(
+                    cx.read(|cx| form.read(cx).draft),
+                    cx.read(|cx| form.read(cx).base.palette()),
+                    "a new press on Reset to base resets the draft"
+                ),
+                "Cancel" => assert!(
+                    cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+                    "a new press on Cancel closes the editor"
+                ),
+                _ => wait_for(cx, &app, |cx| {
+                    cx.read(|cx| app.read(cx).custom_themes.len()) == saved + 1
+                }),
+            }
+        }
     }
 
     /// Keep colors and Replace colors leave the tree when answered; focus
