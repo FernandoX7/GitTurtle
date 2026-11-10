@@ -1470,8 +1470,13 @@ impl PopupMenu {
     /// to act, and Enter held on a button acted on the first item of the
     /// menu it opened. A write now waits for a new press wherever the
     /// platform marks a repeat held, as macOS and Wayland do (Wayland with an
-    /// input method too, through the `gpui-pre-linux` patch): under X11 a
-    /// held key arrives as fresh presses (`GITTURTLE-PATCH.md`).
+    /// input method too, through the `gpui-pre-linux` patch), and for Enter
+    /// under X11 too, whose held key arrives as fresh presses: a key-down
+    /// that repeats the Enter press the base kit recorded
+    /// ([`gpui_base::enter_press_is_repeat`], false for Space and for a
+    /// Command-Enter, which record none) confirms nothing either, so an
+    /// X11 Enter held on an item that waited, or on a button that opened
+    /// the menu, runs nothing (`GITTURTLE-PATCH.md`).
     fn confirm_key(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
         let mut contexts = None;
         let confirm = CONFIRM_KEYSTROKES
@@ -1489,6 +1494,7 @@ impl PopupMenu {
             return;
         };
         if !event.is_held
+            && !gpui_base::enter_press_is_repeat(window, cx)
             && let Some(focused) = window.focused(cx)
         {
             focused.dispatch_action(&confirm, window, cx);
@@ -3315,7 +3321,10 @@ mod tests {
 
     impl Render for Placed {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            // An Enter key-up ends the press the base kit records, as the
+            // component `Root` notes it.
             div()
+                .capture_key_up(|event, window, cx| gpui_base::note_key_up(event, window, cx))
                 .flex()
                 .items_start()
                 .pt(self.top)
@@ -3342,8 +3351,8 @@ mod tests {
     }
 
     /// A focused menu of `items` that run into `ran`, drawn at the window's
-    /// top left at the size its rows give it, with the menu keys bound and
-    /// its fills painted.
+    /// top left at the size its rows give it, with the menu keys bound, its
+    /// fills painted and the base kit's record of Enter's press kept.
     fn placed<'a>(
         cx: &'a mut TestAppContext,
         items: &'static [(&'static str, bool)],
@@ -3357,6 +3366,7 @@ mod tests {
             colors.list_active = gpui::blue();
             cx.set_global(Theme::from(&colors));
             init(cx);
+            gpui_base::init(cx);
         });
         let ran = ran.clone();
         let (placed, cx) = cx.add_window_view(move |window, cx| {
@@ -4401,7 +4411,8 @@ mod tests {
     }
 
     /// A focused [`waiting`] menu drawn at the window's top left with its
-    /// fills painted, the menu keys bound, and how often it was dismissed.
+    /// fills painted, the menu keys bound, the base kit's record of Enter's
+    /// press kept, and how often it was dismissed.
     fn open_waiting<'a>(
         cx: &'a mut TestAppContext,
         ran: &Ran,
@@ -4416,6 +4427,7 @@ mod tests {
             colors.list_active = gpui::blue();
             cx.set_global(Theme::from(&colors));
             init(cx);
+            gpui_base::init(cx);
         });
         let ran = ran.clone();
         let (placed, cx) = cx.add_window_view(move |window, cx| {
@@ -4635,6 +4647,7 @@ mod tests {
         );
         rebuilt(cx, false);
         assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "One acts again");
+        key_up(cx, "enter", true);
         cx.simulate_keystrokes("enter");
         draw(cx);
         assert_eq!(*ran.borrow(), ["One"], "Enter runs One");
@@ -4654,6 +4667,45 @@ mod tests {
             prefer_character_input: false,
         });
         draw(cx);
+    }
+
+    /// `keys` going down as X11 sends both a press and each repeat of it
+    /// while it is held: not marked held, with no key-up before a repeat.
+    /// Drawn after it unless `then_draw` is false, as for a press that comes
+    /// right after its release.
+    fn x11_down(cx: &mut VisualTestContext, keys: &str, then_draw: bool) {
+        // Dispatched with no idle pass after it, as `simulate_event` runs.
+        let down = gpui::PlatformInput::KeyDown(KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(keys).unwrap().with_simulated_ime(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.update(|window, cx| window.dispatch_event(down, cx));
+        if then_draw {
+            draw(cx);
+        }
+    }
+
+    /// `keys` coming up, drawn after it unless `then_draw` is false: drawn,
+    /// the event loop's next idle pass ends the Enter press the base kit
+    /// records (`gpui_base::note_key_up`).
+    fn key_up(cx: &mut VisualTestContext, keys: &str, then_draw: bool) {
+        let up = gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse(keys).unwrap(),
+        });
+        cx.update(|window, cx| window.dispatch_event(up, cx));
+        if then_draw {
+            draw(cx);
+        }
+    }
+
+    /// A held Enter's repeats as X11 sends them, two fresh presses and a
+    /// release with its press together, the menu drawn after each.
+    fn x11_repeats(cx: &mut VisualTestContext) {
+        x11_down(cx, "enter", true);
+        x11_down(cx, "enter", true);
+        key_up(cx, "enter", false);
+        x11_down(cx, "enter", true);
     }
 
     /// Enter held on Two, which waits, runs nothing as it goes down or
@@ -4697,8 +4749,51 @@ mod tests {
         repeat(cx, "enter");
         assert!(ran.borrow().is_empty(), "the held Enter runs nothing");
         assert_eq!(dismissed.get(), 0, "the menu stays open");
+        key_up(cx, "enter", true);
         cx.simulate_keystrokes("enter");
         draw(cx);
+        assert_eq!(*ran.borrow(), ["Two"], "a fresh press runs Two");
+        assert_eq!(dismissed.get(), 1, "and closes the menu");
+    }
+
+    /// The same under X11, whose repeats are fresh presses no flag marks:
+    /// Enter goes down on the waiting Two and runs nothing, a rebuild makes
+    /// Two able to act, and the key's repeats, two presses and a release
+    /// with its press, run nothing, as they repeat the press the base kit
+    /// recorded (`gpui_base::enter_press_is_repeat`); after the key-up a
+    /// fresh press runs Two. Read by its `is_held` alone, the first repeat
+    /// after the rebuild ran Two.
+    #[gpui::test]
+    fn an_x11_enter_held_runs_no_item_a_rebuild_makes_able_to_act(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (menu, dismissed, cx) = open_waiting(cx, &ran);
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+        x11_down(cx, "enter", true);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter on the waiting Two runs nothing"
+        );
+        cx.update(|window, cx| {
+            let ran = ran.clone();
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| {
+                    let mut menu = waiting(menu, &ran, true);
+                    let two = ran.clone();
+                    menu.menu_items[2] = PopupMenuItem::new("Two")
+                        .on_click(move |_, _, _| two.borrow_mut().push("Two"));
+                    menu
+                })
+            })
+        });
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "kept on Two");
+        x11_repeats(cx);
+        assert!(ran.borrow().is_empty(), "the held Enter runs nothing");
+        assert_eq!(dismissed.get(), 0, "the menu stays open");
+        key_up(cx, "enter", true);
+        x11_down(cx, "enter", true);
         assert_eq!(*ran.borrow(), ["Two"], "a fresh press runs Two");
         assert_eq!(dismissed.get(), 1, "and closes the menu");
     }
@@ -4717,8 +4812,35 @@ mod tests {
         repeat(cx, "enter");
         repeat(cx, "enter");
         assert!(ran.borrow().is_empty(), "the held Enter runs nothing");
+        key_up(cx, "enter", true);
         cx.simulate_keystrokes("enter");
         draw(cx);
+        assert_eq!(*ran.borrow(), ["One"], "a fresh press runs One");
+    }
+
+    /// The same under X11: Enter goes down with focus outside the menu, as
+    /// on the button that opens it, the menu opens focused on its first
+    /// item, and the key's repeats, fresh presses no flag marks, run
+    /// nothing; after the key-up a fresh press runs One. Read by its
+    /// `is_held` alone, the first repeat ran One.
+    #[gpui::test]
+    fn an_x11_enter_that_opened_the_menu_runs_nothing(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        cx.update(|window, cx| window.blur(cx));
+        x11_down(cx, "enter", true);
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.focus_handle.clone().focus(window, cx);
+                menu.select_first_item(cx);
+            })
+        });
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "opened on One");
+        x11_repeats(cx);
+        assert!(ran.borrow().is_empty(), "the held Enter runs nothing");
+        key_up(cx, "enter", true);
+        x11_down(cx, "enter", true);
         assert_eq!(*ran.borrow(), ["One"], "a fresh press runs One");
     }
 

@@ -2212,8 +2212,17 @@ press and release land on the item as the menu was last built (above),
 which an assistive technology's Click also produces, since GPUI answers it
 with a press and release at the row's centre (`Window::handle_a11y_action`).
 GPUI's X11 backend marks no key-down held (`gpui-pre-linux`
-`linux/x11/client.rs`), so under X11 a repeat still reads as a fresh press;
-that is not a regression, as every repeat acted before. Nor did the rule
+`linux/x11/client.rs`), so under X11 a repeat reads as a fresh press. For
+Enter the listener also asks the base kit's record of the press
+(gpui-base's `enter_press_is_repeat`, decided 2026-11-10 with every other
+Enter that acts on its key-down): a key-down that repeats the recorded
+Enter press confirms nothing, so under X11 an Enter held on an item that
+waited, or on a button that opened the menu, runs nothing until its
+key-up. The record is false for Space and for a Command-Enter, which
+record no press, so they confirm as before; a held Space still confirms on
+an X11 repeat, as does an X11 Enter repeat whose release ends a poll batch
+and whose press begins the next (the base patch note's residual). Nor did
+the rule
 hold on Wayland with an input method, such as fcitx5, enabled through
 text-input, which `gpui-pre-linux` 0.3.4 enabled whenever the focused
 element had no input handler, as on a default Omarchy: a held Enter or
@@ -2238,7 +2247,15 @@ repeats Enter into a menu opened on its first item, and
 inside a popover's context and the secondary Enter in one inside a list's,
 with those contexts' bindings: nothing runs until a fresh press, and in a
 menu inside neither, neither key runs anything. Each fails with the repeat
-check removed. The app's
+check removed. `an_x11_enter_held_runs_no_item_a_rebuild_makes_able_to_act`
+and `an_x11_enter_that_opened_the_menu_runs_nothing` hold Enter as X11
+sends it, fresh presses and a release with its press, in hosts that keep
+the base kit's record (`gpui_base::init` and a key-up noted as the
+component `Root` notes it), and fail with the record's check removed; the
+two held-Enter tests above and
+`a_rebuilt_menu_keeps_the_cursor_on_an_item_that_states_why_it_waits`
+press again only after the key-up, as a person does, since the record
+takes a press with no key-up before it for a repeat. The app's
 `native_accessibility::menu_tests::a_held_key_that_opened_a_buttons_menu_runs_nothing`
 holds Enter and then Space on a real dropdown's button, and
 `a_held_key_that_chose_from_a_buttons_menu_reopens_nothing` holds the key
@@ -2731,13 +2748,17 @@ and a release with its press. Residuals, none of which writes anything
 a repeat whose release ends a poll batch, with its press in the next, is a
 fresh press and closes the picker once, and on macOS a Command pressed
 during the hold ends the record of where the press began (gpui-base's
-patch note, unverified without a Mac); with focus in the hex field a
+patch note, unverified without a Mac); and with focus in the hex field a
 repeat still closes the picker, since the field's own Enter emits
 `PressEnter`, whose commit (gpui-base's `ColorPickerState::commit_hex`)
 chooses the field's value through `select_color`, which closes it, whatever
 becomes of the
-`Confirm` it passes on; and a pointer press that closes the picker
-mid-hold leaves the press recorded on the trigger, so the next X11 repeat,
-not marked held and begun there, opens it once more (`fresh_enter`), after
-which the popover's filter holds. Remove it when upstream's picker opens
+`Confirm` it passes on. A pointer press that closes the picker mid-hold
+leaves the press recorded on the trigger, and the next X11 repeat, not
+marked held and begun there, opened it once more; `fresh_enter` now also
+asks whether the key-down repeats the recorded press (gpui-base's
+`enter_press_is_repeat`, decided 2026-11-10), so it opens nothing until the
+key-up, and a fresh press after it opens the picker as before
+(`an_x11_enter_held_reopens_no_picker_a_pointer_closed`, which fails with
+that check removed). Remove it when upstream's picker opens
 only on a fresh press and its popover acts only on one.

@@ -60,13 +60,16 @@ pub(crate) fn init(cx: &mut App) {
 
 /// GitTurtle patch: Enter on the focused trigger opens or closes the picker
 /// only on a fresh press, through the kit's held-Enter filter, as a Button in
-/// a dialog presses: never on a held key's repeats, nor for an Enter whose
-/// press began on another control ([`gpui_base::enter_press_began_on`]).
-/// Under X11 a held key's repeats arrive as fresh presses, so Enter held
-/// after the hex field's commit, or a repeat whose release and press a poll
-/// batch split after it chose a swatch, reopened the picker it had just
-/// closed. Focus inside the popover passes over this: there the popover's
-/// own contexts bind the key.
+/// a dialog presses: never on a held key's repeats, marked held or repeating
+/// the recorded press ([`gpui_base::enter_press_is_repeat`]), nor for an
+/// Enter whose press began on another control
+/// ([`gpui_base::enter_press_began_on`]). Under X11 a held key's repeats
+/// arrive as fresh presses, so Enter held after the hex field's commit, or a
+/// repeat whose release and press a poll batch split after it chose a
+/// swatch, reopened the picker it had just closed, and a pointer press that
+/// closed a picker an Enter held on its trigger had opened let the next
+/// repeat, begun on the trigger, open it again. Focus inside the popover
+/// passes over this: there the popover's own contexts bind the key.
 fn fresh_enter(
     trigger: &FocusHandle,
     event: &gpui::KeyDownEvent,
@@ -79,7 +82,10 @@ fn fresh_enter(
     {
         return;
     }
-    if !event.is_held && gpui_base::enter_press_began_on(trigger, window, cx) {
+    if !event.is_held
+        && !gpui_base::enter_press_is_repeat(window, cx)
+        && gpui_base::enter_press_began_on(trigger, window, cx)
+    {
         trigger.dispatch_action(&Confirm { secondary: false }, window, cx);
     }
     cx.stop_propagation();
@@ -1060,6 +1066,85 @@ mod tests {
                 "{at}: the gone slider took no press"
             );
         }
+    }
+
+    /// GitTurtle patch: an Enter held on the trigger opens the picker once,
+    /// and once a pointer press on the trigger has closed it mid-hold, the
+    /// key's repeats as X11 sends them, fresh presses no flag marks and a
+    /// release with its press, open nothing, as they repeat the press the
+    /// base kit recorded (`gpui_base::enter_press_is_repeat`); after the
+    /// key-up a fresh press opens it again. Begun on the trigger and not
+    /// marked held, the first repeat after the pointer's close opened it.
+    #[gpui::test]
+    fn an_x11_enter_held_reopens_no_picker_a_pointer_closed(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let slot: Rc<RefCell<Option<Entity<ColorPickerState>>>> = Rc::default();
+        let (_, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            move |window, cx| {
+                let state = cx.new(|cx| ColorPickerState::new(window, cx));
+                *slot.borrow_mut() = Some(state.clone());
+                let clicks = Rc::new(Cell::new(0));
+                let view = cx.new(|_| Page { state, clicks });
+                crate::Root::new(view, window, cx).bordered(false)
+            }
+        });
+        let state = slot.borrow().clone().expect("the picker's state");
+        let settle = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        // Enter as X11 sends it: a key-down, a press or a repeat alike, or
+        // with `None` its key-up.
+        let enter = |cx: &mut VisualTestContext, down: bool| {
+            // Dispatched with no idle pass after it, as `simulate_event`
+            // runs, so a release and its press arrive together.
+            let keystroke = gpui::Keystroke::parse("enter").unwrap();
+            let event = if down {
+                gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke,
+                    is_held: false,
+                    prefer_character_input: false,
+                })
+            } else {
+                gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke })
+            };
+            cx.update(|window, cx| window.dispatch_event(event, cx));
+        };
+        let open = |cx: &mut VisualTestContext| state.read_with(cx, |state, _| state.is_open());
+        settle(cx);
+        let picker = cx.debug_bounds("picker").expect("the picker");
+        // Opened and closed by the pointer and Escape, focus rests on the
+        // trigger.
+        cx.simulate_click(picker.center(), Default::default());
+        settle(cx);
+        cx.simulate_keystrokes("escape");
+        settle(cx);
+        assert!(!open(cx), "Escape closed it");
+
+        enter(cx, true);
+        settle(cx);
+        assert!(open(cx), "Enter on the trigger opens it");
+        cx.simulate_click(picker.center(), Default::default());
+        settle(cx);
+        assert!(!open(cx), "a press on the trigger closes it");
+        for (repeat, events) in [
+            ("an X11 repeat", &[true][..]),
+            ("another X11 repeat", &[true]),
+            ("a release and its press", &[false, true]),
+        ] {
+            for down in events {
+                enter(cx, *down);
+            }
+            settle(cx);
+            assert!(!open(cx), "{repeat}: the held Enter opens nothing");
+        }
+        enter(cx, false);
+        settle(cx);
+        enter(cx, true);
+        settle(cx);
+        assert!(open(cx), "a fresh press after the key-up opens it");
     }
 
     /// GitTurtle patch: Up and Down land on the swatch above or below, the

@@ -4563,6 +4563,13 @@ mod tests {
                 false,
                 &format!("{when}, after {press}"),
             );
+            // The key comes up between the presses, as a person's does: an
+            // Enter down again with none between is a held key's repeat,
+            // which the menu runs nothing on.
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+            });
+            cx.executor().run_until_parked();
         }
         assert_ne!(
             nodes[0], nodes[1],

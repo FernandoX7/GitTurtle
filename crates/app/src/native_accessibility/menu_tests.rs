@@ -57,6 +57,17 @@ fn draw(cx: &mut VisualTestContext) {
     cx.run_until_parked();
 }
 
+/// `key` coming up, as it does between two presses a person makes: the kit
+/// takes an Enter that goes down again with no key-up or other key between
+/// for a repeat of the press, as X11 sends a held key's repeats, and acts on
+/// none of them.
+fn key_up(cx: &mut VisualTestContext, key: &str) {
+    cx.simulate_event(KeyUpEvent {
+        keystroke: Keystroke::parse(key).unwrap(),
+    });
+    draw(cx);
+}
+
 /// The probe's window with its menu open, and the items chosen from it.
 fn open_menu(cx: &mut TestAppContext) -> (&mut VisualTestContext, Chosen) {
     cx.update(gpui_kit::init);
@@ -198,8 +209,9 @@ fn a_menu_the_keyboard_opens_starts_on_its_first_action(cx: &mut TestAppContext)
 /// macOS and Wayland mark the repeats held, Wayland with an input method
 /// such as fcitx5 too, as on a default Omarchy, since the vendored
 /// `gpui-pre-linux` turns text input on only for a focused text field;
-/// under X11 a held key arrives as fresh presses, which the menu cannot
-/// tell from new ones.
+/// under X11 a held Enter arrives as fresh presses, which the menu tells
+/// from new ones by the press the base kit records
+/// (`enter_press_is_repeat`), so a fresh press comes after the key-up.
 #[gpui::test]
 fn a_held_key_that_opened_a_buttons_menu_runs_nothing(cx: &mut TestAppContext) {
     let (cx, chosen) = open_menu(cx);
@@ -234,6 +246,7 @@ fn a_held_key_that_opened_a_buttons_menu_runs_nothing(cx: &mut TestAppContext) {
             cx.debug_bounds("menu-item: First · MenuItem").is_some(),
             "{key} held leaves the menu open"
         );
+        key_up(cx, key);
         cx.simulate_keystrokes(key);
         draw(cx);
         assert_eq!(
@@ -266,6 +279,7 @@ fn a_held_key_that_chose_from_a_buttons_menu_reopens_nothing(cx: &mut TestAppCon
         cx.simulate_keystrokes(key);
         draw(cx);
         assert!(open(cx), "{key} on the button opened the menu");
+        key_up(cx, key);
         cx.simulate_keystrokes(key);
         draw(cx);
         assert_eq!(
@@ -288,6 +302,7 @@ fn a_held_key_that_chose_from_a_buttons_menu_reopens_nothing(cx: &mut TestAppCon
             assert!(!open(cx), "{key} still held reopens nothing");
         }
         assert!(chosen.borrow().is_empty(), "{key} held runs nothing");
+        key_up(cx, key);
         cx.simulate_keystrokes(key);
         draw(cx);
         assert!(open(cx), "a fresh {key} opens the menu again");
@@ -395,6 +410,7 @@ fn enter_under_the_pointer_acts_only_on_an_item_that_can_act(cx: &mut TestAppCon
         draw(cx);
         cx.simulate_keystrokes("enter");
         draw(cx);
+        key_up(cx, "enter");
         assert_eq!(
             *chosen.borrow(),
             Vec::<&str>::new(),
