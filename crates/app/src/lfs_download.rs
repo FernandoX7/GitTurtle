@@ -874,6 +874,26 @@ impl GitTurtle {
         selection
     }
 
+    /// Gives the open form a plan for its object from `remote`, as its
+    /// source read does where Git LFS runs, for a test, which cannot run
+    /// it: the plan stands in for a reviewed one, and its write refuses
+    /// before any command runs.
+    #[cfg(test)]
+    pub(crate) fn stand_in_plan(&self, remote: &str, cx: &mut App) {
+        let form = self
+            .lfs_downloads
+            .form
+            .as_ref()
+            .and_then(WeakEntity::upgrade)
+            .expect("the form is open");
+        form.update(cx, |form, cx| {
+            form.cancel();
+            form.error = None;
+            form.plan = Some(LfsDownloadPlan::stand_in(form.target.clone(), remote));
+            cx.notify();
+        });
+    }
+
     /// Ends the write [`Self::simulate_lfs_download`] started, failing
     /// with `failure` or succeeding, as `write_from`'s end does.
     #[cfg(test)]

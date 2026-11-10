@@ -32,6 +32,28 @@ pub struct LfsDownloadPlan {
     config_token: String,
 }
 
+/// The app's tests cannot run Git LFS to prepare a plan, so they stand one
+/// in for `target` from `remote`: it captures no repository, so its
+/// execution refuses before any command runs, as for a repository that
+/// changed after review.
+#[cfg(feature = "test-support")]
+impl LfsDownloadPlan {
+    pub fn stand_in(target: LfsDownloadTarget, remote: &str) -> Self {
+        let (oid, size) = parse_download_pointer(&target.pointer).unwrap_or_default();
+        Self {
+            target,
+            oid,
+            size,
+            remote: remote.to_owned(),
+            source: format!("Stand-in source for {remote}"),
+            root: PathBuf::new(),
+            directories: (PathBuf::new(), PathBuf::new()),
+            storage: PathBuf::new(),
+            config_token: String::new(),
+        }
+    }
+}
+
 /// What is wrong with a Git LFS object a preview cannot use, judged of that
 /// object and the store that holds it: a failure of the repository it is read
 /// through is an error instead. A download cannot help any of them, so none

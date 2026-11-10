@@ -6157,6 +6157,96 @@ mod tests {
         assert_eq!(alerted, words, "at once");
     }
 
+    /// The review's download runs for the review through its own form and
+    /// confirmation, whose Review download records who asked: driven from
+    /// the keyboard, Tab onto Download Before… and Enter, then the form's
+    /// Review download and the confirmation's Download object, the write
+    /// runs for the review, the confirmation says where its Cancel stands,
+    /// focus stays on the Download through the busy delay and moves to
+    /// Cancel as the progress shows. Every other test said who asked
+    /// itself, so with the form's record gone the write ran for Compare,
+    /// whose header the review covers, and every test stayed green.
+    #[gpui::test]
+    async fn the_review_s_form_and_confirmation_run_its_download(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        let (_fixture, repo, files) = missing_before();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        // The write waits, as a transfer would, while the test looks.
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        for _ in 0..40 {
+            if holds_focus(&browser, cx, |browser| &browser.download_focus[0]) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            crate::tags::tests::draw(cx);
+        }
+        assert!(
+            holds_focus(&browser, cx, |browser| &browser.download_focus[0]),
+            "Tab reaches Download Before…"
+        );
+        enter(cx, true);
+        enter(cx, false);
+        assert!(
+            cx.debug_bounds("lfs-download-file").is_some(),
+            "Enter on Download Before… opens its form"
+        );
+        app.update(cx, |app, cx| app.stand_in_plan("origin", cx));
+        crate::tags::tests::draw(cx);
+        let review = cx
+            .debug_bounds("dialog-ok: Review download")
+            .expect("the form offers Review download");
+        cx.simulate_click(review.center(), Modifiers::none());
+        crate::tags::tests::draw(cx);
+        let consequences = written::get("operation-consequences")
+            .and_then(|node| node.node.value().or(node.node.label()).map(str::to_owned))
+            .expect("the confirmation says the download's consequences");
+        assert!(
+            consequences
+                .contains("While it runs, Cancel download stands in the review's Download row."),
+            "it says where the review's Cancel stands: {consequences}"
+        );
+        let confirm = cx
+            .debug_bounds("dialog-ok: Download object")
+            .expect("the confirmation offers Download object");
+        cx.simulate_click(confirm.center(), Modifiers::none());
+        crate::tags::tests::draw(cx);
+        let me = crate::lfs_download::Asker::Review(browser.entity_id());
+        assert_eq!(
+            app.read_with(cx, |app, _| app.lfs_downloads.running()),
+            Some(me),
+            "the write runs for the review"
+        );
+        assert!(
+            cx.debug_bounds("lfs-download-progress").is_none()
+                && holds_focus(&browser, cx, |browser| &browser.download_focus[0]),
+            "through the busy delay focus is back on Download Before…"
+        );
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        crate::tags::tests::draw(cx);
+        assert!(
+            cx.debug_bounds("lfs-download-progress").is_some()
+                && cx.debug_bounds("cancel-lfs-download").is_some(),
+            "the progress and Cancel download stand in the review's row"
+        );
+        assert!(
+            holds_focus(&browser, cx, |browser| &browser.download_cancel),
+            "focus moves to Cancel download as the progress shows"
+        );
+        // The stand-in's write refuses as it runs, before any command.
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::tags::tests::draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.lfs_downloads.running())
+                .is_none(),
+            "the write ends"
+        );
+    }
+
     /// The review's Download row in QA's window, 18 pt in 461 × 490 at
     /// scales 2 and 1.2, gives way in Compare's order: beneath a failing
     /// After's line in Patch, the line gives way first, the row keeps its
