@@ -12,7 +12,7 @@ pub use gpui_base::{ColorPickerEvent, ColorPickerState};
 
 use crate::{
     ActiveTheme as _, Colorize as _, Icon, Selectable, Sizable, Size, StyleSized,
-    actions::{SelectDown, SelectLeft, SelectRight, SelectUp},
+    actions::{Confirm, SelectDown, SelectLeft, SelectRight, SelectUp},
     h_flex,
     input::Input,
     popover::Popover,
@@ -29,6 +29,17 @@ use crate::{
 /// close the picker without choosing anything.
 const SWATCHES_CONTEXT: &str = "ColorPickerSwatches";
 
+/// GitTurtle patch: the trigger's key context beside the base picker's
+/// `ColorPicker`, whose Enter, bound to [`Confirm`], toggled the picker on
+/// every key-down, a held key's repeats included. Bound to nothing here,
+/// after it at the same depth, which outranks it, Enter reaches the
+/// trigger's key-down listener ([`fresh_enter`]) instead.
+const TRIGGER_CONTEXT: &str = "ColorPickerTrigger";
+
+/// GitTurtle patch: the trigger's whole key context, the base picker's and
+/// [`TRIGGER_CONTEXT`].
+const TRIGGER_KEY_CONTEXT: &str = "ColorPicker ColorPickerTrigger";
+
 /// GitTurtle patch: the swatches are one stop of the picker's tab order that
 /// the arrow keys move inside. Enter and Space are bound to nothing here, so
 /// they pass the popover's and the dialog's bindings by and reach GPUI's own
@@ -43,7 +54,35 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("right", SelectRight, Some(SWATCHES_CONTEXT)),
         KeyBinding::new("enter", NoAction, Some(SWATCHES_CONTEXT)),
         KeyBinding::new("space", NoAction, Some(SWATCHES_CONTEXT)),
+        KeyBinding::new("enter", NoAction, Some(TRIGGER_CONTEXT)),
     ]);
+}
+
+/// GitTurtle patch: Enter on the focused trigger opens or closes the picker
+/// only on a fresh press, through the kit's held-Enter filter, as a Button in
+/// a dialog presses: never on a held key's repeats, nor for an Enter whose
+/// press began on another control ([`gpui_base::enter_press_began_on`]).
+/// Under X11 a held key's repeats arrive as fresh presses, so Enter held
+/// after the hex field's commit, or a repeat whose release and press a poll
+/// batch split after it chose a swatch, reopened the picker it had just
+/// closed. Focus inside the popover passes over this: there the popover's
+/// own contexts bind the key.
+fn fresh_enter(
+    trigger: &FocusHandle,
+    event: &gpui::KeyDownEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if event.keystroke.key != "enter"
+        || event.keystroke.modifiers.modified()
+        || !trigger.is_focused(window)
+    {
+        return;
+    }
+    if !event.is_held && gpui_base::enter_press_began_on(trigger, window, cx) {
+        trigger.dispatch_action(&Confirm { secondary: false }, window, cx);
+    }
+    cx.stop_propagation();
 }
 
 /// GitTurtle patch: the gap between swatches, the kit's quarter rem, never
@@ -806,7 +845,12 @@ impl RenderOnce for ColorPicker {
 
         BaseColorPicker::new(self.id.clone())
             .open(open)
+            .key_context(TRIGGER_KEY_CONTEXT)
             .track_focus(&focus_handle)
+            .capture_key_down({
+                let focus_handle = focus_handle.clone();
+                move |event, window, cx| fresh_enter(&focus_handle, event, window, cx)
+            })
             // GitTurtle patch: a press on the trigger focuses it before the
             // popover opens and records the focus it gives back as it
             // closes. The popover's own press listener stops the press, so

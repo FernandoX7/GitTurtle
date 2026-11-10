@@ -2684,3 +2684,22 @@ gives focus back to the trigger the picker was opened from. `cargo test
 theme_editor::tests::a_picker_opened_by_the_pointer_gives_focus_back_to_its_trigger`
 covers Escape and a pointer choice after a click opened the picker. Remove it
 when upstream's popover focuses its trigger on a press.
+
+The colour-picker trigger patch also modifies `src/color_picker.rs` (`init`,
+`fresh_enter`, `ColorPicker::render`). The base picker binds Enter on its
+trigger to `Confirm`, which toggles the picker, so every key-down of a held
+Enter toggled it: Enter held after the hex field's commit, which closes the
+picker with focus on its trigger, reopened it through GPUI's held repeats on
+macOS and Wayland, and under X11, where a held key's repeats arrive as fresh
+presses, a repeat whose release and press a poll batch split after Enter had
+chosen a swatch did the same (FU41-B's security review; it chose and wrote
+nothing). Patched, the trigger also carries a `ColorPickerTrigger` context
+that binds Enter to `NoAction` after the base binding, outranking it at the
+same depth, and its key-down listener dispatches the `Confirm` only for a
+fresh press, as a dialog's Button presses: not marked held and begun on the
+trigger (gpui-base's `enter_press_began_on`). Focus inside the popover is
+unchanged, since the popover's own contexts bind the key there. `cargo test
+--locked -p gitturtle
+theme_editor::tests::a_held_enter_never_reopens_the_picker_it_closed` holds
+Enter after the hex field's commit and after a swatch's choice. Remove it when
+upstream's picker opens only on a fresh press.

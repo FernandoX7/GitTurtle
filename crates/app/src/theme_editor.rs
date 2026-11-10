@@ -4650,6 +4650,82 @@ pub(crate) mod tests {
         }
     }
 
+    /// The picker's trigger opens it on Enter only for a fresh press: Enter
+    /// in the popover's hex field commits and closes the picker with focus
+    /// on its trigger, and the key still held there, through GPUI's held
+    /// repeats or X11's fresh presses, reopens nothing; Enter on a swatch
+    /// chooses it as the key comes up, and the repeat whose release and
+    /// press a poll batch split, then X11's fresh presses, reopen nothing
+    /// either. Once the key has come up, a new press opens the picker. The
+    /// trigger's Enter toggled the picker on every key-down, so a held Enter
+    /// reopened the picker it had just closed (FU41-B's security review).
+    #[gpui::test]
+    fn a_held_enter_never_reopens_the_picker_it_closed(cx: &mut TestAppContext) {
+        fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+            let keystroke = Keystroke::parse("enter").expect("a keystroke");
+            let input = match down {
+                Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke,
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
+            };
+            cx.update(|window, cx| window.dispatch_event(input, cx));
+        }
+        let (app, cx) = open_at_rest(cx);
+        let (_, picker, trigger, hex) = first_picker(cx, &app);
+        let closed_on_trigger = |cx: &mut VisualTestContext, step: &str| {
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{step}: the picker stays closed"
+            );
+            assert_eq!(focused_stop(cx), trigger, "{step}: focus is on the trigger");
+        };
+        for route in ["the hex field", "a swatch"] {
+            press(cx, "enter");
+            press(cx, "tab");
+            if route == "the hex field" {
+                press(cx, "tab");
+                assert_eq!(focused_stop(cx), hex, "Tab reached the hex field");
+                let input = cx.read(|cx| picker.read(cx).hex_input().clone());
+                cx.update(|window, cx| {
+                    input.update(cx, |input, cx| input.set_value("#3b82f6", window, cx))
+                });
+                settle(cx);
+                enter(cx, Some(false));
+                settle(cx);
+                closed_on_trigger(cx, "Enter in the hex field");
+            } else {
+                press(cx, "right");
+                assert!(in_popover(cx, &trigger), "a swatch holds focus");
+                enter(cx, Some(false));
+                settle(cx);
+                // The release chooses the swatch; its press, in the next
+                // batch, follows with no idle pass between them.
+                enter(cx, None);
+                enter(cx, Some(false));
+                settle(cx);
+                closed_on_trigger(cx, "a release and its press");
+            }
+            for (repeat, is_held) in [true, true, false, false, false].into_iter().enumerate() {
+                enter(cx, Some(is_held));
+                settle(cx);
+                closed_on_trigger(cx, &format!("{route}: repeat {repeat}, held {is_held}"));
+            }
+            enter(cx, None);
+            settle(cx);
+            closed_on_trigger(cx, &format!("{route}: the release"));
+            press(cx, "enter");
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{route}: a new press opens the picker"
+            );
+            press(cx, "escape");
+            closed_on_trigger(cx, &format!("{route}: Escape"));
+        }
+    }
+
     /// The picker's field shows the digits choosing a colour saves, and Enter
     /// in the field with no edit saves that same value. The field truncated
     /// each channel where the saved token rounds it, so Enter there saved a
