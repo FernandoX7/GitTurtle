@@ -185,6 +185,9 @@ pub(crate) struct DialogProps {
     keyboard: bool,
     // GitTurtle patch: the modal's kind, its accessible role.
     kind: DialogKind,
+    // GitTurtle patch: drawn at the end of its slide and fade from its first
+    // frame ([`Dialog::at_rest`]).
+    at_rest: bool,
 }
 
 impl Default for DialogProps {
@@ -199,6 +202,7 @@ impl Default for DialogProps {
             close_button: true,
             overlay_closable: true,
             kind: DialogKind::Dialog,
+            at_rest: false,
         }
     }
 }
@@ -465,6 +469,15 @@ impl Dialog {
         self
     }
 
+    /// GitTurtle patch: draws the dialog where its slide and fade end from
+    /// its first frame, as reduce motion does, for a dialog that comes back
+    /// rather than opens, as one reopened when the dialog over it is
+    /// cancelled. Defaults to `false`, the 250 ms entrance.
+    pub fn at_rest(mut self, at_rest: bool) -> Self {
+        self.props.at_rest = at_rest;
+        self
+    }
+
     pub(crate) fn has_overlay(&self) -> bool {
         self.props.overlay
     }
@@ -597,6 +610,32 @@ impl RenderOnce for Dialog {
             2. / 3.,
             1.,
         ));
+        // GitTurtle patch: a dialog at rest runs neither animation and draws
+        // where they end ([`Dialog::at_rest`]), asking for no frame, as
+        // reduce motion asks none. Held at their end, the animations still
+        // asked for a frame each frame for their 250 ms.
+        let at_rest = self.props.at_rest;
+        // The slide's frame at `delta`, its end at 1.
+        let slide = move |this: gpui::Stateful<gpui::Div>, delta: f32| {
+            // This is equivalent to `shadow_xl` with an extra opacity.
+            let shadow = vec![
+                BoxShadow {
+                    color: hsla(0., 0., 0., 0.1 * delta),
+                    offset: point(px(0.), px(20.)),
+                    blur_radius: px(25.),
+                    spread_radius: px(-5.),
+                    inset: false,
+                },
+                BoxShadow {
+                    color: hsla(0., 0., 0., 0.1 * delta),
+                    offset: point(px(0.), px(8.)),
+                    blur_radius: px(10.),
+                    spread_radius: px(-6.),
+                    inset: false,
+                },
+            ];
+            this.top(y * delta).shadow(shadow)
+        };
 
         anchored()
             .position(point(window_paddings.left, window_paddings.top))
@@ -736,34 +775,35 @@ impl RenderOnce for Dialog {
                                                     .icon(IconName::Close),
                                             )
                                     }))
-                                    .with_animation(
-                                        "slide-down",
-                                        animation.clone(),
-                                        move |this, delta| {
-                                            // This is equivalent to `shadow_xl` with an extra opacity.
-                                            let shadow = vec![
-                                                BoxShadow {
-                                                    color: hsla(0., 0., 0., 0.1 * delta),
-                                                    offset: point(px(0.), px(20.)),
-                                                    blur_radius: px(25.),
-                                                    spread_radius: px(-5.),
-                                                    inset: false,
-                                                },
-                                                BoxShadow {
-                                                    color: hsla(0., 0., 0., 0.1 * delta),
-                                                    offset: point(px(0.), px(8.)),
-                                                    blur_radius: px(10.),
-                                                    spread_radius: px(-6.),
-                                                    inset: false,
-                                                },
-                                            ];
-                                            this.top(y * delta).shadow(shadow)
-                                        },
-                                    )
-                                    .text_selection_scope(selection_scope),
+                                    .map(|popup| {
+                                        if at_rest {
+                                            slide(popup, 1.)
+                                                .text_selection_scope(selection_scope)
+                                                .into_any_element()
+                                        } else {
+                                            popup
+                                                .with_animation(
+                                                    "slide-down",
+                                                    animation.clone(),
+                                                    slide,
+                                                )
+                                                .text_selection_scope(selection_scope)
+                                                .into_any_element()
+                                        }
+                                    }),
                             ),
                     )
-                    .with_animation("fade-in", animation, move |this, delta| this.opacity(delta)),
+                    .map(|dialog| {
+                        if at_rest {
+                            dialog.into_any_element()
+                        } else {
+                            dialog
+                                .with_animation("fade-in", animation, move |this, delta| {
+                                    this.opacity(delta)
+                                })
+                                .into_any_element()
+                        }
+                    }),
             )
             .into_any_element()
     }
@@ -904,6 +944,81 @@ mod tests {
         // footer's.
         let foot = bounds(cx, "nested-foot").bottom() + px(17.);
         assert_eq!(foot, px(49.) + px(300.), "the first dialog's top plus the cap");
+    }
+
+    /// GitTurtle patch: a dialog at rest draws its title where its slide
+    /// ends in its first frame, as reduce motion draws it, with no clock
+    /// advanced; without it the first frame draws the title where the slide
+    /// starts, higher in the window.
+    #[gpui::test]
+    fn a_dialog_at_rest_draws_its_end_in_its_first_frame(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        let title_top = |cx: &mut VisualTestContext, at_rest: bool, reduce_motion: bool| {
+            cx.update(|_, cx| cx.set_reduce_motion(reduce_motion));
+            cx.update(|window, cx| {
+                window.open_dialog(cx, move |dialog, _, _| {
+                    dialog
+                        .at_rest(at_rest)
+                        .title(
+                            div()
+                                .debug_selector(|| "at-rest-title".into())
+                                .child("Title"),
+                        )
+                        .child(div().h(px(40.)))
+                })
+            });
+            // The first frame alone.
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let top = bounds(cx, "at-rest-title").top();
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            draw(cx);
+            top
+        };
+        let rest = title_top(cx, false, true);
+        assert_eq!(title_top(cx, true, false), rest, "at rest from its first frame");
+        assert!(
+            title_top(cx, false, false) < rest,
+            "the entrance's first frame draws it higher"
+        );
+    }
+
+    /// GitTurtle patch: a dialog at rest asks for no frame after its first,
+    /// as reduce motion asks none, where a dialog's entrance asks for one
+    /// each frame; counted as the frames the window was asked for after the
+    /// dialog's first and second, against the same dialog under reduce
+    /// motion. Held at their end, its animations still ran, and asked for a
+    /// frame each frame for their 250 ms.
+    #[gpui::test]
+    fn a_dialog_at_rest_asks_for_no_frame(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        let asked = |cx: &mut VisualTestContext, at_rest: bool, reduce_motion: bool| {
+            cx.update(|_, cx| cx.set_reduce_motion(reduce_motion));
+            cx.update(|window, cx| {
+                window.open_dialog(cx, move |dialog, _, _| {
+                    dialog.at_rest(at_rest).child(div().h(px(40.)))
+                })
+            });
+            let mut asked = Vec::new();
+            for _ in 0..2 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                asked.push(cx.update(|window, cx| window.simulate_next_frame(cx)));
+            }
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            cx.update(|_, cx| cx.set_reduce_motion(true));
+            draw(cx);
+            cx.update(|window, cx| window.simulate_next_frame(cx));
+            asked
+        };
+        let still = asked(cx, false, true);
+        assert_eq!(asked(cx, true, false), still, "at rest, as reduce motion");
+        let entrance = asked(cx, false, false);
+        assert!(
+            entrance
+                .iter()
+                .zip(&still)
+                .all(|(entrance, still)| entrance > still),
+            "an entrance asks for its next frames: {entrance:?} against {still:?}"
+        );
     }
 
     /// GitTurtle patch: a dialog its Confirm closes, as Enter or its OK

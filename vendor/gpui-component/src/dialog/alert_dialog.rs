@@ -242,6 +242,13 @@ impl AlertDialog {
         self
     }
 
+    /// GitTurtle patch: draws the alert where its entrance ends from its
+    /// first frame ([`Dialog::at_rest`](crate::dialog::Dialog::at_rest)).
+    pub fn at_rest(mut self, at_rest: bool) -> Self {
+        self.base = self.base.at_rest(at_rest);
+        self
+    }
+
     /// Sets the callback for when the alert dialog is closed.
     ///
     /// Called after [`Self::on_action`] or [`Self::on_cancel`] callback.

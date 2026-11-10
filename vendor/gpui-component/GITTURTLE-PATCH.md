@@ -2362,6 +2362,26 @@ dialog named by its title, then a reviewed write as a modal alert dialog; the
 discard review's test reads its own alert. Remove this part of the patch when
 upstream lets an AlertDialog choose its role, and those tests pass without it.
 
+The dialog-at-rest patch modifies `src/dialog/dialog.rs` and
+`src/dialog/alert_dialog.rs`. Upstream slides every dialog down and fades it
+in over a fixed 250 ms as it opens, with no way to skip it short of the
+window's reduce-motion setting. `Dialog::at_rest` and `AlertDialog::at_rest`
+draw a dialog where that slide and fade end from its first frame and run
+neither animation, so the dialog asks for no frame, as reduce motion asks
+none; held at their end, the animations still asked for a frame each frame
+for their 250 ms. The consumer is
+Stashes opened again as Drop…'s confirmation is cancelled (`show_stashes` in
+`crates/app/src/recovery.rs`): a return to the dialog the person left, not a
+new one, which slid in again. Every other dialog keeps its entrance.
+`scripts/vendor-crate-test.sh vendor/gpui-component dialog` reads the title's
+top in the first frame (`a_dialog_at_rest_draws_its_end_in_its_first_frame`)
+and counts the frames the window is asked for after the dialog's first two,
+against the same dialog under reduce motion, which an entrance exceeds
+(`a_dialog_at_rest_asks_for_no_frame`, which fails with the animations held
+at their end).
+Remove this part of the patch when upstream lets a dialog open without its
+entrance.
+
 The context-menu lifetime patch modifies `src/menu/context_menu.rs`. A context
 menu element keeps, in state it shares with its callbacks, the menu it opened
 and the subscription to that menu's dismiss event, and upstream's dismiss
