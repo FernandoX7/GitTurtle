@@ -1922,15 +1922,18 @@ impl GitTurtle {
         {
             Some(branch) => ComposerBranch::Named(branch),
             None if self.working_status_unread() => ComposerBranch::Reading,
+            None if self.working_status_not_read() => ComposerBranch::NotRead,
             None => ComposerBranch::Named("detached HEAD"),
         }
     }
 
     /// Whether the composer's staged count is read: none on a marked tab,
     /// whose count would be the last read's, nor while the status is not
-    /// read yet, which it once counted as "0 staged".
+    /// read, being read or not, which it once counted as "0 staged".
     fn composer_counted(&self) -> bool {
-        !self.shown_tab_unavailable() && !self.working_status_unread()
+        !self.shown_tab_unavailable()
+            && !self.working_status_unread()
+            && !self.working_status_not_read()
     }
 
     /// The commit action's label: what it commits, or why it cannot. It
@@ -2891,6 +2894,10 @@ impl GitTurtle {
                     }
                     Err(error) => {
                         this.work_status = None;
+                        // Said by the branch picker while no status is read
+                        // (`working_status_not_read`).
+                        this.working_read_failure =
+                            Some(views::OperationFailure::of_read("Working tree", &error).banner());
                         this.working_paths.reset();
                         this.integration_state = None;
                         this.clear_working_rows(window, cx);
@@ -3092,6 +3099,7 @@ impl GitTurtle {
             }
         };
         self.work_status = Some(Arc::new(status));
+        self.working_read_failure = None;
         // A quiet refresh that changed nothing leaves the line to whatever it
         // last reported, an operation's outcome included.
         if self.mode == WorkspaceMode::Working && (entries_changed || !quiet) {
@@ -3271,6 +3279,86 @@ impl GitTurtle {
         (self.branches.iter())
             .find(|branch| branch.current && !branch.remote)
             .map(|branch| branch.name.as_str())
+    }
+
+    /// Whether the shown repository's working status is not read and no
+    /// read of it runs: none read, a repository shown, the tab not marked
+    /// and not reading ([`Self::working_status_unread`]), as after a
+    /// working read that failed, a folder that lost its search permission
+    /// among them (`gitturtle_core::CouldNotCheck`). Nothing then claims a
+    /// branch or a detached HEAD: the branch picker reads "Not read" with
+    /// the failure and offers no menu, the composer names no branch, and
+    /// Fetch, Pull and Push refuse ([`NOT_READ_REASON`]). With no status
+    /// they once fell to "Detached HEAD", "Switch to a local branch before
+    /// pulling or pushing" and "No configured remote selected", while
+    /// Changes said "Changes unavailable".
+    pub(crate) fn working_status_not_read(&self) -> bool {
+        self.work_status.is_none()
+            && self.repository.is_some()
+            && !self.shown_tab_unavailable()
+            && !self.working_status_unread()
+    }
+
+    /// What the branch picker says of a working status not read
+    /// ([`Self::working_status_not_read`]): the last working read's failure,
+    /// where one is known, else that it is not read.
+    pub(crate) fn working_read_failure(&self) -> &str {
+        (self.working_read_failure.as_deref()).unwrap_or(crate::branch_actions::NOT_READ_SUBJECT)
+    }
+
+    /// Follows the working status not read as each frame is built, as
+    /// [`Self::track_busy_look`] follows the busy spell: Fetch, Pull and Push
+    /// refuse at once while it is read, and look refused only once the read
+    /// has lasted [`BUSY_LOOK_DELAY`], so a read that lands sooner, as most
+    /// do, never dims the bar; they dimmed the moment any read started. Not
+    /// read with no read running, the look is shown at once, and a Refresh
+    /// from there keeps it until its read lands, so the bar does not light
+    /// up for the read only to dim again.
+    pub(super) fn track_unread_look(&mut self, cx: &mut Context<Self>) {
+        if !self.working_status_unread() {
+            self.unread_look = BusyLook {
+                shown: self.working_status_not_read(),
+                reveal: None,
+            };
+            return;
+        }
+        if self.unread_look.shown || self.unread_look.reveal.is_some() {
+            return;
+        }
+        self.unread_look.reveal = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(BUSY_LOOK_DELAY).await;
+            let _ = this.update(cx, |this, cx| {
+                this.unread_look.shown = true;
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Whether what the working status not read refuses looks refused: at
+    /// once where no read of it runs ([`Self::working_status_not_read`]),
+    /// and once its read has lasted [`BUSY_LOOK_DELAY`] or a press it
+    /// refused showed the look ([`Self::refuse_unread_press`]).
+    pub(super) fn unread_shown(&self) -> bool {
+        self.working_status_not_read() || (self.unread_look.shown && self.working_status_unread())
+    }
+
+    /// Refuses a press of Fetch, Pull or Push while the working status is
+    /// not read ([`Self::working_status_unread`],
+    /// [`Self::working_status_not_read`]), showing the look at once, so the
+    /// refusal and the look that says why come in the same frame, as
+    /// [`Self::show_busy_look`] does for a write; returns whether it
+    /// refused. Through the look's delay they took the press, as nothing
+    /// refused it before they dimmed.
+    fn refuse_unread_press(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.working_status_unread() && !self.working_status_not_read() {
+            return false;
+        }
+        if !self.unread_look.shown {
+            self.unread_look.shown = true;
+            self.unread_look.reveal = None;
+            cx.notify();
+        }
+        true
     }
 
     /// Records `notice`, the outcome Git reported for a write in
@@ -6803,7 +6891,11 @@ impl GitTurtle {
         let looks_busy = self.operation_shown().is_some();
         let detached = self.header_status().is_none_or(|s| s.branch.is_none());
         let marked = self.shown_tab_unavailable();
-        let reading = self.working_status_unread();
+        // Not read, the status says nothing of a remote or a branch: the
+        // actions refuse for that at once, and look it once the read has
+        // lasted a moment, or at once where none runs (`unread_shown`).
+        let unread = self.working_status_unread() || self.working_status_not_read();
+        let unread_looks = self.unread_shown();
         // Where the compact bar has no room for the edge's line, it draws
         // the line's glyph, and a detached HEAD's picker says the line's
         // word, the line leaving, so the bar draws one commit glyph.
@@ -6980,12 +7072,14 @@ impl GitTurtle {
             .zip(marks)
             .map(|(((id, label), action), mark)| {
                 // A marked tab's repository is not the one Targets name.
-                // One whose status no read has given yet waits for it.
-                let missing = marked
-                    || reading
-                    || !remote_set
-                    || (id != "fetch" && (!remote_branch_set || detached));
-                let unavailable = looks_busy || missing;
+                // One whose status no read has given waits for it, and
+                // looks it only as the unread look comes, its remotes and
+                // branch being none until then.
+                let target_missing =
+                    !remote_set || (id != "fetch" && (!remote_branch_set || detached));
+                let missing = marked || unread || target_missing;
+                let unavailable =
+                    looks_busy || marked || if unread { unread_looks } else { target_missing };
                 // Each reads its confirmation where it was touched once Git
                 // reports success, for the target it acted on: labelled in its
                 // label's place, as an icon in its tooltip. Its name stays.
@@ -7054,6 +7148,9 @@ impl GitTurtle {
                     .debug_selector(move || id.into())
                     .accessibility_label(action.name.clone())
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.refuse_unread_press(cx) {
+                            return;
+                        }
                         let remote = this.remote_name.read(cx).value().trim().to_owned();
                         let branch = this.remote_branch.read(cx).value().trim().to_owned();
                         let local_branch = this
@@ -7387,6 +7484,7 @@ impl GitTurtle {
             busy: self.operation_shown(),
             unavailable: self.shown_tab_unavailable(),
             reading: self.working_status_unread(),
+            not_read: self.working_status_not_read(),
         }
     }
 }
@@ -7425,6 +7523,9 @@ struct GitActionsInputs<'a> {
     /// Whether the working status is not read yet, which Fetch, Pull and
     /// Push wait for, saying so (`GitTurtle::working_status_unread`).
     reading: bool,
+    /// Whether it is not read and no read of it runs, which Fetch, Pull and
+    /// Push refuse for, saying so (`GitTurtle::working_status_not_read`).
+    not_read: bool,
 }
 
 /// The parts of the working status the action bar's text shows
@@ -7464,6 +7565,7 @@ impl GitActionsInputs<'_> {
             busy: self.busy,
             unavailable: self.unavailable,
             reading: self.reading,
+            not_read: self.not_read,
         }
     }
 }
@@ -7471,6 +7573,10 @@ impl GitActionsInputs<'_> {
 /// What Changes, and Fetch, Pull and Push, say while the shown tab's
 /// working status is not read yet ([`GitTurtle::working_status_unread`]).
 pub(crate) const READING_WORKING_TREE: &str = "Reading the working tree…";
+/// Why Fetch, Pull and Push refuse where the working status is not read and
+/// no read of it runs (`GitTurtle::working_status_not_read`), and the way
+/// back.
+pub(crate) const NOT_READ_REASON: &str = "Working tree not read · Refresh";
 
 /// The Git action bar's text, as [`GitActionsInputs`] make it, each string
 /// shared, so a frame hands it to its element without copying it.
@@ -7580,6 +7686,10 @@ impl GitActionsText {
                     // No status read yet, which read as a detached HEAD,
                     // and no remotes, as no remote configured.
                     READING_WORKING_TREE.into()
+                } else if inputs.not_read {
+                    // No status read and none being read, as after a read
+                    // that failed, which read as a detached HEAD too.
+                    NOT_READ_REASON.into()
                 } else if inputs.push_url.is_none() {
                     "No configured remote selected · Check Targets".into()
                 } else if id != "fetch" && detached {
@@ -7610,6 +7720,8 @@ impl GitActionsText {
                 crate::branch_actions::UNAVAILABLE_REASON.into()
             } else if inputs.reading {
                 READING_WORKING_TREE.into()
+            } else if inputs.not_read {
+                NOT_READ_REASON.into()
             } else {
                 inputs.push_url.as_deref().map_or_else(
                     || {
@@ -7657,6 +7769,10 @@ enum ComposerBranch<'a> {
     /// checked out: no branch and no detached HEAD, as the branch picker
     /// reads "Reading…".
     Reading,
+    /// The status not read and no read of it running, as after a read that
+    /// failed: no branch and no detached HEAD, as the branch picker reads
+    /// "Not read" (`GitTurtle::working_status_not_read`).
+    NotRead,
     /// A marked tab, whose branch would be the one from the last read.
     Unavailable,
 }
@@ -7666,7 +7782,7 @@ impl<'a> ComposerBranch<'a> {
     fn name(self) -> Option<&'a str> {
         match self {
             Self::Named(branch) => Some(branch),
-            Self::Reading | Self::Unavailable => None,
+            Self::Reading | Self::NotRead | Self::Unavailable => None,
         }
     }
 
@@ -7676,7 +7792,7 @@ impl<'a> ComposerBranch<'a> {
     fn heading(self) -> String {
         match self {
             Self::Named(branch) => format!("Commit to {branch}"),
-            Self::Reading => "Create a commit".to_owned(),
+            Self::Reading | Self::NotRead => "Create a commit".to_owned(),
             Self::Unavailable => crate::branch_actions::UNAVAILABLE_REASON.to_owned(),
         }
     }
@@ -7686,6 +7802,7 @@ impl<'a> ComposerBranch<'a> {
         match self {
             Self::Named(branch) => branch,
             Self::Reading => crate::branch_actions::READING,
+            Self::NotRead => crate::branch_actions::NOT_READ,
             Self::Unavailable => crate::branch_actions::UNAVAILABLE,
         }
     }
@@ -7695,6 +7812,7 @@ impl<'a> ComposerBranch<'a> {
         match self {
             Self::Named(branch) => format!("Commit staged changes to {branch}"),
             Self::Reading => READING_WORKING_TREE.to_owned(),
+            Self::NotRead => NOT_READ_REASON.to_owned(),
             Self::Unavailable => crate::branch_actions::UNAVAILABLE_REASON.to_owned(),
         }
     }
@@ -8294,6 +8412,184 @@ mod tests {
                 "{line_read}: the staged count once read"
             );
         }
+    }
+
+    /// A working read that fails, its index unreadable, leaves no status and
+    /// no read running: the branch picker reads "Not read", saying the
+    /// failure and "Refresh to read it again", and offers no menu; the
+    /// composer names no branch; Fetch, Pull and Push refuse, saying
+    /// "Working tree not read · Refresh", as the palette's Branch does.
+    /// They fell to "Detached HEAD", "Switch to a local branch before
+    /// pulling or pushing" and "No configured remote selected", and Branch
+    /// to "Check out a named local branch first", while Changes said
+    /// "Changes unavailable" (FU39-A design review). Refreshed once the read
+    /// can succeed, the bar names the branch again.
+    #[gpui::test]
+    async fn a_failed_working_read_claims_no_branch_or_detached_head(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::views::tests::settle;
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        // Tall enough for the composer's full form, with its branch line.
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(1200.)));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        // The fixture's history was imported, so it may have no index yet.
+        let index = root.join(".git").join("index");
+        let kept = std::fs::read(&index).ok();
+        let picker = || crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(picker().as_deref(), Some("main"), "read");
+
+        std::fs::write(&index, "not an index").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&crate::Refresh, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.working_status_not_read()),
+            "no status and no read running"
+        );
+        crate::views::tests::assert_claims_no_branch(&app, cx, "Working tree", "a failed read");
+        let push = crate::tags::tests::rendered(cx, "push");
+        cx.simulate_click(push.center(), gpui::Modifiers::default());
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            None,
+            "Push runs nothing"
+        );
+
+        match kept {
+            Some(kept) => std::fs::write(&index, kept).unwrap(),
+            None => std::fs::remove_file(&index).unwrap(),
+        }
+        // Refreshed from there, they keep their look until the read lands,
+        // rather than light up for the read and dim again.
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&crate::Refresh, window, cx)));
+        crate::views::tests::draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.working_status_unread()),
+            "read"
+        );
+        for id in ["fetch", "pull", "push"] {
+            assert_eq!(
+                super::refusals::get(id).map(|r| (r.announced, r.dimmed)),
+                Some((true, true)),
+                "{id} keeps its look through the read"
+            );
+        }
+        drop(held);
+        settle(&app, cx).await;
+        assert_eq!(picker().as_deref(), Some("main"), "read again");
+        let said = crate::views::CONTROL_TOOLTIPS
+            .with(|tooltips| tooltips.borrow().get("push").cloned())
+            .unwrap_or_default();
+        assert!(
+            !said.ends_with(super::NOT_READ_REASON),
+            "Push no longer says it: {said}"
+        );
+    }
+
+    /// Until an Open's status read lands, Fetch, Pull and Push refuse at
+    /// once, a press among them running nothing and showing their look,
+    /// but look refused only once the read has lasted 200 ms, as a write's
+    /// look waits (`BusyLook`): a read that lands sooner, as most do, draws
+    /// no dimmed frame. They dimmed the moment any read started, so each
+    /// Open flashed the bar.
+    #[gpui::test]
+    async fn a_quick_working_read_never_dims_the_bar(cx: &mut gpui::TestAppContext) {
+        use crate::views::tests::{draw, fixture_git, fixture_repository, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        // Each pushed to a remote of its own, so once read nothing refuses
+        // Fetch, Pull or Push.
+        let [quick, slow, pressed] = ["quick", "slow", "pressed"].map(|name| {
+            let repository = fixture_repository(fixture.path().join(name));
+            fixture_git(
+                repository.path(),
+                &["commit", "-q", "--allow-empty", "-m", name],
+            );
+            let bare = fixture.path().join(format!("{name}.git"));
+            let bare = bare.to_str().unwrap();
+            fixture_git(
+                fixture.path(),
+                &["init", "-q", "--bare", "-b", "main", bare],
+            );
+            fixture_git(repository.path(), &["remote", "add", "origin", bare]);
+            fixture_git(repository.path(), &["push", "-q", "-u", "origin", "main"]);
+            repository
+        });
+        let actions = ["fetch", "pull", "push"];
+        let states = || actions.map(|id| super::refusals::get(id).map(|r| (r.announced, r.dimmed)));
+        let each = |state: (bool, bool)| actions.map(|_| Some(state));
+        // Opens `repository` in a new tab with the operation executor held,
+        // until its snapshot is installed and its status read waits.
+        let open_held = |cx: &mut gpui::VisualTestContext,
+                         repository: &gitturtle_core::GitRepository| {
+            let held = app.read_with(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.open_repository_tab(repository.path().to_owned(), window, cx)
+                })
+            });
+            for _ in 0..16 {
+                let installed = app.read_with(cx, |app, _| {
+                    app.repository.as_ref().map(|repo| repo.git_dir()) == Some(repository.git_dir())
+                });
+                if installed {
+                    break;
+                }
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+            }
+            assert!(
+                app.read_with(cx, |app, _| app.working_status_unread()
+                    && app.status_task.is_some()),
+                "its status read waits"
+            );
+            draw(cx);
+            held
+        };
+
+        // A read that lands before the delay: refused, never dimmed.
+        let held = open_held(cx, &quick);
+        assert_eq!(states(), each((true, false)), "quick: refused at once");
+        cx.executor()
+            .advance_clock(super::BUSY_LOOK_DELAY - std::time::Duration::from_millis(1));
+        draw(cx);
+        assert_eq!(states(), each((true, false)), "quick: not dimmed yet");
+        drop(held);
+        settle(&app, cx).await;
+        assert_eq!(states(), each((false, false)), "quick: read, never dimmed");
+
+        // One that lasts the delay looks refused.
+        let held = open_held(cx, &slow);
+        assert_eq!(states(), each((true, false)), "slow: refused at once");
+        cx.executor().advance_clock(super::BUSY_LOOK_DELAY);
+        draw(cx);
+        assert_eq!(states(), each((true, true)), "slow: looks refused");
+        drop(held);
+        settle(&app, cx).await;
+        assert_eq!(states(), each((false, false)), "slow: read");
+
+        // A press in the delay runs nothing and shows the look at once.
+        let held = open_held(cx, &pressed);
+        assert_eq!(states(), each((true, false)), "pressed: refused at once");
+        let push = crate::tags::tests::rendered(cx, "push");
+        cx.simulate_click(push.center(), gpui::Modifiers::default());
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            None,
+            "Push runs nothing"
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(states(), each((true, true)), "its look at once");
+        drop(held);
+        settle(&app, cx).await;
+        assert_eq!(states(), each((false, false)), "pressed: read");
     }
 
     /// Until an Open's status is read, the Changes preview says the read,

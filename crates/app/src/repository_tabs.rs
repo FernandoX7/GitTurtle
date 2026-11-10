@@ -1386,6 +1386,9 @@ impl GitTurtle {
         self.history_panels = warm.history_panels;
         self.retained_history_files = warm.retained_history_files;
         self.work_status = warm.work_status;
+        // What a read of another tab failed with is not this one's to say
+        // (`GitTurtle::working_read_failure`).
+        self.working_read_failure = None;
         self.integration_state = warm.integration_state;
         self.profile = warm.profile;
         self.remotes = warm.remotes;
@@ -2258,6 +2261,7 @@ impl GitTurtle {
             self.path = None;
             self.scope = None;
             self.work_status = None;
+            self.working_read_failure = None;
             self.working_rows.clear();
             self.working_paths.reset();
             self.file_paths.reset();
@@ -5258,6 +5262,53 @@ pub(crate) mod tests {
         });
     }
 
+    /// A Refresh in Changes that cannot check the folder, its parent's
+    /// search permission lost, fails its working read as
+    /// `gitturtle_core::CouldNotCheck` and leaves no status and no read
+    /// running: nothing claims a branch or a detached HEAD, the picker
+    /// saying the failure and the way back
+    /// (`GitTurtle::working_status_not_read`). The picker, Fetch, Pull, Push
+    /// and the composer fell to "Detached HEAD" while Changes said "Changes
+    /// unavailable". With the permission back, Refresh reads the branch
+    /// again.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_refresh_in_changes_that_cannot_check_the_folder_claims_no_branch(
+        cx: &mut TestAppContext,
+    ) {
+        if !denied_a_locked_folder() {
+            return;
+        }
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        // Tall enough for the composer's full form, with its branch line.
+        cx.simulate_resize(size(px(1280.), px(1200.)));
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let picker = || crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(picker().as_deref(), Some("main"), "read");
+
+        let denied = Denied::Parent.apply(&fixture, &root);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(!app.shown_tab_unavailable(), "nothing marked");
+            assert!(app.working_status_not_read(), "no status, no read running");
+        });
+        crate::views::tests::assert_claims_no_branch(
+            &app,
+            cx,
+            &format!("Working tree: Could not read {}", root.display()),
+            "a folder that cannot be checked",
+        );
+
+        drop(denied);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(picker().as_deref(), Some("main"), "read again");
+    }
+
     /// A cold tab shown again is opened by its captured root: with its
     /// `.git` away inside another work tree, the switch once opened the
     /// enclosing repository in it. It now shows the tab marked, on its own
@@ -7208,6 +7259,11 @@ pub(crate) mod tests {
             || crate::workspace::TARGETS_DESTINATION.with(|line| line.borrow().clone());
         let a = bare_a.display().to_string();
         frame(cx);
+        // Refused at once, Fetch, Pull and Push look it once the read has
+        // lasted a moment, as a write's look waits (`track_unread_look`).
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        frame(cx);
         assert_eq!(
             app.read_with(cx, |app, _| app.changes_label()),
             "Changes",
@@ -7448,11 +7504,26 @@ pub(crate) mod tests {
                 assert!(cx.debug_bounds(id).is_some(), "{while_read}: {id} drawn");
                 let refusal = crate::workspace::refusals::get(id).expect("drawn");
                 assert!(
-                    refusal.announced && refusal.dimmed,
-                    "{while_read}: {id} refuses"
+                    refusal.announced && !refusal.dimmed,
+                    "{while_read}: {id} refuses, its look waiting"
                 );
                 let said = tooltip(id).unwrap_or_default();
                 assert!(said.ends_with(reading), "{while_read}: {id} says {said}");
+            }
+            // The look comes once the read has lasted a moment, as a
+            // write's does (`GitTurtle::track_unread_look`).
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            for id in ["fetch", "pull", "push"] {
+                let refusal = crate::workspace::refusals::get(id).expect("drawn");
+                assert!(
+                    refusal.announced && refusal.dimmed,
+                    "{while_read}: {id} looks refused"
+                );
             }
             assert_eq!(
                 destination().as_deref(),
@@ -7550,9 +7621,21 @@ pub(crate) mod tests {
             for id in ["fetch", "pull", "push"] {
                 assert!(cx.debug_bounds(id).is_some(), "{route}: {id} drawn");
                 let refusal = crate::workspace::refusals::get(id).expect("drawn");
-                assert!(refusal.announced && refusal.dimmed, "{route}: {id} refuses");
+                assert!(refusal.announced, "{route}: {id} refuses");
                 let said = tooltip(id).unwrap_or_default();
                 assert!(said.ends_with(reading), "{route}: {id} says {said}");
+            }
+            // Looking it once the read has lasted a moment
+            // (`GitTurtle::track_unread_look`).
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            for id in ["fetch", "pull", "push"] {
+                let refusal = crate::workspace::refusals::get(id).expect("drawn");
+                assert!(refusal.dimmed, "{route}: {id} looks refused");
             }
         };
 

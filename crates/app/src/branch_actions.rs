@@ -25,6 +25,17 @@ pub(crate) const UNAVAILABLE_WAY_BACK: &str =
 /// detached HEAD, which only that read can tell
 /// (`GitTurtle::working_status_unread`).
 pub(crate) const READING: &str = "Reading…";
+/// What the branch picker reads where the working status is not read and
+/// no read of it runs, as after a read that failed: no branch and no
+/// detached HEAD, which only a read can tell
+/// (`GitTurtle::working_status_not_read`).
+pub(crate) const NOT_READ: &str = "Not read";
+/// What the branch picker's tooltip says there before the way back, where
+/// no failure is known (`GitTurtle::working_read_failure`).
+pub(crate) const NOT_READ_SUBJECT: &str = "Working tree not read";
+/// The way back from a working status not read, which the branch picker's
+/// tooltip names after the failure.
+pub(crate) const NOT_READ_WAY_BACK: &str = "Refresh to read it again";
 const CHOICE_LIMIT: usize = 40;
 type PreparationFailure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTurtle>)>;
 
@@ -75,6 +86,10 @@ struct PickerInputs<'a> {
     /// one the accepted snapshot found checked out, if any
     /// (`GitTurtle::working_status_unread`).
     reading: bool,
+    /// Where the working status is not read and no read of it runs, what
+    /// its last read failed with, which the picker says in place of a
+    /// branch or a detached HEAD (`GitTurtle::working_status_not_read`).
+    not_read: Option<Cow<'a, str>>,
     /// The branch checked out, if any.
     branch: Option<Cow<'a, str>>,
     /// HEAD's commit where no branch is checked out.
@@ -92,6 +107,7 @@ impl PickerInputs<'_> {
         PickerInputs {
             unavailable: self.unavailable,
             reading: self.reading,
+            not_read: self.not_read.as_ref().map(text),
             branch: self.branch.as_ref().map(text),
             detached: self.detached.as_ref().map(text),
             done: self.done,
@@ -139,6 +155,19 @@ impl PickerText {
             return Self {
                 labels: [label.clone(), label.clone(), label],
                 name: "Current branch unavailable".into(),
+                narrow_tooltip: tooltip.clone(),
+                tooltip,
+            };
+        }
+        if let Some(failure) = inputs.not_read.as_deref() {
+            // No status read and none being read, as after a read that
+            // failed: the picker claims no branch and no detached HEAD,
+            // saying the failure and the way back.
+            let label = SharedString::from(NOT_READ);
+            let tooltip = SharedString::from(format!("{failure} · {NOT_READ_WAY_BACK}"));
+            return Self {
+                labels: [label.clone(), label.clone(), label],
+                name: format!("Current branch not read. {NOT_READ_WAY_BACK}").into(),
                 narrow_tooltip: tooltip.clone(),
                 tooltip,
             };
@@ -363,9 +392,11 @@ impl GitTurtle {
     ) -> Button {
         let status = self.header_status();
         let unavailable = self.shown_tab_unavailable();
+        let not_read = self.working_status_not_read();
         let inputs = PickerInputs {
             unavailable,
             reading: self.working_status_unread(),
+            not_read: not_read.then(|| Cow::Borrowed(self.working_read_failure())),
             branch: status
                 .and_then(|status| status.branch.as_deref())
                 .or_else(|| self.unread_branch())
@@ -428,13 +459,15 @@ impl GitTurtle {
             // items the write refuses; only then does the picker look
             // unavailable (`workspace::BusyLook`). It dimmed the moment any
             // write started, a quick Stage's too. A marked tab has no
-            // branches to offer: its list would be the ones from before.
+            // branches to offer: its list would be the ones from before;
+            // nor one whose status is not read and is not being read, whose
+            // menu would claim a current branch, or none.
             .map(|picker| {
                 workspace::refusing(
                     picker,
                     || "current-branch".into(),
                     false,
-                    unavailable || self.operation_shown().is_some(),
+                    unavailable || not_read || self.operation_shown().is_some(),
                 )
             })
             .accessibility_label(name)

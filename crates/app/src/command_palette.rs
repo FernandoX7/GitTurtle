@@ -334,6 +334,9 @@ struct Availability {
     /// Whether the shown tab's working status is not read yet, which says
     /// whether a branch is checked out (`GitTurtle::working_status_unread`).
     reading: bool,
+    /// Whether it is not read and no read of it runs, as after a read that
+    /// failed (`GitTurtle::working_status_not_read`).
+    not_read: bool,
     branch: bool,
     file: bool,
     working_file: bool,
@@ -457,6 +460,13 @@ impl CommandId {
         // named.
         if self == Self::Branch && context.reading && !context.branch {
             return Some(crate::workspace::READING_WORKING_TREE);
+        }
+        // With none read and none being read, as after a read that failed,
+        // it says so as Fetch, Pull and Push do, the picker reading "Not
+        // read": it said "Check out a named local branch first", as for a
+        // detached HEAD.
+        if self == Self::Branch && context.not_read {
+            return Some(crate::workspace::NOT_READ_REASON);
         }
         if self == Self::Branch && !context.branch {
             return Some("Check out a named local branch first");
@@ -703,6 +713,7 @@ impl GitTurtle {
             unsettled: self.write_unsettled(),
             unavailable: self.shown_tab_unavailable(),
             reading: self.working_status_unread(),
+            not_read: self.working_status_not_read(),
             branch: self.palette_branch().is_some(),
             file: file_scope.file.is_some(),
             working_file: file_scope.working.is_some(),

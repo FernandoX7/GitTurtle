@@ -5083,6 +5083,10 @@ struct ChromeInputs<'a> {
     /// picker names (`GitTurtle::working_status_unread`).
     reading: bool,
     unread_branch: Option<Cow<'a, str>>,
+    /// Whether it is not read and no read of it runs, where the branch
+    /// reads as the branch picker's does
+    /// (`GitTurtle::working_status_not_read`).
+    not_read: bool,
     /// Whether a remote is configured, which decides the edge with them
     /// (`RepositoryEdge::of`).
     remotes: bool,
@@ -5153,6 +5157,7 @@ impl ChromeInputs<'_> {
             unavailable: self.unavailable,
             reading: self.reading,
             unread_branch: self.unread_branch.as_ref().map(text),
+            not_read: self.not_read,
             remotes: self.remotes,
             profile: self.profile.owned(),
             repository: self.repository.as_ref().map(named),
@@ -6313,6 +6318,7 @@ impl GitTurtle {
             unavailable: self.shown_tab_unavailable(),
             reading: self.working_status_unread(),
             unread_branch: self.unread_branch().map(Cow::Borrowed),
+            not_read: self.working_status_not_read(),
             status: self.header_status().map(|status| StatusInputs {
                 entries: status.entries.len(),
                 branch: status.branch.as_deref().map(Cow::Borrowed),
@@ -6345,6 +6351,10 @@ impl GitTurtle {
             branch
         } else if self.working_status_unread() {
             (self.unread_branch()).map_or(crate::branch_actions::READING.into(), str::to_owned)
+        } else if self.working_status_not_read() {
+            // No status read and none being read: neither a branch nor a
+            // detached HEAD, which it said after a read that failed.
+            crate::branch_actions::NOT_READ.into()
         } else {
             "Detached HEAD".into()
         };
@@ -10273,8 +10283,10 @@ impl Render for GitTurtle {
             }
         }
         image_lifetime::after_draw(window, cx);
-        // Before anything reads it: whether a busy spell looks busy yet.
+        // Before anything reads it: whether a busy spell looks busy yet,
+        // and whether a working status not read looks it.
         self.track_busy_look(cx);
+        self.track_unread_look(cx);
         // A refused Toggle Sidebar is announced only from the narrow History
         // rail. Forget it once that is not drawn, so the node cannot reappear,
         // and be announced again, when the window narrows or History returns.
@@ -11047,6 +11059,86 @@ pub(crate) mod tests {
             }
         }
         draw(cx);
+    }
+
+    /// Asserts what Changes says where the shown repository's working status
+    /// is not read and no read of it runs
+    /// (`GitTurtle::working_status_not_read`), as after a read that failed,
+    /// on the route `at`: the branch picker reads "Not read", says `failure`
+    /// and the way back in its tooltip and offers no menu, and the header
+    /// lays out the label it draws; the composer names no branch and draws
+    /// no staged count; Fetch, Pull and Push refuse, looking it, and say
+    /// why, as the palette's Branch does.
+    pub(crate) fn assert_claims_no_branch(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        failure: &str,
+        at: &str,
+    ) {
+        use crate::branch_actions::{NOT_READ, PICKER_LABEL};
+        use crate::workspace::{NOT_READ_REASON, refusals};
+        let tooltip =
+            |id: &str| CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(id).cloned());
+        assert_eq!(
+            PICKER_LABEL.with(|label| label.borrow().clone()).as_deref(),
+            Some(NOT_READ),
+            "{at}: the picker"
+        );
+        let said = tooltip("current-branch").expect("the picker's tooltip");
+        assert!(
+            said.contains(failure) && said.ends_with(" · Refresh to read it again"),
+            "{at}: the picker says the failure and the way back: {said}"
+        );
+        assert_eq!(
+            refusals::get("current-branch").map(|r| (r.announced, r.dimmed)),
+            Some((true, true)),
+            "{at}: the picker offers no menu"
+        );
+        let (laid, drawn) = cx.update(|window, cx| {
+            (
+                app.read(cx).chrome_widths(window).branch,
+                laid_out_text_width(
+                    shaped_width(
+                        NOT_READ,
+                        appearance::ui_text(12.),
+                        FontWeight::MEDIUM,
+                        window,
+                    ),
+                    window,
+                ),
+            )
+        });
+        assert_eq!(laid, drawn, "{at}: the header lays out the picker's label");
+        assert_eq!(
+            tooltip("commit-composer-heading").as_deref(),
+            Some("Create a commit"),
+            "{at}: the composer names no branch"
+        );
+        assert!(
+            cx.debug_bounds("commit-composer-branch/Not read").is_some(),
+            "{at}: the composer's branch line"
+        );
+        assert!(
+            cx.debug_bounds("commit-staged-count").is_none(),
+            "{at}: no staged count"
+        );
+        for id in ["fetch", "pull", "push"] {
+            assert_eq!(
+                refusals::get(id).map(|r| (r.announced, r.dimmed)),
+                Some((true, true)),
+                "{at}: {id} refuses"
+            );
+            let said = tooltip(id).unwrap_or_default();
+            assert!(said.ends_with(NOT_READ_REASON), "{at}: {id} says {said}");
+        }
+        let branch = cx.update(|window, cx| {
+            (app.read(cx)).menu_command_reason(
+                crate::command_palette::CommandId::Branch,
+                window,
+                cx,
+            )
+        });
+        assert_eq!(branch, Some(NOT_READ_REASON), "{at}: the palette's Branch");
     }
 
     /// Holds quiet reads from starting for the rest of the test, once one

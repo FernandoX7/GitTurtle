@@ -478,6 +478,14 @@ struct GitTurtle {
     /// The look of the current busy spell, which waits a moment
     /// (`workspace::BusyLook`).
     busy_look: workspace::BusyLook,
+    /// The look of the shown tab's working status not read, which waits as
+    /// the busy spell's does while it is read
+    /// (`GitTurtle::track_unread_look`).
+    unread_look: workspace::BusyLook,
+    /// What the shown repository's last working read failed with, which the
+    /// branch picker says while no status is read and none is being read
+    /// (`GitTurtle::working_status_not_read`).
+    working_read_failure: Option<SharedString>,
     operation_repository: Option<PathBuf>,
     operation_outcomes: operations::RepositoryOutcomes,
     operation_error: Option<views::OperationFailure>,
@@ -932,6 +940,8 @@ impl GitTurtle {
             operations: SerialExecutor::new("gitturtle-operations"),
             operation_busy: None,
             busy_look: workspace::BusyLook::default(),
+            unread_look: workspace::BusyLook::default(),
+            working_read_failure: None,
             operation_repository: None,
             operation_outcomes: operations::RepositoryOutcomes::default(),
             operation_error: None,
@@ -1492,6 +1502,7 @@ impl GitTurtle {
         self.repository = None;
         self.work_generation += 1;
         self.work_status = None;
+        self.working_read_failure = None;
         self.working_paths.reset();
         self.integration_state = None;
         self.profile = None;
