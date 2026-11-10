@@ -523,6 +523,10 @@ pub(crate) struct ScrollCue {
     /// built, before the frame prepaints it.
     #[cfg(test)]
     key: std::rc::Rc<std::cell::Cell<Option<&'static str>>>,
+    /// Where the cue was made, which the test guard counts the frames of a
+    /// cue drawn without [`ScrollCue::list`] or [`ScrollCue::around`] under.
+    #[cfg(test)]
+    site: &'static std::panic::Location<'static>,
 }
 
 /// The shortest track a scrollbar's thumb moves along: the kit's shortest
@@ -547,6 +551,7 @@ impl ScrollCue {
     /// The cue for the list `scroll` tracks, which keeps `room` around its
     /// rows for their rings, for the frame being rendered: for a list that
     /// holds no control focus can reach, such as a model's details.
+    #[cfg_attr(test, track_caller)]
     pub(crate) fn new(scroll: &ScrollHandle, room: Pixels) -> Self {
         let rows = RowColumn {
             scroll: scroll.clone(),
@@ -561,6 +566,8 @@ impl ScrollCue {
             surface: Surface::Canvas,
             #[cfg(test)]
             key: Default::default(),
+            #[cfg(test)]
+            site: std::panic::Location::caller(),
         }
     }
 
@@ -592,6 +599,7 @@ impl ScrollCue {
 
     /// [`Self::new`] for a list whose controls `reveal` scrolls into view:
     /// its fades stop short of the focused control's ring.
+    #[cfg_attr(test, track_caller)]
     pub(crate) fn revealing(reveal: &FocusReveal, room: Pixels) -> Self {
         Self {
             reveal: Some(reveal.clone()),
@@ -640,7 +648,7 @@ impl ScrollCue {
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
         let (rows, cued, decided) = (self.rows.clone(), self.cued, self.decided);
         #[cfg(test)]
-        let key = self.key.clone();
+        let (key, site) = (self.key.clone(), self.site);
         move |bounds, window, cx| {
             prepainted(bounds, window, cx);
             let settled = match decided {
@@ -648,7 +656,7 @@ impl ScrollCue {
                 None => cues(&rows) == cued,
             };
             #[cfg(test)]
-            settling::observed(key.get(), &rows, settled);
+            settling::observed(key.get(), site, &rows, settled);
             if !settled {
                 window.defer(cx, |window, _| window.refresh());
             }
@@ -937,19 +945,38 @@ impl ScrollbarHandle for RowColumn {
 #[cfg(test)]
 pub(crate) mod settling {
     use super::RowColumn;
-    use std::{cell::RefCell, collections::HashMap};
+    use std::{cell::RefCell, collections::HashMap, panic::Location};
 
     /// The frames running a cue may find its layout cued otherwise.
     const FRAMES: usize = 16;
 
+    /// What a cue's run is counted under: the scrollbar id its list names it
+    /// by (`ScrollCue::list`), or, for a cue drawn without its list, the
+    /// place it was made (`ScrollCue::new`). Counted under one key shared by
+    /// every cue drawn without its list, a cue that settled ended the run of
+    /// one that kept cueing otherwise, which then never failed its test.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum Key {
+        Named(&'static str),
+        Made(&'static Location<'static>),
+    }
+
+    impl std::fmt::Display for Key {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Named(id) => f.write_str(id),
+                Self::Made(site) => write!(f, "made at {site}"),
+            }
+        }
+    }
+
     thread_local! {
-        /// The frames running each cue, by the scrollbar id its list names
-        /// it by (`ScrollCue::list`), has found its layout cued otherwise
-        /// than the frame assumed. Counted by where the list was laid out,
-        /// a list that moved between frames started a new count at each
-        /// place, and the counts of places no later frame settled at
+        /// The frames running each cue ([`Key`]) has found its layout cued
+        /// otherwise than the frame assumed. Counted by where the list was
+        /// laid out, a list that moved between frames started a new count at
+        /// each place, and the counts of places no later frame settled at
         /// survived on the thread.
-        static RUNS: RefCell<HashMap<&'static str, usize>> = RefCell::default();
+        static RUNS: RefCell<HashMap<Key, usize>> = RefCell::default();
     }
 
     /// Forgets every cue's run, as a test's draw begins: a run is the
@@ -961,15 +988,21 @@ pub(crate) mod settling {
         RUNS.with(|runs| runs.borrow_mut().clear());
     }
 
-    /// Notes whether the cue `key` names, whose list `rows` reads as its
-    /// frame prepainted it, was cued as that frame assumed: a frame that
-    /// was ends the cue's run.
-    pub(super) fn observed(key: Option<&'static str>, rows: &RowColumn, settled: bool) {
-        let key = key.unwrap_or("drawn without its list");
+    /// Notes whether the cue `key` names, or that was made at `site` where
+    /// it was drawn without its list, whose list `rows` reads as its frame
+    /// prepainted it, was cued as that frame assumed: a frame that was ends
+    /// the cue's run.
+    pub(super) fn observed(
+        key: Option<&'static str>,
+        site: &'static Location<'static>,
+        rows: &RowColumn,
+        settled: bool,
+    ) {
+        let key = key.map_or(Key::Made(site), Key::Named);
         RUNS.with(|runs| {
             let mut runs = runs.borrow_mut();
             if settled {
-                runs.remove(key);
+                runs.remove(&key);
                 return;
             }
             let run = runs.entry(key).or_default();
@@ -981,6 +1014,24 @@ pub(crate) mod settling {
                 rows.scroll.bounds()
             );
         });
+    }
+
+    /// Two cues drawn without their lists, made in two places: the one
+    /// that keeps cueing otherwise than its frames assume fails its test on
+    /// the guard's frame, though the other settles in every frame between.
+    /// Counted under one key, each settled frame of the one ended the
+    /// other's run, which never failed.
+    #[test]
+    #[should_panic(expected = "frames running: what overflows follows its gutter")]
+    fn a_settled_cue_leaves_another_cues_run() {
+        use super::{ScrollCue, ScrollHandle, px};
+        reset();
+        let looping = ScrollCue::new(&ScrollHandle::new(), px(0.));
+        let settled = ScrollCue::new(&ScrollHandle::new(), px(0.));
+        for _ in 0..FRAMES {
+            observed(looping.key.get(), looping.site, &looping.rows, false);
+            observed(settled.key.get(), settled.site, &settled.rows, true);
+        }
     }
 }
 
@@ -1913,6 +1964,7 @@ pub(crate) mod tests {
 
     pub(crate) fn draw(cx: &mut VisualTestContext) {
         crate::tags::settling::reset();
+        crate::commit_message::State::forget_laid_out_toolbars();
         for _ in 0..3 {
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);

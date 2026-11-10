@@ -11007,6 +11007,7 @@ pub(crate) mod tests {
 
     pub(crate) fn draw(cx: &mut VisualTestContext) {
         crate::tags::settling::reset();
+        crate::commit_message::State::forget_laid_out_toolbars();
         for _ in 0..3 {
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);

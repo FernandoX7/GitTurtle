@@ -428,6 +428,15 @@ impl State {
         LAID_OUT.with(|laid| std::mem::take(&mut *laid.borrow_mut()))
     }
 
+    /// Forgets the toolbars laid out so far, as a test's draw begins
+    /// (`views::tests::draw`), so the record holds the frames since then:
+    /// kept, it grew by a frame for every frame any test on the thread drew
+    /// and handed a test that read it every earlier test's frames.
+    #[cfg(test)]
+    pub(crate) fn forget_laid_out_toolbars() {
+        LAID_OUT.with(|laid| laid.borrow_mut().clear());
+    }
+
     /// The room a line or a control of the metadata has in the inspector the
     /// window draws next (`Toolbar::room`); `None` where no window lays the
     /// inspector out.
@@ -1455,6 +1464,7 @@ pub(crate) mod tests {
 
     pub(crate) fn draw(cx: &mut VisualTestContext) {
         crate::tags::settling::reset();
+        crate::commit_message::State::forget_laid_out_toolbars();
         for _ in 0..3 {
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);

@@ -3858,21 +3858,43 @@ pub(crate) mod tests {
         });
     }
 
-    /// File History's message toolbar settles in one form for each size,
-    /// whatever the panel's last frame: at every width from 500 to 600 px at
-    /// 18 pt in a 490 px tall window, and at heights from 420 to 620 px at
-    /// 511 and 540 px wide, Copy message and Hash lie where they do come to
-    /// from the size before, from a 1,000 px tall window, where the panel
-    /// fits, from a 400 px tall one, where it scrolls, and once a failed
-    /// page's notice goes; the panel scrolls alike, and the toolbar is laid
-    /// out for the room it is drawn in. Decided from the gutter the panel
-    /// kept in its last frame, a panel that had scrolled kept their labels
-    /// on two rows and its scrollbar at about 530 to 560 px wide, where one
-    /// that had fitted drew their icons and no scrollbar.
+    /// The toolbars a test reads as laid out start with its last draw
+    /// (`views::tests::draw`): at most the frames that draw drew, never an
+    /// earlier draw's. Kept, the record grew by a frame for every frame any
+    /// test on the thread drew.
     #[gpui::test]
-    async fn file_historys_toolbar_settles_in_one_form_whatever_its_last_frame(
-        cx: &mut TestAppContext,
-    ) {
+    async fn the_laid_out_toolbars_start_with_each_draw(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        let frames = commit_message::State::take_laid_out_toolbars();
+        assert!(
+            !frames.is_empty() && frames.len() <= 3,
+            "the toolbars of the last draw's three frames, not {} frames",
+            frames.len()
+        );
+    }
+
+    /// File History's message toolbar settles in one form for each of
+    /// `sizes` at 18 pt, whatever the panel's last frame: Copy message and
+    /// Hash lie where they do come to from the size before, from a 1,000 px
+    /// tall window, where the panel fits, from a 400 px tall one, where it
+    /// scrolls, and once a failed page's notice goes; the panel scrolls
+    /// alike, and the toolbar is laid out for the room it is drawn in.
+    /// Decided from the gutter the panel kept in its last frame, a panel that
+    /// had scrolled kept their labels on two rows and its scrollbar at about
+    /// 530 to 560 px wide in a 490 px tall window, where one that had fitted
+    /// drew their icons and no scrollbar. Its cases are tests of their own
+    /// (`file_historys_toolbar_settles_*`), each under about 15 s: the 123
+    /// sizes took 31.9 s in one.
+    async fn toolbar_settles(cx: &mut TestAppContext, sizes: &[(f32, f32)]) {
         use crate::views::tests::{
             draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
         };
@@ -3913,15 +3935,7 @@ pub(crate) mod tests {
                 (room - drawn).abs() <= px(1.),
             )
         };
-        let sizes =
-            (500..=600)
-                .map(|width| (width as f32, 490.))
-                .chain([511., 540.].into_iter().flat_map(|width| {
-                    (420..=620)
-                        .step_by(20)
-                        .map(move |height| (width, height as f32))
-                }));
-        for (width, height) in sizes {
+        for &(width, height) in sizes {
             let at = format!("18 pt in {width} × {height}");
             resize(cx, width, height);
             let settled = form(cx);
@@ -3941,6 +3955,37 @@ pub(crate) mod tests {
             cx.set_reduce_motion(false);
             crate::appearance::apply_text_sizes(13, 12, window, cx);
         });
+    }
+
+    /// [`toolbar_settles`] at every width from 500 to 550 px in a 490 px
+    /// tall window.
+    #[gpui::test]
+    async fn file_historys_toolbar_settles_at_500_to_550_wide(cx: &mut TestAppContext) {
+        let sizes: Vec<_> = (500..=550).map(|width| (width as f32, 490.)).collect();
+        toolbar_settles(cx, &sizes).await;
+    }
+
+    /// [`toolbar_settles`] at every width from 551 to 600 px in a 490 px
+    /// tall window.
+    #[gpui::test]
+    async fn file_historys_toolbar_settles_at_551_to_600_wide(cx: &mut TestAppContext) {
+        let sizes: Vec<_> = (551..=600).map(|width| (width as f32, 490.)).collect();
+        toolbar_settles(cx, &sizes).await;
+    }
+
+    /// [`toolbar_settles`] at heights from 420 to 620 px, 20 px apart, at
+    /// 511 and 540 px wide.
+    #[gpui::test]
+    async fn file_historys_toolbar_settles_from_420_to_620_tall(cx: &mut TestAppContext) {
+        let sizes: Vec<_> = [511., 540.]
+            .into_iter()
+            .flat_map(|width| {
+                (420..=620)
+                    .step_by(20)
+                    .map(move |height| (width, height as f32))
+            })
+            .collect();
+        toolbar_settles(cx, &sizes).await;
     }
 
     /// Where File History's header and footer lay out each of their parts,
