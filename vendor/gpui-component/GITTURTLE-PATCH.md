@@ -2670,3 +2670,17 @@ the trigger. `cargo test --locked -p gitturtle
 theme_editor::tests::choosing_a_swatch_by_key_rings_the_trigger_in_the_next_frame`
 checks the theme editor's trigger ring in the one frame the key-up draws.
 Remove it when upstream's popover gives focus back outside the draw.
+
+The colour-picker press patch also modifies `src/color_picker.rs`
+(`ColorPicker::render`). The popover's press listener on its trigger stops
+the press, so GPUI's focus on press never reached the picker's root, which
+tracks the trigger's focus handle: a picker opened by the pointer recorded
+whichever control held focus before as the focus to give back, and Escape
+returned there, another row's trigger in the theme editor (QA-110, found
+outside the checks, 1). Patched, a left press on the trigger focuses it in
+the capture phase, before the popover opens and records it, so every close
+gives focus back to the trigger the picker was opened from. `cargo test
+--locked -p gitturtle
+theme_editor::tests::a_picker_opened_by_the_pointer_gives_focus_back_to_its_trigger`
+covers Escape and a pointer choice after a click opened the picker. Remove it
+when upstream's popover focuses its trigger on a press.

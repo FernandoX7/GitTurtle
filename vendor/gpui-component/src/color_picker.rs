@@ -1,8 +1,9 @@
 use gpui::{
     Anchor, App, Context, ElementId, Entity, FocusHandle, Focusable, Hsla, InteractiveElement as _,
-    IntoElement, KeyBinding, NoAction, ParentElement, Pixels, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, Subscription, TextAlign, Window, div,
-    hsla, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
+    IntoElement, KeyBinding, MouseButton, NoAction, ParentElement, Pixels, RenderOnce, Role,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Subscription,
+    TextAlign, Window, div, hsla, linear_color_stop, linear_gradient, prelude::FluentBuilder as _,
+    px,
 };
 use rust_i18n::t;
 
@@ -806,6 +807,19 @@ impl RenderOnce for ColorPicker {
         BaseColorPicker::new(self.id.clone())
             .open(open)
             .track_focus(&focus_handle)
+            // GitTurtle patch: a press on the trigger focuses it before the
+            // popover opens and records the focus it gives back as it
+            // closes. The popover's own press listener stops the press, so
+            // GPUI never focused the trigger and Escape gave focus back to
+            // whichever control held it before the press.
+            .capture_any_mouse_down({
+                let focus_handle = focus_handle.clone();
+                move |event, window, cx| {
+                    if event.button == MouseButton::Left {
+                        focus_handle.focus(window, cx);
+                    }
+                }
+            })
             .when_some(
                 self.accessibility_label
                     .clone()

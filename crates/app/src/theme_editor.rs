@@ -754,8 +754,12 @@ impl GitTurtle {
         };
         let owner = cx.entity().downgrade();
         let customs = self.custom_themes.clone();
-        let form =
-            cx.new(|cx| ThemeForm::new(owner, editing, name, base, palette, customs, window, cx));
+        let ring = self.focus_ring.clone();
+        let form = cx.new(|cx| {
+            ThemeForm::new(
+                owner, editing, name, base, palette, customs, ring, window, cx,
+            )
+        });
         self.theme_editor.form = Some(form.clone());
         self.clear_theme_transfer_result();
         self.preview_theme_draft(palette, started, window, cx);
@@ -1566,7 +1570,8 @@ struct RowKey {
     /// The applied palette: the row's text, borders and rings follow it.
     active: Palette,
     rem: Pixels,
-    picker_focused: bool,
+    /// The trigger draws its keyboard ring ([`ThemeForm::focus_ring`]).
+    picker_ringed: bool,
 }
 
 /// One token row of the editor, a view the form embeds with
@@ -1580,8 +1585,8 @@ struct RowKey {
 /// - the form's render compares each row's [`RowKey`] with the last one the
 ///   row showed and embeds a changed row uncached for that frame, so every
 ///   form-side change (draft color, validity, readability flag, a pending
-///   save, a palette application, the text size, the picker's focus) builds
-///   it without a notify site;
+///   save, a palette application, the text size, the picker trigger's
+///   keyboard ring) builds it without a notify site;
 /// - the row observes its hex field and its color picker: the field's view
 ///   node is registered outside the row (`settings::ViewNodeAnchor`, as the
 ///   Settings page does), so the kit input's notify from paint on every frame
@@ -1691,6 +1696,11 @@ pub(super) struct ThemeForm {
     save_focus: FocusHandle,
     /// The focused row or Readability list the last render scrolled into view.
     revealed: Option<Reveal>,
+    /// The window's keyboard ring: a picker's trigger draws its ring only
+    /// while it holds focus a key gave it, so a picker opened and closed by
+    /// the pointer leaves its trigger focused without one, and Escape, Enter
+    /// or Space closing a picker shows it.
+    focus_ring: focus_ring::FocusRing,
     /// The Readability list is a tab stop, so the keyboard can bring it into view.
     warnings_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -1705,6 +1715,7 @@ impl ThemeForm {
         base: ThemeChoice,
         palette: Palette,
         customs: Vec<CustomTheme>,
+        focus_ring: focus_ring::FocusRing,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1794,6 +1805,7 @@ impl ThemeForm {
             cancel_focus: cx.focus_handle(),
             save_focus: cx.focus_handle(),
             revealed: None,
+            focus_ring,
             warnings_focus,
             _subscriptions: subscriptions,
         }
@@ -2003,7 +2015,7 @@ impl ThemeForm {
             pending: self.pending,
             active: palette(cx),
             rem: window.rem_size(),
-            picker_focused: row.picker.focus_handle(cx).is_focused(window),
+            picker_ringed: self.focus_ring.shows(&row.picker.focus_handle(cx)),
         }
     }
 
@@ -2477,7 +2489,7 @@ impl ThemeForm {
         let label = kind.label();
         let tooltip = Self::row_tooltip(kind);
         let trigger = row.picker.focus_handle(cx);
-        let picker_focused = trigger.is_focused(window);
+        let picker_ringed = self.focus_ring.shows(&trigger);
         div()
             .id(("theme-token", kind as usize))
             .debug_selector(move || format!("theme-token-{}", kind.key()))
@@ -2578,8 +2590,10 @@ impl ThemeForm {
             .child(
                 // The toolkit trigger paints no focus indicator of its own, and
                 // its swatch would vanish on a matching background: a 1 px
-                // border edge at rest, the 2 px accent ring when focused.
+                // border edge at rest, the 2 px accent ring while it holds
+                // keyboard focus.
                 div()
+                    .debug_selector(move || format!("theme-token-picker-{}", kind.key()))
                     .key_context(PICKER_CONTEXT)
                     .on_action({
                         let trigger = trigger.clone();
@@ -2592,7 +2606,7 @@ impl ThemeForm {
                     })
                     .rounded(px(7.))
                     .map(|ring| {
-                        if picker_focused {
+                        if picker_ringed {
                             ring.border_2().border_color(rgb(p.accent))
                         } else {
                             ring.border_1().border_color(rgb(p.border)).p(px(1.))
@@ -4431,6 +4445,86 @@ pub(crate) mod tests {
                 whole_trigger_ring(cx).is_some(),
                 "{key}: that frame draws the trigger's ring"
             );
+        }
+    }
+
+    /// The picker opened by a pointer press, its trigger clicked while
+    /// another row's trigger holds focus, gives focus back to the trigger it
+    /// was opened from as it closes (FU37-A's rule): Escape, or a swatch
+    /// chosen by the keyboard after the pointer opened it, draws that
+    /// trigger's ring whole, since a key shows it, and a swatch chosen by
+    /// the pointer, or the trigger pressed again, leaves it focused with no
+    /// ring. The press never focused the trigger, so focus went back to the
+    /// trigger that held it before (QA-110, found outside the checks, 1).
+    #[gpui::test]
+    fn a_picker_opened_by_the_pointer_gives_focus_back_to_its_trigger(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (form, _, first, _) = first_picker(cx, &app);
+        let kind = TokenKind::ALL[1];
+        let picker = cx.read(|cx| form.read(cx).row(kind).picker.clone());
+        let trigger = cx.read(|cx| picker.focus_handle(cx));
+        let selector: &'static str = format!("theme-token-picker-{}", kind.key()).leak();
+        for close in [
+            "escape",
+            "a swatch clicked",
+            "the trigger pressed again",
+            "tab, right, enter",
+        ] {
+            cx.update(|window, cx| first.focus(window, cx));
+            settle(cx);
+            click(cx, selector);
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{close}: the click opened the second row's picker"
+            );
+            if close == "escape" {
+                press(cx, "escape");
+            } else if close == "the trigger pressed again" {
+                click(cx, selector);
+            } else if close == "tab, right, enter" {
+                press(cx, "tab");
+                press(cx, "right");
+                assert!(in_popover(cx, &trigger), "{close}: a swatch holds focus");
+                press(cx, "enter");
+            } else {
+                // The featured row's first swatch, the theme's red.
+                let red =
+                    cx.read(|cx| Background::from(gpui_kit::component::Theme::global(cx).red));
+                let swatch = painted_quads(cx)
+                    .into_iter()
+                    .find(|quad| {
+                        quad.background == red
+                            && (px(8.)..=px(30.)).contains(&quad.bounds.size.width)
+                            && (px(8.)..=px(30.)).contains(&quad.bounds.size.height)
+                    })
+                    .expect("the featured red swatch")
+                    .bounds;
+                cx.simulate_click(swatch.center(), Modifiers::default());
+                settle(cx);
+            }
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{close}: the picker closed"
+            );
+            assert_eq!(
+                focused_stop(cx),
+                trigger,
+                "{close}: focus is back on the trigger the picker was opened from"
+            );
+            let ring = whole_trigger_ring(cx);
+            if matches!(close, "escape" | "tab, right, enter") {
+                // The first 2 px accent outline drawn, which must be the
+                // clicked trigger's own.
+                let at = settings::shown(cx, selector).expect("the clicked trigger is drawn");
+                let ring =
+                    ring.unwrap_or_else(|| panic!("{close}: the trigger draws its ring whole"));
+                assert!(
+                    ring.contains(&at.center()) && at.dilate(px(1.)).contains(&ring.origin),
+                    "{close}: the ring {ring:?} lies on the clicked trigger {at:?}"
+                );
+            } else {
+                assert_eq!(ring, None, "{close}: a pointer close draws no ring");
+            }
         }
     }
 
