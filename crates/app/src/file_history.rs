@@ -5,6 +5,9 @@ use focus_reveal::{FocusReveal, Trigger};
 use gitturtle_core::{FileHistoryEntry, FileHistoryPage};
 use gpui_kit::prelude::FluentBuilder;
 
+#[cfg(test)]
+mod panel_bench;
+
 const PAGE_SIZE: usize = 100;
 
 /// The id File History's message panel is revealed under as one region
