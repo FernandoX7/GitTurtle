@@ -3384,9 +3384,9 @@ impl StashBrowser {
             .map(|owner| owner.read(cx).focus_ring.clone());
         crate::lfs_download::above_comparison(
             &self.lfs_failure_line,
-            self.content
-                .as_ref()
-                .map_or(0, crate::lfs_download::comparison_key),
+            crate::lfs_download::comparison_key(
+                self.selected_file.and_then(|index| self.files().get(index)),
+            ),
             failure,
             body,
             ring.as_ref(),

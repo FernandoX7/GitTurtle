@@ -1664,9 +1664,9 @@ impl SeriesBrowser {
         });
         crate::lfs_download::above_comparison_with_row(
             &self.lfs_failure_line,
-            self.content
-                .as_ref()
-                .map_or(0, crate::lfs_download::comparison_key),
+            crate::lfs_download::comparison_key(
+                self.selected_file.and_then(|index| self.files.get(index)),
+            ),
             failure,
             row,
             body,

@@ -147,12 +147,19 @@ pub(super) struct FailureLine {
     pub(super) focus: FocusHandle,
     /// The comparison last drawn ([`comparison_key`]): another one starts
     /// from its top, even where it says the same words.
-    shown: std::cell::Cell<usize>,
+    shown: std::cell::RefCell<ComparisonKey>,
 }
 
-/// Which comparison `content` is, for as long as it is the one shown.
-pub(super) fn comparison_key(content: &Arc<Content>) -> usize {
-    Arc::as_ptr(content).addr()
+/// Which comparison a line is drawn above: its file, its sides' objects and
+/// their modes, as the read that prepared it was keyed. Told apart by its
+/// memory address, a comparison read again could land where the one it
+/// replaced was freed and keep that one's scroll.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ComparisonKey(Option<FileChange>);
+
+/// Which comparison the shown `file` is.
+pub(super) fn comparison_key(file: Option<&FileChange>) -> ComparisonKey {
+    ComparisonKey(file.cloned())
 }
 
 impl FailureLine {
@@ -170,14 +177,15 @@ impl FailureLine {
     /// edge, as the rewritten-series preview's over-tall failure does.
     fn render<V: 'static>(
         &self,
-        key: usize,
+        key: ComparisonKey,
         sentence: String,
         ring: Option<&crate::focus_ring::FocusRing>,
         window: &Window,
         cx: &mut Context<V>,
     ) -> Div {
-        if self.shown.replace(key) != key {
+        if *self.shown.borrow() != key {
             self.scroll.set_offset(point(px(0.), px(0.)));
+            self.shown.replace(key);
         }
         let id = self.id;
         let scroll = &self.scroll;
@@ -246,7 +254,7 @@ impl FailureLine {
 /// gives way first.
 pub(super) fn above_comparison<V: 'static>(
     line: &FailureLine,
-    key: usize,
+    key: ComparisonKey,
     sentence: Option<String>,
     body: AnyElement,
     ring: Option<&crate::focus_ring::FocusRing>,
@@ -263,7 +271,7 @@ pub(super) fn above_comparison<V: 'static>(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn above_comparison_with_row<V: 'static>(
     line: &FailureLine,
-    key: usize,
+    key: ComparisonKey,
     sentence: Option<String>,
     row: Option<AnyElement>,
     body: AnyElement,
@@ -665,7 +673,7 @@ impl GitTurtle {
     ) -> Option<Div> {
         let sentence = self.lfs_failure_sentence()?;
         let ring = self.focus_ring.clone();
-        let key = self.content.as_ref().map_or(0, comparison_key);
+        let key = comparison_key(self.selected_file.and_then(|index| self.files.get(index)));
         Some(
             self.lfs_failure_line
                 .render(key, sentence, Some(&ring), window, cx),

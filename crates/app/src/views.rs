@@ -11125,6 +11125,39 @@ pub(crate) mod tests {
         settle(&app, cx).await;
         assert!(offset(cx) > px(0.), "Down scrolls it");
 
+        // Another file's comparison starts from its top even where its
+        // reading lands at the address of the one it replaced, once freed,
+        // as a read can (3 of 20 seeds): told apart by that address, it kept
+        // the old one's scroll. At that address itself here: the reading
+        // shown stays and the file it compares changes.
+        let (two, next) = app.read_with(cx, |app, _| {
+            let at = |path: &str| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+            };
+            (at("two.txt").unwrap(), at("next.txt").unwrap())
+        });
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.selected_file = Some(next);
+                cx.notify();
+            })
+        });
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            offset(cx),
+            px(0.),
+            "another comparison at the same address starts at its top"
+        );
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.selected_file = Some(two);
+                cx.notify();
+            })
+        });
+        crate::tags::tests::draw(cx);
+
         // The next file's words start from their top.
         select("next.txt", cx);
         settle(&app, cx).await;
