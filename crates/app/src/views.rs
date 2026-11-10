@@ -4031,37 +4031,39 @@ impl GitTurtle {
             && !self.blame.is_visible()
             && !matches!(self.text_mode, TextMode::Diagrams | TextMode::Markdown);
         let review_shown = text_shown && !quick_source;
+        // Why a working file's lines cannot be staged one by one, beneath
+        // its text.
+        let reason = self
+            .content
+            .as_ref()
+            .and_then(|content| match content.as_ref() {
+                Content::Text {
+                    partial_unavailable,
+                    ..
+                } if self.mode == WorkspaceMode::Working => {
+                    partial_unavailable.as_deref().map(SharedString::from)
+                }
+                _ => None,
+            });
+        let muted = colors.muted;
         // Beside a Download row, Diff, Before, After and Split lay the row,
         // the review options and the comparison out for the room the line
-        // leaves them in the frame they are drawn ([`DownloadRegion`]).
+        // leaves them in the frame they are drawn ([`DownloadRegion`]), from
+        // heights measured only where what they follow from changed
+        // ([`Self::download_heights`]).
         let region = (text_shown && download_offered).then(|| {
-            let measured = |element: AnyElement, window: &mut Window, cx: &mut Context<Self>| {
-                crate::in_frame::measured_height(element, column, window, cx)
-            };
-            let rows = [false, true].map(|short| {
-                let row = self.render_lfs_download_actions(column, short, window, cx);
-                let height = measured(
-                    self.render_lfs_download_actions(column, short, window, cx),
-                    window,
-                    cx,
-                );
-                (row, height)
-            });
-            let review = review_shown.then(|| {
-                let review = self.render_text_review(column, window, cx);
-                let height = measured(self.render_text_review(column, window, cx), window, cx);
-                (review, height)
-            });
+            let heights =
+                self.download_heights(column, review_shown, reason.as_ref(), muted, window, cx);
             let heading = if split.is_some() {
                 window.pixel_snap(appearance::ui_size(crate::split_diff::SIDE_HEADING_HEIGHT))
             } else {
                 px(0.)
             };
-            let [full, short] = rows;
             DownloadRegion {
-                rows: [full.0, short.0],
-                heights: [full.1, short.1],
-                review,
+                owner: cx.entity().downgrade(),
+                column,
+                heights,
+                review: review_shown.then(|| self.render_text_review(column, window, cx)),
                 floor: comparison_floor(1., window) + heading,
                 name: match self.text_mode {
                     TextMode::Before => "Before",
@@ -4071,7 +4073,6 @@ impl GitTurtle {
                 },
             }
         });
-        let column_width = column;
         div()
             .size_full()
             .min_w_0()
@@ -4095,37 +4096,9 @@ impl GitTurtle {
                         edge.debug_selector(|| "compare-text-ring".into())
                             .into_any_element()
                     });
-                let reason = self
-                    .content
-                    .as_ref()
-                    .and_then(|content| match content.as_ref() {
-                        Content::Text {
-                            partial_unavailable,
-                            ..
-                        } if self.mode == WorkspaceMode::Working => {
-                            partial_unavailable.as_deref().map(SharedString::from)
-                        }
-                        _ => None,
-                    });
-                let muted = colors.muted;
                 if let Some(region) = region {
-                    let reason_height = reason.clone().map_or(px(0.), |reason| {
-                        crate::in_frame::measured_height(
-                            partial_reason(reason, muted),
-                            column_width,
-                            window,
-                            cx,
-                        )
-                    });
-                    return column.child(region.render(
-                        content,
-                        split,
-                        edge,
-                        reason.map(|reason| (reason, reason_height)),
-                        muted,
-                        footer,
-                        window,
-                    ));
+                    return column
+                        .child(region.render(content, split, edge, reason, muted, footer, window));
                 }
                 match split {
                     // Laid out for the room it shares with the footer in the
@@ -4176,14 +4149,18 @@ impl GitTurtle {
 /// the comparison keeping at least one whole row, beneath Split's headings
 /// there. Beside two stacked buttons at 18 pt in a 461 px wide window the
 /// footer took the comparison's last row below 480 px tall, leaving Diff
-/// none at 440 px.
+/// none at 440 px. Its parts' heights are measured only where what they
+/// follow from changes ([`GitTurtle::download_heights`]), and it builds the
+/// row once, in the form it draws.
 struct DownloadRegion {
-    /// The row with its buttons' word, and without it.
-    rows: [AnyElement; 2],
-    /// Their heights, as laid out in the column.
-    heights: [Pixels; 2],
-    /// The review options and their height, where they are drawn.
-    review: Option<(AnyElement, Pixels)>,
+    /// The window, which builds the row in the form the region chooses.
+    owner: WeakEntity<GitTurtle>,
+    /// The column's width, which the row is built for.
+    column: Pixels,
+    /// What its parts take, as laid out in the column.
+    heights: DownloadHeights,
+    /// The review options, where they are drawn.
+    review: Option<AnyElement>,
     /// What the comparison keeps: one whole row, beneath Split's headings.
     floor: Pixels,
     /// The mode the comparison is shown in, which names it once it carries
@@ -4191,36 +4168,143 @@ struct DownloadRegion {
     name: &'static str,
 }
 
+/// The heights of a Download row's region's parts, as laid out in Compare's
+/// column ([`GitTurtle::download_heights`]).
+#[derive(Clone, Copy)]
+struct DownloadHeights {
+    /// The row with its buttons' word, and without it.
+    rows: [Pixels; 2],
+    /// The review options, where they are drawn, else none.
+    review: Pixels,
+    /// The reason the text's lines cannot be staged, where it is drawn,
+    /// else none.
+    reason: Pixels,
+}
+
+/// What a Download row's region's heights follow from
+/// ([`GitTurtle::download_heights`]): the interface font and sizes, the
+/// window's scale factor, the column's width, what the row is built from
+/// (`lfs_download::CompareRow`), what the review options say, where they
+/// are drawn, and the reason beneath the text. Never the room's height,
+/// which only the region's arithmetic reads, in the frame it is drawn.
+#[derive(Clone, PartialEq)]
+struct DownloadHeightsKey {
+    line: LineKey,
+    scale: u32,
+    column: u32,
+    row: crate::lfs_download::CompareRow,
+    /// The options and whether the review is unavailable, which choose its
+    /// labels and caption.
+    review: Option<(crate::text_review::Options, bool)>,
+    reason: Option<SharedString>,
+}
+
+thread_local! {
+    /// The heights Download rows' regions lay their parts out at, for each
+    /// of the few keys drawn lately ([`DownloadHeightsKey`]).
+    static DOWNLOAD_HEIGHTS: RefCell<Measured<DownloadHeightsKey, DownloadHeights>> =
+        const { RefCell::new(Measured::new()) };
+}
+
+/// Empties [`DOWNLOAD_HEIGHTS`], for a test that counts what a Download
+/// row's region measures: a GPUI test's seeds share the thread and its
+/// cache.
+#[cfg(test)]
+pub(crate) fn forget_download_heights() {
+    DOWNLOAD_HEIGHTS.with_borrow_mut(|kept| *kept = Measured::new());
+}
+
+impl GitTurtle {
+    /// The heights a Download row's region lays its parts out at in a
+    /// column `column` wide: the row with its buttons' word and without it,
+    /// the review options where `review_shown`, and the `reason` the text's
+    /// lines cannot be staged, its text `muted`. Each is laid out as a root
+    /// to measure it, built for that alone, which beside the row once cost
+    /// every Compare frame 142–177 µs of the UI thread's time, scrolls and
+    /// resizes alike (release, 2026-11-10); so they are measured again only
+    /// where what they follow from changes ([`DownloadHeightsKey`]), and a
+    /// frame that changes none of it, as each of a scroll, measures nothing.
+    /// The key is read from this frame's inputs and a new one is measured
+    /// in this frame, so the form the region draws never follows a frame
+    /// before's layout and asks for no other frame.
+    fn download_heights(
+        &self,
+        column: Pixels,
+        review_shown: bool,
+        reason: Option<&SharedString>,
+        muted: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> DownloadHeights {
+        let key = DownloadHeightsKey {
+            line: LineKey::current(window),
+            scale: window.scale_factor().to_bits(),
+            column: f32::from(column).to_bits(),
+            row: self.lfs_download_row(),
+            review: review_shown.then(|| (self.review.options, self.review_unavailable())),
+            reason: reason.cloned(),
+        };
+        DOWNLOAD_HEIGHTS.with_borrow_mut(|kept| {
+            *kept.get(key, |_| {
+                let mut row = |short| {
+                    let row = self.render_lfs_download_actions(column, short, window, cx);
+                    crate::in_frame::measured_height(row, column, window, cx)
+                };
+                let rows = [row(false), row(true)];
+                let review = if review_shown {
+                    let review = self.render_text_review(column, window, cx);
+                    crate::in_frame::measured_height(review, column, window, cx)
+                } else {
+                    px(0.)
+                };
+                let reason = reason.map_or(px(0.), |reason| {
+                    let reason = partial_reason(reason.clone(), muted);
+                    crate::in_frame::measured_height(reason, column, window, cx)
+                });
+                DownloadHeights {
+                    rows,
+                    review,
+                    reason,
+                }
+            })
+        })
+    }
+}
+
 impl DownloadRegion {
     /// The region holding `content`, or Split's `split` view, with the
-    /// reason its lines cannot be staged and its height and `footer`.
+    /// `reason` its lines cannot be staged and `footer`.
     #[allow(clippy::too_many_arguments)]
     fn render(
         self,
         content: AnyElement,
         split: Option<Entity<crate::split_diff::SplitView>>,
         edge: Option<AnyElement>,
-        reason: Option<(SharedString, Pixels)>,
+        reason: Option<SharedString>,
         muted: u32,
         footer: Option<CompareFooter>,
         window: &Window,
     ) -> Div {
         let Self {
-            rows: [full, short],
-            heights: [full_height, short_height],
+            owner,
+            column,
+            heights:
+                DownloadHeights {
+                    rows: [full_height, short_height],
+                    review: review_height,
+                    reason: reason_height,
+                },
             review,
             floor,
             name,
         } = self;
-        let review_height = review.as_ref().map_or(px(0.), |(_, height)| *height);
-        let reason_height = reason.as_ref().map_or(px(0.), |(_, height)| *height);
         let footer_height = footer.as_ref().map_or(px(0.), |_| {
             window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT))
         });
         let device = px(1. / window.scale_factor());
         #[cfg(test)]
         DOWNLOAD_ROWS.set(Some([full_height, short_height]));
-        let region = crate::in_frame::in_frame(move |bounds, _, _| {
+        let region = crate::in_frame::in_frame(move |bounds, window, cx| {
             // Beside the row with its word, the room the comparison has,
             // less half a device pixel, as every length here stands on a
             // whole one.
@@ -4248,34 +4332,36 @@ impl DownloadRegion {
                     let room = room + full_height - short_height;
                     (true, footer.is_some() && holds(room, floor + footer_height))
                 };
-            let review = review.map(|(review, _)| review);
+            // The row in the form drawn, built once in the frame.
+            let row = owner
+                .update(cx, |this, cx| {
+                    this.render_lfs_download_actions(column, short_shown, window, cx)
+                })
+                .unwrap_or_else(|_| div().into_any_element());
             let body = match split {
-                Some(view) => {
-                    let reason = reason.map(|(reason, _)| reason);
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            crate::in_frame::in_frame(move |bounds, window, cx| {
-                                split_room(
-                                    view,
-                                    edge,
-                                    reason,
-                                    muted,
-                                    footer,
-                                    Some(1.),
-                                    !footer_stays,
-                                    bounds,
-                                    window,
-                                    cx,
-                                )
-                            })
-                            .named("compare-split-room"),
-                        )
-                        .into_any_element()
-                }
+                Some(view) => div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        crate::in_frame::in_frame(move |bounds, window, cx| {
+                            split_room(
+                                view,
+                                edge,
+                                reason,
+                                muted,
+                                footer,
+                                Some(1.),
+                                !footer_stays,
+                                bounds,
+                                window,
+                                cx,
+                            )
+                        })
+                        .named("compare-split-room"),
+                    )
+                    .into_any_element(),
                 None => {
                     let (footer, described) = match footer {
                         Some(footer) if !footer_stays => (None, Some(footer.line)),
@@ -4301,7 +4387,7 @@ impl DownloadRegion {
                         .flex()
                         .flex_col()
                         .child(preview_content(comparison, edge))
-                        .children(reason.map(|(reason, _)| partial_reason(reason, muted)))
+                        .children(reason.map(|reason| partial_reason(reason, muted)))
                         .children(footer)
                         .into_any_element()
                 }
@@ -4310,7 +4396,7 @@ impl DownloadRegion {
                 .size_full()
                 .flex()
                 .flex_col()
-                .child(if short_shown { short } else { full })
+                .child(row)
                 .children(review)
                 .child(body)
                 .into_any_element()
@@ -11961,6 +12047,161 @@ pub(crate) mod tests {
             comparison.size.height >= row - px(0.25),
             "{comparison:?} keeps its row, {row:?}"
         );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Beside a Download row, Compare measures the heights its region lays
+    /// the row, its form without the buttons' word and the review options
+    /// out at only where what they follow from changes
+    /// (`GitTurtle::download_heights`): each frame of a scroll builds the
+    /// row once, in the form it draws, and lays nothing out to measure, and
+    /// a new width, a new text size, a download that starts and new review
+    /// options each measure them again in the frame that draws them.
+    /// Measured in every frame, the region built the row four times and
+    /// laid three elements out to measure them, which cost each Compare
+    /// frame 142–177 µs of the UI thread's time in a release build
+    /// (2026-11-10).
+    #[gpui::test]
+    async fn a_download_row_s_region_measures_only_when_what_it_follows_from_changes(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::in_frame::{MEASURES, probe};
+        use crate::lfs_download::ROWS_BUILT;
+        // A GPUI test's seeds share the thread and the heights it keeps.
+        forget_download_heights();
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let text: String = (0..400)
+            .map(|line| format!("asset line {line}\n"))
+            .collect();
+        let input = file_commits(&[
+            ("before", &[("asset.txt", pointer.as_bytes())]),
+            ("after", &[("asset.txt", text.as_bytes())]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        let index = app.read_with(cx, |app, _| {
+            app.files
+                .iter()
+                .position(|file| file.path() == std::path::Path::new("asset.txt"))
+                .expect("the commit changes asset.txt")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.text_mode = TextMode::Unified;
+                app.select_file(index, window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.lfs_download_offered()),
+            "asset.txt's Before side, a pointer whose object is not local, offers Download"
+        );
+        probe::watch();
+        // The Download rows built, the elements laid out to measure them
+        // and the frames that drew the row's region since the last call.
+        let mut counted = (ROWS_BUILT.get(), MEASURES.get());
+        let mut work = move || {
+            let now = (ROWS_BUILT.get(), MEASURES.get());
+            let drawn = probe::take()
+                .iter()
+                .filter(|frame| frame.region == "compare-download-region")
+                .count();
+            let done = (now.0 - counted.0, now.1 - counted.1, drawn);
+            counted = now;
+            done
+        };
+        let editor = app.read_with(cx, |app, _| {
+            app.patch_editor.clone().expect("Diff's editor")
+        });
+        let offset =
+            |cx: &mut VisualTestContext| editor.read_with(cx, |editor, _| editor.scroll_offset().y);
+        type Work<'a> = &'a mut dyn FnMut() -> (usize, usize, usize);
+        // Wheel notches over the text, each a frame that changes nothing
+        // the heights follow from.
+        let scroll = |cx: &mut VisualTestContext, at: &str, work: Work<'_>| {
+            let position = cx
+                .debug_bounds("preview-content")
+                .expect("the comparison is drawn")
+                .center();
+            for notch in 0..4 {
+                cx.update(|window, cx| window.simulate_next_frame(cx));
+                cx.run_until_parked();
+                work();
+                let before = offset(cx);
+                cx.update(|window, cx| {
+                    window.dispatch_event(
+                        gpui_kit::PlatformInput::ScrollWheel(gpui_kit::ScrollWheelEvent {
+                            position,
+                            delta: gpui_kit::ScrollDelta::Lines(point(0., -3.)),
+                            modifiers: gpui_kit::Modifiers::default(),
+                            touch_phase: gpui_kit::TouchPhase::Moved,
+                        }),
+                        cx,
+                    );
+                });
+                cx.run_until_parked();
+                let (rows, measures, drawn) = work();
+                assert_ne!(offset(cx), before, "{at}: notch {notch} scrolls the text");
+                assert_eq!(
+                    (rows, measures, drawn),
+                    (1, 0, 1),
+                    "{at}: notch {notch}'s frame builds the row once and measures nothing"
+                );
+            }
+        };
+        work();
+        scroll(cx, "1480 × 973 at 13 pt", &mut work);
+        // Each change measures again, in the frame that draws it, the two
+        // forms of the row among what it lays out to measure; the frames
+        // after it measure nothing.
+        let changes = |at: &str, work: Work<'_>| {
+            let (rows, measures, drawn) = work();
+            assert!(
+                drawn >= 1 && rows >= drawn + 2 && measures >= 3,
+                "{at}: the region measures again as it is drawn: {rows} rows built and \
+                 {measures} elements measured in {drawn} frames"
+            );
+        };
+        cx.simulate_resize(size(px(1200.), px(973.)));
+        draw(cx);
+        changes("a new width", &mut work);
+        scroll(cx, "1200 × 973 at 13 pt", &mut work);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        draw(cx);
+        changes("a new text size", &mut work);
+        scroll(cx, "1200 × 973 at 18 pt", &mut work);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.simulate_lfs_download(crate::lfs_download::Asker::Compare, window, cx);
+            })
+        });
+        draw(cx);
+        changes("a download that starts", &mut work);
+        scroll(cx, "1200 × 973 at 18 pt, downloading", &mut work);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.simulate_lfs_download_end(None, window, cx)
+            })
+        });
+        let options = crate::text_review::Options {
+            hide_whitespace: true,
+            ..Default::default()
+        };
+        cx.update(|window, cx| app.update(cx, |app, cx| app.set_text_review(options, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.review.options == options
+                && app.lfs_download_offered()),
+            "the review hides whitespace beside the Download row"
+        );
+        changes("new review options", &mut work);
+        scroll(cx, "1200 × 973 at 18 pt, whitespace hidden", &mut work);
+        probe::stop();
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

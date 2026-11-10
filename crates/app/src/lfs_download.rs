@@ -345,6 +345,8 @@ thread_local! {
     /// measurement that disagrees with layout.
     pub(crate) static SENTENCE_FITS: std::cell::Cell<Option<bool>> =
         const { std::cell::Cell::new(None) };
+    /// How many Download rows [`download_row`] has built, for a test.
+    pub(crate) static ROWS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -754,6 +756,27 @@ pub(crate) enum AskedState {
     Failed { side: usize, words: SharedString },
 }
 
+/// What Compare's Download row is built from besides its column and its
+/// form, as [`GitTurtle::render_lfs_download_actions`] passes it to
+/// [`download_row`]; with the font, sizes, scale and column, what the heights
+/// of its forms follow from, which Compare keeps while none of them changes
+/// (`views::DownloadRegion`). Compare passes no [`Asked`], its operation bar
+/// showing a download's progress, Cancel and outcome, so a download running,
+/// cancelling or failing reaches its row only as the window's write, `busy`.
+#[derive(Clone, PartialEq)]
+pub(crate) struct CompareRow {
+    targets: Vec<(usize, LfsDownloadTarget)>,
+    quick_source: bool,
+    /// Whether a failing side's line stands above it.
+    line_above: bool,
+    /// Whether a write refuses its buttons, and whether it looks busy.
+    busy: (bool, bool),
+    /// A test's answer in place of the sentence's measurement
+    /// ([`SENTENCE_FITS`]).
+    #[cfg(test)]
+    fits: Option<bool>,
+}
+
 /// The row offering a download of each side among `targets`, whose object
 /// is missing, where `quick_source` calls the one side Source, beneath a
 /// failing side's line if `line_above`, in a column `column` wide; where
@@ -784,6 +807,8 @@ pub(crate) fn download_row(
     if targets.is_empty() {
         return div().into_any_element();
     }
+    #[cfg(test)]
+    ROWS_BUILT.set(ROWS_BUILT.get() + 1);
     let sides = targets.iter().map(|(side, _)| *side).collect::<Vec<_>>();
     let asks = asked.is_some();
     let fits = sentence_fits_beside(quick_source, &sides, asks, column, window);
@@ -1166,6 +1191,22 @@ impl GitTurtle {
         !self.lfs_download_targets().is_empty()
     }
 
+    /// What Compare's Download row is built from now, besides its column
+    /// and its form ([`CompareRow`]).
+    pub(super) fn lfs_download_row(&self) -> CompareRow {
+        CompareRow {
+            targets: self.lfs_download_targets(),
+            quick_source: self.is_quick_source(),
+            line_above: self.lfs_failure_sentence().is_some(),
+            busy: (
+                self.operation_busy.is_some(),
+                self.operation_shown().is_some(),
+            ),
+            #[cfg(test)]
+            fits: SENTENCE_FITS.get(),
+        }
+    }
+
     /// Compare's Download row, its buttons' word given way where `short`.
     pub(super) fn render_lfs_download_actions(
         &self,
@@ -1174,17 +1215,21 @@ impl GitTurtle {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let CompareRow {
+            targets,
+            quick_source,
+            line_above,
+            busy,
+            ..
+        } = self.lfs_download_row();
         let owner = cx.entity().downgrade();
         download_row(
-            self.lfs_download_targets(),
-            self.is_quick_source(),
-            self.lfs_failure_sentence().is_some(),
+            targets,
+            quick_source,
+            line_above,
             short,
             column,
-            (
-                self.operation_busy.is_some(),
-                self.operation_shown().is_some(),
-            ),
+            busy,
             // Its header shows the download's progress and Cancel.
             None,
             move |_, target, window, cx| {

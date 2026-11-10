@@ -188,6 +188,12 @@ fn on_whole_device_pixels(length: Pixels, scale: f32) -> Pixels {
     px(snapped)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many elements [`measured_height`] has laid out, for a test.
+    pub(crate) static MEASURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The height `element` takes laid out `width` wide, for a choice made while
 /// an [`InFrame`] builds; the element is laid out and dropped, never drawn.
 pub(crate) fn measured_height(
@@ -196,6 +202,8 @@ pub(crate) fn measured_height(
     window: &mut Window,
     cx: &mut App,
 ) -> Pixels {
+    #[cfg(test)]
+    MEASURES.set(MEASURES.get() + 1);
     div()
         .w(width)
         .child(element)
