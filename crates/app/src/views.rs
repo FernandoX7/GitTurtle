@@ -3763,6 +3763,19 @@ impl GitTurtle {
                 empty_state::working_clean_line(self.header_status(), true),
             )
             .pane(cx)
+        } else if file.is_none()
+            && self.mode == WorkspaceMode::Working
+            && self.working_status_unread()
+        {
+            // Beside a list that has no rows until the status is read, the
+            // preview says the read as the list does, where it said "Choose
+            // a file", or the Open's "Reading local history…", inviting a
+            // choice from a list with none.
+            EmptyState::new(
+                "working-preview-reading",
+                crate::workspace::READING_WORKING_TREE,
+            )
+            .pane(cx)
         } else if file.is_none() {
             empty(self.loading.unwrap_or("Choose a file"), CHOOSE_A_FILE)
         } else if let Some(content) = &self.content {

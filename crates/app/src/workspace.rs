@@ -8295,6 +8295,72 @@ mod tests {
         }
     }
 
+    /// Until an Open's status is read, the Changes preview says the read,
+    /// as the list beside it does, rather than "Choose a file" from a list
+    /// that has no rows yet; once read, with nothing chosen, it says
+    /// "Choose a file" again.
+    #[gpui::test]
+    async fn changes_preview_says_the_read_until_an_open_s_status_lands(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::views::tests::{fixture_git, fixture_repository, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let topic = fixture_repository(fixture.path().join("topic"));
+        fixture_git(
+            topic.path(),
+            &["commit", "-q", "--allow-empty", "-m", "Topic"],
+        );
+        std::fs::write(topic.path().join("new.txt"), "new\n").unwrap();
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(topic.path().to_owned(), window, cx)
+            })
+        });
+        for _ in 0..16 {
+            let installed = app.read_with(cx, |app, _| {
+                app.repository.as_ref().map(|repo| repo.git_dir()) == Some(topic.git_dir())
+            });
+            if installed {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            app.read_with(cx, |app, _| app.working_status_unread()),
+            "its status read waits"
+        );
+        assert!(cx.debug_bounds("working-reading").is_some(), "the list");
+        assert!(
+            cx.debug_bounds("working-preview-reading").is_some(),
+            "the preview says the read"
+        );
+        assert!(
+            cx.debug_bounds("empty-state").is_none(),
+            "nothing to choose from"
+        );
+
+        drop(held);
+        settle(&app, cx).await;
+        crate::views::tests::draw(cx);
+        assert!(cx.debug_bounds("working-preview-reading").is_none(), "read");
+        assert!(
+            cx.debug_bounds("empty-state").is_some(),
+            "a file to choose once read"
+        );
+        assert!(
+            crate::native_accessibility::written::get("empty-state:Choose a file").is_some(),
+            "Choose a file"
+        );
+    }
+
     /// The Changes header measures the count it draws: none on a marked
     /// tab, so its Actions keep their label in an inspector narrower, by
     /// the count's chip and its gap, than where the status is counted.
