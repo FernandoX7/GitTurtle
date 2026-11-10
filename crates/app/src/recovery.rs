@@ -938,6 +938,23 @@ impl GitTurtle {
         let repo = self.repository.clone()?;
         let owner = cx.entity().downgrade();
         let browser = cx.new(|cx| StashBrowser::new(owner, repo, window, cx));
+        // Stashes opens on its saved stashes, the first real stop.
+        let list = browser.read(cx).stash_focus.clone();
+        self.show_stashes(browser.clone(), &list, window, cx);
+        Some(browser)
+    }
+
+    /// Opens the Stashes dialog on `browser`, with focus on `focus`, one of
+    /// the browser's controls: its saved stashes as it opens, or, opened
+    /// again as Drop…'s confirmation is cancelled, the control the press
+    /// found focus on ([`Self::reopen_stashes`]).
+    fn show_stashes(
+        &mut self,
+        browser: Entity<StashBrowser>,
+        focus: &FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let opened = browser.clone();
         self.recovery.browser = Some(browser.downgrade());
         // The dialog holds the browser's only handle, so however it closes,
@@ -964,18 +981,46 @@ impl GitTurtle {
                 })
         });
         // The dialog took focus on its own handle as it opened, which draws
-        // nothing: Stashes opens on its saved stashes, the first real stop,
-        // set now so the first frame draws its ring. The dialog keeps the
-        // control focus was on to return to as it closes. Marked, as Settings
-        // marks the control it opens on, so the ring shows even where a
-        // click opened it.
+        // nothing: focus goes to `focus`, set now so the first frame draws
+        // its ring. The dialog keeps the control focus was on to return to
+        // as it closes. Marked, as Settings marks the control it opens on,
+        // so the ring shows even where a click opened it.
         let dialog_focus = window.focused(cx);
-        let list = opened.read(cx).stash_focus.clone();
         opened.update(cx, |browser, _| browser.dialog_focus = dialog_focus);
-        list.focus(window, cx);
+        focus.focus(window, cx);
         self.focus_ring.mark(window);
         window.refresh();
-        Some(opened)
+    }
+
+    /// Drop…'s confirmation cancelled, by Cancel or Escape (an alert never
+    /// closes from a press on its backdrop): Stashes, which closed as the
+    /// confirmation opened, opens again on the browser it had, its
+    /// page, selected stash and inspection as they were, with focus where
+    /// the press found it (`acted`), Drop… itself for a key, else the saved
+    /// stashes, and reads its page again as Refresh does, saying nothing
+    /// unless the stash has gone (`StashBrowser::read_again`). Escape
+    /// landed on History, the stash selection gone (QA-109). Only where
+    /// Stashes could open: the same repository's page, no write running and
+    /// no other dialog open.
+    fn reopen_stashes(
+        &mut self,
+        browser: Entity<StashBrowser>,
+        acted: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let repository = browser.read(cx).repository.path().to_owned();
+        if self.operation_busy.is_some()
+            || self.page != AppPage::Repository
+            || self.path.as_ref() != Some(&repository)
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+        {
+            return;
+        }
+        let focus = acted.unwrap_or_else(|| browser.read(cx).stash_focus.clone());
+        self.show_stashes(browser.clone(), &focus, window, cx);
+        browser.update(cx, |browser, cx| browser.read_again(window, cx));
     }
 
     /// The window's Refresh under a dialog: the open Stashes reads its saved
@@ -1244,6 +1289,11 @@ fn amended_message(original: &str, initial: &CommitDraft, draft: &CommitDraft) -
 enum SpokenRefresh {
     /// What the landed page shows.
     Pending,
+    /// Nothing, unless the inspected stash is no longer listed: the read
+    /// Stashes opened again makes as Drop…'s confirmation is cancelled
+    /// ([`StashBrowser::read_again`]), which no press asked for but which
+    /// can clear the selection the person returned to.
+    Quiet,
     /// The inspected stash is no longer listed.
     Gone,
 }
@@ -1717,6 +1767,12 @@ pub(crate) struct StashBrowser {
     /// ([`Self::refresh_saved_stashes`]), which leaves the browser as it is and
     /// so does not count as reading ([`Self::reading`]).
     list_quiet: bool,
+    /// Whether Stashes, opened again while a read of its list or of the
+    /// selected stash still ran ([`Self::read_again`]), owes the read it
+    /// could not start: made once that read ends, so a change made under
+    /// Drop…'s confirmation shows. The running read began before it, and
+    /// its answer was all Stashes showed.
+    read_owed: bool,
     /// What a press of Refresh waits to say once its read has landed
     /// ([`Self::say_refreshed`]), once per press; any other read of the list
     /// says nothing.
@@ -2103,6 +2159,7 @@ impl StashBrowser {
             list_task: None,
             list_generation: 0,
             list_quiet: false,
+            read_owed: false,
             spoken_refresh: None,
             preview_task: None,
             page: None,
@@ -2258,6 +2315,42 @@ impl StashBrowser {
         self.read_list(self.offset, None, window, cx);
     }
 
+    /// Stashes opened again on this browser as Drop…'s confirmation is
+    /// cancelled ([`GitTurtle::reopen_stashes`]): reads the page shown
+    /// again, as Refresh does, keeping the selected stash, its inspection
+    /// and focus wherever a stash saved or dropped elsewhere meanwhile has
+    /// renumbered it. No press asked for it, so it says nothing, unless the
+    /// stash the person returned to has gone, dropped from a terminal while
+    /// the confirmation was open: that clears the selection, which is said
+    /// once, "Saved stash no longer listed", as Refresh says it. Cleared with
+    /// nothing said, the person heard only the list's focus. A read still
+    /// running is let land first, and this read made after it
+    /// ([`Self::read_owed`]).
+    fn read_again(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.metadata_task.is_some() || self.list_task.is_some() {
+            self.read_owed = true;
+            return;
+        }
+        self.read_owed = false;
+        self.refresh_saved_stashes(window, cx);
+        if self.spoken_refresh.is_some() {
+            self.spoken_refresh = Some(SpokenRefresh::Quiet);
+        }
+    }
+
+    /// A read of the list or of the selected stash has ended: the read
+    /// Stashes owes ([`Self::read_owed`]) is made once no other still runs,
+    /// after the landing has been shown.
+    fn pay_owed_read(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_owed {
+            cx.defer_in(window, |this, window, cx| {
+                if this.read_owed {
+                    this.read_again(window, cx);
+                }
+            });
+        }
+    }
+
     /// Reads the page at `offset` of the saved stashes, replacing any read
     /// of the list still running, and shows it as it lands, keeping
     /// selected the stash chosen meanwhile, else `kept`.
@@ -2296,6 +2389,7 @@ impl StashBrowser {
                     return;
                 }
                 this.list_task = None;
+                this.pay_owed_read(window, cx);
                 let quiet = std::mem::replace(&mut this.list_quiet, false);
                 let opening = std::mem::take(&mut this.opening);
                 this.loading = this.reading();
@@ -2455,7 +2549,11 @@ impl StashBrowser {
     /// the saved stashes and the one selected, or that it is no longer
     /// listed. A read of the list no press asked for says nothing.
     fn say_refreshed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(spoken) = self.spoken_refresh.take() else {
+        let Some(spoken) = self
+            .spoken_refresh
+            .take()
+            .filter(|spoken| *spoken != SpokenRefresh::Quiet)
+        else {
             return;
         };
         let Some(page) = self.page.as_ref() else {
@@ -2624,6 +2722,7 @@ impl StashBrowser {
                     return;
                 }
                 this.metadata_task = None;
+                this.pay_owed_read(window, cx);
                 this.loading = this.reading();
                 if !this.is_current(cx) {
                     this.read_alert = Some(crate::tags::alert_error_line(
@@ -3127,16 +3226,54 @@ impl StashBrowser {
         .into_any_element()
     }
 
+    /// Drop…: Stashes closes as its confirmation opens, so no list
+    /// renumbers behind an alert holding a `stash@{n}` and the window's
+    /// Refresh key finds no Stashes under it
+    /// ([`GitTurtle::refresh_open_stashes`]). The confirmation keeps this
+    /// browser while it is open: cancelled, Stashes opens again on it
+    /// ([`GitTurtle::reopen_stashes`]); confirmed, the write goes as before
+    /// and the browser with the confirmation.
     fn drop_stash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
         let stash = snapshot.stash.clone();
         let repository = self.repository.path().to_owned();
+        let accepted = self.owner.upgrade().is_some_and(|owner| {
+            let owner = owner.read(cx);
+            owner.path.as_ref() == Some(&repository) && owner.operation_busy.is_none()
+        });
+        if !accepted {
+            return;
+        }
+        // Where the press found focus, among the browser's own controls,
+        // which it keeps while its confirmation is open: Drop… for a key, or
+        // the saved files or stashes a pointer's press, which focuses no
+        // Button, left it on. A control of the dialog's own, as its Close,
+        // goes with the dialog: Stashes then opens again on its stashes.
+        let acted = window.focused(cx).filter(|_| {
+            self.inspection_focus.contains_focused(window, cx)
+                || self.stash_focus.is_focused(window)
+                || self.refresh_focus.is_focused(window)
+        });
+        // Nothing it prepares, says or owes outlives the close, as its
+        // release ensured when the dialog held its only handle: a read a
+        // cancel owed ([`Self::read_owed`]) ran under this alert.
+        self.cancel_restore(cx);
+        self.spoken_refresh = None;
+        self.read_owed = false;
+        let browser = cx.entity();
+        let owner = self.owner.clone();
+        let reopen: crate::integration::Cancelled = std::rc::Rc::new(move |window, cx| {
+            let (browser, acted) = (browser.clone(), acted.clone());
+            let _ = owner.update(cx, |this, cx| {
+                this.reopen_stashes(browser, acted, window, cx)
+            });
+        });
         let _ = self.owner.update(cx, |this, cx| {
-            if this.path.as_ref() != Some(&repository) || this.operation_busy.is_some() { return; }
             window.close_dialog(cx);
-            this.confirm_git_write("Drop saved stash".into(), format!("Remove “{}” ({}) from the saved stash list. Its saved changes will no longer be available here. Current index and working files stay as they are.\n\nInspect or restore any work you need before dropping this stash.", stash.name, short_oid(&stash.oid)), "Drop stash", WriteCommand::Recovery(RecoveryCommand::DropStash { stash }.into()), window, cx);
+            this.recovery.browser = None;
+            this.confirm_git_write_or_return("Drop saved stash".into(), format!("Remove “{}” ({}) from the saved stash list. Its saved changes will no longer be available here. Current index and working files stay as they are.\n\nInspect or restore any work you need before dropping this stash.", stash.name, short_oid(&stash.oid)), "Drop stash", WriteCommand::Recovery(RecoveryCommand::DropStash { stash }.into()), Some(reopen), window, cx);
         });
     }
 
@@ -6576,6 +6713,444 @@ mod tests {
         refresh_key_stays_out(&app, &repo, cx);
     }
 
+    /// QA-109: Drop…'s confirmation, which Stashes closes to open, cancelled
+    /// by Escape or by its Cancel, opens Stashes again as it was, the same
+    /// stash selected with its inspection, and focus where the person acted:
+    /// on Drop… pressed from the keyboard, ringed in the first frame, or on
+    /// the saved stashes a click on Drop… left it on. A stash saved
+    /// meanwhile from a terminal is read as Stashes opens again, the stash
+    /// followed where it now stands and nothing said. Confirmed, the stash
+    /// is dropped and Stashes stays closed, as before. Escape landed on
+    /// History, the selection gone.
+    #[gpui::test]
+    async fn cancelling_drop_returns_to_stashes_where_the_person_acted(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first", "second", "third"]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        select_row(&browser, 1, cx);
+        draw(cx);
+        let app = browser
+            .read_with(cx, |this, _| this.owner.upgrade())
+            .expect("the window");
+        let oid = selected_stash(&browser, cx).1.expect("a stash selected");
+        let open = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.recovery.browser.clone())
+                .and_then(|browser| browser.upgrade())
+        };
+        let confirming =
+            |cx: &mut VisualTestContext| cx.debug_bounds("operation-consequences").is_some();
+
+        // From the keyboard: Drop… focused, Enter, then Escape.
+        let drop_focus = cx.update(|_, cx| browser.read(cx).detail.focus("drop-saved-stash", cx));
+        cx.update(|window, cx| window.focus(&drop_focus, cx));
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        assert!(confirming(cx), "Enter on Drop… opens its confirmation");
+        assert!(open(cx).is_none(), "Stashes closed for it");
+        // The Enter comes up, as a press does.
+        cx.simulate_event(gpui_kit::KeyUpEvent {
+            keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+        });
+        save_stash(&repo, "saved meanwhile");
+        cx.simulate_keystrokes("escape");
+        // The frame Escape draws.
+        assert!(!confirming(cx), "Escape closes the confirmation");
+        let again = open(cx).expect("Escape opens Stashes again");
+        assert_eq!(again, browser, "on the browser it had");
+        assert!(
+            cx.update(|window, _| drop_focus.is_focused(window)),
+            "focus is back on Drop…"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.focus_ring.shows(&drop_focus)),
+            "ringed in the first frame"
+        );
+        let button = cx.debug_bounds("drop-saved-stash").expect("Drop… is drawn");
+        let room = cx.update(|window, _| window.viewport_size());
+        assert!(
+            button.left() >= px(0.)
+                && button.top() >= px(0.)
+                && button.right() <= room.width
+                && button.bottom() <= room.height,
+            "whole in the window {room:?}: {button:?}"
+        );
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        assert_eq!(
+            selected_stash(&browser, cx),
+            (Some(2), Some(oid.clone())),
+            "the same stash stays selected where the terminal's save moved it"
+        );
+        assert!(
+            cx.update(|window, _| drop_focus.is_focused(window)),
+            "focus stays on Drop… as the read lands"
+        );
+        assert!(
+            browser.read_with(cx, |this, _| this.snapshot.is_some()),
+            "with its inspection"
+        );
+        assert_eq!(
+            crate::copy_feedback::tests::announced(cx),
+            None,
+            "and nothing is said"
+        );
+
+        // By the pointer: the click leaves focus on the saved stashes, and
+        // the confirmation's Cancel brings it back there.
+        let list = browser.read_with(cx, |this, _| this.stash_focus.clone());
+        cx.update(|window, cx| window.focus(&list, cx));
+        draw(cx);
+        crate::copy_feedback::tests::click(cx, "drop-saved-stash");
+        assert!(confirming(cx), "a click on Drop… opens its confirmation");
+        crate::copy_feedback::tests::click(cx, "dialog-cancel: Cancel");
+        assert!(!confirming(cx), "Cancel closes the confirmation");
+        assert_eq!(open(cx), Some(browser.clone()), "Stashes is open again");
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus is back on the saved stashes"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.focus_ring.shows(&list)),
+            "ringed in the first frame, as Stashes opens"
+        );
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        assert_eq!(selected_stash(&browser, cx), (Some(2), Some(oid.clone())));
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus stays on the saved stashes as the read lands"
+        );
+
+        // Confirmed: the stash is dropped and Stashes stays closed.
+        crate::copy_feedback::tests::click(cx, "drop-saved-stash");
+        assert!(confirming(cx));
+        drop(browser);
+        cx.simulate_keystrokes("enter");
+        recovery_lands(&app, cx);
+        assert!(!confirming(cx), "the confirmation closes");
+        assert!(open(cx).is_none(), "and Stashes stays closed");
+        let listed = repo.stash_list(0, STASH_PAGE_SIZE).expect("the stash list");
+        assert!(
+            !listed.entries.iter().any(|stash| stash.oid == oid),
+            "the stash is dropped"
+        );
+    }
+
+    /// Drop…'s confirmation cancelled the other ways: its Cancel pressed by a
+    /// held Enter after Drop… was pressed from the keyboard, and Escape after
+    /// a click on Drop…. Stashes opens again on the same stash, with focus on
+    /// Drop… for the key and on the saved stashes for the click; the held
+    /// Enter's repeats press nothing Stashes gives focus to, neither Drop…,
+    /// which would ask again, nor Review restore…. A stash dropped from a
+    /// terminal meanwhile is read as Stashes opens again, the selected stash
+    /// followed where it now stands.
+    #[gpui::test]
+    async fn cancelling_drop_by_a_held_enter_or_after_a_click_returns_to_stashes(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        fn key_down(cx: &mut VisualTestContext, is_held: bool) {
+            cx.simulate_event(gpui_kit::KeyDownEvent {
+                keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+                is_held,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first", "second", "third"]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        select_row(&browser, 1, cx);
+        draw(cx);
+        let app = browser
+            .read_with(cx, |this, _| this.owner.upgrade())
+            .expect("the window");
+        let oid = selected_stash(&browser, cx).1.expect("a stash selected");
+        let open = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.recovery.browser.clone())
+                .and_then(|browser| browser.upgrade())
+        };
+        let confirming =
+            |cx: &mut VisualTestContext| cx.debug_bounds("operation-consequences").is_some();
+
+        // From the keyboard: Drop…, then a held Enter on the Cancel.
+        let drop_focus = cx.update(|_, cx| browser.read(cx).detail.focus("drop-saved-stash", cx));
+        cx.update(|window, cx| window.focus(&drop_focus, cx));
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        assert!(confirming(cx), "Enter on Drop… opens its confirmation");
+        // The Enter that opened it comes up, as a press does.
+        cx.simulate_event(gpui_kit::KeyUpEvent {
+            keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+        });
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let cancel = cx.debug_bounds("dialog-cancel: Cancel").expect("Cancel");
+        assert_eq!(
+            focused_footer_button(cx, &["dialog-cancel: Cancel", "dialog-ok: Drop stash"]),
+            Some("dialog-cancel: Cancel"),
+            "Tab reaches Cancel"
+        );
+        // The stash sits first once its newer one is dropped elsewhere.
+        let newest = repo
+            .stash_list(0, STASH_PAGE_SIZE)
+            .expect("the stash list")
+            .entries[0]
+            .selector
+            .clone();
+        crate::tags::tests::git(repo.path(), &["stash", "drop", "--quiet", &newest]);
+        key_down(cx, false);
+        assert!(
+            !confirming(cx),
+            "the held Enter's press cancels: {cancel:?}"
+        );
+        assert_eq!(open(cx), Some(browser.clone()), "Stashes opens again");
+        assert!(
+            cx.update(|window, _| drop_focus.is_focused(window)),
+            "focus is back on Drop…"
+        );
+        key_down(cx, true);
+        key_down(cx, true);
+        cx.simulate_event(gpui_kit::KeyUpEvent {
+            keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+        });
+        draw(cx);
+        assert!(
+            !confirming(cx),
+            "the held Enter's repeats press neither Drop… nor Review restore…"
+        );
+        assert_eq!(open(cx), Some(browser.clone()), "Stashes stays open");
+        assert!(cx.update(|window, _| drop_focus.is_focused(window)));
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        assert_eq!(
+            selected_stash(&browser, cx),
+            (Some(0), Some(oid.clone())),
+            "the same stash stays selected where the terminal's drop moved it"
+        );
+
+        // By the pointer: a click on Drop…, then Escape.
+        let list = browser.read_with(cx, |this, _| this.stash_focus.clone());
+        cx.update(|window, cx| window.focus(&list, cx));
+        draw(cx);
+        crate::copy_feedback::tests::click(cx, "drop-saved-stash");
+        assert!(confirming(cx), "a click on Drop… opens its confirmation");
+        cx.simulate_keystrokes("escape");
+        assert!(!confirming(cx), "Escape closes the confirmation");
+        assert_eq!(open(cx), Some(browser.clone()), "Stashes is open again");
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus is back on the saved stashes"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.focus_ring.shows(&list)),
+            "ringed in the first frame"
+        );
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        assert_eq!(selected_stash(&browser, cx), (Some(0), Some(oid)));
+    }
+
+    /// Drop…'s confirmation cancelled after a terminal dropped that very
+    /// stash: Stashes opens again on its list as now read, nothing selected
+    /// and focus on the saved stashes, and says once "Saved stash no longer
+    /// listed", as Refresh says it. The selection was cleared with nothing
+    /// said. A press on the alert's backdrop cancels nothing: the kit's
+    /// alerts close only by a choice, Escape among them.
+    #[gpui::test]
+    async fn cancelling_drop_of_a_stash_gone_meanwhile_says_so_once(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cancel_drop_of_a_stash_gone_meanwhile(cx, "click").await;
+    }
+
+    /// As [`cancelling_drop_of_a_stash_gone_meanwhile_says_so_once`], with
+    /// Drop… pressed from the keyboard: focus starts on Drop…, which the
+    /// read that finds the stash gone no longer draws, and ends on the
+    /// saved stashes, the sentence said once.
+    #[gpui::test]
+    async fn cancelling_drop_of_a_stash_gone_meanwhile_by_key_says_so_once(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cancel_drop_of_a_stash_gone_meanwhile(cx, "key").await;
+    }
+
+    async fn cancel_drop_of_a_stash_gone_meanwhile(cx: &mut gpui_kit::TestAppContext, press: &str) {
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first", "second", "third"]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        select_row(&browser, 1, cx);
+        draw(cx);
+        let selector = browser.read_with(cx, |this, _| {
+            this.page.as_ref().expect("the list").entries[1]
+                .selector
+                .clone()
+        });
+        let confirming =
+            |cx: &mut VisualTestContext| cx.debug_bounds("operation-consequences").is_some();
+        if press == "key" {
+            let drop_focus =
+                cx.update(|_, cx| browser.read(cx).detail.focus("drop-saved-stash", cx));
+            cx.update(|window, cx| window.focus(&drop_focus, cx));
+            draw(cx);
+            assert!(
+                cx.update(|window, _| drop_focus.is_focused(window)),
+                "focus starts on Drop…"
+            );
+            cx.simulate_keystrokes("enter");
+            assert!(confirming(cx), "Enter on Drop… opens its confirmation");
+            // The Enter comes up, as a press does.
+            cx.simulate_event(gpui_kit::KeyUpEvent {
+                keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+            });
+        } else {
+            crate::copy_feedback::tests::click(cx, "drop-saved-stash");
+            assert!(confirming(cx), "a click on Drop… opens its confirmation");
+        }
+        cx.simulate_click(
+            gpui_kit::point(px(4.), px(600.)),
+            gpui_kit::Modifiers::default(),
+        );
+        draw(cx);
+        assert!(
+            confirming(cx),
+            "{press}: a press on the backdrop cancels nothing"
+        );
+        crate::tags::tests::git(repo.path(), &["stash", "drop", "--quiet", &selector]);
+        let mut heard = Heard::start(cx);
+        cx.simulate_keystrokes("escape");
+        assert!(!confirming(cx), "{press}: Escape closes the confirmation");
+        StashBrowser::lands(&browser, cx);
+        let mut said = Vec::new();
+        for _ in 0..3 {
+            said.extend(heard.next(cx).unwrap_or_default());
+        }
+        assert_eq!(
+            selected_stash(&browser, cx),
+            (None, None),
+            "{press}: the stash gone, nothing is selected"
+        );
+        let list = browser.read_with(cx, |this, _| this.stash_focus.clone());
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "{press}: focus ends on the saved stashes"
+        );
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                said.iter()
+                    .filter(|line| line.contains("Saved stash no longer listed"))
+                    .count(),
+                1,
+                "{press}: said once: {said:?}"
+            );
+        } else {
+            StashBrowser::lands(&browser, cx);
+            draw(cx);
+            assert_eq!(
+                crate::copy_feedback::tests::announced(cx).map(|(_, said)| said),
+                Some("Saved stash no longer listed".to_owned()),
+                "{press}"
+            );
+        }
+    }
+
+    /// Drop… pressed again before the read a cancelled Drop… owes has been
+    /// made: the owed read goes with the close, as what it would say does,
+    /// so nothing reads the list under the second confirmation. It
+    /// outlived the second Drop… and ran under its alert as the read before
+    /// it landed.
+    #[gpui::test]
+    async fn a_second_drop_forgets_the_read_the_first_cancel_owed(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let (_repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first", "second"]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        select_row(&browser, 1, cx);
+        draw(cx);
+        let confirming =
+            |cx: &mut VisualTestContext| cx.debug_bounds("operation-consequences").is_some();
+        crate::copy_feedback::tests::click(cx, "drop-saved-stash");
+        assert!(confirming(cx), "Drop… opens its confirmation");
+        // A read of the list that has not answered as Escape is pressed.
+        let held = browser.read_with(cx, |this, _| this.metadata.hold());
+        cx.update(|window, cx| {
+            browser.update(cx, |this, cx| this.refresh_saved_stashes(window, cx))
+        });
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!confirming(cx), "Escape closes the confirmation");
+        assert!(
+            browser.read_with(cx, |this, _| this.read_owed),
+            "the reopened Stashes owes a read after the one still running"
+        );
+        crate::copy_feedback::tests::click(cx, "drop-saved-stash");
+        assert!(confirming(cx), "Drop… opens its confirmation again");
+        let reads = browser.read_with(cx, |this, _| this.list_generation);
+
+        drop(held);
+        for _ in 0..2 {
+            browser.read_with(cx, |this, _| this.metadata.drain());
+            draw(cx);
+        }
+        browser.read_with(cx, |this, _| {
+            assert!(this.list_task.is_none(), "the running read has landed");
+            assert_eq!(
+                this.list_generation, reads,
+                "and no read of the list starts under the confirmation"
+            );
+            assert!(!this.read_owed, "nothing is owed");
+        });
+        assert!(confirming(cx), "the confirmation stays");
+    }
+
+    /// Drop…'s confirmation cancelled while the list's read still runs, as
+    /// a Refresh pressed just before Drop… leaves it: Stashes lets that read
+    /// land, then reads again, so a stash saved from a terminal under the
+    /// confirmation is listed and the selected stash followed to where it
+    /// now stands. The reopen's read was skipped while another ran, and the
+    /// list showed the earlier read's answer.
+    #[gpui::test]
+    async fn cancelling_drop_during_a_read_reads_again_after_it(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first", "second"]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        select_row(&browser, 1, cx);
+        draw(cx);
+        let oid = selected_stash(&browser, cx).1.expect("a stash selected");
+        crate::copy_feedback::tests::click(cx, "drop-saved-stash");
+        assert!(
+            cx.debug_bounds("operation-consequences").is_some(),
+            "Drop… opens its confirmation"
+        );
+        // A read of the list answered on the browser's thread before the
+        // terminal's save, its reply not yet handled as Escape is pressed.
+        cx.update(|window, cx| {
+            browser.update(cx, |this, cx| this.refresh_saved_stashes(window, cx))
+        });
+        browser.read_with(cx, |this, _| this.metadata.drain());
+        save_stash(&repo, "third");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        StashBrowser::lands(&browser, cx);
+        StashBrowser::lands(&browser, cx);
+        let listed = browser.read_with(cx, |this, _| {
+            this.page.as_ref().expect("the list").entries.len()
+        });
+        assert_eq!(listed, 3, "the stash saved meanwhile is listed");
+        assert_eq!(
+            selected_stash(&browser, cx),
+            (Some(2), Some(oid)),
+            "the same stash stays selected where the save moved it"
+        );
+    }
+
     /// Ctrl+R does nothing under Review restore…'s confirmation, which opens
     /// in place of Stashes once the core has prepared it.
     #[gpui::test]
@@ -8756,6 +9331,33 @@ mod tests {
             crate::views::tests::draw(cx);
         }
         drop(fixture);
+    }
+
+    /// Which of a dialog's footer Buttons, by their selectors, holds focus in
+    /// the last frame drawn: the one the ring painted tight around, the kit
+    /// Button's ring drawn only on a focused Button, within the ring's room.
+    fn focused_footer_button(
+        cx: &mut gpui::VisualTestContext,
+        buttons: &[&'static str],
+    ) -> Option<&'static str> {
+        let room = px(6.);
+        let ringed: Vec<_> = buttons
+            .iter()
+            .copied()
+            .filter(|selector| {
+                let button = cx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector} is drawn"));
+                ring_around(cx, button).is_some_and(|ring| {
+                    button.left() - ring.bounds.left() <= room
+                        && ring.bounds.right() - button.right() <= room
+                        && button.top() - ring.bounds.top() <= room
+                        && ring.bounds.bottom() - button.bottom() <= room
+                })
+            })
+            .collect();
+        assert!(ringed.len() <= 1, "one focused Button: {ringed:?}");
+        ringed.first().copied()
     }
 
     /// The keyboard ring the last frame painted around `control`: the

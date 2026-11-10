@@ -4,6 +4,11 @@ use gitturtle_core::{IntegrationCommand, OperationKind, OperationState, WriteCom
 use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::FluentBuilder as _;
 
+/// Where a confirmation's Cancel or Escape returns once it has closed
+/// ([`GitTurtle::confirm_git_write_or_return`]); an alert never closes from
+/// a press on its backdrop.
+pub(crate) type Cancelled = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
+
 /// The busy state of the comparison Merge… and Rebase… ask for.
 pub(crate) const COMPARING: &str = "Comparing branch tips…";
 
@@ -26,6 +31,27 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.confirm_git_write_or_return(title, explanation, action, command, None, window, cx);
+    }
+
+    /// As [`Self::confirm_git_write`], with `cancelled`, where the person goes
+    /// back to once Cancel or Escape has closed the confirmation (a press on
+    /// its backdrop cancels nothing, as the kit's alerts never close from
+    /// one): the dialog it was asked from, which closed as it opened,
+    /// opened again, as Stashes is for Drop… (`StashBrowser::drop_stash`).
+    /// It runs after the close, which gives focus back first; a confirmed
+    /// write keeps its own route.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn confirm_git_write_or_return(
+        &mut self,
+        title: String,
+        explanation: String,
+        action: &'static str,
+        command: WriteCommand,
+        cancelled: Option<Cancelled>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let path = self.path.clone();
         let view = cx.entity().downgrade();
         let command = Arc::new(command);
@@ -33,6 +59,7 @@ impl GitTurtle {
             let path = path.clone();
             let view = view.clone();
             let command = Arc::clone(&command);
+            let cancelled = cancelled.clone();
             // Every reviewed write's last step interrupts with its
             // consequences before it runs: an alert.
             dialog
@@ -53,6 +80,14 @@ impl GitTurtle {
                     .child(explanation.clone()),
                 )
                 .footer(crate::tags::dialog_footer(action, Some("Cancel")))
+                // The alert's own button callbacks, which Enter and Escape
+                // take too: it drops an `on_close` as it builds its surface.
+                .on_cancel(move |_, window, cx| {
+                    if let Some(cancelled) = cancelled.clone() {
+                        window.defer(cx, move |window, cx| cancelled(window, cx));
+                    }
+                    true
+                })
                 .on_ok(move |_, window, cx| {
                     let _ = view.update(cx, |this, cx| {
                         if this.path == path {

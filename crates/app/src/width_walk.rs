@@ -2406,7 +2406,11 @@ const DIALOG_SITES: &[(&str, &str, Walked)] = {
             "show_ignore_form",
             Left("needs an untracked file; the fixture has none"),
         ),
-        ("integration.rs", "confirm_git_write", As(Dialog::GitWrite)),
+        (
+            "integration.rs",
+            "confirm_git_write_or_return",
+            As(Dialog::GitWrite),
+        ),
         (
             "integration.rs",
             "show_error_details",
@@ -2463,7 +2467,7 @@ const DIALOG_SITES: &[(&str, &str, Walked)] = {
             "choose_commit_recovery",
             Left("needs a merge commit; the fixture's history is linear"),
         ),
-        ("recovery.rs", "open_stash_browser", As(Dialog::Stashes)),
+        ("recovery.rs", "show_stashes", As(Dialog::Stashes)),
         (
             "recovery.rs",
             "show_amend",
