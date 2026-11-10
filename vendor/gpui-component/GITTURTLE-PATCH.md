@@ -2655,8 +2655,8 @@ gitturtle theme_editor::` drives the theme editor's real picker
 palette roving focus, names its swatches and lets Enter and Space choose one.
 
 The colour-picker close patch also modifies `src/color_picker.rs`
-(`ClosingWatch`). A choice, a swatch's click or keyboard click or Enter in the
-hex field, closes the picker through `ColorPickerState`, and gpui-base's
+(`ClosingWatch`). A swatch's choice, by its click or keyboard click, closes
+the picker through `ColorPickerState`, and gpui-base's
 `PopoverState` gave focus back to the trigger only as the next frame built
 the popover (`sync_open` in `Popover::render`), where GPUI's `Window::refresh`
 does nothing: that frame drew the trigger unfocused, no frame followed, and a
@@ -2666,10 +2666,17 @@ the popover's own Cancel outside a draw, drew it at once). Patched, the
 watch's observer, which runs as the close's notification is flushed and
 before that frame, moves focus still inside the closing popover to the
 trigger, so the focus change asks for the frame and that frame draws focus on
-the trigger. `cargo test --locked -p gitturtle
+the trigger. Enter in the hex field is no route through the watch: the
+single-line Input passes its Enter on, so the popover's own Enter binding
+dispatches `Confirm`, which closes it through `PopoverState::toggle_open`
+outside a draw, as Escape's Cancel does, and gives focus back there; the
+commit the Input's `PressEnter` then makes finds the picker closed and
+focus on the trigger, and the watch only clears the preview. `cargo test
+--locked -p gitturtle
 theme_editor::tests::choosing_a_swatch_by_key_rings_the_trigger_in_the_next_frame`
-checks the theme editor's trigger ring in the one frame the key-up draws.
-Remove it when upstream's popover gives focus back outside the draw.
+checks the theme editor's trigger ring in the one frame the key-up draws,
+after Enter, Space and Enter in the hex field. Remove it when upstream's
+popover gives focus back outside the draw.
 
 The colour-picker press patch also modifies `src/color_picker.rs`
 (`ColorPicker::render`). The popover's press listener on its trigger stops

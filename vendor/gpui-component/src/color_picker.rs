@@ -196,13 +196,17 @@ fn swatch_id(row: usize, ix: usize) -> ElementId {
 /// has the window draw before its next input
 /// ([`crate::root::draw_after_popup_close`]).
 ///
-/// A choice (a swatch's click or keyboard click, Enter in the hex field)
-/// closes the picker through its state, and the popover gave focus back to
-/// the trigger only as the next frame built it, where GPUI asks for no frame
-/// after the one being drawn: that frame drew the trigger as unfocused and
-/// none followed, so its ring waited for an unrelated redraw. Focus inside
-/// the closing popover goes back to the trigger here, before that frame, as
-/// Escape's close gives it back, and the focus change asks for the frame.
+/// A swatch's choice (its click or keyboard click) closes the picker through
+/// its state, and the popover gave focus back to the trigger only as the
+/// next frame built it, where GPUI asks for no frame after the one being
+/// drawn: that frame drew the trigger as unfocused and none followed, so its
+/// ring waited for an unrelated redraw. Focus inside the closing popover
+/// goes back to the trigger here, before that frame, as Escape's close gives
+/// it back, and the focus change asks for the frame. Enter in the hex field
+/// closes it otherwise: the single-line Input passes the key on to the
+/// popover's own Enter binding, whose `Confirm` closes it through
+/// `PopoverState::toggle_open`, giving focus back as Escape does, so the
+/// commit that follows finds focus on the trigger already.
 struct ClosingWatch {
     _closing: Subscription,
 }
