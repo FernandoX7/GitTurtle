@@ -1623,6 +1623,7 @@ impl SeriesBrowser {
                 targets,
                 false,
                 failure.is_some(),
+                false,
                 width,
                 busy,
                 Some(asked),

@@ -306,6 +306,13 @@ const DOWNLOAD_BEFORE: &str = "Download Before…";
 const DOWNLOAD_AFTER: &str = "Download After…";
 const DOWNLOAD_SOURCE: &str = "Download Source…";
 
+/// What a Download button reads once its word "Download" has given way to
+/// the comparison's row ([`download_row`]'s `short`), its pull icon and its
+/// accessible name and tooltip still saying the whole.
+fn short_label(full: &'static str) -> &'static str {
+    full.strip_prefix("Download ").unwrap_or(full)
+}
+
 #[cfg(test)]
 thread_local! {
     /// Whether a Download row's sentence fits beside its buttons, in place
@@ -374,6 +381,20 @@ fn sentence_fits_beside(
         })
         .sum::<Pixels>();
     crate::views::laid_out_text_width(sentence, window) + buttons <= room
+}
+
+/// `row`, which notes, where it is drawn with its buttons' word given way,
+/// that it is, for a test: a row measured and not drawn notes nothing.
+fn noted_short(row: Div, short: bool) -> Div {
+    #[cfg(test)]
+    if short {
+        use gpui_kit::base::ElementExt as _;
+        return row.on_prepaint(|_, _, _| {
+            crate::views::note_compact_label("download-lfs-row", &DOWNLOAD_BEFORE.into())
+        });
+    }
+    let _ = short;
+    row
 }
 
 /// Who asked for an LFS download: Compare, whose header shows the write's
@@ -456,7 +477,9 @@ pub(crate) enum AskedState {
 
 /// The row offering a download of each side among `targets`, whose object
 /// is missing, where `quick_source` calls the one side Source, beneath a
-/// failing side's line if `line_above`, in a column `column` wide. It looks
+/// failing side's line if `line_above`, in a column `column` wide; where
+/// `short`, its buttons' word "Download" has given way, so two that stack
+/// with it share a line without it (DESIGN.md, "One responsive order"). It looks
 /// refused while a write runs (`refused`, and `dimmed` once the write looks
 /// busy, `workspace::BusyLook`), and a press asks `download` for the side's
 /// target. Its frames stand on the pane's text edge, the line's above it: a
@@ -471,6 +494,7 @@ pub(crate) fn download_row(
     targets: Vec<(usize, LfsDownloadTarget)>,
     quick_source: bool,
     line_above: bool,
+    short: bool,
     column: Pixels,
     (refused, dimmed): (bool, bool),
     asked: Option<Asked>,
@@ -497,14 +521,15 @@ pub(crate) fn download_row(
         }) => (None, Some((*side, progress.clone()))),
         _ => (None, None),
     };
-    // The line the sentence is drawn on, where it is, or its failure's.
-    let one_line = !line_above && fits;
+    // The line the sentence is drawn on, where it is, or its failure's:
+    // it gives way before the buttons' word does.
+    let one_line = !line_above && fits && !short;
     let sentence_moves = !one_line || failure.is_some();
     let warning = appearance::labels(cx).warning;
     let accent = palette(cx).accent;
     let download = std::rc::Rc::new(download);
     let asked = asked.map(std::rc::Rc::new);
-    div()
+    noted_short(div(), short)
         .flex_none()
         .px_3()
         // The line above already keeps this row's distance.
@@ -601,13 +626,14 @@ pub(crate) fn download_row(
             }
             let download = download.clone();
             let focus = asked.as_ref().map(|asked| asked.focus[side].clone());
+            let full = download_label(quick_source, side).0;
             div()
                 .debug_selector(move || format!("download-lfs-side-{side}"))
                 .when(one_line, |button| button.flex_none())
                 .child(
                     button(
                         ("download-lfs-side", side),
-                        download_label(quick_source, side).0,
+                        if short { short_label(full) } else { full },
                         "pull",
                         false,
                     )
@@ -616,7 +642,15 @@ pub(crate) fn download_row(
                         crate::branch_actions::Described(button)
                             .aria_description(DOWNLOAD_EXPLANATION)
                             .0
-                            .tooltip(DOWNLOAD_EXPLANATION)
+                    })
+                    // Its whole name stays in its accessible name and
+                    // tooltip, beside the sentence where that moved here.
+                    .when(short, |button| button.accessibility_label(full))
+                    .map(|button| match (short, sentence_moves) {
+                        (true, true) => button.tooltip(format!("{full} · {DOWNLOAD_EXPLANATION}")),
+                        (true, false) => button.tooltip(full),
+                        (false, true) => button.tooltip(DOWNLOAD_EXPLANATION),
+                        (false, false) => button,
                     })
                     // `open_lfs_download` refuses while a write runs.
                     .map(|button| {
@@ -695,9 +729,11 @@ impl GitTurtle {
         !self.lfs_download_targets().is_empty()
     }
 
+    /// Compare's Download row, its buttons' word given way where `short`.
     pub(super) fn render_lfs_download_actions(
         &self,
         column: Pixels,
+        short: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -706,6 +742,7 @@ impl GitTurtle {
             self.lfs_download_targets(),
             self.is_quick_source(),
             self.lfs_failure_sentence().is_some(),
+            short,
             column,
             (
                 self.operation_busy.is_some(),
