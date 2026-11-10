@@ -4818,6 +4818,72 @@ pub(crate) mod tests {
         }
     }
 
+    /// Enter held on a row's picker trigger opens the picker as it goes down
+    /// and does nothing more until its key-up: GPUI's held repeats, X11's
+    /// fresh presses and a release with its press together leave it open
+    /// with focus inside it, and nothing is chosen. After the key-up a new
+    /// press inside the popover closes it onto its trigger. The popover's
+    /// own Enter binding took every key-down inside it, so the first held
+    /// repeat closed the picker the press had opened, and under X11 each
+    /// repeat toggled it (the FU41-B2 security re-check).
+    #[gpui::test]
+    fn a_held_enter_that_opened_the_picker_does_nothing_more(cx: &mut TestAppContext) {
+        fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+            let keystroke = Keystroke::parse("enter").expect("a keystroke");
+            let input = match down {
+                Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke,
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
+            };
+            cx.update(|window, cx| window.dispatch_event(input, cx));
+        }
+        let (app, cx) = open_at_rest(cx);
+        let (form, picker, trigger, _) = first_picker(cx, &app);
+        let draft = cx.read(|cx| form.read(cx).draft);
+        let open_inside = |cx: &mut VisualTestContext, step: &str| {
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{step}: the picker stays open"
+            );
+            assert!(in_popover(cx, &trigger), "{step}: focus stays inside it");
+            assert_eq!(
+                cx.read(|cx| form.read(cx).draft),
+                draft,
+                "{step}: nothing is chosen"
+            );
+        };
+        enter(cx, Some(false));
+        settle(cx);
+        open_inside(cx, "the press");
+        for (repeat, is_held) in [true, true, false, false, false].into_iter().enumerate() {
+            enter(cx, Some(is_held));
+            settle(cx);
+            open_inside(cx, &format!("repeat {repeat}, held {is_held}"));
+        }
+        // A release and its press together, with no idle pass between.
+        enter(cx, None);
+        enter(cx, Some(false));
+        settle(cx);
+        open_inside(cx, "a release and its press");
+        enter(cx, None);
+        settle(cx);
+        open_inside(cx, "the release");
+        press(cx, "enter");
+        assert!(
+            !cx.read(|cx| picker.read(cx).is_open()),
+            "a new press inside the popover closes it"
+        );
+        assert_eq!(
+            focused_stop(cx),
+            trigger,
+            "the close gives focus to the trigger"
+        );
+        assert_eq!(cx.read(|cx| form.read(cx).draft), draft, "nothing chosen");
+    }
+
     /// The picker's field shows the digits choosing a colour saves, and Enter
     /// in the field with no edit saves that same value. The field truncated
     /// each channel where the saved token rounds it, so Enter there saved a

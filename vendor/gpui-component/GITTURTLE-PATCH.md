@@ -2708,5 +2708,19 @@ trigger (gpui-base's `enter_press_began_on`). Focus inside the popover is
 unchanged, since the popover's own contexts bind the key there. `cargo test
 --locked -p gitturtle
 theme_editor::tests::a_held_enter_never_reopens_the_picker_it_closed` holds
-Enter after the hex field's commit and after a swatch's choice. Remove it when
-upstream's picker opens only on a fresh press.
+Enter after the hex field's commit and after a swatch's choice. The same
+patch filters the popover's own Enter (`fresh_popover_confirm`, decided by
+the coordinator, owner-delegated, 2026-11-10, after FU41-B2's security
+re-check): an Enter held on the trigger opened the picker as it went down,
+and the popover's binding, which dispatches `Confirm` to close it, took the
+first held repeat and closed it again; under X11 each repeat toggled it, the
+trigger taking the next. The trigger's capture-phase `Confirm` listener now
+stops one dispatched with focus inside the popover for a key-down that
+repeats the recorded press (gpui-base's `enter_press_is_repeat`), so a held
+Enter that opened the picker does nothing more until its key-up, and a fresh
+press inside it closes it as before. Space, which records no Enter press,
+is unchanged. `cargo test --locked -p gitturtle
+theme_editor::tests::a_held_enter_that_opened_the_picker_does_nothing_more`
+holds Enter on the trigger through GPUI's held repeats, X11's fresh presses
+and a release with its press. Remove it when upstream's picker opens only on
+a fresh press and its popover acts only on one.

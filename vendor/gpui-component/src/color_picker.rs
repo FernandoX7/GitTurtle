@@ -85,6 +85,22 @@ fn fresh_enter(
     cx.stop_propagation();
 }
 
+/// GitTurtle patch: Enter inside the open popover, whose own binding
+/// dispatches [`Confirm`] to close it, acts only on a fresh press, one that
+/// began inside it, so a held Enter that opened the picker from its trigger
+/// does nothing more until its key-up. That binding took every key-down, so
+/// the first held repeat closed the picker its press had opened, and under
+/// X11, whose repeats arrive as fresh presses the trigger takes again, each
+/// repeat toggled it. A repeat is one by the kit's Enter tracker, marked
+/// held or not ([`gpui_base::enter_press_is_repeat`]). The trigger's own
+/// `Confirm` ([`fresh_enter`]) passes, and so does Space, which the popover
+/// binds alike and which records no Enter press.
+fn fresh_popover_confirm(trigger: &FocusHandle, window: &mut Window, cx: &mut App) {
+    if !trigger.is_focused(window) && gpui_base::enter_press_is_repeat(window, cx) {
+        cx.stop_propagation();
+    }
+}
+
 /// GitTurtle patch: the gap between swatches, the kit's quarter rem, never
 /// narrower than the focus ring and a pixel of surface beyond it, so a
 /// focused swatch's ring lies whole in the gaps around it at every text
@@ -854,6 +870,10 @@ impl RenderOnce for ColorPicker {
             .capture_key_down({
                 let focus_handle = focus_handle.clone();
                 move |event, window, cx| fresh_enter(&focus_handle, event, window, cx)
+            })
+            .capture_action({
+                let focus_handle = focus_handle.clone();
+                move |_: &Confirm, window, cx| fresh_popover_confirm(&focus_handle, window, cx)
             })
             // GitTurtle patch: a press on the trigger focuses it before the
             // popover opens and records the focus it gives back as it
