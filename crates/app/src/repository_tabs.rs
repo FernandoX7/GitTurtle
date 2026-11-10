@@ -1656,6 +1656,17 @@ impl GitTurtle {
     ) {
         if let Some(index) = self.repository_tabs.find(&path) {
             if self.repository_tabs.tabs[index].error.is_some() {
+                // A fresh capture forgets what the window read, so it waits
+                // for a running write in the words the Projects page and the
+                // palette give it, as the Projects and pane rows refuse it
+                // (`project_event`, `open_project_from_pane`). Open…, whose
+                // folder is chosen after the write may have started, once
+                // captured the tab, and the write, failing safe, named the
+                // replaced repository on the fresh tab.
+                if self.operation_busy.is_some() {
+                    self.refuse_where_asked(self.busy_reason(), cx);
+                    return;
+                }
                 self.recapture_marked_tab(index, path, window, cx);
             } else {
                 self.switch_repository_tab(index, window, cx);
@@ -7690,6 +7701,69 @@ pub(crate) mod tests {
         });
         // Asked again, with the allowance back, it reads.
         press_projects_row(&app, cx, &root);
+        settle_tab_test(&app, cx).await;
+        assert_recaptured(&app, cx, 0, &root, &third_git);
+    }
+
+    /// Open… of a marked tab's folder chosen while a write runs, which may
+    /// start after the picker opened, captures nothing: it says in the tab
+    /// strip that it waits for the write, in the words the palette and the
+    /// Projects page give it, and the tab keeps its mark, root and Git
+    /// directory, as the Projects and pane rows refuse it. It once captured
+    /// the tab afresh, and the write, failing safe, then named the replaced
+    /// repository on the fresh tab (FU39-A security review). Asked again
+    /// once the write ends, it captures the tab.
+    #[gpui::test]
+    async fn open_refuses_to_capture_a_marked_tab_while_a_write_runs(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+        let open = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.dispatch_action(Box::new(crate::OpenRepository), cx));
+            assert!(cx.did_prompt_for_paths(), "Open… asks for a folder");
+        };
+        let captured = app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            (
+                tab.path.clone(),
+                tab.git_dir.as_ref().map(|d| d.git_dir.clone()),
+            )
+        });
+        open(cx);
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Pushing branch…");
+            cx.notify();
+        });
+        cx.simulate_path_prompt_response(|_| Some(vec![root.clone()]));
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.repository_tabs.refusal.as_deref(),
+                Some(crate::workspace::BUSY_REASON),
+                "the tab strip says it waits for the write"
+            );
+            let tab = &app.repository_tabs.tabs[0];
+            assert!(tab.error.is_some(), "its mark as it was");
+            assert_eq!(
+                (
+                    tab.path.clone(),
+                    tab.git_dir.as_ref().map(|d| d.git_dir.clone())
+                ),
+                captured,
+                "its root and Git directory as they were"
+            );
+            assert!(app.repository_tabs.recapture.is_none(), "nothing read");
+            assert_eq!(app.loading, None, "nothing read");
+        });
+        assert!(
+            cx.debug_bounds("repository-tab-refusal").is_some(),
+            "said beneath the strip"
+        );
+
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        open(cx);
+        cx.simulate_path_prompt_response(|_| Some(vec![root.clone()]));
         settle_tab_test(&app, cx).await;
         assert_recaptured(&app, cx, 0, &root, &third_git);
     }
