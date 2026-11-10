@@ -37,6 +37,26 @@ thread_local! {
     static FROM_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times File History's panel decided its toolbar and
+    /// `Regions` from its rows rather than taking its last decision
+    /// (`RegionsInputs`).
+    static REGIONS_DECIDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Empties the panel's kept widths, for a test that counts what the panel
+/// lays out: a GPUI test's seeds share the thread and its caches, so from
+/// the second seed on every width the first measured is kept
+/// (`views::forget_chrome_text`).
+#[cfg(test)]
+fn forget_text() {
+    for cache in [&TITLE_WIDTH, &CLOSE_LABEL_WIDTH, &PAGE_LABEL_WIDTH] {
+        cache.with_borrow_mut(|width| *width = None);
+    }
+    FROM_WIDTH.with_borrow_mut(|width| *width = None);
+}
+
 /// The least heights of File History's parts, so the content stays whole
 /// first (DESIGN.md's responsive order): the header and the footer, which
 /// scroll their own rows, give way down to their first row, and the body
@@ -1052,6 +1072,8 @@ impl GitTurtle {
             self.file_history.regions.set(Some(decided.regions));
             return decided.toolbar;
         }
+        #[cfg(test)]
+        REGIONS_DECIDED.with(|decided| decided.set(decided.get() + 1));
         // The panel takes the inspector's whole height, which the window
         // lays out in this frame: read from the panel's last frame, a
         // one-step resize from 511 × 490 to 511 × 520 at 18 pt kept the
@@ -4919,6 +4941,102 @@ pub(crate) mod tests {
                 seen[1].1, decided,
                 "{at}: the message scrolls exactly where decided, {:?}",
                 seen[1].0
+            );
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// A wheel step over File History's revisions lays out no line and
+    /// decides the panel's toolbar and regions at most once, and a window a
+    /// pixel taller decides them once: the wheel leaves every input the
+    /// decision was made from as it was (`RegionsInputs`). Measured again in
+    /// every frame, the header's and the footer's rows laid out six lines in
+    /// each wheel step at 13 pt in a 1,480 × 980 window and at 18 pt in
+    /// 461 × 490, where History's did none.
+    #[gpui::test]
+    async fn a_wheel_step_over_the_revisions_lays_out_no_line(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test,
+        };
+        use gpui_kit::{
+            Modifiers, PlatformInput, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px, size,
+        };
+        // Each seed starts from empty caches, so what it counts is its own.
+        forget_text();
+        crate::views::forget_chrome_text();
+        crate::views::forget_status_text();
+        let (_fixture, app, cx) = history_window_from(cx, history_script(40, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        open_landed(&app, cx).await;
+        let scroll = app.read_with(cx, |app, _| {
+            app.file_history.scroll.0.borrow().base_handle.clone()
+        });
+        let counts = || {
+            (
+                crate::views::LINE_LAYOUTS.with(std::cell::Cell::get),
+                crate::image_compare::note_tests::WRAPPED.with(std::cell::Cell::get),
+                REGIONS_DECIDED.with(std::cell::Cell::get),
+            )
+        };
+        for (text, width, height) in [(13, 1480., 980.), (18, 461., 490.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            scroll.set_offset(point(px(0.), px(0.)));
+            cx.update(|_, cx| app.update(cx, |_, cx| cx.notify()));
+            draw(cx);
+            let list = cx
+                .debug_bounds("file-revision-list")
+                .expect("the revisions' list");
+            let panel = cx.debug_bounds("file-history-panel").expect("the panel");
+            let viewport = cx.update(|window, _| window.viewport_size());
+            let shown = list
+                .intersect(&panel)
+                .intersect(&gpui_kit::Bounds::new(point(px(0.), px(0.)), viewport));
+            assert!(
+                shown.size.height > px(4.),
+                "{at}: the list {list:?} lies in view in the panel {panel:?}"
+            );
+            for step in 0..3 {
+                cx.update(|window, cx| window.simulate_next_frame(cx));
+                cx.run_until_parked();
+                let before = (scroll.offset().y, counts());
+                cx.update(|window, cx| {
+                    window.dispatch_event(
+                        PlatformInput::ScrollWheel(ScrollWheelEvent {
+                            position: shown.center(),
+                            delta: ScrollDelta::Lines(point(0., -3.)),
+                            modifiers: Modifiers::default(),
+                            touch_phase: TouchPhase::Moved,
+                        }),
+                        cx,
+                    );
+                });
+                cx.run_until_parked();
+                let after = (scroll.offset().y, counts());
+                assert_ne!(after.0, before.0, "{at}: wheel step {step} moves the list");
+                assert_eq!(
+                    (after.1.0 - before.1.0, after.1.1 - before.1.1),
+                    (0, 0),
+                    "{at}: wheel step {step} lays out no line and wraps no text"
+                );
+                assert!(
+                    after.1.2 - before.1.2 <= 1,
+                    "{at}: wheel step {step} decides the regions at most once, not {}",
+                    after.1.2 - before.1.2
+                );
+            }
+            let before = counts().2;
+            cx.simulate_resize(size(px(width), px(height + 1.)));
+            cx.run_until_parked();
+            assert_eq!(
+                counts().2 - before,
+                1,
+                "{at}: a window a pixel taller decides the regions once"
             );
         }
         cx.update(|window, cx| {

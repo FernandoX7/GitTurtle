@@ -3906,7 +3906,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod note_tests {
+pub(crate) mod note_tests {
     use super::*;
     use core::prelude::v1::test;
 
@@ -3971,7 +3971,7 @@ mod note_tests {
 
     thread_local! {
         /// How many times this thread counted a text's lines as one wrapping text.
-        pub(super) static WRAPPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(crate) static WRAPPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     /// A note that wraps counts its lines once per text, size and room, by phrase or as one
