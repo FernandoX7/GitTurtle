@@ -5,6 +5,7 @@ use crate::{
     focus_ring::FocusRing,
     text::PatchPresentation,
 };
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     App, AppContext, ClipboardItem, Context, Entity, Focusable, HighlightStyle, InteractiveElement,
     IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window, canvas,
@@ -15,6 +16,31 @@ use std::{mem::size_of, ops::Range, sync::Arc};
 
 /// The height of the heading over each side's text, at the default size.
 pub(crate) const SIDE_HEADING_HEIGHT: f32 = 30.;
+
+/// How Split's headings stand in the room its sides have, which Compare
+/// decides in the frame it draws them (`views::split_room`): labels give
+/// way before content (DESIGN.md, "One responsive order").
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum Headings {
+    /// Whole above the text.
+    #[default]
+    Whole,
+    /// Given way to the text's one whole row, which the room holds but not
+    /// with them: each side's accessible name says which side it is.
+    GivenWay,
+    /// The room, this tall, holds no whole row: they take its height, their
+    /// padding giving way first and their words drawn only while the room
+    /// holds them whole, the text none, and the focused side's ring lies on
+    /// the whole side. Kept at their own height there, they ran past the
+    /// room, which cut them, and the ring lay on a text 0 px tall.
+    Room(Pixels),
+}
+
+/// How tall a heading's words stand: its 11 pt text on GPUI's line height,
+/// the golden ratio times the text's size.
+fn heading_words_height() -> Pixels {
+    crate::appearance::ui_text(11.) * std::f32::consts::GOLDEN_RATIO
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Row {
@@ -326,6 +352,8 @@ pub struct SplitView {
     views: [Entity<diff_view::DiffView>; 2],
     decorations: [crate::editor_find::PatchDecorations; 2],
     scroll: LinkedScroll,
+    /// How its headings stand in the frame being drawn ([`Headings`]).
+    headings: std::cell::Cell<Headings>,
     initial_row: Option<usize>,
     change_index: Option<usize>,
     /// The window's keyboard focus ring, which a side's text rings its edge
@@ -473,6 +501,7 @@ pub fn new(
             views,
             decorations,
             scroll: LinkedScroll::default(),
+            headings: Default::default(),
             focus_ring,
             _subscriptions: subscriptions,
         }
@@ -483,6 +512,19 @@ impl SplitView {
     /// The Before and After sides' editors.
     pub(crate) fn editors(&self) -> &[Entity<EditorState>; 2] {
         &self.editors
+    }
+
+    /// Draws its headings as `headings` says in the frame being drawn, which
+    /// lays it out next.
+    pub(crate) fn fit_headings(&self, headings: Headings) {
+        self.headings.set(headings);
+    }
+
+    /// The Before and After sides' text views, for a test to read their
+    /// accessible names.
+    #[cfg(test)]
+    pub(crate) fn views(&self) -> &[Entity<diff_view::DiffView>; 2] {
+        &self.views
     }
 
     pub fn rescale_code(&mut self, ratio: f32, cx: &mut Context<Self>) {
@@ -580,12 +622,22 @@ impl Render for SplitView {
         // patch's does, and the headings' height: on a side of its own it
         // took four lines in a 461 × 490 window and left no row in view.
         let shared_bar = crate::editor_find::shared_bar(&self.editors, cx);
-        let headings = shared_bar.is_none().then(|| {
-            div().flex().children((0..2).map(|side| {
+        // Where the room holds a whole row but not the headings with it,
+        // they give way; where it holds no row, they take its height, and
+        // the focused side, being all heading, rings its heading's edge.
+        let fit = self.headings.get();
+        let (height, words) = match fit {
+            Headings::Room(room) => (room, room >= heading_words_height()),
+            _ => (crate::appearance::ui_size(SIDE_HEADING_HEIGHT), true),
+        };
+        let headings = (shared_bar.is_none() && fit != Headings::GivenWay).then(|| {
+            div().flex().flex_none().children((0..2).map(|side| {
                 div()
+                    .debug_selector(move || format!("split-heading-{side}"))
+                    .relative()
                     .flex_1()
                     .min_w_0()
-                    .h(crate::appearance::ui_size(SIDE_HEADING_HEIGHT))
+                    .h(height)
                     .px_3()
                     .flex()
                     .items_center()
@@ -594,7 +646,16 @@ impl Render for SplitView {
                     .bg(rgb(p.panel))
                     .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
-                    .child(if side == 0 { "Before" } else { "After" })
+                    .when(words, |heading| {
+                        heading.child(
+                            div()
+                                .debug_selector(move || format!("split-heading-words-{side}"))
+                                .child(if side == 0 { "Before" } else { "After" }),
+                        )
+                    })
+                    .when(matches!(fit, Headings::Room(_)), |heading| {
+                        heading.children(edges[side].take())
+                    })
             }))
         });
         let sides = div().flex_1().min_h_0().flex().children((0..2).map(|side| {

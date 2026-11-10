@@ -401,6 +401,13 @@ impl DiffView {
         self.partial_busy = false;
     }
 
+    /// The text's accessible name, such as "Read-only Before source", for
+    /// a test.
+    #[cfg(test)]
+    pub(crate) fn label(&self) -> &SharedString {
+        &self.label
+    }
+
     pub fn refresh_numbered(
         &mut self,
         rows: Arc<[LineNumbers]>,

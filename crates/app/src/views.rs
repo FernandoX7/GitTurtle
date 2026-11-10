@@ -4445,6 +4445,10 @@ fn split_room(
     #[cfg(test)]
     SPLIT_FIND_BAR.set(bar);
     let device_pixel = px(1. / window.scale_factor());
+    let footer_height = window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT));
+    let reason_height = reason.clone().map_or(px(0.), |reason| {
+        crate::in_frame::measured_height(partial_reason(reason, muted), width, window, cx)
+    });
     // What stands above the text, the rows the footer leaves it and how much
     // beyond them it needs: with the bar, a device pixel short of the rows,
     // as layout may draw the text's edges, takes the footer away; beneath
@@ -4463,22 +4467,38 @@ fn split_room(
     };
     let gives_way = given_way
         || above.is_some_and(|(above, rows, spare)| {
-            let footer = window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT));
-            let reason = reason.clone().map_or(px(0.), |reason| {
-                crate::in_frame::measured_height(partial_reason(reason, muted), width, window, cx)
-            });
             let line = (appearance::code_text() * CODE_LINE_HEIGHT).round();
             // The padding as drawn: reckoned at the raw 8 px, drawn on 10 device
             // pixels at scale 1.2, the footer stayed with 0.17 px to spare
             // beyond the rows, a fifth of the device pixel below.
             let padding = window.pixel_snap(CODE_PADDING);
-            let text = bounds.size.height - reason - footer - above - padding * 2.;
+            let text = bounds.size.height - reason_height - footer_height - above - padding * 2.;
             text < line * rows + spare
         });
     let (footer, described) = match footer {
         Some(footer) if gives_way => (None, Some(footer.line)),
         footer => (footer.map(|footer| footer.element), None),
     };
+    // Labels give way before content (DESIGN.md, "One responsive order"):
+    // where the room left to the sides holds a whole row but not their
+    // headings with it, the headings give way, each side's accessible name
+    // saying which side it is, and where it holds no whole row they take
+    // its height, never cut. Kept whole, at 18 pt in a 461 × 440 window
+    // beside a failing side's line and a Download row, the headings took
+    // 41.5 px of a 37.5 px room, cut, and left the text none, though one
+    // row is 34 px.
+    let room =
+        bounds.size.height - reason_height - footer.as_ref().map_or(px(0.), |_| footer_height);
+    let heading = window.pixel_snap(appearance::ui_size(crate::split_diff::SIDE_HEADING_HEIGHT));
+    let row = comparison_floor(1., window);
+    let holds = |need: Pixels| room >= need - device_pixel / 2.;
+    view.read(cx).fit_headings(if holds(heading + row) {
+        crate::split_diff::Headings::Whole
+    } else if holds(row) {
+        crate::split_diff::Headings::GivenWay
+    } else {
+        crate::split_diff::Headings::Room(room.max(px(0.)))
+    });
     // A group in every layout, so its texts keep their place in the
     // accessibility tree as the footer comes and goes.
     let comparison = div()
@@ -11752,26 +11772,15 @@ pub(crate) mod tests {
                             settle(&app, cx).await;
                             draw(cx);
                             draw(cx);
-                            let (row, heading) = cx.update(|window, _| {
-                                (
-                                    comparison_floor(1., window),
-                                    window.pixel_snap(appearance::ui_size(
-                                        crate::split_diff::SIDE_HEADING_HEIGHT,
-                                    )),
-                                )
-                            });
+                            let row = cx.update(|window, _| comparison_floor(1., window));
                             let comparison = cx
                                 .debug_bounds("preview-content")
                                 .expect("the comparison is drawn");
-                            let text_rows = if shown == TextMode::Split {
-                                let text = cx
-                                    .debug_bounds("split-text-0")
-                                    .expect("Split's Before text");
-                                assert!(
-                                    text.top() >= comparison.top() + heading - device / 2.,
-                                    "{at}: Split's headings stand whole above {text:?}"
-                                );
-                                text
+                            let fit =
+                                (shown == TextMode::Split).then(|| split_headings(&app, cx, &at));
+                            let text_rows = if fit.is_some() {
+                                cx.debug_bounds("split-text-0")
+                                    .expect("Split's Before text")
                             } else {
                                 comparison
                             };
@@ -11789,22 +11798,27 @@ pub(crate) mod tests {
                             );
                             // Where both sides' buttons stack with their word
                             // or without it, as in Compare's 243.5 px column
-                            // at 18 pt, Diff, Before and After keep their row
-                            // down to 460 px and Split its headings and a row
-                            // down to 490 px, and at 13 pt down to 440 and
-                            // 480 px, as DESIGN.md says, and below that the
-                            // comparison takes what remains with the footer
-                            // gone.
+                            // at 18 pt, the comparison keeps its row down to
+                            // 460 px, Split's headings giving way before it,
+                            // and Split its headings and a row down to 490 px,
+                            // and at 13 pt down to 440 and 480 px, as
+                            // DESIGN.md says, and below that the comparison
+                            // takes what remains with the footer gone.
                             let stacked = cx
                                 .debug_bounds("download-lfs-side-1")
                                 .is_some_and(|after| after.top() >= button.bottom() - device / 2.);
                             // The heights measured, at scales 2 and 1.2.
-                            let floor = match (text, shown == TextMode::Split) {
-                                (18, false) => 460.,
-                                (18, true) => 490.,
-                                (_, false) => 440.,
-                                (_, true) => 480.,
+                            let (floor, whole) = if text == 18 {
+                                (460., 490.)
+                            } else {
+                                (440., 480.)
                             };
+                            assert!(
+                                fit.is_none_or(|fit| fit == crate::split_diff::Headings::Whole)
+                                    || (stacked && height < whole),
+                                "{at}: Split's headings, {fit:?}, stand whole above a row \
+                                 beside one button and down to {whole} px beside two"
+                            );
                             if stacked && height < floor {
                                 if text_rows.size.height < row - device / 2. {
                                     assert!(
@@ -12123,12 +12137,11 @@ pub(crate) mod tests {
             above <= comparison.top() + device / 2.,
             "{at}: the row ends above the comparison, {comparison:?}"
         );
-        let (row, heading, footer_height, padding) = cx.update(|window, _| {
+        let (row, heading, footer_height) = cx.update(|window, _| {
             (
                 comparison_floor(1., window),
                 window.pixel_snap(appearance::ui_size(crate::split_diff::SIDE_HEADING_HEIGHT)),
                 window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT)),
-                window.pixel_snap(CODE_PADDING),
             )
         });
         let status = cx.debug_bounds("status-bar").expect("the status bar");
@@ -12149,14 +12162,10 @@ pub(crate) mod tests {
             );
             return (sentence.is_some(), room, need);
         }
+        let fit = split_headings(app, cx, &at);
         let text = cx
             .debug_bounds("split-text-0")
             .expect("Split's Before text");
-        assert!(
-            text.top() >= comparison.top() + heading - device / 2.
-                && text.bottom() <= comparison.bottom() + device / 2.,
-            "{at}: Split's headings, {heading:?}, stand whole above {text:?} in {comparison:?}"
-        );
         assert_eq!(
             footer.is_some(),
             left >= heading + row + footer_height - device / 2.,
@@ -12170,20 +12179,17 @@ pub(crate) mod tests {
                 "{at}: the comparison's description keeps the footer's words"
             );
         }
-        if left >= heading + row - device / 2. {
+        if left >= row - device / 2. {
             assert!(
                 text.size.height >= row - device / 2.,
-                "{at}: {text:?} keeps a whole row, {row:?}"
+                "{at}: {text:?} keeps a whole row, {row:?}, {fit:?}"
             );
         } else {
-            // No room for a whole row beneath the headings with nothing
-            // else left to give way: the text takes what remains, its
-            // first line whole above its foot's padding.
+            // No room for a whole row with nothing else left to give way:
+            // the headings take what remains.
             assert!(
-                sentence.is_none()
-                    && text.bottom() >= status.top() - device / 2.
-                    && text.size.height >= row - padding - device / 2.,
-                "{at}: {text:?} takes the room that remains, {left:?}"
+                sentence.is_none() && comparison.bottom() >= status.top() - device / 2.,
+                "{at}: {comparison:?} takes the room that remains, {left:?}, {fit:?}"
             );
         }
         (sentence.is_some(), room, need)
@@ -12317,11 +12323,12 @@ pub(crate) mod tests {
     /// comparison's description, while its headings and a whole row stay,
     /// as they do in QA's 461 × 490 window at 18 pt and scale 2; only where
     /// the column cannot hold them does Split take what the column leaves
-    /// it, down to the status bar and no further, its headings' words
-    /// whole first. With no floor there, at 18 pt in a 461 × 490 window,
-    /// the line kept its three lines and left Split a strip 9 device pixels
-    /// tall, no heading's words drawn; with its headings kept whole as its
-    /// least, at 461 × 440 it ran 4 px under the status bar.
+    /// it, down to the status bar and no further, its headings giving way
+    /// before its last row ([`split_headings`]). With no floor there, at
+    /// 18 pt in a 461 × 490 window, the line kept its three lines and left
+    /// Split a strip 9 device pixels tall, no heading's words drawn; with
+    /// its headings kept whole as its least, at 461 × 440 it ran 4 px under
+    /// the status bar.
     #[gpui::test]
     async fn split_gives_way_in_one_order_beside_a_line_and_a_download_row(
         cx: &mut TestAppContext,
@@ -12375,10 +12382,6 @@ pub(crate) mod tests {
                                 - window.rem_size() * 0.5,
                         )
                     });
-                    // Where a heading's words end, centred in it on GPUI's
-                    // line height, the golden ratio times their size.
-                    let phi = (1. + 5f32.sqrt()) / 2.;
-                    let words = (heading + appearance::ui_text(11.) * phi) / 2.;
                     let button = cx
                         .debug_bounds("download-lfs-side-1")
                         .expect("After offers its download");
@@ -12412,12 +12415,7 @@ pub(crate) mod tests {
                             "{at}: the description keeps the footer's words"
                         );
                     }
-                    assert!(
-                        room.size.height >= words - device / 2.
-                            && text.top() >= room.top() + heading - device / 2.,
-                        "{at}: Split's headings, {heading:?}, their words whole, stand \
-                         above {text:?} in {room:?}"
-                    );
+                    let fit = split_headings(&app, cx, &at);
                     let below = footer.map_or(room.bottom(), |footer| footer.bottom());
                     let over = at_least && room.size.height < heading + row - device / 2.;
                     if at == "18 pt, 461 × 490, scale 2" {
@@ -12434,8 +12432,9 @@ pub(crate) mod tests {
                             "{at}: {room:?} takes the room that remains above {status:?}"
                         );
                     } else {
-                        assert!(
-                            room.size.height >= heading - device / 2.,
+                        assert_eq!(
+                            fit,
+                            crate::split_diff::Headings::Whole,
                             "{at}: Split's headings, {heading:?}, stand whole in {room:?}"
                         );
                         held += 1;
@@ -12461,6 +12460,226 @@ pub(crate) mod tests {
             window.set_scale_factor(2.);
             appearance::apply_text_sizes(13, 12, window, cx);
         });
+    }
+
+    /// Labels give way before content: beside a failing Git LFS side's line
+    /// and a Download row at 18 pt in a 461 px wide window, as the window
+    /// shortens from 490 to 380 px at scales 2 and 1.2, Split's headings
+    /// stand whole above a whole row where the room holds both, give way
+    /// where it holds the row but not them, each side's accessible name
+    /// saying which side it is, and where it holds no whole row they take
+    /// its height, never cut, their words drawn only where they stand whole,
+    /// and the focused side is ringed whole, all heading there. Kept whole
+    /// at 461 × 440 they took 41.5 px of a 37.5 px room, cut, and left the
+    /// text none, though one row is 34 px, the ring lying on a text 0 px
+    /// tall.
+    #[gpui::test]
+    async fn split_s_headings_give_way_before_its_last_row(cx: &mut TestAppContext) {
+        use crate::split_diff::Headings;
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let missing = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let input = file_commits(&[
+            ("before", &[("notes.txt", oversize.as_bytes())]),
+            ("after", &[("notes.txt", missing.as_bytes())]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let accent: Hsla = cx.read(|cx| rgb(appearance::palette(cx).accent).into());
+        let mut seen = [false; 3];
+        for scale in [2.0f32, 1.2] {
+            let device = px(1. / scale);
+            for height in [490., 478., 455., 440., 436., 432., 410., 380.] {
+                let at = format!("18 pt, 461 × {height}, scale {scale}");
+                cx.simulate_resize(size(px(461.), px(height)));
+                cx.update(|window, cx| {
+                    window.set_scale_factor(scale);
+                    app.update(cx, |app, cx| {
+                        app.text_mode = TextMode::Split;
+                        app.ensure_editor(window, cx);
+                        cx.notify();
+                    })
+                });
+                settle(&app, cx).await;
+                draw(cx);
+                draw(cx);
+                let fit = split_headings(&app, cx, &at);
+                let room = cx
+                    .debug_bounds("preview-content")
+                    .expect("Split's room is drawn");
+                let status = cx.debug_bounds("status-bar").expect("the status bar");
+                // A room with any height ends above the status bar; at
+                // 380 px the line at its least and the row above leave it
+                // none.
+                assert!(
+                    room.size.height < device / 2. || room.bottom() <= status.top() + device / 2.,
+                    "{at}: {room:?} ends above {status:?}"
+                );
+                if scale == 2. && height == 440. {
+                    assert_eq!(
+                        fit,
+                        Headings::GivenWay,
+                        "{at}: the room holds one row, not the headings with it"
+                    );
+                }
+                seen[match fit {
+                    Headings::Whole => 0,
+                    Headings::GivenWay => 1,
+                    Headings::Room(_) => 2,
+                }] = true;
+                // Before's side, focused from the keyboard, is ringed whole:
+                // its text's edge, or, where it is all heading, its
+                // heading's, both inside the side's right border.
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        let editor = app
+                            .split_view
+                            .as_ref()
+                            .expect("Split's view")
+                            .read(cx)
+                            .editors()[0]
+                            .clone();
+                        window.focus(&editor.read(cx).focus_handle(cx), cx);
+                        app.focus_ring.mark(window);
+                    })
+                });
+                draw(cx);
+                let text = cx
+                    .debug_bounds("split-text-0")
+                    .expect("Split's Before text");
+                let side = match fit {
+                    Headings::Room(_) => {
+                        let heading = cx
+                            .debug_bounds("split-heading-0")
+                            .expect("Before's heading");
+                        Bounds::from_corners(
+                            point(text.left(), heading.top()),
+                            point(text.right(), heading.bottom()),
+                        )
+                    }
+                    _ => text,
+                };
+                if side.size.height >= px(4.) {
+                    let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                        .into_iter()
+                        .map(|outline| outline.bounds)
+                        .collect();
+                    assert!(
+                        crate::focus_ring::sweep::rings_edge(&rings, side),
+                        "{at}: Before, focused, is ringed whole on {side:?}, not {rings:?}"
+                    );
+                }
+                cx.update(|window, cx| window.blur(cx));
+            }
+        }
+        assert_eq!(
+            seen, [true; 3],
+            "the headings stand whole, give way and take the room as the window shortens"
+        );
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// How Split's headings stand, as drawn, in the room its sides have
+    /// (`preview-content`), labels giving way before content: whole above
+    /// the text where the room holds them and a whole row; given way where
+    /// it holds a row but not them, the text taking the room and each side's
+    /// accessible name saying which side it is; and where it holds no whole
+    /// row, at the room's height, never cut, their words drawn wherever they
+    /// stand whole there, the text none.
+    fn split_headings(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        at: &str,
+    ) -> crate::split_diff::Headings {
+        use crate::split_diff::Headings;
+        let (device, row, heading, words) = cx.update(|window, _| {
+            (
+                px(1. / window.scale_factor()),
+                comparison_floor(1., window),
+                window.pixel_snap(appearance::ui_size(crate::split_diff::SIDE_HEADING_HEIGHT)),
+                // GPUI's line height, the golden ratio times the text's size.
+                appearance::ui_text(11.) * ((1. + 5f32.sqrt()) / 2.),
+            )
+        });
+        let room = cx
+            .debug_bounds("preview-content")
+            .expect("Split's room is drawn");
+        let text = cx
+            .debug_bounds("split-text-0")
+            .expect("Split's Before text");
+        let drawn = cx.debug_bounds("split-heading-0");
+        let shown = cx.debug_bounds("split-heading-words-0");
+        let holds = |need: Pixels| room.size.height >= need - device / 2.;
+        let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.top() >= outer.top() - device / 2.
+                && inner.bottom() <= outer.bottom() + device / 2.
+        };
+        if holds(heading + row) {
+            let drawn = drawn.unwrap_or_else(|| panic!("{at}: Split's headings are drawn"));
+            assert!(
+                (drawn.size.height - heading).abs() <= device / 2.
+                    && shown.is_some_and(|shown| inside(shown, drawn))
+                    && text.top() >= drawn.bottom() - device / 2.
+                    && text.size.height >= row - device / 2.
+                    && inside(text, room),
+                "{at}: Split's headings, {drawn:?}, their words {shown:?} whole, stand above \
+                 {text:?} and its whole row, {row:?}, in {room:?}"
+            );
+            Headings::Whole
+        } else if holds(row) {
+            let names = cx.update(|_, cx| {
+                let app = app.read(cx);
+                let split = app.split_view.as_ref().expect("Split's view").read(cx);
+                split
+                    .views()
+                    .each_ref()
+                    .map(|view| view.read(cx).label().clone())
+            });
+            assert!(
+                drawn.is_none()
+                    && (text.top() - room.top()).abs() <= device / 2.
+                    && text.size.height >= row - device / 2.
+                    && inside(text, room),
+                "{at}: Split's headings, {drawn:?}, give way to {text:?}'s whole row, {row:?}, \
+                 which {room:?} holds without them"
+            );
+            assert!(
+                names[0].contains("Before") && names[1].contains("After"),
+                "{at}: each side's accessible name says which side it is: {names:?}"
+            );
+            Headings::GivenWay
+        } else {
+            let drawn = drawn.unwrap_or_else(|| panic!("{at}: Split's headings are drawn"));
+            assert!(
+                (drawn.top() - room.top()).abs() <= device / 2.
+                    && (drawn.bottom() - room.bottom()).abs() <= device / 2.
+                    && text.size.height <= device / 2.,
+                "{at}: Split's headings, {drawn:?}, take the room, {room:?}, which holds no \
+                 whole row, {row:?}, and {text:?} none"
+            );
+            if let Some(shown) = shown {
+                assert!(
+                    inside(shown, drawn),
+                    "{at}: the heading's words, {shown:?}, stand whole in {drawn:?}"
+                );
+            }
+            assert!(
+                shown.is_some() || drawn.size.height < words + device,
+                "{at}: the heading's words, {words:?} tall, are drawn in {drawn:?}"
+            );
+            Headings::Room(drawn.size.height)
+        }
     }
 
     /// A Download row is one of the 0.75 rem bars whose padding cannot hold
