@@ -940,18 +940,22 @@ impl GitTurtle {
         let browser = cx.new(|cx| StashBrowser::new(owner, repo, window, cx));
         // Stashes opens on its saved stashes, the first real stop.
         let list = browser.read(cx).stash_focus.clone();
-        self.show_stashes(browser.clone(), &list, window, cx);
+        self.show_stashes(browser.clone(), &list, false, window, cx);
         Some(browser)
     }
 
     /// Opens the Stashes dialog on `browser`, with focus on `focus`, one of
     /// the browser's controls: its saved stashes as it opens, or, opened
     /// again as Drop…'s confirmation is cancelled, the control the press
-    /// found focus on ([`Self::reopen_stashes`]).
+    /// found focus on ([`Self::reopen_stashes`]). Opened again it is
+    /// `returning`, drawn where its entrance ends from its first frame
+    /// (the kit's `at_rest`): a return to the dialog the person left, which
+    /// slid in again as a new one would.
     fn show_stashes(
         &mut self,
         browser: Entity<StashBrowser>,
         focus: &FocusHandle,
+        returning: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -962,6 +966,7 @@ impl GitTurtle {
         // for (`StashBrowser::new`).
         window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
+                .at_rest(returning)
                 .title(native_accessibility::dialog_title(
                     "stashes-title",
                     "Stashes",
@@ -994,7 +999,7 @@ impl GitTurtle {
 
     /// Drop…'s confirmation cancelled, by Cancel or Escape (an alert never
     /// closes from a press on its backdrop): Stashes, which closed as the
-    /// confirmation opened, opens again on the browser it had, its
+    /// confirmation opened, opens again at rest on the browser it had, its
     /// page, selected stash and inspection as they were, with focus where
     /// the press found it (`acted`), Drop… itself for a key, else the saved
     /// stashes, and reads its page again as Refresh does, saying nothing
@@ -1019,7 +1024,7 @@ impl GitTurtle {
             return;
         }
         let focus = acted.unwrap_or_else(|| browser.read(cx).stash_focus.clone());
-        self.show_stashes(browser.clone(), &focus, window, cx);
+        self.show_stashes(browser.clone(), &focus, true, window, cx);
         browser.update(cx, |browser, cx| browser.read_again(window, cx));
     }
 
@@ -7056,6 +7061,74 @@ mod tests {
                 "{press}"
             );
         }
+    }
+
+    /// Stashes opened again as Drop…'s confirmation is cancelled is drawn at
+    /// rest from its first frame, its title where a first open's entrance
+    /// ends, while a first open's first frame draws the title above that,
+    /// so the check tells the two apart. It slid in again as a new dialog;
+    /// read after frames that parking draws, the title stood at rest either
+    /// way.
+    #[gpui::test]
+    async fn a_cancelled_drop_reopens_stashes_at_rest(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let (_repo, browser, cx) = stashes_saved(cx, fixture.path(), &["first", "second"]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let app = browser
+            .read_with(cx, |this, _| this.owner.upgrade())
+            .expect("the window");
+        let title = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("stashes-title")
+                .expect("the title is drawn")
+                .top()
+        };
+        let first_frame = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        // Where the title stands once the entrance has ended.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        draw(cx);
+        let rest = title(cx);
+
+        // A first open, with motion: its first frame draws the title higher.
+        cx.update(|window, cx| window.close_dialog(cx));
+        draw(cx);
+        drop(browser);
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+        first_frame(cx);
+        assert!(
+            title(cx) < rest,
+            "a first open's first frame draws the title above its rest"
+        );
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let browser = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes opens");
+        StashBrowser::lands(&browser, cx);
+        select_row(&browser, 1, cx);
+        draw(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+        crate::copy_feedback::tests::click(cx, "drop-saved-stash");
+        assert!(
+            cx.debug_bounds("operation-consequences").is_some(),
+            "Drop… opens its confirmation"
+        );
+
+        // Escape, and the reopen's first frame, with nothing run between.
+        cx.update(|window, cx| {
+            window.dispatch_keystroke(gpui::Keystroke::parse("escape").unwrap(), cx);
+        });
+        first_frame(cx);
+        assert!(
+            cx.debug_bounds("operation-consequences").is_none(),
+            "Escape closes the confirmation"
+        );
+        assert_eq!(title(cx), rest, "the reopen's first frame draws it at rest");
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        StashBrowser::lands(&browser, cx);
     }
 
     /// Drop… pressed again before the read a cancelled Drop… owes has been

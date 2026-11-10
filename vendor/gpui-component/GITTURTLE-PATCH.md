@@ -2378,7 +2378,10 @@ top in the first frame (`a_dialog_at_rest_draws_its_end_in_its_first_frame`)
 and counts the frames the window is asked for after the dialog's first two,
 against the same dialog under reduce motion, which an entrance exceeds
 (`a_dialog_at_rest_asks_for_no_frame`, which fails with the animations held
-at their end).
+at their end), and `cargo test --locked -p gitturtle a_cancelled_drop_reopens_stashes_at_rest`
+the reopened Stashes', against a first open's first frame, which draws the
+title higher; with `at_rest(false)` there the reopen's title is drawn 3 px
+higher and the test fails.
 Remove this part of the patch when upstream lets a dialog open without its
 entrance.
 
