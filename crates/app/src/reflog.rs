@@ -1200,7 +1200,12 @@ impl Render for ReflogBrowser {
         });
         let (error_above, error_below, error_after_review) = place.slots(error);
         let show_entry = self.entries.items(entries.clone(), room);
-        let show_list = self.content.group(entries.clone(), room);
+        // The list's own box keeps the ring's room around its entries
+        // (`p(room).m(-room)`) and is what the group reads, its cue drawn
+        // over it (`tags::Cued`), so the reveal keeps no room of its own:
+        // with the ring's room again around that box, Tab onto an entry
+        // scrolled the content 3 px further than the list.
+        let show_list = self.content.group(entries.clone(), Pixels::ZERO);
         // Past its height the entry list cues the rest with its scrollbar.
         let cue = crate::tags::ScrollCue::revealing(&self.entries, room);
         let shown =
@@ -3534,6 +3539,63 @@ mod tests {
             .map(|index| &*format!("reflog-entry-{index}").leak())
             .collect();
         crate::tags::tests::assert_scroll_cue(cx, &app, &scroll, "reflog-list", room, &rows);
+    }
+
+    /// Tab from the filter onto the entry list scrolls the Reflog's content
+    /// to the list's own box, which keeps the ring's room around its
+    /// entries, and no further, at 18 pt in a 461 × 490 half tile with an
+    /// entry selected, the list past the content's fold: the box ends at the content's
+    /// foot, or starts at its top where it is the taller, as when the list's
+    /// cue lay in a column of its own around it. The list is the node its
+    /// group reveal reads since the cue draws over it (`tags::Cued`), so the
+    /// reveal keeps no room of its own: revealed with the ring's room again
+    /// around that box, the content scrolled 3 px further than it had.
+    #[gpui::test]
+    async fn tab_onto_the_entries_scrolls_the_content_to_the_list_alone(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 3);
+        let (app, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        set_interface_text_size(cx, &app, 18);
+        // With an entry selected, its details stand below the list, so the
+        // content reaches past the list's box and stops the reveal nowhere.
+        ReflogBrowser::select_newest(&browser, cx);
+        park_pointer(cx);
+        let filter = browser.read_with(cx, |this, cx| this.filter_focus(cx));
+        cx.update(|window, cx| window.focus(&filter, cx));
+        draw(cx);
+        let content = browser.read_with(cx, |this, _| this.content.scroll().clone());
+        content.set_offset(point(px(0.), px(0.)));
+        draw(cx);
+        let before = content.offset().y;
+        let folded = rendered(cx, "reflog-list");
+        assert!(
+            folded.bottom() > content.bounds().bottom(),
+            "the list {folded:?} lies past the content's fold, {:?}",
+            content.bounds()
+        );
+        cx.simulate_keystrokes("tab");
+        settle_reads(cx, &browser);
+        draw(cx);
+        let focused = cx.update(|window, cx| browser.read(cx).focused_index(window, cx));
+        assert_eq!(focused, Some(0), "Tab moves focus onto the first entry");
+        let (list, viewport) = (rendered(cx, "reflog-list"), content.bounds());
+        let after = content.offset().y;
+        assert!(
+            after < before && -after < content.max_offset().y - px(0.5),
+            "the content scrolls to the list, {before:?} to {after:?}, short of its reach, {:?}",
+            content.max_offset().y
+        );
+        let edge = if list.size.height > viewport.size.height {
+            list.top() - viewport.top()
+        } else {
+            list.bottom() - viewport.bottom()
+        };
+        assert!(
+            edge.abs() < px(0.5),
+            "the list's box {list:?} meets the content's edge, {viewport:?}, scrolled from \
+             {before:?} to {after:?}: {edge:?} past it"
+        );
     }
 
     /// The dialog's text starts at one inset at 1480 × 980: the title, the

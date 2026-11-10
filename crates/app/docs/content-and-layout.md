@@ -136,6 +136,16 @@ frame, as a column's flex items take them (`file_history::Regions`,
 `PanelLeast::shares`), for each toolbar form the panel weighs, and the footer takes Newer page's and Older page's
 labels, else their icons, where it then holds them, and only otherwise
 scrolls, keeping their icons, laid out in the room its gutter leaves. A
+region holds its rows where they fit its share on the device pixel, and is
+laid out tall enough for them, its rows rounded up to the device pixel
+(`file_history::held_at`), so it cuts none of its padding and a wheel over
+it moves nothing; the body gives what that takes past the share, so a held
+header may pass its 30% cap, and a held footer its 25%, by under one device
+pixel. One that does not hold them scrolls in its share as layout lays it
+out, or a device pixel less where its rows would otherwise reach no more
+than half a pixel past it, what its cue takes as an end
+(`file_history::scrolled_in`, `tags::AN_END`), so a gutter never stands
+without a scroll its cue shows. A
 failed page's notice and its message cue their own scrolls on the notice's
 removed background (`Surface::Removed`), their tracks resting on it and their
 thumbs fitted to it (`Palette::removed_thumb`); the message gives way inside the
@@ -149,8 +159,19 @@ from this frame's toolbar and measured extent
 layout. The revisions cue theirs on the panel
 too: their `uniform_list` keeps the gutter itself (`ScrollCue::trailing`), since
 the kit lays the track over the bounds the list's own scroll handle reports,
-and the cue lies around it (`ScrollCue::around`), its track inside the ring's
-room so the keyboard ring on the list's edge stays whole.
+and the cue draws over it (`ScrollCue::around`), its track inside the ring's
+room so the keyboard ring on the list's edge stays whole. Every cued list
+is laid out where its parent puts it, with the sizing and selector its owner
+gives it, and its cue's fades and scrollbar are drawn outside the layout's
+flow, inside any border the list draws itself, after its content
+(`tags::Cued`): the cue once lay in a flex column of its own around the list,
+and the header's and footer's cost 70 to 94 µs more a frame on a wheel or
+width step. A divider its owner draws, the header's below it, the footer's
+and Blame's footer's above them, stands beside the list as a node of its own
+(`ScrollCue::divider`), and the region's height holds both: a scrolling
+node's own border takes from its reach, since GPUI measures the reach
+against the node's bounds, border included, so carried by the list, a
+divider kept up to 1 px of the rows out of reach and the track ran onto it.
 Reading order is title, available body, then author/date/parent/path metadata.
 Empty bodies add neither filler nor a blank clipboard suffix.
 

@@ -454,7 +454,7 @@ pub(crate) fn dialog_cancel(id: &'static str, label: &'static str) -> Button {
 /// side's own header controls and a 3D model's details. Where the
 /// scrollbar's thumb can move along its track it is the always-visible
 /// scrollbar the review dialogs cue theirs with; along a shorter track it
-/// is a soft fade at each edge the rows continue past ([`edge_fades`]).
+/// is a soft fade at each edge the rows continue past ([`paint_edge_fades`]).
 ///
 /// While the list overflows, its rows keep a gutter at their right, and
 /// along a track at least [`SHORTEST_SCROLL_TRACK`] tall the scrollbar
@@ -546,6 +546,13 @@ pub(crate) const SHORTEST_SCROLL_TRACK: Pixels = px(48. + 4. * 2.);
 /// cue ([`ScrollCue`]) and by the inspector's commit message viewport
 /// (`commit_message::message_fades`), so their fades read as one.
 pub(crate) const EDGE_FADE: f32 = 8.;
+
+/// How near an end a list's scroll may stop and still be at it: GPUI
+/// rounds the reach to two decimals, and a cue draws no fade at an end its
+/// list lies within this of ([`paint_edge_fades`]), so rows that reach no
+/// further than this past their list show no scroll, and a list kept a
+/// gutter for them keeps it empty (`file_history::scrolled_in`).
+pub(crate) const AN_END: Pixels = px(0.5);
 
 impl ScrollCue {
     /// The cue for the list `scroll` tracks, which keeps `room` around its
@@ -639,6 +646,31 @@ impl ScrollCue {
         Scrollbar::width() + ring.gap + ring.width
     }
 
+    /// The divider an owner draws in `color` beside a cued list, as File
+    /// History's header keeps one below it and its footer and Blame's footer
+    /// one above them: a node of its own beside the list, holding nothing but
+    /// its 1 px border, so layout snaps it to the device pixel as it snaps a
+    /// border ([`ScrollCue::divider_height`]). It never lies on the list:
+    /// GPUI takes a scrolling node's reach as its content and padding less
+    /// its bounds, its own border included (`Interactivity`'s
+    /// `clamp_scroll_position`), so a divider carried by the list took its
+    /// width from the rows' reach, and the cue, laid over the list's bounds,
+    /// sized its fades and its track from them: three 20 px rows in a 60 px
+    /// list with a divider below scrolled none where they had scrolled
+    /// 1 px, File History's header up to 1.5 px over its share kept a gutter
+    /// it could not scroll, and its scrollbar's track ran 1 px onto the
+    /// divider (2026-11-10).
+    pub(crate) fn divider(color: impl Into<Hsla>) -> Div {
+        div().flex_none().border_t_1().border_color(color)
+    }
+
+    /// The height [`ScrollCue::divider`] takes in `window`: 1 px on the
+    /// device pixel, as layout rounds a border, and never less than one
+    /// device pixel.
+    pub(crate) fn divider_height(window: &Window) -> Pixels {
+        border_on_device_pixel(px(1.), window)
+    }
+
     /// For the list's `on_children_prepainted`: runs `prepainted`, then draws
     /// once more when this frame's layout cues otherwise than the cue
     /// assumed.
@@ -667,9 +699,12 @@ impl ScrollCue {
     /// along a track a thumb moves on, and otherwise the fades at the edges
     /// its rows continue past. The list is a node that clips its rows
     /// (`native_accessibility::clips_children`), so a row scrolled out of
-    /// view is out of reach as well as out of sight. Tests find the
-    /// scrollbar, while it is drawn, by `id`.
-    pub(crate) fn list(&self, list: Stateful<Div>, id: &'static str) -> Div {
+    /// view is out of reach as well as out of sight, and it is laid out where
+    /// its parent puts it, with the sizing and selector its owner gives the
+    /// cued list, any divider standing beside it ([`ScrollCue::divider`]):
+    /// the cue draws over it outside the layout's flow ([`Cued`]). Tests
+    /// find the scrollbar, while it is drawn, by `id`.
+    pub(crate) fn list(&self, list: Stateful<Div>, id: &'static str) -> CuedList {
         let trailing = self.trailing();
         self.around(
             crate::native_accessibility::clips_children(
@@ -677,6 +712,16 @@ impl ScrollCue {
             ),
             id,
         )
+    }
+
+    /// [`ScrollCue::list`] in a column of its own, for a list whose owner
+    /// lays out more around its scroll than the list holds: room below it
+    /// that its rows never scroll into, and a ring around both, as a Git LFS
+    /// preview's warning line keeps (`lfs_download::FailureLine`). The column
+    /// is a flex node above the list's subtree, which [`ScrollCue::list`]
+    /// leaves out, so a list that needs none takes [`ScrollCue::list`].
+    pub(crate) fn wrapped(&self, list: Stateful<Div>, id: &'static str) -> Div {
+        div().flex().flex_col().child(self.list(list, id))
     }
 
     /// The inset a list's rows keep at its right in this frame: the gutter
@@ -698,103 +743,341 @@ impl ScrollCue {
     /// inside the list that clips them: the kit lays the track over that
     /// handle's bounds, so a gutter kept by an element around it would leave
     /// the track over the rows' ends.
-    pub(crate) fn around(&self, list: impl IntoElement, id: &'static str) -> Div {
+    pub(crate) fn around<E: IntoElement>(&self, list: E, id: &'static str) -> Cued<E::Element> {
         #[cfg(test)]
         self.key.set(Some(id));
-        let (_, scrollbar) = self.cued;
-        let clear_track = self.clear_track;
-        let surface = self.surface;
-        let cue = div()
-            .flex()
-            .flex_col()
-            .child(list)
+        Cued {
+            list: list.into_element(),
+            rows: self.rows.clone(),
+            scrollbar: self.cued.1,
+            reveal: self.reveal.clone(),
+            clear_track: self.clear_track,
+            surface: self.surface,
+            id,
+            over: Vec::new(),
+            prepainted: None,
+        }
+    }
+}
+
+/// A list its cue draws over ([`ScrollCue::list`], [`ScrollCue::around`]):
+/// the list itself, laid out where its parent puts it, and the cue's fades
+/// and scrollbar drawn outside the layout's flow, taking no room, painted
+/// after the list at the bounds its scroll handle reports, over its content
+/// and inside any border the list draws itself. Its sizing, its selector and
+/// its children's place are the list's: what [`Styled`] and
+/// [`InteractiveElement`] set lands on the list, so a divider its owner
+/// draws stands beside it ([`ScrollCue::divider`]), where it takes nothing
+/// from the list's scroll, its fades or its track, and what
+/// [`ParentElement`] adds is drawn over the list with its cue, as a ring
+/// along its edge is (`workspace::list_edge`).
+///
+/// The cue once lay in a flex column of its own around the list, a node
+/// above the list's whole subtree that GPUI's layout measured it through
+/// again: File History's header and footer, cued in that column, cost 70 to
+/// 94 µs more a frame on a wheel step over its revisions and on a width step
+/// (release build, 13 pt in 1,480 × 980 and 18 pt in 461 × 490, 2026-11-10),
+/// and laid out without the column, their cue's observation kept, they cost
+/// what they had uncued.
+///
+/// The scrollbar's fill, thumb and hitbox are the kit's, laid out on the
+/// list's bounds as the frame prepaints, after the list has laid out in it,
+/// so its hitbox lies over the list's and a pointer meets the bar first,
+/// and the fades are painted on the list's surface before the scrollbar, so
+/// the bar lies over a fade.
+pub(crate) struct Cued<E> {
+    list: E,
+    rows: RowColumn,
+    /// Whether this frame draws the scrollbar ([`cues`]).
+    scrollbar: bool,
+    /// What scrolls the list's focused control into view, whose ring the
+    /// fades stop short of.
+    reveal: Option<FocusReveal>,
+    /// The track takes no fill and no edge ([`ScrollCue::over_rows`]).
+    clear_track: bool,
+    /// The surface the list is drawn on ([`ScrollCue::on`]).
+    surface: Surface,
+    /// The scrollbar's id, which tests find it by.
+    id: &'static str,
+    /// What [`ParentElement`] adds, drawn over the list after its cue.
+    over: Vec<AnyElement>,
+    /// What runs once the list and its cue have prepainted
+    /// ([`Cued::on_children_prepainted`]).
+    prepainted: Option<Box<Prepainted>>,
+}
+
+/// What runs as a list's children have prepainted, as a `Div` runs it.
+type Prepainted = dyn Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App);
+
+/// The list [`ScrollCue::list`] cues: a `div` that clips its rows.
+pub(crate) type CuedList = Cued<crate::native_accessibility::ClipsChildren<Stateful<Div>>>;
+
+impl<E> Cued<E> {
+    /// Runs `listener` with the list's bounds once the list and its cue have
+    /// prepainted, as a `Div`'s listener runs once its children have: for a
+    /// list that takes its id before its cue can observe it, as a document
+    /// side's details do (`system_preview::SideHeader::foot`), since a list with
+    /// an id takes no listener of its own.
+    pub(crate) fn on_children_prepainted(
+        mut self,
+        listener: impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.prepainted = Some(Box::new(listener));
+        self
+    }
+
+    /// The scrollbar, built as the frame paints (`in_frame`), after the list
+    /// has laid out in it, and only along a track a thumb moves on then: a
+    /// list that shrinks below the shortest track draws no bar, and leaves
+    /// no hitbox, in the frame that shrinks it, where its fades already
+    /// are. Built as the cue rendered, from the length the list kept from
+    /// the frame before, the bar painted for that one frame over the new
+    /// fade, and a pointer could still meet it.
+    fn scrollbar(&self) -> impl IntoElement + use<E> {
+        let (rows, id) = (self.rows.clone(), self.id);
+        let (clear_track, surface) = (self.clear_track, self.surface);
+        crate::in_frame::in_frame(move |_, _, cx| {
+            if rows.viewport_bounds().size.height < SHORTEST_SCROLL_TRACK {
+                return div().into_any_element();
+            }
+            // The kit's scrollbar lays itself over the list already; this
+            // wrapper only carries its debug selector, which the kit's
+            // element takes none of. It stays: a test tells a list that
+            // draws no scrollbar from one that leaves a bar behind painting
+            // nothing, which a pointer would still meet, only by it, where a
+            // painted thumb shows only what is painted.
+            crate::in_frame::probed(
+                div().debug_selector(move || id.into()).size_full().child({
+                    let bar = Scrollbar::vertical(&rows)
+                        .id(id)
+                        .mode(ScrollbarMode::Always);
+                    if clear_track {
+                        // Its thumb rests on the rows, so it takes the thumb
+                        // fitted to them; hovered and dragged, the palette's
+                        // hovered thumb, which the resting one set here would
+                        // otherwise replace.
+                        let clear = gpui_kit::transparent_black();
+                        let thumb = rgb(appearance::labels(cx).over_rows_thumb);
+                        let hovered = rgb(appearance::palette(cx).muted);
+                        bar.styles(|styles| {
+                            styles
+                                .track(|track| track.bg(clear).border_color(clear))
+                                .thumb(|style| style.bg(thumb))
+                                .thumb_hover(|style| style.bg(hovered))
+                                .thumb_active(|style| style.bg(hovered))
+                        })
+                    } else if surface == Surface::Removed {
+                        // Its track rests on a failed page's notice, as the
+                        // pickers' tracks rest on their raised surface
+                        // (`shortcuts.rs`): the kit's track is the canvas, a
+                        // band across the notice. Its thumb takes the thumb
+                        // fitted to that surface (`Palette::removed_thumb`),
+                        // where the palette's stood 1.66:1 in Ember; hovered
+                        // and dragged, the palette's hovered thumb.
+                        let palette = appearance::palette(cx);
+                        let track: Hsla = rgb(surface.color(&palette)).into();
+                        let thumb = rgb(appearance::labels(cx).removed_thumb);
+                        let hovered = rgb(palette.muted);
+                        bar.styles(|styles| {
+                            styles
+                                .track(|style| style.bg(track))
+                                .thumb(|style| style.bg(thumb))
+                                .thumb_hover(|style| style.bg(hovered))
+                                .thumb_active(|style| style.bg(hovered))
+                        })
+                    } else {
+                        bar
+                    }
+                }),
+                "scrollbar",
+            )
+            .into_any_element()
+        })
+        .named(id)
+    }
+}
+
+impl<E: Styled> Styled for Cued<E> {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.list.style()
+    }
+}
+
+impl<E: InteractiveElement> InteractiveElement for Cued<E> {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.list.interactivity()
+    }
+}
+
+impl<E> ParentElement for Cued<E> {
+    /// Adds `elements` over the list, never into it: each is laid out as
+    /// part of a root of its own over the list's bounds, inside any border
+    /// the list draws itself and outside the layout's flow, a column the
+    /// list's size that the cue's scrollbar fills first, and painted after
+    /// the list and its cue, so it takes no room from the list and moves
+    /// none of its rows. Each must be absolutely positioned, placed against
+    /// that root as a ring along the list's edge is (`workspace::list_edge`):
+    /// laid out in the column's flow, one would stand below the scrollbar.
+    /// A debug build refuses a `div`, an identified `div` or a `canvas` that
+    /// is not ([`absolutely_positioned`]); it cannot see into any other
+    /// element, such as a component that builds its own `div` or a text,
+    /// whose place it lets pass.
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        for mut element in elements {
+            debug_assert!(
+                absolutely_positioned(&mut element) != Some(false),
+                "what a cued list holds besides its rows is drawn over it, absolutely \
+                 positioned (`tags::Cued`)"
+            );
+            self.over.push(element);
+        }
+    }
+}
+
+/// Whether `element` is absolutely positioned, where its type lets its
+/// style be read from outside: a `div`, identified or not, or a `canvas`
+/// that prepaints nothing, or such an element already made an
+/// `AnyElement`, which `ParentElement::child` wraps once more; `None` for
+/// any other element, whose style only it reads ([`Cued`]'s
+/// `ParentElement`).
+fn absolutely_positioned(element: &mut AnyElement) -> Option<bool> {
+    if let Some(inner) = element.downcast_mut::<AnyElement>() {
+        return absolutely_positioned(inner);
+    }
+    let style = if let Some(div) = element.downcast_mut::<Div>() {
+        div.style()
+    } else if let Some(div) = element.downcast_mut::<Stateful<Div>>() {
+        div.style()
+    } else {
+        element.downcast_mut::<gpui::Canvas<()>>()?.style()
+    };
+    Some(style.position == Some(gpui::Position::Absolute))
+}
+
+impl<E: Element + Styled> IntoElement for Cued<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<E: Element + Styled> Element for Cued<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    /// The list's own, what is drawn over it, and the bounds inside its
+    /// border that the cue is drawn within.
+    type PrepaintState = (E::PrepaintState, Option<AnyElement>, Bounds<Pixels>);
+
+    fn id(&self) -> Option<ElementId> {
+        self.list.id()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.list.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        // The list's own node: the cue takes none.
+        self.list.request_layout(id, inspector, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let list = self
+            .list
+            .prepaint(id, inspector, bounds, layout, window, cx);
+        // Inside the list's own border, as layout snaps it, so a fade or a
+        // track never covers an edge the list draws itself, as File
+        // History's panel draws its left one. A divider stands beside the
+        // list instead ([`ScrollCue::divider`]).
+        let rem = window.rem_size();
+        let borders = &self.list.style().border_widths;
+        let edge = |width: Option<AbsoluteLength>| {
+            width.map_or(Pixels::ZERO, |w| {
+                border_on_device_pixel(w.to_pixels(rem), window)
+            })
+        };
+        let inside = Bounds::from_corners(
+            point(
+                bounds.left() + edge(borders.left),
+                bounds.top() + edge(borders.top),
+            ),
+            point(
+                bounds.right() - edge(borders.right),
+                bounds.bottom() - edge(borders.bottom),
+            ),
+        );
+        let scrollbar = self.scrollbar.then(|| self.scrollbar());
+        let mut over = (scrollbar.is_some() || !self.over.is_empty()).then(|| {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .children(scrollbar)
+                .children(self.over.drain(..))
+                .into_any_element()
+        });
+        if let Some(over) = over.as_mut() {
+            window.with_content_mask(Some(ContentMask { bounds: inside }), |window| {
+                over.layout_as_root(inside.size.map(AvailableSpace::Definite), window, cx);
+                over.prepaint_at(inside.origin, window, cx);
+            });
+        }
+        if let Some(prepainted) = &self.prepainted {
+            prepainted(vec![bounds], window, cx);
+        }
+        (list, over, inside)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        (list, over, inside): &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.list
+            .paint(id, inspector, bounds, layout, list, window, cx);
+        window.with_content_mask(Some(ContentMask { bounds: *inside }), |window| {
             // In every frame, so a list that shrinks below the shortest
             // track fades in the frame that shrinks it.
-            .child(edge_fades(
-                self.rows.clone(),
-                self.reveal.clone(),
-                self.surface,
-            ));
-        if scrollbar {
-            // The scrollbar is built as the frame paints (`in_frame`), after
-            // the list has laid out in it, and only along a track a thumb
-            // moves on then: a list that shrinks below the shortest track
-            // draws no bar, and leaves no hitbox, in the frame that shrinks
-            // it, where its fades already are. Built as the cue rendered,
-            // from the length the list kept from the frame before, the bar
-            // painted for that one frame over the new fade, and a pointer
-            // could still meet it.
-            let rows = self.rows.clone();
-            cue.child(
-                div().absolute().size_full().flex().flex_col().child(
-                    crate::in_frame::in_frame(move |_, _, cx| {
-                        if rows.viewport_bounds().size.height < SHORTEST_SCROLL_TRACK {
-                            return div().into_any_element();
-                        }
-                        // The kit's scrollbar lays itself over the list
-                        // already; this wrapper only carries its debug
-                        // selector, which the kit's element takes none of.
-                        // It stays: a test tells a list that draws no
-                        // scrollbar from one that leaves a bar behind
-                        // painting nothing, which a pointer would still
-                        // meet, only by it, where a painted thumb shows only
-                        // what is painted.
-                        crate::in_frame::probed(
-                            div().debug_selector(move || id.into()).size_full().child({
-                                let bar = Scrollbar::vertical(&rows)
-                                    .id(id)
-                                    .mode(ScrollbarMode::Always);
-                                if clear_track {
-                                    // Its thumb rests on the rows, so it
-                                    // takes the thumb fitted to them; hovered
-                                    // and dragged, the palette's hovered
-                                    // thumb, which the resting one set here
-                                    // would otherwise replace.
-                                    let clear = gpui_kit::transparent_black();
-                                    let thumb = rgb(appearance::labels(cx).over_rows_thumb);
-                                    let hovered = rgb(appearance::palette(cx).muted);
-                                    bar.styles(|styles| {
-                                        styles
-                                            .track(|track| track.bg(clear).border_color(clear))
-                                            .thumb(|style| style.bg(thumb))
-                                            .thumb_hover(|style| style.bg(hovered))
-                                            .thumb_active(|style| style.bg(hovered))
-                                    })
-                                } else if surface == Surface::Removed {
-                                    // Its track rests on a failed page's
-                                    // notice, as the pickers' tracks rest on
-                                    // their raised surface (`shortcuts.rs`):
-                                    // the kit's track is the canvas, a band
-                                    // across the notice. Its thumb takes the
-                                    // thumb fitted to that surface
-                                    // (`Palette::removed_thumb`), where the
-                                    // palette's stood 1.66:1 in Ember; hovered
-                                    // and dragged, the palette's hovered thumb.
-                                    let palette = appearance::palette(cx);
-                                    let track: Hsla = rgb(surface.color(&palette)).into();
-                                    let thumb = rgb(appearance::labels(cx).removed_thumb);
-                                    let hovered = rgb(palette.muted);
-                                    bar.styles(|styles| {
-                                        styles
-                                            .track(|style| style.bg(track))
-                                            .thumb(|style| style.bg(thumb))
-                                            .thumb_hover(|style| style.bg(hovered))
-                                            .thumb_active(|style| style.bg(hovered))
-                                    })
-                                } else {
-                                    bar
-                                }
-                            }),
-                            "scrollbar",
-                        )
-                        .into_any_element()
-                    })
-                    .named(id),
-                ),
-            )
-        } else {
-            cue
-        }
+            paint_edge_fades(&self.rows, self.reveal.as_ref(), self.surface, window, cx);
+            if let Some(over) = over {
+                over.paint(window, cx);
+            }
+        });
+    }
+
+    fn a11y_role(&self) -> Option<Role> {
+        self.list.a11y_role()
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.list.write_a11y_info(node);
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        (list, _, _): &mut Self::PrepaintState,
+        builder: &mut A11ySubtreeBuilder,
+    ) {
+        self.list.a11y_synthetic_children(list, builder);
     }
 }
 
@@ -809,7 +1092,7 @@ fn edge_fade(rows: &RowColumn) -> Pixels {
     appearance::ui_size(EDGE_FADE).min(rows.scroll.bounds().size.height / 4.)
 }
 
-/// The fades over a list too short for its scrollbar's thumb to move
+/// Paints the fades over a list too short for its scrollbar's thumb to move
 /// ([`ScrollCue`]): at each edge its rows continue past, a band as wide as
 /// the list and [`EDGE_FADE`] tall, opaque at the edge in the theme's
 /// background colour (the palette's canvas, which panes and dialogs are
@@ -833,51 +1116,47 @@ fn edge_fade(rows: &RowColumn) -> Pixels {
 /// the list, and a row under one takes its hover and click. It does not
 /// move: a fade comes and goes with the scroll that reveals an edge, in
 /// that frame.
-fn edge_fades(rows: RowColumn, reveal: Option<FocusReveal>, surface: Surface) -> impl IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |_, _, window, cx| {
-            let scroll = &rows.scroll;
-            let list = scroll.bounds();
-            let fade = edge_fade(&rows);
-            if fade <= Pixels::ZERO {
-                return;
-            }
-            let ring = reveal
-                .as_ref()
-                .and_then(|reveal| reveal.focused_bounds(window, cx))
-                .map(|control| control.dilate(appearance::button_ring_room(cx)));
-            let (top_fade, bottom_fade) = fade_reach(list, fade, ring);
-            // Half a pixel either way is an end: GPUI rounds the reach to
-            // two decimals.
-            let slack = px(0.5);
-            let scrolled = -scroll.offset().y;
-            let palette = appearance::palette(cx);
-            let surface: Hsla = rgb(surface.color(&palette)).into();
-            let band = |angle: f32| {
-                linear_gradient(
-                    angle,
-                    linear_color_stop(surface.opacity(0.), 0.),
-                    linear_color_stop(surface, 1.),
-                )
-            };
-            if scrolled > slack && top_fade > Pixels::ZERO {
-                // Toward the top, opaque at the list's top edge.
-                let top = Bounds::new(list.origin, size(list.size.width, top_fade));
-                window.paint_quad(fill(top, band(0.)));
-            }
-            if scrolled < scroll.max_offset().y - slack && bottom_fade > Pixels::ZERO {
-                // Toward the bottom, opaque at the list's bottom edge.
-                let bottom = Bounds::new(
-                    point(list.left(), list.bottom() - bottom_fade),
-                    size(list.size.width, bottom_fade),
-                );
-                window.paint_quad(fill(bottom, band(180.)));
-            }
-        },
-    )
-    .absolute()
-    .size_full()
+fn paint_edge_fades(
+    rows: &RowColumn,
+    reveal: Option<&FocusReveal>,
+    surface: Surface,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let scroll = &rows.scroll;
+    let list = scroll.bounds();
+    let fade = edge_fade(rows);
+    if fade <= Pixels::ZERO {
+        return;
+    }
+    let ring = reveal
+        .and_then(|reveal| reveal.focused_bounds(window, cx))
+        .map(|control| control.dilate(appearance::button_ring_room(cx)));
+    let (top_fade, bottom_fade) = fade_reach(list, fade, ring);
+    let slack = AN_END;
+    let scrolled = -scroll.offset().y;
+    let palette = appearance::palette(cx);
+    let surface: Hsla = rgb(surface.color(&palette)).into();
+    let band = |angle: f32| {
+        linear_gradient(
+            angle,
+            linear_color_stop(surface.opacity(0.), 0.),
+            linear_color_stop(surface, 1.),
+        )
+    };
+    if scrolled > slack && top_fade > Pixels::ZERO {
+        // Toward the top, opaque at the list's top edge.
+        let top = Bounds::new(list.origin, size(list.size.width, top_fade));
+        window.paint_quad(fill(top, band(0.)));
+    }
+    if scrolled < scroll.max_offset().y - slack && bottom_fade > Pixels::ZERO {
+        // Toward the bottom, opaque at the list's bottom edge.
+        let bottom = Bounds::new(
+            point(list.left(), list.bottom() - bottom_fade),
+            size(list.size.width, bottom_fade),
+        );
+        window.paint_quad(fill(bottom, band(180.)));
+    }
 }
 
 /// How far the fades `fade` tall reach in from the top and the bottom edge
@@ -904,6 +1183,18 @@ pub(crate) fn fade_reach(
         fade
     };
     (top, bottom)
+}
+
+/// A border `width` wide as layout lays it out in `window`: on the device
+/// pixel, its half rounded toward zero, and never under one device pixel
+/// where it is drawn at all, as GPUI rounds a stroke. Taken unsnapped, a
+/// list's 1 px border at scale 1.5, which layout draws one device pixel
+/// wide, left its cue's mask half a device pixel short of it.
+fn border_on_device_pixel(width: Pixels, window: &Window) -> Pixels {
+    if width <= Pixels::ZERO {
+        return Pixels::ZERO;
+    }
+    window.pixel_snap(width).max(px(1. / window.scale_factor()))
 }
 
 /// A list's scroll as its scrollbar reads it: over the column its rows lie
@@ -4380,6 +4671,355 @@ pub(crate) mod tests {
         });
         draw(cx);
         (list, cx)
+    }
+
+    /// A list with `rows` rows, 20 px each on a fill of their own, and a
+    /// 1 px divider below it, in the `height` its owner gives the two, as
+    /// File History's header keeps them: the owner sizes what
+    /// [`ScrollCue::list`] returns, that height less the divider, and draws
+    /// the divider beside it ([`ScrollCue::divider`]). Tests find the list as
+    /// `owned-list` and its scrollbar, while it is drawn, as
+    /// `owned-list/scrollbar`.
+    struct Owned {
+        scroll: ScrollHandle,
+        height: Pixels,
+        rows: usize,
+    }
+
+    /// The rows' fill in [`Owned`].
+    const OWNED_ROW: u32 = 0x3a5f8a;
+    /// The divider's colour in [`Owned`].
+    const OWNED_DIVIDER: u32 = 0xc04040;
+
+    impl Render for Owned {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let cue = ScrollCue::new(&self.scroll, Pixels::ZERO);
+            let observe = cue.observe(|_, _, _| {});
+            let list = div()
+                .id("owned-list")
+                .debug_selector(|| "owned-list".into())
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .flex()
+                .flex_col()
+                .children((0..self.rows).map(|row| {
+                    div()
+                        .flex_shrink_0()
+                        .h(px(20.))
+                        .bg(rgb(OWNED_ROW))
+                        .child(format!("Row {row}"))
+                }));
+            let divider = ScrollCue::divider_height(window);
+            div()
+                .w(px(200.))
+                .h(px(400.))
+                .flex()
+                .flex_col()
+                .child(
+                    cue.list(list, "owned-list/scrollbar")
+                        .on_children_prepainted(observe)
+                        .h(self.height - divider)
+                        .flex_none(),
+                )
+                .child(ScrollCue::divider(rgb(OWNED_DIVIDER)))
+        }
+    }
+
+    /// Where an [`Owned`] list's divider begins, its owner's `height` less
+    /// the divider, at the window's scale.
+    fn owned_divider_top(cx: &mut VisualTestContext, height: Pixels) -> Pixels {
+        height - cx.update(|window, _| ScrollCue::divider_height(window))
+    }
+
+    /// A divider beside a cued list takes nothing from its scroll: three
+    /// 20 px rows in the 60 px their owner gives the list and a 1 px divider
+    /// below it scroll by the divider's height at scales 1, 1.5 and 2, 1 px,
+    /// one device pixel (0.67 px) and 1 px, as they did while the cue's own
+    /// column carried the divider. Carried by the list, the divider lay
+    /// inside the bounds GPUI takes the list's reach from, and the rows
+    /// scrolled none.
+    #[gpui::test]
+    fn a_divider_beside_a_cued_list_takes_nothing_from_its_scroll(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let scroll = ScrollHandle::new();
+        let (_list, cx) = cx.add_window_view(|_, _| Owned {
+            scroll: scroll.clone(),
+            height: px(60.),
+            rows: 3,
+        });
+        for scale in [1., 1.5, 2.] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            draw(cx);
+            let edge = owned_divider_top(cx, px(60.));
+            let list = scroll.bounds();
+            assert!(
+                (list.bottom() - edge).abs() < px(0.01),
+                "at scale {scale}, the list {list:?} ends where its divider begins, {edge:?}"
+            );
+            let reach = scroll.max_offset().y;
+            let divider = px(60.) - edge;
+            assert!(
+                (reach - divider).abs() < px(0.01),
+                "at scale {scale}, three 20 px rows in 60 px with a {divider:?} divider \
+                 scroll {reach:?}, the divider's height"
+            );
+        }
+    }
+
+    /// What a cued list holds besides its rows is drawn over it, laid out in
+    /// a root of its own (`Cued`'s `ParentElement`), so a debug build refuses
+    /// a `div`, an identified `div` or a `canvas` given to it that is not
+    /// absolutely positioned, which would stand below the cue's scrollbar in
+    /// that root's column, whether given as it is or made an element first,
+    /// which `child` wraps once more, and takes one that is, as the Working
+    /// body's ring along its edge is (`workspace::list_edge`), and an
+    /// element whose place it cannot read, a text.
+    #[test]
+    fn a_cued_list_refuses_what_is_not_placed_over_it() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        type Add = dyn Fn(super::Cued<Div>) -> super::Cued<Div>;
+        let scroll = ScrollHandle::new();
+        let refused = |add: &Add| {
+            let cue = ScrollCue::new(&scroll, px(0.));
+            catch_unwind(AssertUnwindSafe(|| {
+                drop(add(cue.around(div(), "refused-scrollbar")));
+            }))
+            .is_err()
+        };
+        fn canvas() -> gpui::Canvas<()> {
+            gpui::canvas(|_, _, _| (), |_, _, _, _| ())
+        }
+        let flowing: [(&Add, &str); 4] = [
+            (&|cued| cued.child(div()), "a div in the flow"),
+            (
+                &|cued| cued.child(div().id("placed")),
+                "an identified div in the flow",
+            ),
+            (&|cued| cued.child(canvas()), "a canvas in the flow"),
+            (
+                &|cued| cued.child(div().into_any_element()),
+                "a div in the flow made an element",
+            ),
+        ];
+        for (add, what) in flowing {
+            assert!(refused(add), "a cued list refuses {what}");
+        }
+        let placed: [(&Add, &str); 5] = [
+            (
+                &|cued| cued.child(div().absolute().inset_0()),
+                "an absolute div",
+            ),
+            (
+                &|cued| cued.child(div().id("placed").absolute()),
+                "an absolute identified div",
+            ),
+            (
+                &|cued| cued.child(canvas().absolute().size_full()),
+                "an absolute canvas",
+            ),
+            (
+                &|cued| cued.children([div().absolute().into_any_element()]),
+                "an absolute div made an element",
+            ),
+            (
+                &|cued| cued.child("a text"),
+                "a text, whose place it cannot read",
+            ),
+        ];
+        for (add, what) in placed {
+            assert!(!refused(add), "a cued list takes {what}");
+        }
+    }
+
+    /// A cued list is the node its owner sizes, its divider drawn beside it
+    /// ([`ScrollCue::divider`]), with its cue drawn over it outside the
+    /// layout's flow: what the owner sets on the cued list lands on the list
+    /// that scrolls, so a list of two rows given 100 px less its divider
+    /// scrolls in all of them, and ends where the divider begins. The cue
+    /// paints after the rows and the divider and over the list alone, at
+    /// scales 1, 1.5 and 2: the bottom fade of a 40 px list, opaque at the
+    /// list's edge, and the track and thumb of a 100 px one lie over the
+    /// rows' fills and end where the divider begins; and the scrollbar takes
+    /// the pointer over its track, a press below its thumb scrolling the
+    /// rows, and none on the divider. The cue once lay in a flex column of
+    /// its own around the list, which took the owner's sizing and divider,
+    /// left the list as tall as its rows and measured the list's whole
+    /// subtree again in every frame: File History's header and footer cost
+    /// 70 to 94 µs a frame more in a release build. Laid on the list without
+    /// it, the divider took from the list's bounds, which the fades, the
+    /// track and its hitbox are laid over, and the track ran onto it.
+    #[gpui::test]
+    fn a_cued_list_is_the_node_its_owner_sizes(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let scroll = ScrollHandle::new();
+        let (list, cx) = cx.add_window_view(|_, _| Owned {
+            scroll: scroll.clone(),
+            height: px(100.),
+            rows: 2,
+        });
+        // Where each frame painted the rows' fills, the cue's quads and the
+        // divider, by their order and their mask.
+        let painted = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .map(|quad| {
+                        (
+                            quad.order,
+                            quad.background,
+                            quad.border_color,
+                            logical(quad.bounds, scale),
+                            logical(quad.content_mask.bounds, scale),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let row: gpui_kit::Background = Hsla::from(rgb(OWNED_ROW)).into();
+        let divider = Hsla::from(rgb(OWNED_DIVIDER));
+        let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.01);
+        for scale in [1., 1.5, 2.] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            list.update(cx, |list, cx| {
+                list.height = px(100.);
+                list.rows = 2;
+                cx.notify();
+            });
+            scroll.set_offset(point(px(0.), px(0.)));
+            draw(cx);
+            let edge = owned_divider_top(cx, px(100.));
+            let region = cx.debug_bounds("owned-list").expect("the list");
+            assert!(
+                scroll.bounds() == region && near(region.bottom(), edge),
+                "at scale {scale}, the list {region:?} scrolls in the 100 px its owner gave \
+                 it less its divider, to {edge:?}"
+            );
+            for (height, cue) in [(40., "fade"), (100., "thumb")] {
+                list.update(cx, |list, cx| {
+                    list.height = px(height);
+                    list.rows = 30;
+                    cx.notify();
+                });
+                scroll.set_offset(point(px(0.), px(0.)));
+                draw(cx);
+                let at = format!("at scale {scale}, a {height} px list's {cue}");
+                let edge = owned_divider_top(cx, px(height));
+                let region = cx.debug_bounds("owned-list").expect("the list");
+                assert!(
+                    scroll.bounds() == region && near(region.bottom(), edge),
+                    "{at}: the list {region:?} is its owner's node and ends where its \
+                     divider begins, {edge:?}"
+                );
+                let quads = painted(cx);
+                let last_row = quads
+                    .iter()
+                    .filter(|quad| quad.1 == row)
+                    .map(|quad| quad.0)
+                    .max()
+                    .expect("rows painted");
+                let line = quads
+                    .iter()
+                    .find(|quad| quad.2 == divider)
+                    .expect("the divider painted");
+                assert!(
+                    near(line.3.top(), edge) && near(line.3.bottom(), px(height)),
+                    "{at}: the divider {:?} lies from {edge:?} to the owner's {height} px",
+                    line.3
+                );
+                let cues: Vec<_> = quads
+                    .iter()
+                    .filter(|quad| {
+                        quad.1 != row
+                            && quad.2 != divider
+                            && !quad.1.is_transparent()
+                            && quad.3.intersects(&region)
+                            && quad.3.size.height < region.size.height
+                            && quad.3.size.width < region.size.width + px(0.5)
+                            && (cue == "fade") == (quad.3.size.width > px(20.))
+                    })
+                    .collect();
+                assert!(!cues.is_empty(), "{at} is painted: {quads:?}");
+                for quad in cues {
+                    assert!(
+                        quad.0 > last_row && quad.0 > line.0,
+                        "{at} {quad:?} paints over the rows and after the divider"
+                    );
+                    assert!(
+                        quad.3.bottom() <= edge + px(0.01) && quad.4.bottom() <= edge + px(0.01),
+                        "{at} {quad:?} ends where the divider of {region:?} begins, {edge:?}"
+                    );
+                }
+                if cue == "fade" {
+                    let (_, bottom) = painted_fades(cx, region);
+                    assert!(
+                        bottom.is_some(),
+                        "{at}: its fade is opaque at the list's edge, {edge:?}: {quads:?}"
+                    );
+                }
+            }
+            let list = scroll.bounds();
+            let track = Bounds::from_corners(
+                point(list.right() - Scrollbar::width(), list.top()),
+                list.bottom_right(),
+            );
+            let filled = cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| !quad.background.is_transparent())
+                    .map(|quad| logical(quad.bounds, scale))
+                    .filter(|fill| {
+                        (fill.left() - track.left()).abs() < px(0.5)
+                            && (fill.right() - track.right()).abs() < px(0.5)
+                            && fill.size.height > track.size.height / 2.
+                    })
+                    .map(|fill| fill.bottom())
+                    .fold(px(0.), Pixels::max)
+            });
+            assert!(
+                near(filled, edge),
+                "at scale {scale}, the track's fill ends at {filled:?}, where the divider \
+                 begins, {edge:?}"
+            );
+            // A press on the divider below the track meets no scrollbar.
+            let on_divider = point(track.center().x, (edge + px(100.)) / 2.);
+            cx.simulate_mouse_move(on_divider, None, Modifiers::default());
+            cx.simulate_mouse_down(on_divider, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(on_divider, MouseButton::Left, Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                scroll.offset().y,
+                px(0.),
+                "at scale {scale}, a press on the divider at {on_divider:?} scrolls nothing"
+            );
+            // The kit moves the rows under a dragged thumb at most once a
+            // frame's time by the wall clock, which a test does not wait on;
+            // a press on the track below the thumb meets the same hitbox,
+            // and brings the rows there.
+            let thumb = painted_thumb(cx, track).expect("a thumb");
+            let below = point(thumb.center().x, track.bottom() - px(4.));
+            assert!(
+                below.y > thumb.bottom(),
+                "the track runs on below {thumb:?}"
+            );
+            cx.simulate_mouse_move(below, None, Modifiers::default());
+            cx.simulate_mouse_down(below, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(below, MouseButton::Left, Modifiers::default());
+            draw(cx);
+            assert!(
+                scroll.offset().y < px(-20.),
+                "at scale {scale}, a press on the track below the thumb scrolls the rows, \
+                 to {:?}",
+                scroll.offset()
+            );
+            cx.simulate_mouse_move(point(px(300.), px(300.)), None, Modifiers::default());
+        }
     }
 
     /// A list its owner decided overflows keeps the gutter, so its rows

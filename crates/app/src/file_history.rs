@@ -68,7 +68,7 @@ fn forget_text() {
 /// shares left the revisions 55 px, part of one 94 px row, and at 461 × 420
 /// a failed page's notice left them about 31 px.
 struct PanelLeast {
-    /// The header's padding and its top row, with its bottom border.
+    /// The header's padding and its top row, with the divider below it.
     header: Pixels,
     /// The message's toolbar and first line, where a revision is shown, a
     /// failed page's notice, where one shows, and one revision row; or,
@@ -84,7 +84,7 @@ struct PanelLeast {
     error_line: Pixels,
     /// One whole revision row, which the revisions keep.
     row: Pixels,
-    /// The footer's padding and its status line, with its top border.
+    /// The footer's padding and its status line, with the divider above it.
     footer: Pixels,
 }
 
@@ -93,7 +93,7 @@ impl PanelLeast {
     /// is shown, keeps at least `message` (`Toolbar::revision_message_least`).
     fn of(message: Option<Pixels>, failed: bool, window: &Window) -> Self {
         let rem = window.rem_size();
-        let edge = window.pixel_snap(px(1.)) + rem * 1.5;
+        let edge = crate::tags::ScrollCue::divider_height(window) + rem * 1.5;
         let line = |size: f32| {
             window
                 .text_style()
@@ -199,13 +199,15 @@ const FOLLOWS: &str = "Follows renames and the first parent of each merge.";
 /// The heights File History's header and footer take, and whether each
 /// scrolls its own rows, decided from the room their rows have without a
 /// scroll cue's gutter and the height the window lays the panel out in,
-/// never from whether they scrolled in their last frame: each is as tall
-/// as its rows laid out in that room, within its share of the panel
-/// (`PanelLeast::shares`); Newer page and Older page keep their labels
+/// never from whether they scrolled in their last frame: each takes its
+/// rows laid out in that room within its share of the panel
+/// (`PanelLeast::shares`), on the device pixel at or above them where it
+/// holds them (`held_at`); Newer page and Older page keep their labels
 /// where the footer then holds them, else their icons where it holds
 /// those (DESIGN.md's responsive order), and only otherwise does the footer
 /// scroll, keeping their icons, laid out in the room its gutter leaves.
-/// Each scrolls exactly where its rows overflow it so. Laid out in the
+/// Each scrolls exactly where its rows overflow it so, past what its cue
+/// takes as an end (`scrolled_in`). Laid out in the
 /// gutter's room once it had scrolled, the footer kept Newer page and Older
 /// page on two rows reached from a shorter window and on one from a taller
 /// one at 13 pt in
@@ -289,13 +291,16 @@ struct Decided {
 /// more: the two take the same width, and only the panel's least heights
 /// differ between them (`Rows::regions`).
 struct Rows {
-    /// The header's rows, with its padding and its border.
+    /// The header's rows, with its padding and the divider below it.
     header: Pixels,
     /// The footer's with Newer page and Older page labelled, where the
     /// wider label fits the room (`page_labels_fit`).
     labelled: Option<Pixels>,
     /// The footer's with their icons.
     icons: Pixels,
+    /// The scale factor the panel is laid out at, on whose device pixels
+    /// the regions' heights lie (`held_at`, `scrolled_in`).
+    scale: f32,
 }
 
 impl Rows {
@@ -308,6 +313,7 @@ impl Rows {
             labelled: page_labels_fit(room, window)
                 .then(|| file_history_footer_height(status, true, room, window)),
             icons: file_history_footer_height(status, false, room, window),
+            scale: window.scale_factor(),
         }
     }
 
@@ -315,28 +321,53 @@ impl Rows {
     /// `least` (`PanelLeast::shares`): Newer page and Older page labelled
     /// where the footer then holds them, else their icons where it holds
     /// those, and otherwise the footer scrolls, keeping their icons
-    /// (DESIGN.md's responsive order), its share taken as theirs.
+    /// (DESIGN.md's responsive order), its share taken as theirs. A region
+    /// holds its rows where they fit its share on the device pixel, and is
+    /// laid out tall enough for them (`held_at`), so it ends at its last row
+    /// and its padding and a wheel over it moves nothing, the body giving the
+    /// less than one device pixel that takes past its share; one that does
+    /// not scrolls in its share as layout lays it out, its rows reaching
+    /// past it by more than its cue takes as an end (`scrolled_in`). Laid
+    /// out at its share as layout rounds it, half a device pixel toward
+    /// zero, a header whose rows ran up to half a pixel past that was held
+    /// there, cut that much of its padding and moved half a pixel under a
+    /// wheel with no cue to say so; weighed against the share itself, a
+    /// header 0.15 px over its 203.85 px at scale 2 was laid out 204 px
+    /// tall, held its rows whole and still kept a gutter.
     fn regions(&self, least: &PanelLeast, tall: Pixels) -> Regions {
+        let scale = self.scale;
         let held = |footer: Pixels| {
             let shares = least.shares(tall, self.header, footer);
-            (footer <= shares[1] + SETTLED).then_some(shares)
+            held_at(footer, shares[1], scale).map(|height| (shares, height))
         };
-        let (shares, footer_scrolls, page_labels) =
-            if let Some(shares) = self.labelled.and_then(held) {
-                (shares, false, true)
+        let (shares, footer, footer_scrolls, page_labels) =
+            if let Some((shares, footer)) = self.labelled.and_then(held) {
+                (shares, footer, false, true)
             } else {
                 // Their icons' shares, worked out once whether the footer
                 // holds them or scrolls them. Labelled in the room its
                 // gutter left, Older page lay below the footer's fold at
                 // 15 pt in a 424 × 600 window.
                 let shares = least.shares(tall, self.header, self.icons);
-                (shares, self.icons > shares[1] + SETTLED, false)
+                match held_at(self.icons, shares[1], scale) {
+                    Some(footer) => (shares, footer, false, false),
+                    None => (
+                        shares,
+                        scrolled_in(self.icons, shares[1], scale),
+                        true,
+                        false,
+                    ),
+                }
             };
+        let (header, header_scrolls) = match held_at(self.header, shares[0], scale) {
+            Some(header) => (header, false),
+            None => (scrolled_in(self.header, shares[0], scale), true),
+        };
         Regions {
-            header: shares[0],
-            footer: shares[1],
-            body: (tall - shares[0] - shares[1]).max(least.body),
-            header_scrolls: self.header > shares[0] + SETTLED,
+            header,
+            footer,
+            body: (tall - header - footer).max(least.body),
+            header_scrolls,
             footer_scrolls,
             page_labels,
         }
@@ -346,6 +377,42 @@ impl Rows {
 /// How far rows measured from their parts may run past the height they are
 /// given and still fit it: layout sums the same lengths in another order.
 const SETTLED: Pixels = px(0.01);
+
+/// The height a region whose rows are `rows` tall is laid out at to hold
+/// them whole in its `share` at `scale`: its rows rounded up to the device
+/// pixel, where they fit the share rounded up to it, so a held region
+/// passes its share, and a held header its 30% cap or a held footer its
+/// 25%, by under one device pixel, which the body gives; `None` where they
+/// do not, and it scrolls (`scrolled_in`). Laid out where layout rounds its
+/// share, half a device pixel toward zero, a held header cut up to half a
+/// pixel of its padding at scale 2.
+fn held_at(rows: Pixels, share: Pixels, scale: f32) -> Option<Pixels> {
+    let up = |length: Pixels| px((f32::from(length - SETTLED) * scale).ceil() / scale);
+    let height = up(rows);
+    (height <= up(share) + SETTLED).then_some(height)
+}
+
+/// The height a region whose `rows` run past its `share` at `scale` is laid
+/// out at while it scrolls them: its share as layout lays it out
+/// (`laid_out`), or the device pixel below where its rows would reach no
+/// further past that than its cue takes as an end (`tags::AN_END`), so the
+/// cue always shows the scroll it keeps a gutter for. Only a device pixel
+/// of half a pixel or less, at scale 2 and above, leaves rows that run past
+/// their share rounded up so near it: at scale 2 a header's 181.5 px of rows
+/// in a 180.9 px share, laid out 181 px tall, scrolled half a pixel and
+/// kept a gutter its cue drew nothing in.
+fn scrolled_in(rows: Pixels, share: Pixels, scale: f32) -> Pixels {
+    let below = (f32::from(rows - crate::tags::AN_END - SETTLED) * scale).floor() / scale;
+    laid_out(share, scale).min(px(below))
+}
+
+/// `length` as layout lays a set height out at `scale`: on the device pixel,
+/// its half rounded toward zero, as GPUI rounds every set length before
+/// layout (`Window::pixel_snap` rounds so too).
+fn laid_out(length: Pixels, scale: f32) -> Pixels {
+    let device = f32::from(length) * scale;
+    px((device.abs() - 0.5).ceil().copysign(device) / scale)
+}
 
 /// The interface font's line at `size` pt, as a text element lays one out,
 /// on a device pixel (`image_compare::text_line`).
@@ -407,7 +474,7 @@ fn labelled_width(label: &str, window: &Window) -> Pixels {
 }
 
 /// File History's header laid out `room` wide, its `py_3` above and below
-/// its rows and its bottom border included: the top row, a 28 px control
+/// its rows and the divider below it included: the top row, a 28 px control
 /// tall; the anchor's path, one line; the anchor's line `from` beside its
 /// copy control where both fit, else on its own line or as it wraps with
 /// the control beneath; the note, as it wraps; and Newer, Older and the
@@ -469,11 +536,11 @@ fn file_history_header_height(
         + gap
         + revision_row
         + pad
-        + snap(px(1.))
+        + crate::tags::ScrollCue::divider_height(window)
 }
 
 /// File History's footer laid out `room` wide, its `p_3` above and below its
-/// rows and its top border included: its status line, `status` tall as it
+/// rows and the divider above it included: its status line, `status` tall as it
 /// wraps there, and Newer page and Older page, labelled where `labels`, else
 /// 28 px icons, on one row where they fit side by side.
 fn file_history_footer_height(
@@ -505,7 +572,7 @@ fn file_history_footer_height(
             window,
         )
         + pad
-        + snap(px(1.))
+        + crate::tags::ScrollCue::divider_height(window)
 }
 
 /// Whether Newer page and Older page keep their labels in a footer whose
@@ -1720,6 +1787,9 @@ impl GitTurtle {
         let from = lineage.anchor_line();
         let status = lineage.status();
         let regions = self.file_history.regions.get();
+        // The header's and the footer's dividers, which each region holds
+        // beside its scrolling rows (`tags::ScrollCue::divider`).
+        let divider = crate::tags::ScrollCue::divider_height(window);
         // The message and details as measured, which the message panel's
         // height in this frame, and so a failed page's notice's, follows.
         let extent =
@@ -1833,8 +1903,8 @@ impl GitTurtle {
             .bg(rgb(p.panel))
             .border_l_1()
             .border_color(rgb(p.border))
-            .child(
-                header_cue.list(div()
+            .child({
+                let header = header_cue.list(div()
                     .on_children_prepainted(header_cue.observe(reveals.header.observe()))
                     .id("file-history-header")
                     .overflow_y_scroll()
@@ -1990,18 +2060,34 @@ impl GitTurtle {
                                     })),
                             ),
                     ), "file-history-header-scrollbar")
-                    // The cue's own node gives way and carries the divider,
-                    // inside which its track lies, so it paints over no line.
-                    .debug_selector(|| "file-history-header".into())
-                    // As tall as `Regions` decided, or, where no window lays
-                    // the inspector out, its rows within its share.
-                    .map(|header| match regions {
-                        Some(regions) => header.h(regions.header).flex_none(),
-                        None => header.max_h(relative(0.30)).flex_shrink(1.).min_h(least.header),
-                    })
-                    .border_b_1()
-                    .border_color(rgb(p.border)),
-            )
+                    // The scrolling node itself gives way, its cue drawn over
+                    // it adding no node (`tags::Cued`).
+                    .debug_selector(|| "file-history-header".into());
+                // As tall as `Regions` decided less its divider, or, where no
+                // window lays the inspector out, its rows within its share
+                // with its divider, as `Regions` weighs them.
+                match regions {
+                    Some(regions) => header
+                        .h(regions.header - divider)
+                        .flex_none()
+                        .into_any_element(),
+                    None => div()
+                        .flex()
+                        .flex_col()
+                        .max_h(relative(0.30))
+                        .flex_shrink(1.)
+                        .min_h(least.header)
+                        .child(header.flex_shrink(1.).min_h(least.header - divider))
+                        .child(crate::tags::ScrollCue::divider(rgb(p.border)))
+                        .into_any_element(),
+                }
+            })
+            // Its divider stands below it, beside the list rather than on it,
+            // so it takes nothing from what the header scrolls, its fades or
+            // its track (`tags::ScrollCue::divider`).
+            .when(regions.is_some(), |panel| {
+                panel.child(crate::tags::ScrollCue::divider(rgb(p.border)))
+            })
             .child(div().flex_1().min_h(least.body).flex().flex_col()
                 // As tall as the message and the revision's details where
                 // they fit, as History's panel is, at most its share here.
@@ -2052,7 +2138,7 @@ impl GitTurtle {
                             .child(error.clone()),
                         "file-history-error-scrollbar",
                     )
-                    // The cue's own node gives way, down to a line.
+                    // It gives way, down to a line.
                     .flex_shrink(1.)
                     .min_h(least.error_line))
                     .child({
@@ -2070,8 +2156,8 @@ impl GitTurtle {
                             }));
                         reveals.track(&reveals.failure, "retry-file-history", retry, room, cx)
                     }), "file-history-failure-scrollbar")
-                    // The cue's own node gives way to the revisions' whole
-                    // row down to its least, and carries the notice's fill.
+                    // It gives way to the revisions' whole row down to its
+                    // least, and carries the notice's fill.
                     .max_h(relative(0.35))
                     .flex_shrink(1.)
                     .min_h(least.failure)
@@ -2139,8 +2225,13 @@ impl GitTurtle {
                     .children(self.focus_ring.edge(&self.file_focus, rgb(p.accent)))),
             )
             )
-            .child(
-                footer_cue.list(div()
+            // The footer's divider stands above it, beside the list, as the
+            // header's stands below the header.
+            .when(regions.is_some(), |panel| {
+                panel.child(crate::tags::ScrollCue::divider(rgb(p.border)))
+            })
+            .child({
+                let footer = footer_cue.list(div()
                     .on_children_prepainted(footer_cue.observe(reveals.footer.observe()))
                     .id("file-history-footer")
                     .overflow_y_scroll()
@@ -2197,14 +2288,23 @@ impl GitTurtle {
                                 reveals.track(&reveals.footer, "older-file-page", older, room, cx)
                             }),
                     ), "file-history-footer-scrollbar")
-                    .debug_selector(|| "file-history-footer".into())
-                    .map(|footer| match regions {
-                        Some(regions) => footer.h(regions.footer).flex_none(),
-                        None => footer.max_h(relative(0.25)).flex_shrink(1.).min_h(least.footer),
-                    })
-                    .border_t_1()
-                    .border_color(rgb(p.border)),
-            ), "file-history-panel-scrollbar")
+                    .debug_selector(|| "file-history-footer".into());
+                match regions {
+                    Some(regions) => footer
+                        .h(regions.footer - divider)
+                        .flex_none()
+                        .into_any_element(),
+                    None => div()
+                        .flex()
+                        .flex_col()
+                        .max_h(relative(0.25))
+                        .flex_shrink(1.)
+                        .min_h(least.footer)
+                        .child(crate::tags::ScrollCue::divider(rgb(p.border)))
+                        .child(footer.flex_shrink(1.).min_h(least.footer - divider))
+                        .into_any_element(),
+                }
+            }), "file-history-panel-scrollbar")
             .size_full()
             .min_w_0()
             .into_any_element()
@@ -3304,8 +3404,11 @@ pub(crate) mod tests {
                 size(px(width), px(height)),
             ))
         };
+        // The header's and the footer's scrolling nodes, each with its 1 px
+        // divider beside it (`tags::ScrollCue::divider`), the header's below
+        // it and the footer's above it, in the regions they took with it.
         for (selector, before) in [
-            ("file-history-header", laid_out(1201., 136., 279., 181.5)),
+            ("file-history-header", laid_out(1201., 136., 279., 180.5)),
             ("file-history-top-row", laid_out(1210.5, 145.5, 260., 28.)),
             ("file-history-title", laid_out(1210.5, 149.5, 87., 19.5)),
             ("close-file-history", laid_out(1399.5, 145.5, 71., 28.)),
@@ -3317,7 +3420,7 @@ pub(crate) mod tests {
                 laid_out(1201., 351.5, 279., 137.),
             ),
             (LIST, laid_out(1201., 489.5, 279., 387.)),
-            ("file-history-footer", laid_out(1201., 876.5, 279., 70.5)),
+            ("file-history-footer", laid_out(1201., 877.5, 279., 69.5)),
             ("newer-file-page", laid_out(1210.5, 909.5, 92., 28.)),
             ("older-file-page", laid_out(1309., 909.5, 92., 28.)),
         ] {
@@ -3683,6 +3786,15 @@ pub(crate) mod tests {
             for (reveal, scrollbar, stop) in regions {
                 let at = format!("{text} pt in {width} × 490, {scrollbar}, {stop}");
                 let scroll = reveal.scroll();
+                // The region scrolls itself, its sizing on it and its
+                // divider beside it, with no node of its cue's around it
+                // (`tags::Cued`).
+                let region = scrollbar.trim_end_matches("-scrollbar");
+                assert_eq!(
+                    Some(scroll.bounds()),
+                    cx.debug_bounds(region),
+                    "{at}: {region} is the node that scrolls"
+                );
                 if !scrolls {
                     if scroll.max_offset().y > px(0.) {
                         let list = scroll.bounds();
@@ -4253,7 +4365,7 @@ pub(crate) mod tests {
                     .map(|part| part.bottom())
                     .fold(px(0.), Pixels::max);
                 assert!(
-                    (list.bottom() - pad - foot).abs() < px(0.5),
+                    (list.bottom() - pad - foot).abs() <= SETTLED,
                     "{at}: {list:?} ends at its last row, {foot:?}, and its padding"
                 );
             }
@@ -4314,6 +4426,261 @@ pub(crate) mod tests {
     #[gpui::test]
     async fn file_history_regions_scroll_where_decided_at_15_to_18_pt(cx: &mut TestAppContext) {
         regions_scroll_where_decided(cx, &[15, 16, 17, 18]).await;
+    }
+
+    /// Resizes the window to `width` × `height` at `scale` and draws it: the
+    /// test platform's window reports scale 2, which a resize takes as the
+    /// window's scale again (`Window::bounds_changed`), so a scale set
+    /// before a resize lasts only until it.
+    fn resize_at(cx: &mut gpui_kit::VisualTestContext, width: f32, height: f32, scale: f32) {
+        use gpui_kit::{px, size};
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, _| window.set_scale_factor(scale));
+        crate::views::tests::draw(cx);
+    }
+
+    /// File History's header or its footer, `footer`, held whole where
+    /// `Regions` decided it holds its rows: it ends at its last row and its
+    /// padding, cutting none of either, and a wheel over it moves nothing.
+    fn assert_held_whole(
+        app: &gpui_kit::Entity<GitTurtle>,
+        cx: &mut gpui_kit::VisualTestContext,
+        footer: bool,
+        at: &str,
+    ) {
+        use gpui_kit::{
+            Modifiers, PlatformInput, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
+        };
+        let (scroll, panel) = app.read_with(cx, |app, _| {
+            let reveals = &app.file_history.reveals;
+            let region = if footer {
+                &reveals.footer
+            } else {
+                &reveals.header
+            };
+            (region.scroll().clone(), reveals.panel.scroll().clone())
+        });
+        let last = if footer {
+            ["older-file-page", "newer-file-page"]
+        } else {
+            ["older-file-revision", "file-history-revision-number"]
+        };
+        let pad = cx.update(|window, _| window.pixel_snap(window.rem_size() * 0.75));
+        let foot = last
+            .into_iter()
+            .filter_map(|part| cx.debug_bounds(part))
+            .map(|part| part.bottom())
+            .fold(px(0.), Pixels::max);
+        let list = scroll.bounds();
+        assert!(
+            (list.bottom() - pad - foot).abs() <= SETTLED,
+            "{at}: {list:?} ends at its last row, {foot:?}, and its whole {pad:?} padding"
+        );
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    position: list.center(),
+                    delta: ScrollDelta::Lines(point(0., -3.)),
+                    modifiers: Modifiers::default(),
+                    touch_phase: TouchPhase::Moved,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            scroll.offset().y,
+            px(0.),
+            "{at}: a wheel over {list:?}, which holds its rows, moves nothing"
+        );
+        for handle in [&scroll, &panel] {
+            handle.set_offset(point(px(0.), px(0.)));
+        }
+        crate::views::tests::draw(cx);
+    }
+
+    /// Sweeps File History's header or its footer, `footer`, at 13 pt and at
+    /// scales 1, 1.5 and 2, at a width where its cue's gutter wraps none of
+    /// its rows anew, through window heights a quarter pixel apart from 8 px
+    /// below to 2 px above the height where `Regions` first decides it
+    /// scrolls: it scrolls more than half a pixel, past what its cue takes as
+    /// an end, exactly where it was decided to, so a gutter never stands
+    /// without a scroll, and where it holds its rows it cuts none of its
+    /// padding and a wheel over it moves nothing (`assert_held_whole`).
+    /// Returns how far its rows ran past the height each frame decided it.
+    async fn sweep_just_over_its_share(cx: &mut TestAppContext, footer: bool) -> Vec<Pixels> {
+        use crate::views::tests::{
+            history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::px;
+        let part = if footer { "footer" } else { "header" };
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        // The region's rows, the footer's with Newer page and Older page
+        // labelled where `labels`, as `Rows` measures them, in the room the
+        // decided toolbar leaves them, and in that room less the gutter.
+        let rows = |cx: &mut gpui_kit::VisualTestContext, labels: bool| {
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                let lineage = app.file_history.lineage.as_ref().expect("a lineage");
+                let gutter =
+                    crate::tags::ScrollCue::gutter() + crate::appearance::button_ring_room(cx);
+                [Pixels::ZERO, gutter].map(|gutter| {
+                    let room = app
+                        .file_history_header_room(gutter, window)
+                        .expect("the region's room");
+                    let rows = Rows::measure(lineage, room, window);
+                    match (footer, labels) {
+                        (false, _) => rows.header,
+                        (true, true) => rows.labelled.unwrap_or(rows.icons),
+                        (true, false) => rows.icons,
+                    }
+                })
+            })
+        };
+        let scrolls = |cx: &mut gpui_kit::VisualTestContext| {
+            let regions = app
+                .read_with(cx, |app, _| app.file_history.regions.get())
+                .expect("decided regions");
+            if footer {
+                regions.footer_scrolls
+            } else {
+                regions.header_scrolls
+            }
+        };
+        let mut over = Vec::new();
+        for scale in [1., 1.5, 2.] {
+            let width = [664., 760., 880., 1000., 600.]
+                .into_iter()
+                .find(|width| {
+                    resize_at(cx, *width, 1000., scale);
+                    // A footer that scrolls keeps its icons.
+                    let [whole, kept] = rows(cx, false);
+                    whole == kept
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "at scale {scale}, a width the gutter wraps none of the {part}'s rows at"
+                    )
+                });
+            assert!(
+                !scrolls(cx),
+                "at scale {scale}, the {part} holds its rows 1,000 px tall"
+            );
+            // The tallest window a quarter pixel apart in which it scrolls.
+            let (mut held, mut scrolled) = (1000., 1000.);
+            while !scrolls(cx) {
+                held = scrolled;
+                scrolled -= 50.;
+                assert!(
+                    scrolled > 200.,
+                    "at scale {scale}, the {part} scrolls somewhere"
+                );
+                resize_at(cx, width, scrolled, scale);
+            }
+            while held - scrolled > 0.25 {
+                let between = ((held + scrolled) / 2. * 4.).round() / 4.;
+                resize_at(cx, width, between, scale);
+                if scrolls(cx) {
+                    scrolled = between;
+                } else {
+                    held = between;
+                }
+            }
+            for quarter in -32..=8 {
+                let height = scrolled + quarter as f32 / 4.;
+                resize_at(cx, width, height, scale);
+                let at = format!("13 pt in {width} × {height} at scale {scale}");
+                assert_eq!(
+                    cx.update(|window, _| window.scale_factor()),
+                    scale,
+                    "{at}: drawn at its scale"
+                );
+                let regions = app
+                    .read_with(cx, |app, _| app.file_history.regions.get())
+                    .expect("decided regions");
+                let (scroll, decided, given) = app.read_with(cx, |app, _| {
+                    let reveals = &app.file_history.reveals;
+                    if footer {
+                        (
+                            reveals.footer.scroll().clone(),
+                            regions.footer_scrolls,
+                            regions.footer,
+                        )
+                    } else {
+                        (
+                            reveals.header.scroll().clone(),
+                            regions.header_scrolls,
+                            regions.header,
+                        )
+                    }
+                });
+                let reach = scroll.max_offset().y;
+                let [whole, _] = rows(cx, regions.page_labels);
+                assert_eq!(
+                    reach > px(0.5),
+                    decided,
+                    "{at}: the {part} scrolls {reach:?} exactly where it keeps its gutter, \
+                     its rows {whole:?} in its share, {regions:?}"
+                );
+                if !decided {
+                    assert_held_whole(&app, cx, footer, &at);
+                }
+                over.push(whole - given);
+            }
+        }
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+        over
+    }
+
+    /// File History's header just over its share scrolls wherever it keeps
+    /// its gutter, and holds its rows whole wherever it does not
+    /// (`sweep_just_over_its_share`): through heights where its share, 30%
+    /// of the panel, runs from past its rows to 2.4 px short of them. A
+    /// header that holds its rows is laid out on the device pixel at or
+    /// above them (`Rows::regions`): laid out at its share as layout rounds
+    /// it, half a device pixel toward zero, a header whose rows ran up to
+    /// half a pixel past that was held there, cut that much of its padding
+    /// and moved half a pixel under a wheel with no cue to say so, and one
+    /// held only within its share as laid out scrolled half a pixel with an
+    /// empty gutter at scale 2. Its divider stands beside it and takes
+    /// nothing from its reach (`tags::ScrollCue::divider`): carried by the
+    /// header, it kept 1 px of the rows out of reach, so a header up to 1 px
+    /// over its share kept an empty gutter and scrolled none, and one 1 to
+    /// 1.5 px over it half a pixel or less. Set before each resize, the
+    /// scale lasted only until it, so the sweep ran at scale 2 alone.
+    #[gpui::test]
+    async fn a_header_just_over_its_share_scrolls_where_it_keeps_its_gutter(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::px;
+        let over = sweep_just_over_its_share(cx, false).await;
+        for (least, most) in [(px(0.), px(1.)), (px(1.), px(1.5))] {
+            assert!(
+                over.iter().any(|over| *over > least && *over <= most),
+                "the heights reach a header over its share by {least:?} to {most:?}: {over:?}"
+            );
+        }
+    }
+
+    /// File History's footer just over its share scrolls wherever it keeps
+    /// its gutter, and holds its rows whole wherever it does not, as the
+    /// header does (`sweep_just_over_its_share`): laid out at its share as
+    /// layout rounds it, a footer whose rows ran up to half a pixel past it
+    /// cut that much of its padding and moved under a wheel.
+    #[gpui::test]
+    async fn a_footer_just_over_its_share_scrolls_where_it_keeps_its_gutter(
+        cx: &mut TestAppContext,
+    ) {
+        let over = sweep_just_over_its_share(cx, true).await;
+        assert!(
+            over.iter().any(|over| *over > Pixels::ZERO),
+            "the heights reach a footer over its share: {over:?}"
+        );
     }
 
     /// File History's header and footer take each form and wrap from the

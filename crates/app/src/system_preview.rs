@@ -1544,7 +1544,11 @@ impl SideHeader {
     /// a sliver, the model's details once showed a part of their lines with
     /// no sign that the rest scrolled, and a little taller, a thumb that ran
     /// out of its track against the scroll.
-    pub(crate) fn foot(&self, area: Stateful<Div>, scrollbar: &'static str) -> Div {
+    pub(crate) fn foot(
+        &self,
+        area: Stateful<Div>,
+        scrollbar: &'static str,
+    ) -> crate::tags::CuedList {
         let cue = crate::tags::ScrollCue::new(&self.foot, px(0.));
         let observe = cue.observe(|_, _, _| {});
         let area = area.min_h_0().overflow_y_scroll().track_scroll(&self.foot);

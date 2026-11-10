@@ -740,8 +740,11 @@ impl GitTurtle {
         // Blame). At 18 pt in a 461 × 490 window it left the lines 2 px.
         let least_lines = px(self.settings.density.history_row_height()) * 3.;
         let room = crate::appearance::button_ring_room(cx);
-        // One control with its ring whole, inside the footer's top border.
+        // One control with its ring whole, below the footer's divider, which
+        // stands beside its scrolling rows (`tags::ScrollCue::divider`): the
+        // footer's least and its full height hold the divider and the rows.
         let least_footer = crate::appearance::ui_size(28.) + room * 2. + px(3.);
+        let divider = crate::tags::ScrollCue::divider_height(window);
         // A pane that cannot hold the header at its usual height, three rows
         // and the footer's least: the header draws compact and gives up the
         // lineage note's line, which the source line's tooltip and name say,
@@ -913,6 +916,11 @@ impl GitTurtle {
                 // Its keyboard ring on its own edge, over the lines, so none of
                 // them moves.
                 .children(self.focus_ring.edge(focus, rgb(p.accent)))))
+            // The footer's divider stands above it, beside the list rather
+            // than on it, so it takes nothing from what the footer scrolls,
+            // its fades or its track (`tags::ScrollCue::divider`), and spans
+            // what the footer spans.
+            .child(crate::tags::ScrollCue::divider(rgb(p.border)).when(cue.kept(), |line| line.mr(-room)))
             .child(footer_cue.list(div().on_children_prepainted(footer_cue.observe(reveals.footer.observe())).id("blame-footer").debug_selector(|| "blame-footer".into()).min_h_0().overflow_y_scroll().track_scroll(reveals.footer.scroll()).map(|footer| if footer_compact { footer.px_3().py_1() } else { footer.p_3() }).flex().flex_col().gap_2()
                 // Compact, one line of summary, its full text with the
                 // detail in its tooltip and name, so the first action starts
@@ -963,7 +971,7 @@ impl GitTurtle {
                     .child(crate::native_accessibility::clips_children(div().when(footer_full, |list| list.on_children_prepainted(reveals.history.observe())).id("line-history-results").debug_selector(|| "line-history-results".into()).flex().flex_col().map(|list| if footer_full { list.min_h_0() } else { list.flex_shrink_0() }).when(footer_full, |list| list.max_h(crate::appearance::ui_size(LIST_CAP)).overflow_y_scroll().track_scroll(reveals.history.scroll())).children(history.commits.iter().enumerate().map(|(index, commit)| {
                         let hash = commit_hash_button(copy_feedback::Mark::new(("copy-line-history-commit", index), &commit.oid), &commit.oid, LINE_HISTORY_HASH, cx);
                         div().py_1().flex().items_center().gap_2().child(if footer_full { reveals.track_list(("line-history-hash", index), hash, room, cx) } else { reveals.track(("line-history-hash", index), hash, room, cx) }).child(static_text(("blame-line-history-subject", index), commit.subject.clone()).flex_1().truncate().text_size(crate::appearance::ui_text(11.))).child(static_text(("blame-line-history-author", index), commit.author.clone()).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))
-                    })))))), "blame-footer-scrollbar").flex_shrink(1.).min_h(least_footer).max_h(crate::appearance::ui_size(FOOTER_FULL)).border_t_1().border_color(rgb(p.border)).when(cue.kept(), |footer| footer.mr(-room))), "blame-panel-scrollbar").size_full().min_w_0().into_any_element()
+                    })))))), "blame-footer-scrollbar").flex_shrink(1.).min_h(least_footer - divider).max_h(crate::appearance::ui_size(FOOTER_FULL) - divider).when(cue.kept(), |footer| footer.mr(-room))), "blame-panel-scrollbar").size_full().min_w_0().into_any_element()
     }
 
     /// The compact header's source line, the note its form gave up (`lineage`)

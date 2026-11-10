@@ -2110,7 +2110,7 @@ impl SeriesBrowser {
         region: FailureBox<'_>,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> crate::tags::CuedList {
         let FailureBox {
             id,
             scrollbar,

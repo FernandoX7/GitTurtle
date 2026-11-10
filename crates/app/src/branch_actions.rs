@@ -1689,9 +1689,13 @@ impl Render for BranchChooser {
         // it). It keeps the focus ring's room at its sides, given back
         // through its margin, and below its last control.
         let query = self.query.read(cx).focus_handle(cx);
-        let show_list = self
-            .content
-            .group(rows.iter().map(|(_, focus)| focus.clone()).collect(), room);
+        // The list's own box keeps the ring's room around its rows and is
+        // what the group reads, its cue drawn over it (`tags::Cued`), so the
+        // reveal keeps no room of its own.
+        let show_list = self.content.group(
+            rows.iter().map(|(_, focus)| focus.clone()).collect(),
+            Pixels::ZERO,
+        );
         let content = div().on_children_prepainted(self.content.observe()).id("branch-chooser-content").debug_selector(|| "branch-chooser-content".into()).flex().flex_col().gap_3().min_h_0().overflow_y_scroll().track_scroll(self.content.scroll()).px(room).mx(-room).pb(room)
             .child(div().debug_selector(|| "branch-chooser-detail".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(detail))
             .child(div().on_children_prepainted(self.content.control(query, room)).py(room).my(-room).child(Input::new(&self.query).cleanable(true).prefix(Icon::default().path("icons/search.svg").size(px(14.)))))

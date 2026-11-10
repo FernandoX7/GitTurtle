@@ -196,7 +196,7 @@ impl FailureLine {
         let (warning, accent) = (appearance::labels(cx).warning, palette(cx).accent);
         let keys = scroll.clone();
         let edge = ring.and_then(|ring| ring.edge(focus, rgb(accent)));
-        cue.list(
+        cue.wrapped(
             div()
                 .on_children_prepainted(cue.observe(|_, _, _| {}))
                 .id(SharedString::from(format!("{id}-region")))

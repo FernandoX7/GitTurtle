@@ -735,7 +735,10 @@ impl Render for WorktreeManager {
             .map(|index| self.rows.focus(("managed-worktree-row", index), cx))
             .collect();
         let reveal = self.rows.items(rows.clone(), room);
-        let show_list = self.content.group(rows.clone(), room);
+        // Each list's own box keeps the ring's room around its rows and is
+        // what its group reads, its cue drawn over it (`tags::Cued`), so the
+        // reveal keeps no room of its own.
+        let show_list = self.content.group(rows.clone(), Pixels::ZERO);
         let tabs = [
             "worktree-browse-tab",
             "worktree-create-tab",
@@ -762,7 +765,7 @@ impl Render for WorktreeManager {
             .map(|index| self.choices.focus(("worktree-branch-choice", index), cx))
             .collect();
         let reveal_choice = self.choices.items(choice_focus.clone(), room);
-        let show_choices = self.content.group(choice_focus.clone(), room);
+        let show_choices = self.content.group(choice_focus.clone(), Pixels::ZERO);
         let cue = crate::tags::ScrollCue::revealing(&self.rows, room);
         let choice_cue = crate::tags::ScrollCue::revealing(&self.choices, room);
         // As the dialog opens, the content scrolls the shown form's first
