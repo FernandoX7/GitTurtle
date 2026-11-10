@@ -613,14 +613,27 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let entries =
-            self.apply_worktree_state(refresh.working, true, from_write, requested, window, cx);
-        if let Some(Ok(history)) = &refresh.snapshot {
-            self.repository_tabs.follow_read_repository(match history {
-                worker::QuietHistory::Refreshed(snapshot) => &snapshot.repository,
-                worker::QuietHistory::Retained { metadata, .. } => &metadata.repository,
-            });
+        let found = match &refresh.snapshot {
+            Some(Ok(worker::QuietHistory::Refreshed(snapshot))) => Some(&snapshot.repository),
+            Some(Ok(worker::QuietHistory::Retained { metadata, .. })) => Some(&metadata.repository),
+            _ => None,
+        };
+        // Another repository than the shown status and remotes were read
+        // from, as a re-clone at the tab's path leaves, is a fresh capture,
+        // as an accepted Refresh's is (`shows_another_repository`): what was
+        // read of the other goes, and the found one's status is read
+        // explicitly, since this read's went through the window's handle by
+        // path and may hold either's.
+        let replaced = found.is_some_and(|found| self.shows_another_repository(found));
+        if let Some(found) = found {
+            self.repository_tabs.follow_read_repository(found);
         }
+        let entries = if replaced {
+            self.forget_repository_state(window, cx);
+            true
+        } else {
+            self.apply_worktree_state(refresh.working, true, from_write, requested, window, cx)
+        };
         if let Some(snapshot) = refresh.snapshot {
             match snapshot {
                 Ok(worker::QuietHistory::Refreshed(snapshot)) => {
@@ -650,6 +663,11 @@ impl GitTurtle {
                     });
                 }
             }
+        }
+        if replaced {
+            // The comparison read for the other's row goes with its rows.
+            self.refresh_worktree(window, cx);
+            return entries;
         }
         if self.mode == WorkspaceMode::Working
             && let Some(preview) = refresh.preview

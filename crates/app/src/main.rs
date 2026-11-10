@@ -526,6 +526,13 @@ struct GitTurtle {
     /// readers are, so numbers only grow across tabs.
     status_requests: u64,
     work_status: Option<Arc<gitturtle_core::RepositoryStatus>>,
+    /// The Git directories the shown working status and remotes were read
+    /// from, recorded as they are installed (`apply_worktree_state`) and
+    /// gone with them (`forget_repository_state`): every accepted capture
+    /// of the tab compares the repository it found with these, not with the
+    /// window's handle, which Show latest and a quiet read replace without
+    /// reading the status again (`GitTurtle::shows_another_repository`).
+    working_identity: Option<worker::GitDirectories>,
     working_paths: working_selection::FilterState,
     integration_state: Option<gitturtle_core::OperationState>,
     integration_task: Option<Task<()>>,
@@ -956,6 +963,7 @@ impl GitTurtle {
             work_generation: 0,
             status_requests: 0,
             work_status: None,
+            working_identity: None,
             working_paths: working_selection::FilterState::default(),
             integration_state: None,
             integration_task: None,
@@ -1502,6 +1510,7 @@ impl GitTurtle {
         self.repository = None;
         self.work_generation += 1;
         self.work_status = None;
+        self.working_identity = None;
         self.working_read_failure = None;
         self.working_paths.reset();
         self.integration_state = None;

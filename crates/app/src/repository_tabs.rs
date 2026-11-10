@@ -934,6 +934,9 @@ struct WarmTab {
     history_panels: Entity<ResizableState>,
     retained_history_files: Option<(Vec<FileChange>, Option<usize>)>,
     work_status: Option<Arc<gitturtle_core::RepositoryStatus>>,
+    /// The Git directories `work_status` and `remotes` were read from
+    /// (`GitTurtle::working_identity`).
+    working_identity: Option<worker::GitDirectories>,
     integration_state: Option<gitturtle_core::OperationState>,
     profile: Option<gitturtle_core::GitProfile>,
     remotes: Vec<gitturtle_core::Remote>,
@@ -1279,6 +1282,7 @@ impl GitTurtle {
             ),
             retained_history_files: self.retained_history_files.take(),
             work_status: self.work_status.take(),
+            working_identity: self.working_identity.take(),
             integration_state: self.integration_state.take(),
             profile: self.profile.take(),
             remotes: std::mem::take(&mut self.remotes),
@@ -1386,6 +1390,7 @@ impl GitTurtle {
         self.history_panels = warm.history_panels;
         self.retained_history_files = warm.retained_history_files;
         self.work_status = warm.work_status;
+        self.working_identity = warm.working_identity;
         // What a read of another tab failed with is not this one's to say
         // (`GitTurtle::working_read_failure`).
         self.working_read_failure = None;
@@ -1621,20 +1626,46 @@ impl GitTurtle {
     }
 }
 
-/// Whether two opens found the same Git and common directories: the same
-/// paths and, where both captured one, the same inodes. A directory
-/// replaced at the same path, as a re-clone there leaves, is another
-/// repository. Reads what the opens captured, so it touches no filesystem.
+/// Whether two opens found the same Git and common directories. At the
+/// same paths, where both captured a directory's inode, the inodes match: a
+/// directory replaced at the same path, as a re-clone there leaves, is
+/// another repository. At other paths, as a folder above the root
+/// re-pointed leaves them (`worker::FoldersAbove`), only the inodes tell,
+/// so both must have captured them and they must match: the folder is the
+/// same repository only if its Git and common directories are, moved and
+/// linked back. Reads what the opens captured, so it touches no filesystem.
 fn same_git_directories(shown: &worker::GitDirectories, found: &worker::GitDirectories) -> bool {
-    let same =
-        |shown: Option<u64>, found: Option<u64>| shown.zip(found).is_none_or(|(a, b)| a == b);
-    shown.git_dir == found.git_dir
-        && shown.common == found.common
-        && same(shown.inodes.git_dir, found.inodes.git_dir)
-        && same(shown.inodes.common, found.inodes.common)
+    let (shown_inodes, found_inodes) = (shown.inodes, found.inodes);
+    if shown.git_dir == found.git_dir && shown.common == found.common {
+        let same =
+            |shown: Option<u64>, found: Option<u64>| shown.zip(found).is_none_or(|(a, b)| a == b);
+        same(shown_inodes.git_dir, found_inodes.git_dir)
+            && same(shown_inodes.common, found_inodes.common)
+    } else {
+        let known = |shown: Option<u64>, found: Option<u64>| shown.is_some() && shown == found;
+        known(shown_inodes.git_dir, found_inodes.git_dir)
+            && known(shown_inodes.common, found_inodes.common)
+    }
 }
 
 impl GitTurtle {
+    /// Whether `found`, the repository a read the window accepts found at
+    /// the shown tab (an Open's or Refresh's snapshot, Show latest's, a
+    /// quiet read's), is another than the one the shown working status and
+    /// remotes were read from (`GitTurtle::working_identity`), or, with none
+    /// read yet, than the window's handle ([`same_git_directories`]). Such a
+    /// read is a fresh capture: what the window read of the other goes
+    /// (`GitTurtle::forget_repository_state`) before the found one's status
+    /// read starts. Compared with the handle alone, it missed a re-clone
+    /// that Show latest or a quiet read had installed already, whose handle
+    /// it compared with itself while the status and remotes shown were the
+    /// replaced one's, and a folder above the root re-pointed, whose paths
+    /// it took to be another tab's open (security probes S1 to S3, FU44-A).
+    pub(super) fn shows_another_repository(&self, found: &GitRepository) -> bool {
+        let shown = (self.working_identity.clone())
+            .or_else(|| self.repository.as_ref().map(worker::GitDirectories::of));
+        shown.is_some_and(|shown| !same_git_directories(&shown, &worker::GitDirectories::of(found)))
+    }
     fn tab_inputs(&self) -> [&Entity<InputState>; 6] {
         [
             &self.search,
@@ -1782,19 +1813,14 @@ impl GitTurtle {
             self.repository_tabs.recapture,
             Some(Recapture::Reading(generation)) if generation == self.generation
         );
-        // So is one that finds another Git directory where the shown one
-        // was, by path or by inode, as a re-clone at the tab's path leaves:
-        // an Open or Refresh in place kept what was read of the replaced
-        // one, so until the status read landed Push pushed the found
-        // repository's branch to its own remote while Targets named the
-        // other's (security probe N1, FU39-A5).
-        let replaced = self.repository.as_ref().is_some_and(|shown| {
-            shown.path() == repo.path()
-                && !same_git_directories(
-                    &worker::GitDirectories::of(shown),
-                    &worker::GitDirectories::of(repo),
-                )
-        });
+        // So is one that finds another repository than the shown status and
+        // remotes were read from, as a re-clone at the tab's path or a
+        // folder above it re-pointed leaves: an Open or Refresh in place
+        // kept what was read of the replaced one, so until the status read
+        // landed Push pushed the found repository's branch to its own
+        // remote while Targets named the other's (security probe N1,
+        // FU39-A5; S2 and S3, FU44-A).
+        let replaced = self.shows_another_repository(repo);
         self.repository_tabs.recapture = None;
         if let Some(existing) = self.repository_tabs.find(repo.path())
             && self.repository_tabs.active != Some(existing)
@@ -2261,6 +2287,7 @@ impl GitTurtle {
             self.path = None;
             self.scope = None;
             self.work_status = None;
+            self.working_identity = None;
             self.working_read_failure = None;
             self.working_rows.clear();
             self.working_paths.reset();
@@ -6742,14 +6769,31 @@ pub(crate) mod tests {
     #[gpui::test]
     async fn a_quiet_read_takes_a_repository_cloned_again_into_the_tab(cx: &mut TestAppContext) {
         a_tab_follows_a_repository_cloned_again(cx, "quiet-read", |app, cx| {
-            quiet_read_of(
-                app,
-                cx,
-                crate::local_refresh::LocalChange {
-                    git: true,
-                    ..Default::default()
-                },
-            )
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.executor().run_until_parked();
+            app.update(cx, |app, _| {
+                app.automatic
+                    .report_local_change(crate::local_refresh::LocalChange {
+                        git: true,
+                        ..Default::default()
+                    })
+            });
+            // Found cloned again, the repository's status is read on the
+            // operation thread and its watch is made again, whose rescan
+            // follows (`apply_quiet_refresh`).
+            for _ in 0..16 {
+                cx.executor().run_until_parked();
+                let reading = app.read_with(cx, |app, _| {
+                    app.automatic.quiet_read_requested() || app.status_task.is_some()
+                });
+                if !reading {
+                    break;
+                }
+                app.read_with(cx, |app, _| {
+                    app.worker.wait_idle();
+                    app.operations.drain();
+                });
+            }
         })
         .await;
     }
@@ -7282,22 +7326,57 @@ pub(crate) mod tests {
         cx: &mut TestAppContext,
         route: impl FnOnce(&Entity<GitTurtle>, &mut VisualTestContext, &Path),
     ) {
-        assert_a_capture_shows_nothing_from_before(cx, false, route).await;
+        assert_a_capture_shows_nothing_from_before(cx, Replaced::Marked, route).await;
     }
 
-    /// [`assert_a_fresh_capture_shows_nothing_from_before`], where `in_place`
-    /// moves the third repository's Git directory to the tab's `.git`, as a
-    /// re-clone at the path leaves it, which marks nothing: `route` then
-    /// reads the folder again unmarked.
+    /// How [`assert_a_capture_shows_nothing_from_before`] puts the third
+    /// repository where the tab's was.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Replaced {
+        /// The tab's `.git` becomes the third repository's gitfile, which
+        /// History's Refresh marks: `route` reads the marked tab's folder.
+        Marked,
+        /// The third repository's Git directory moves to the tab's `.git`,
+        /// as a re-clone at the path leaves it, which marks nothing.
+        InPlace,
+        /// The tab, opened at `x/repo`, sees `x` moved aside and linked to
+        /// `y`, whose `repo` is the third repository: a folder above the
+        /// root re-pointed, which a reopen follows (`worker::FoldersAbove`)
+        /// and which marks nothing.
+        Above,
+    }
+
+    /// [`assert_a_fresh_capture_shows_nothing_from_before`], with the third
+    /// repository put where the tab's was as `replaced` says; `route` then
+    /// reads the folder, marked or not.
     async fn assert_a_capture_shows_nothing_from_before(
         cx: &mut TestAppContext,
-        in_place: bool,
+        replaced: Replaced,
         route: impl FnOnce(&Entity<GitTurtle>, &mut VisualTestContext, &Path),
     ) {
         use crate::views::tests::{fixture_git, fixture_git_output, fixture_repository};
         let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
-        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         let base = fixture.path().to_owned();
+        let root = if replaced == Replaced::Above {
+            for folder in ["x", "y"] {
+                std::fs::create_dir_all(base.join(folder)).unwrap();
+            }
+            let repository = fixture_repository(base.join("x").join("repo"));
+            fixture_git(
+                repository.path(),
+                &["commit", "-q", "--allow-empty", "-m", "Before"],
+            );
+            let root = repository.path().to_owned();
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.open_repository_tab(root.clone(), window, cx)
+                })
+            });
+            settle_tab_test(&app, cx).await;
+            root
+        } else {
+            app.read_with(cx, |app, _| app.path.clone().expect("a repository"))
+        };
         let read = |dir: &Path, args: &[&str]| {
             let output = fixture_git_output(dir, args);
             (output.status.success())
@@ -7320,7 +7399,11 @@ pub(crate) mod tests {
         fixture_git(&root, &["push", "-q", "-u", "origin", "before"]);
         std::fs::write(root.join("staged.txt"), "the person's\n").unwrap();
         fixture_git(&root, &["add", "staged.txt"]);
-        let third = fixture_repository(base.join("third"));
+        let third = fixture_repository(if replaced == Replaced::Above {
+            base.join("y").join("repo")
+        } else {
+            base.join("third")
+        });
         fixture_git(
             third.path(),
             &["commit", "-q", "--allow-empty", "-m", "Third"],
@@ -7354,7 +7437,11 @@ pub(crate) mod tests {
         assert_eq!(picker().as_deref(), Some("before"), "read before the mark");
         assert_eq!(
             app.read_with(cx, |app, _| app.changes_label()),
-            "Changes · 2"
+            if replaced == Replaced::Above {
+                "Changes · 1"
+            } else {
+                "Changes · 2"
+            }
         );
         assert!(
             !crate::workspace::refusals::get("push")
@@ -7362,23 +7449,35 @@ pub(crate) mod tests {
                 .announced
         );
 
-        std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
-        let found_git = if in_place {
-            std::fs::rename(&third_git, root.join(".git")).unwrap();
-            root.join(".git")
-        } else {
-            std::fs::write(
-                root.join(".git"),
-                format!("gitdir: {}\n", third_git.display()),
-            )
-            .unwrap();
-            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
-            crate::views::tests::settle(&app, cx).await;
-            assert!(
-                app.read_with(cx, |app, _| app.shown_tab_unavailable()),
-                "Refresh marks the tab"
-            );
-            third_git.clone()
+        let found_git = match replaced {
+            Replaced::InPlace => {
+                std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+                std::fs::rename(&third_git, root.join(".git")).unwrap();
+                root.join(".git")
+            }
+            Replaced::Marked => {
+                std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+                std::fs::write(
+                    root.join(".git"),
+                    format!("gitdir: {}\n", third_git.display()),
+                )
+                .unwrap();
+                cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+                crate::views::tests::settle(&app, cx).await;
+                assert!(
+                    app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+                    "Refresh marks the tab"
+                );
+                third_git.clone()
+            }
+            Replaced::Above => {
+                std::fs::rename(base.join("x"), base.join("x-away")).unwrap();
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(base.join("y"), base.join("x")).unwrap();
+                #[cfg(not(unix))]
+                unreachable!("a folder above is re-pointed through a link");
+                third_git.clone()
+            }
         };
         let identity = |app: &GitTurtle| {
             (app.repository.as_ref()).map(|repo| (repo.git_dir().to_owned(), repo.git_dir_inode()))
@@ -7389,7 +7488,7 @@ pub(crate) mod tests {
         route(&app, cx, &root);
         for _ in 0..16 {
             let installed = app.read_with(cx, |app, _| {
-                identity(app).is_some_and(|found| Some(found) != shown)
+                identity(app).is_some_and(|found| Some(found) != shown) && app.loading.is_none()
             });
             if installed {
                 break;
@@ -7525,6 +7624,11 @@ pub(crate) mod tests {
             Some("Third"),
             "Commit committed nothing"
         );
+        if replaced == Replaced::Above {
+            // Back as it was, so the folder's removal stays inside it.
+            std::fs::remove_file(base.join("x")).unwrap();
+            std::fs::rename(base.join("x-away"), base.join("x")).unwrap();
+        }
     }
 
     #[gpui::test]
@@ -7544,8 +7648,80 @@ pub(crate) mod tests {
     async fn a_refresh_that_finds_another_git_directory_in_place_captures_it_afresh(
         cx: &mut TestAppContext,
     ) {
-        assert_a_capture_shows_nothing_from_before(cx, true, |app, cx, _| {
+        assert_a_capture_shows_nothing_from_before(cx, Replaced::InPlace, |app, cx, _| {
             cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        })
+        .await;
+    }
+
+    /// Show latest over a re-clone at the tab's path installs the found
+    /// repository's handle; a Refresh after it compares the found repository
+    /// with the one the shown status and remotes were read from, not with
+    /// that handle, and captures it afresh. Compared with the handle, it
+    /// compared the found repository with itself, kept the status read
+    /// before, and Push pushed the found repository's `main` to its own
+    /// remote while Targets named the other's (security probe S2, FU44-A).
+    #[gpui::test]
+    async fn a_refresh_after_show_latest_over_a_re_clone_captures_it_afresh(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_capture_shows_nothing_from_before(cx, Replaced::InPlace, |app, cx, _| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)));
+            for _ in 0..16 {
+                if app.read_with(cx, |app, _| app.loading.is_none()) {
+                    break;
+                }
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+            }
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        })
+        .await;
+    }
+
+    /// A Refresh that finds the tab's repository through a folder above its
+    /// root re-pointed at a folder holding another repository by the same
+    /// name, which the reopen follows (`worker::FoldersAbove`), captures it
+    /// afresh: at other paths only the inodes tell the repository, and
+    /// they differ. Compared only at the same path, it kept the status read
+    /// before, and Push pushed the found repository's `main` to its own
+    /// remote while Targets named the other's (security probe S3, FU44-A).
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_refresh_through_a_re_pointed_folder_above_captures_another_repository_afresh(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_capture_shows_nothing_from_before(cx, Replaced::Above, |app, cx, _| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        })
+        .await;
+    }
+
+    /// A quiet read of a Git change that finds a re-clone at the tab's path
+    /// captures it afresh, as an accepted Refresh does: what was read of the
+    /// replaced repository goes and the found one's status is read
+    /// explicitly, so Push and Commit refuse until it lands. It once took
+    /// the working state its read had gone through the window's handle for,
+    /// by path, which may be either repository's.
+    #[gpui::test]
+    async fn a_quiet_read_that_finds_a_re_clone_captures_it_afresh(cx: &mut TestAppContext) {
+        assert_a_capture_shows_nothing_from_before(cx, Replaced::InPlace, |app, cx, _| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.automatic.hold_quiet_reads(false);
+                    app.queue_automatic_refresh(
+                        crate::local_refresh::LocalChange {
+                            git: true,
+                            worktree: true,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                })
+            });
+            quiet_reads_landed(app, cx);
+            app.update(cx, |app, _| app.automatic.hold_quiet_reads(true));
         })
         .await;
     }

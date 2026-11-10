@@ -3099,6 +3099,12 @@ impl GitTurtle {
             }
         };
         self.work_status = Some(Arc::new(status));
+        // Read through the window's handle, explicit and quiet reads alike,
+        // whose landing is dropped once another generation of either was
+        // asked for: the repository the status and remotes are of, which
+        // every capture accepted later is compared with
+        // (`shows_another_repository`).
+        self.working_identity = self.repository.as_ref().map(worker::GitDirectories::of);
         self.working_read_failure = None;
         // A quiet refresh that changed nothing leaves the line to whatever it
         // last reported, an operation's outcome included.
