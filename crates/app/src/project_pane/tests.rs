@@ -1382,6 +1382,136 @@ async fn a_group_dialog_shows_its_own_failed_save_beside_a_newer_one(cx: &mut Te
     });
 }
 
+/// Opens the group dialog for `intent` and fills its field with `name`.
+fn group_form_with(
+    app: &Entity<GitTurtle>,
+    intent: GroupIntent,
+    name: &str,
+    cx: &mut VisualTestContext,
+) -> Entity<GroupForm> {
+    let form = cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_group_form(intent, window, cx);
+            app.project_pane.group_form.clone().unwrap()
+        })
+    });
+    settle(cx);
+    let name = name.to_owned();
+    cx.update(|window, cx| {
+        let input = form.read(cx).input.clone();
+        input.update(cx, |input, cx| input.set_value(name, window, cx));
+    });
+    settle(cx);
+    form
+}
+
+/// Presses Return once in the group dialog and checks that the project list
+/// refused `typed` for `reason`: the dialog stays open with the typed name
+/// and focus in its field, says why once, on one node heard once, and
+/// nothing is saved.
+async fn return_is_refused(
+    app: &Entity<GitTurtle>,
+    form: &Entity<GroupForm>,
+    typed: &str,
+    reason: &str,
+    cx: &mut VisualTestContext,
+) {
+    use crate::native_accessibility::written;
+    let library = app.read_with(cx, |app, _| app.project_library.clone());
+    written::forget();
+    enter(cx, Some(false));
+    settle_save(app, cx).await;
+    enter(cx, None);
+    settle(cx);
+    cx.update(|window, cx| {
+        assert!(window.has_active_dialog(cx), "{reason}: the dialog stays");
+        let form = form.read(cx);
+        assert!(form.visible && !form.pending, "{reason}: the form waits");
+        assert_eq!(form.error.as_deref(), Some(reason));
+        assert_eq!(form.errors_shown, 1, "{reason}: said once");
+        let input = form.input.read(cx);
+        assert_eq!(input.value().as_ref(), typed, "{reason}: the name is kept");
+        assert!(
+            input.focus_handle(cx).is_focused(window),
+            "{reason}: focus stays in the field"
+        );
+    });
+    let heard = written::announced_from("project-group-error");
+    assert_eq!(heard.len(), 1, "{reason}: heard once: {heard:?}");
+    assert_eq!(
+        app.read_with(cx, |app, _| app.project_library.clone()),
+        library,
+        "{reason}: the pane's list is unchanged"
+    );
+    assert_eq!(
+        Preferences::load().project_library,
+        ProjectLibrary::default(),
+        "{reason}: nothing is saved"
+    );
+}
+
+/// Return on a group name one byte over the limit says why in the dialog.
+/// The project list's refusal updated the form again while the form was
+/// asking for the save, which panicked ("cannot update GroupForm while it is
+/// already being updated").
+#[gpui::test]
+async fn return_on_a_group_name_over_the_byte_limit_says_why(cx: &mut TestAppContext) {
+    use crate::preferences::MAX_PROJECT_NAME_BYTES;
+    let (app, cx) = test_app(cx, enabled(), ProjectLibrary::default());
+    let long = "a".repeat(MAX_PROJECT_NAME_BYTES + 1);
+    let form = group_form_with(&app, GroupIntent::Create(None), &long, cx);
+    return_is_refused(
+        &app,
+        &form,
+        &long,
+        &format!("Use a group name of at most {MAX_PROJECT_NAME_BYTES} bytes."),
+        cx,
+    )
+    .await;
+}
+
+/// The project list's refusals that are not about the name are said in the
+/// dialog the same way: a group inside the deepest level, and one more group
+/// than the list holds. Each panicked as the byte limit did.
+#[gpui::test]
+async fn return_on_a_group_the_list_cannot_hold_says_why(cx: &mut TestAppContext) {
+    use crate::project_library::{MAX_DEPTH, MAX_GROUPS};
+    let mut nested = ProjectLibrary::default();
+    let mut deepest = None;
+    for level in 0..MAX_DEPTH {
+        let name = format!("Level {level}");
+        deepest = Some(nested.create_group(deepest, &name).unwrap());
+    }
+    let mut full = ProjectLibrary::default();
+    for group in 0..MAX_GROUPS {
+        full.create_group(None, &format!("Group {group}")).unwrap();
+    }
+    let (app, cx) = test_app(cx, enabled(), ProjectLibrary::default());
+    let cases = [
+        (
+            nested,
+            GroupIntent::Create(deepest),
+            format!("Groups can nest up to {MAX_DEPTH} levels deep."),
+        ),
+        (
+            full,
+            GroupIntent::Create(None),
+            format!(
+                "Up to {MAX_GROUPS} groups can be saved. Remove a group before adding another."
+            ),
+        ),
+    ];
+    for (library, intent, reason) in cases {
+        cx.update(|window, cx| {
+            window.close_dialog(cx);
+            app.update(cx, |app, _| app.set_project_library(library));
+        });
+        settle(cx);
+        let form = group_form_with(&app, intent, "Clients", cx);
+        return_is_refused(&app, &form, "Clients", &reason, cx).await;
+    }
+}
+
 /// A write refuses a project's row at once: assistive technology hears it
 /// unavailable from the write's start, and a click leaves the cursor where it
 /// was and opens nothing, while the row dims only once the write looks busy

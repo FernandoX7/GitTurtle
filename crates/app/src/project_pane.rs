@@ -1148,6 +1148,12 @@ impl GitTurtle {
         });
     }
 
+    /// Begins saving `name` for the group `form` names, or returns why the
+    /// project list refuses it. `form` asks while it is being updated, so the
+    /// refusal goes back to it to show: updating it here again panicked
+    /// ("already being updated") for a name over the byte limit, a group
+    /// past the nesting depth or the group limit, or one removed while its
+    /// dialog was open. Only the save's later answer updates `form`.
     fn submit_group_name(
         &mut self,
         intent: GroupIntent,
@@ -1155,20 +1161,12 @@ impl GitTurtle {
         form: WeakEntity<GroupForm>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Result<(), String> {
         let mut library = self.project_library.clone();
-        let outcome = match intent {
+        match intent {
             GroupIntent::Create(parent) => library.create_group(parent, &name).map(|_| ()),
             GroupIntent::Rename(id) => library.rename_group(id, &name),
-        };
-        if let Err(message) = outcome {
-            let _ = form.update(cx, |form, cx| {
-                form.pending = false;
-                form.refuse(message);
-                cx.notify();
-            });
-            return;
-        }
+        }?;
         self.set_project_library(library.clone());
         let save = self.begin_project_library_save();
         let response = self
@@ -1187,6 +1185,7 @@ impl GitTurtle {
             });
         })
         .detach();
+        Ok(())
     }
 
     fn finish_group_form(
@@ -1880,15 +1879,18 @@ impl GroupForm {
         self.error = None;
         let intent = self.intent;
         let form = cx.entity().downgrade();
-        if self
-            .owner
-            .update(cx, |owner, cx| {
-                owner.submit_group_name(intent, name, form, window, cx)
-            })
-            .is_err()
-        {
+        // The owner answers a refusal here rather than updating this form,
+        // which is being updated while it asks.
+        let refusal = match self.owner.update(cx, |owner, cx| {
+            owner.submit_group_name(intent, name, form, window, cx)
+        }) {
+            Ok(Ok(())) => None,
+            Ok(Err(refusal)) => Some(refusal),
+            Err(_) => Some("The project window is no longer available.".into()),
+        };
+        if let Some(refusal) = refusal {
             self.pending = false;
-            self.refuse("The project window is no longer available.".into());
+            self.refuse(refusal);
         }
         cx.notify();
     }
