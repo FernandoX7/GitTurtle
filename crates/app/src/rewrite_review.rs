@@ -606,6 +606,16 @@ impl SeriesBrowser {
             this._subscriptions
                 .push(cx.observe_in(&owner, window, Self::follow_download));
         }
+        // Released, as a window closing its dialogs releases it, the
+        // review hands a download it asked for over to Compare.
+        let (owner, me) = (
+            this.owner.clone(),
+            crate::lfs_download::Asker::Review(cx.entity_id()),
+        );
+        cx.on_release(move |_, cx| {
+            let _ = owner.update(cx, |owner, _| owner.lfs_downloads.left(me));
+        })
+        .detach();
         this.load(window, cx);
         this
     }
@@ -801,6 +811,11 @@ impl SeriesBrowser {
         }
         window.close_dialog(cx);
         if let Some(owner) = self.owner.upgrade() {
+            // A download it asked for that still runs goes to Compare,
+            // whose preview its end reads again where Compare shows its
+            // object.
+            let me = crate::lfs_download::Asker::Review(cx.entity_id());
+            owner.update(cx, |owner, _| owner.lfs_downloads.left(me));
             let focus = owner.read(cx).app_focus.clone();
             focus.focus(window, cx);
         }
@@ -7185,6 +7200,96 @@ mod tests {
             );
             end_download(&app, &browser, cx, None);
         }
+    }
+
+    /// A review closed or released while its download runs hands it over
+    /// to Compare: as the write began, Compare's preview was kept where
+    /// Compare showed the object it fetches, and the end Compare now owns
+    /// reads that preview again, so Compare never keeps "not downloaded"
+    /// after a success. While the review is open its download reads none of
+    /// Compare's preview, and Compare showing another object keeps none.
+    /// Left to a closed review, the end reached no one.
+    #[gpui::test]
+    async fn a_review_closed_while_its_download_runs_hands_it_to_compare(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::lfs_download::Asker;
+        let (_fixture, repo, files) = missing_before();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let flow = file_index(&files, "flow.mmd");
+        let browser = reviewing_download(&app, cx, &files);
+        let target = browser.read_with(cx, |browser, _| {
+            let content = browser.content.as_deref().expect("flow.mmd's preview");
+            crate::lfs_download::preview_targets(content, &files[flow])
+                .into_iter()
+                .find_map(|(side, target)| (side == 0).then_some(target))
+                .expect("Before's missing object")
+        });
+        // Compare shows flow.mmd of the same commit.
+        app.update(cx, |app, _| {
+            app.files = files.clone();
+            app.selected_file = Some(flow);
+        });
+        let begin = |browser: &Entity<SeriesBrowser>, cx: &mut gpui::VisualTestContext| {
+            let me = Asker::Review(browser.entity_id());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.simulate_lfs_download_of(me, Some(&target), window, cx)
+                })
+            })
+        };
+        let end = |kept, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.simulate_lfs_download_end_with(None, kept, window, cx)
+                })
+            })
+        };
+        let kept = begin(&browser, cx);
+        assert!(
+            kept.is_some(),
+            "Compare's preview is kept where it shows the object"
+        );
+        assert!(
+            end(kept, cx).is_none(),
+            "the review open, its end reads none of it"
+        );
+        let other = files[flow].new_oid.clone();
+        app.update(cx, |app, _| app.files[flow].old_oid = other);
+        assert!(
+            begin(&browser, cx).is_none(),
+            "Compare showing another object keeps nothing"
+        );
+        end(None, cx);
+        app.update(cx, |app, _| app.files = files.clone());
+        // Closed while it runs.
+        let kept = begin(&browser, cx);
+        cx.update(|window, cx| browser.update(cx, |browser, cx| browser.close(window, cx)));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.lfs_downloads.running()),
+            Some(Asker::Compare),
+            "the closed review hands its download to Compare"
+        );
+        assert!(
+            kept.is_some() && end(kept.clone(), cx) == kept,
+            "whose end reads Compare's preview again"
+        );
+        // Released while it runs, its dialog closed by the window.
+        let browser = reviewing_download(&app, cx, &files);
+        let kept = begin(&browser, cx);
+        cx.update(|window, cx| window.close_dialog(cx));
+        let weak = browser.downgrade();
+        drop(browser);
+        // The last frame holds the dialog's content until the next.
+        crate::tags::tests::draw(cx);
+        cx.run_until_parked();
+        assert!(weak.upgrade().is_none(), "the review is released");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.lfs_downloads.running()),
+            Some(Asker::Compare),
+            "a released review hands its download to Compare"
+        );
+        assert!(kept.is_some() && end(kept.clone(), cx) == kept);
     }
 
     /// Delivers `events` to the window with no frame between them, as a

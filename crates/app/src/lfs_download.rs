@@ -538,6 +538,25 @@ impl Downloads {
         self.running
     }
 
+    /// `asker`, the rewritten-series review, closed or was released: a
+    /// download it asked for that still runs is handed over to Compare,
+    /// whose preview, kept as the write began where Compare showed the
+    /// object it fetches ([`GitTurtle::lfs_download_begins`]), its end reads
+    /// again, and a confirmation it opened runs for Compare. Left to the
+    /// review, its end reached no one, so Compare, showing the same file,
+    /// kept "not downloaded" after a success.
+    pub(crate) fn left(&mut self, asker: Asker) {
+        if self.running == Some(asker) {
+            self.running = Some(Asker::Compare);
+        }
+        if self.confirming == Some(asker) {
+            self.confirming = None;
+        }
+        if self.ended.as_ref().is_some_and(|(by, _)| *by == asker) {
+            self.ended = None;
+        }
+    }
+
     /// How the download `asker` asked for last ended: `Some(None)` where it
     /// succeeded, `Some(Some(words))` with the failure's words.
     pub(crate) fn ended(&self, asker: Asker) -> Option<Option<SharedString>> {
@@ -881,12 +900,19 @@ impl GitTurtle {
         )
     }
 
-    /// A download's write begins: it runs for the caller whose form opened
-    /// its confirmation, and where Compare asked, the preview it was asked
-    /// from, which its end reads again if still shown, is captured. Only
-    /// the caller that asked reads again: a download the review asked for
-    /// once read Compare's unchanged file again too.
-    pub(super) fn lfs_download_begins(&mut self) -> Option<crate::workspace::LfsView> {
+    /// A download of `target`'s object begins: it runs for the caller
+    /// whose form opened its confirmation, and Compare's preview, which the
+    /// end reads again if still shown and the download ended for Compare
+    /// ([`Self::lfs_download_ends`]), is kept where Compare asked, or where
+    /// Compare shows that pointer as its file's old or new object, for a
+    /// review closed meanwhile to hand the download over to
+    /// ([`Downloads::left`]). Only the caller that asked reads again: a
+    /// download the review asked for once read Compare's unchanged file
+    /// again too.
+    pub(super) fn lfs_download_begins(
+        &mut self,
+        target: Option<&LfsDownloadTarget>,
+    ) -> Option<crate::workspace::LfsView> {
         let asker = self
             .lfs_downloads
             .confirming
@@ -894,21 +920,27 @@ impl GitTurtle {
             .unwrap_or(Asker::Compare);
         self.lfs_downloads.running = Some(asker);
         self.lfs_downloads.ended = None;
-        if asker != Asker::Compare {
-            return None;
-        }
-        self.selected_file
-            .and_then(|index| self.files.get(index))
-            .cloned()
-            .map(|file| (file, self.mode, self.generation))
+        let file = self.selected_file.and_then(|index| self.files.get(index))?;
+        let object = target.and_then(|target| target.blob_oid.as_ref());
+        let shows_object = object.is_some_and(|oid| {
+            file.old_oid.as_ref() == Some(oid) || file.new_oid.as_ref() == Some(oid)
+        });
+        (asker == Asker::Compare || shows_object)
+            .then(|| (file.clone(), self.mode, self.generation))
     }
 
     /// The running download's write ends, having failed with `failure`'s
-    /// words or succeeded: the caller that asked reads how.
-    pub(super) fn lfs_download_ends(&mut self, failure: Option<SharedString>) {
-        if let Some(asker) = self.lfs_downloads.running.take() {
-            self.lfs_downloads.ended = Some((asker, failure));
-        }
+    /// words or succeeded: the caller that asked reads how, and Compare's
+    /// `selection`, kept as it began, is what the end reads again where the
+    /// download ended for Compare, as one a closed review left does.
+    pub(super) fn lfs_download_ends(
+        &mut self,
+        failure: Option<SharedString>,
+        selection: Option<crate::workspace::LfsView>,
+    ) -> Option<crate::workspace::LfsView> {
+        let asker = self.lfs_downloads.running.take()?;
+        self.lfs_downloads.ended = Some((asker, failure));
+        selection.filter(|_| asker == Asker::Compare)
     }
 
     /// Whether a press asks the window for a download that it accepts,
@@ -938,8 +970,20 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<crate::workspace::LfsView> {
+        self.simulate_lfs_download_of(asker, None, window, cx)
+    }
+
+    /// [`Self::simulate_lfs_download`] of `target`'s object.
+    #[cfg(test)]
+    pub(crate) fn simulate_lfs_download_of(
+        &mut self,
+        asker: Asker,
+        target: Option<&LfsDownloadTarget>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::workspace::LfsView> {
         self.lfs_downloads.confirming = Some(asker);
-        let selection = self.lfs_download_begins();
+        let selection = self.lfs_download_begins(target);
         self.operation_busy = Some(DOWNLOAD_OBJECT);
         let _ = self.begin_operation_control(window, cx);
         cx.notify();
@@ -975,10 +1019,24 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.simulate_lfs_download_end_with(failure, None, window, cx);
+    }
+
+    /// [`Self::simulate_lfs_download_end`] of a write that kept Compare's
+    /// `selection` as it began, returning what its end reads again.
+    #[cfg(test)]
+    pub(crate) fn simulate_lfs_download_end_with(
+        &mut self,
+        failure: Option<&str>,
+        selection: Option<crate::workspace::LfsView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::workspace::LfsView> {
         self.operation_busy = None;
         self.finish_operation_control(window, cx);
-        self.lfs_download_ends(failure.map(SharedString::from));
+        let selection = self.lfs_download_ends(failure.map(SharedString::from), selection);
         cx.notify();
+        selection
     }
 
     pub(super) fn open_lfs_download(

@@ -4079,10 +4079,9 @@ impl GitTurtle {
         // Once the write will run: begun before this return, a download
         // stayed running for whoever asked, which waited for its end for
         // good.
-        let lfs_selection = if downloading_lfs {
-            self.lfs_download_begins()
-        } else {
-            None
+        let lfs_selection = match &command {
+            WriteCommand::DownloadLfs(plan) => self.lfs_download_begins(Some(&plan.target)),
+            _ => None,
         };
         let path = repo.path().to_owned();
         let ending_integration = matches!(
@@ -4322,8 +4321,7 @@ impl GitTurtle {
                 if this.path.as_ref()==Some(&path) && succeeded && submitted_branch.as_deref().is_some_and(|branch| this.branch_name.read(cx).value().trim() == branch) {
                     this.branch_name.update(cx,|input,cx|input.set_value("",window,cx));
                 }
-                if downloading_lfs { this.lfs_download_ends(lfs_failure); }
-                let download = downloading_lfs.then_some((succeeded, lfs_selection));
+                let download = downloading_lfs.then(|| (succeeded, this.lfs_download_ends(lfs_failure, lfs_selection)));
                 this.read_after_write(&path, refresh_history, download, window, cx);
                 cx.notify();
             });
