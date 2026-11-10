@@ -368,6 +368,7 @@ thread_local! {
     static CANCELLING_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static FAILED_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static ELLIPSIS_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static LINE_LEAST_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
 /// Cancel download's width, its word given way where `short`: as wide as
@@ -760,7 +761,11 @@ pub(crate) fn download_row(
                 progress.clone(),
                 (&asked.cancel, asked.on_cancel.clone()),
                 cancel.clone(),
-                short,
+                if short {
+                    CancelForm::Short
+                } else {
+                    CancelForm::Whole
+                },
                 window,
                 cx,
             )
@@ -840,24 +845,53 @@ pub(crate) fn download_row(
         .into_any_element()
 }
 
+/// How a running download's Cancel download reads ([`running_form`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CancelForm {
+    /// "Cancel download".
+    Whole,
+    /// "Cancel", its word given way.
+    Short,
+    /// Its close icon alone, the shared 28 px control, as the header's
+    /// Cancel is where its label does not fit.
+    Icon,
+}
+
+/// The form of the review's Cancel download on its line in the dialog's
+/// footer, `room` wide beside Back to repository: the line's text gives way
+/// first, to `least`, its first word and an ellipsis, then Cancel's word,
+/// then its label, the icon standing for it.
+pub(crate) fn line_cancel_form(least: &'static str, room: Pixels, window: &Window) -> CancelForm {
+    let (gap, _) = row_room(px(0.), window);
+    let least = row_text_width(least, &LINE_LEAST_WIDTH, window) + gap;
+    if least + cancel_width(false, window) <= room {
+        CancelForm::Whole
+    } else if least + cancel_width(true, window) <= room {
+        CancelForm::Short
+    } else {
+        CancelForm::Icon
+    }
+}
+
 /// A running download's progress and its Cancel download, as the
 /// rewritten-series review draws them for the download it asked for: in its
-/// Download row where the pressed Download stood, and at the top of its
-/// body while it shows another file or commit. The progress, the window's
+/// Download row where the pressed Download stood, and on its dialog's footer
+/// while it shows another file or commit. The progress, the window's
 /// progress text, gives way first, ending in an ellipsis, whole in its
-/// tooltip; then, where `short`, Cancel download's word, as the Downloads'
+/// tooltip; then, in its `form`, Cancel download's word, as the Downloads'
 /// does beside it, so it reads "Cancel", its accessible name and tooltip
-/// saying what it cancels. Once pressed it reads "Cancelling…" and is no
-/// longer pressable, drawn as wide as the wider of its labels so the press
-/// moves nothing, as the header's Cancel is (decision, 2026-11-10: kept
-/// whole, "Cancel download" stacked a missing After… under a running
-/// Before… at 18 pt in a 461 × 490 window and cut the comparison's row by
-/// 1.5 px; and it stayed "Cancel download" and pressable after a press).
+/// saying what it cancels, and on the footer its label for its icon. Once
+/// pressed it reads "Cancelling…" and is no longer pressable, drawn as wide
+/// as the wider of its labels so the press moves nothing, as the header's
+/// Cancel is (decision, 2026-11-10: kept whole, "Cancel download" stacked a
+/// missing After… under a running Before… at 18 pt in a 461 × 490 window and
+/// cut the comparison's row by 1.5 px; and it stayed "Cancel download" and
+/// pressable after a press).
 pub(crate) fn running_form(
     progress: SharedString,
     (focus, on_cancel): (&FocusHandle, OnCancel),
     cancel: RunningCancel,
-    short: bool,
+    form: CancelForm,
     window: &Window,
     cx: &App,
 ) -> Div {
@@ -877,12 +911,17 @@ pub(crate) fn running_form(
     // Tests assemble the window's tree from what they record.
     #[cfg(test)]
     crate::native_accessibility::written::built(&text);
-    let label = match (cancel.cancelling, short) {
+    let label = match (cancel.cancelling, form) {
+        (_, CancelForm::Icon) => "",
         (true, _) => CANCELLING,
-        (false, true) => CANCEL,
-        (false, false) => CANCEL_DOWNLOAD,
+        (false, CancelForm::Short) => CANCEL,
+        (false, CancelForm::Whole) => CANCEL_DOWNLOAD,
     };
-    let form = div()
+    let width = match form {
+        CancelForm::Icon => Pixels::ZERO,
+        form => cancel_width(form == CancelForm::Short, window),
+    };
+    let drawn = div()
         .flex_shrink(1.)
         .min_w_0()
         .flex()
@@ -893,7 +932,7 @@ pub(crate) fn running_form(
             div().flex_none().child(
                 button("cancel-lfs-download", label, "close", false)
                     .debug_selector(|| "cancel-lfs-download".into())
-                    .min_w(cancel_width(short, window))
+                    .when(width > Pixels::ZERO, |cancel| cancel.min_w(width))
                     .accessibility_label(cancel.name.clone())
                     .tooltip(cancel.name)
                     .disabled(cancel.cancelling)
@@ -902,7 +941,7 @@ pub(crate) fn running_form(
                     .node_recorded(),
             ),
         );
-    noted_cancel(form, label)
+    noted_cancel(drawn, label)
 }
 
 /// `form`, which notes what its Cancel reads, `label`, where it is drawn,

@@ -77,6 +77,7 @@ fn open_series_dialog(form: Entity<SeriesBrowser>, window: &mut Window, cx: &mut
         let close = form.clone();
         let cancel = form.clone();
         let shown = form.clone();
+        let line = form.clone();
         // In the dialog's content, as the profile form is: the body takes
         // what the cap leaves it and scrolls the rest, revealing the control
         // Tab moves onto, with the ring's room below it, which the footer's
@@ -90,11 +91,35 @@ fn open_series_dialog(form: Entity<SeriesBrowser>, window: &mut Window, cx: &mut
             .max_h(appearance::dialog_max_height(window))
             .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
             .content(move |content, _, _| content.min_h_0().child(shown.clone()))
-            .footer(DialogFooter::new().child(
-                button("close-series-review", "Back to repository", "", false).on_click(
-                    move |_, window, cx| close.update(cx, |form, cx| form.close(window, cx)),
-                ),
-            ))
+            .footer(
+                DialogFooter::new()
+                    // The review's download, while its own row is not
+                    // drawn, on the leading side: a line of the footer's
+                    // one button's height, built for the room Back to
+                    // repository leaves it ([`SeriesBrowser::footer_line`]).
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h(appearance::ui_size(28.))
+                            .flex()
+                            .flex_col()
+                            .child(crate::in_frame::in_frame(move |bounds, window, cx| {
+                                line.read(cx)
+                                    .footer_line(line.entity_id(), bounds.size.width, window, cx)
+                                    .unwrap_or_else(|| div().into_any_element())
+                            })),
+                    )
+                    .child(
+                        div().flex_none().child(
+                            button("close-series-review", "Back to repository", "", false)
+                                .debug_selector(|| "close-series-review".into())
+                                .on_click(move |_, window, cx| {
+                                    close.update(cx, |form, cx| form.close(window, cx))
+                                }),
+                        ),
+                    ),
+            )
             .on_cancel(move |_, window, cx| {
                 cancel.update(cx, |form, cx| form.back(window, cx));
                 false
@@ -206,6 +231,11 @@ const READING_FILES: &str = "Reading changed files…";
 
 /// What the preview's box says while a chosen file's preview is read.
 const READING_PREVIEW: &str = "Reading preview…";
+
+/// The least the download's line on the dialog's footer keeps of its text
+/// before Cancel download's word gives way: its first word and an
+/// ellipsis (`lfs_download::line_cancel_form`).
+const LINE_LEAST: &str = "Download…";
 
 /// What the chosen file's row says at its end while its preview is read
 /// below the body's view ([`SeriesBrowser::preview_read_hidden`]).
@@ -408,8 +438,8 @@ struct FailureBox<'a> {
 /// failed, which the row says in place of its sentence
 /// (`lfs_download::AskedState`). It is said of that file of that commit
 /// only, while the review shows it ([`SeriesBrowser::shows`]); while the
-/// review shows another, the top of its body says the progress and offers
-/// Cancel ([`SeriesBrowser::download_status`]).
+/// review shows another, the dialog's footer says the progress and offers
+/// Cancel ([`SeriesBrowser::footer_line`]).
 struct ReviewDownload {
     file: FileChange,
     commit: Option<String>,
@@ -701,7 +731,7 @@ impl SeriesBrowser {
             Some(words) => {
                 asked.failure = Some(words.clone());
                 // The Download comes back with focus where the row draws
-                // it; Cancel at the top of the body leaves nothing.
+                // it; Cancel on the dialog's footer leaves nothing.
                 if cancel_focused && drawn {
                     self.download_focus[asked.side].focus(window, cx);
                 } else if cancel_focused {
@@ -771,30 +801,43 @@ impl SeriesBrowser {
                     .any(|(side, _)| *side == asked.side)
             })
     }
+    /// Whether the preview's row says what `asked` asks, or will once the
+    /// person's file, being read, lands: the line on the dialog's footer
+    /// stays away meanwhile, so it does not come and go as they return.
+    fn row_says(&self, asked: &ReviewDownload) -> bool {
+        self.row_draws(asked)
+            || (self.shows(asked).is_some() && self.messages.is_none() && self.content.is_none())
+    }
     /// The progress and Cancel download of the download a Download in the
-    /// preview asked for, at the top of the body while it runs and the
-    /// preview's row does not draw them: the review covers the operation
-    /// bar, so once the person chose another file or commit, or went back
-    /// to the series, nothing on screen said a download ran or offered its
-    /// Cancel. Cancel tracks the row's handle, so focus on it stays as it
-    /// moves between the two.
-    fn download_status(
+    /// preview asked for, on the leading side of the dialog's footer beside
+    /// Back to repository, `width` wide, while it runs and the preview's row
+    /// does not say it ([`Self::row_says`]): the review covers the operation
+    /// bar, so once the person chose another file or commit, or went back to
+    /// the series, nothing on screen said a download ran or offered its
+    /// Cancel. The footer is the dialog's persistent chrome: at the top of
+    /// the scrolling body, at 18 pt in a 461 × 490 window, the line scrolled
+    /// away with it, overflowed a body the series list's rows do not count,
+    /// and moved the content by about 50 px as it came and went (decision,
+    /// 2026-11-10). Its text gives way first, then Cancel's word, then its
+    /// label for its icon (`lfs_download::line_cancel_form`). Cancel tracks
+    /// the row's handle, so focus on it stays as it moves between the two.
+    fn footer_line(
         &self,
-        room: Pixels,
+        me: EntityId,
+        width: Pixels,
         window: &Window,
-        cx: &Context<Self>,
+        cx: &App,
     ) -> Option<AnyElement> {
         let asked = self
             .lfs_download
             .as_ref()
             .filter(|asked| asked.started && asked.failure.is_none())?;
-        if self.row_draws(asked) {
+        if self.row_says(asked) {
             return None;
         }
         let owner = self.owner.upgrade()?;
         let owner = owner.read(cx);
-        if owner.lfs_downloads.running() != Some(crate::lfs_download::Asker::Review(cx.entity_id()))
-        {
+        if owner.lfs_downloads.running() != Some(crate::lfs_download::Asker::Review(me)) {
             return None;
         }
         let label = owner.operation_shown()?;
@@ -806,9 +849,10 @@ impl SeriesBrowser {
         Some(
             div()
                 .debug_selector(|| "series-download-status".into())
-                .flex()
+                .size_full()
                 .min_w_0()
-                .on_children_prepainted(self.body.control(self.download_cancel.clone(), room))
+                .flex()
+                .items_center()
                 .child(crate::lfs_download::running_form(
                     progress,
                     (
@@ -819,7 +863,7 @@ impl SeriesBrowser {
                         }),
                     ),
                     running,
-                    false,
+                    crate::lfs_download::line_cancel_form(LINE_LEAST, width, window),
                     window,
                     cx,
                 ))
@@ -2194,7 +2238,6 @@ impl Render for SeriesBrowser {
         div().debug_selector(|| "rewrite-review-content".into()).flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("rewrite-review-body").debug_selector(|| "rewrite-review-body".into()).min_w_0().min_h_0().p(room).m(-room).pl(lead).ml(-lead).when(self.inspecting, |element| element.h(cap)).overflow_y_scroll().track_scroll(self.body.scroll()).flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
-            .children(self.download_status(room, window, cx))
             .when(!self.inspecting, |element| element
                 .child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Original → rewritten · unique patch fingerprints identify likely correspondence. Changed patches may match by unique subject only. Ambiguous, combined and empty commits remain explicit; inspect both sides before publishing."))
                 .when_some(self.review.as_ref(), |element, review| element.child(div().text_size(appearance::ui_text(11.)).child(format!("{} · original {} → rewritten {} · base {}", review.branch, short_oid(&review.original_head), short_oid(&review.rewritten_head), short_oid(&review.base)))))
@@ -7127,7 +7170,7 @@ mod tests {
     }
 
     /// The download stays in view while the review shows another file: the
-    /// top of its body says the progress and offers Cancel download, focus
+    /// dialog's footer says the progress and offers Cancel download, focus
     /// on Cancel staying on it as it moves there. A failure that lands
     /// meanwhile is announced at once, focus going from the vanished Cancel
     /// to Back to series, never the window's root, and kept: the row says
@@ -7151,23 +7194,24 @@ mod tests {
         choose(&browser, cx, file_index(&files, "notes.txt"));
         let status = cx
             .debug_bounds("series-download-status")
-            .expect("the top of the body says the download");
+            .expect("the dialog's footer says the download");
         let progress = cx
             .debug_bounds("lfs-download-progress")
             .expect("its progress");
         let cancel = cx
             .debug_bounds("cancel-lfs-download")
             .expect("and its Cancel download");
-        let back = cx
-            .debug_bounds("back-rewrite-series")
-            .expect("Back to series");
+        let [body, close] = ["rewrite-review-body", "close-series-review"]
+            .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
         assert!(
             cx.debug_bounds("download-lfs-side-0").is_none()
                 && status.contains(&progress.center())
                 && status.contains(&cancel.center())
-                && status.bottom() <= back.top(),
-            "the progress, {progress:?}, and Cancel, {cancel:?}, stand at the top of the \
-             body, {status:?}, above {back:?}"
+                && status.top() >= body.bottom()
+                && cancel.right() <= close.left()
+                && (cancel.center().y - close.center().y).abs() <= px(0.5),
+            "the progress, {progress:?}, and Cancel, {cancel:?}, stand on the footer, \
+             {status:?}, below the body, {body:?}, beside {close:?}"
         );
         assert!(
             holds_focus(&browser, cx, |browser| &browser.download_cancel),
@@ -7210,9 +7254,118 @@ mod tests {
         );
     }
 
+    /// While the review shows another file, its download's line stands on
+    /// the leading side of the dialog's footer, beside Back to repository,
+    /// never in the scrolling body: at 18 pt in QA's 461 × 490 window at
+    /// scale 2, with the body scrolled to its end, the line and its Cancel
+    /// are whole inside the dialog and the window, and nothing in the body
+    /// moves as the line comes with the download's busy look and goes as it
+    /// ends. At the top of the body, the line scrolled away with it,
+    /// overflowed a body the series list's rows do not count, and moved
+    /// the content by about 50 px as it came and went.
+    #[gpui::test]
+    async fn the_review_s_download_line_stands_on_its_footer(cx: &mut gpui_kit::TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_before_with(&["notes.txt"]);
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        let at = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Download Before… is offered")
+            .center();
+        start_download(&app, &browser, cx, at);
+        choose(&browser, cx, file_index(&files, "notes.txt"));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, _| window.set_scale_factor(2.));
+        draw(cx);
+        draw(cx);
+        let placed = |cx: &mut gpui::VisualTestContext| {
+            ["back-rewrite-series", "series-files", "series-file-preview"]
+                .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")))
+        };
+        let resting = placed(cx);
+        assert!(
+            cx.debug_bounds("series-download-status").is_none(),
+            "through the busy delay no line stands"
+        );
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        draw(cx);
+        cx.debug_bounds("series-download-status")
+            .expect("the line stands as the write looks busy");
+        assert_eq!(
+            placed(cx),
+            resting,
+            "the line coming moves nothing in the body"
+        );
+        // The body scrolled to its end, past the file list.
+        cx.update(|_, cx| {
+            let scroll = browser.read(cx).body.scroll().clone();
+            scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+        });
+        draw(cx);
+        draw(cx);
+        let frame = dialog_frame(cx);
+        let window = Bounds::new(point(px(0.), px(0.)), size(px(461.), px(490.)));
+        let [status, progress, cancel, close] = [
+            "series-download-status",
+            "lfs-download-progress",
+            "cancel-lfs-download",
+            "close-series-review",
+        ]
+        .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
+        eprintln!();
+        let inside = |part: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            part.left() >= outer.left()
+                && part.right() <= outer.right()
+                && part.top() >= outer.top()
+                && part.bottom() <= outer.bottom()
+        };
+        assert!(
+            progress.size.width > Pixels::ZERO
+                && progress.right() <= cancel.left()
+                && cancel.right() <= close.left()
+                && inside(cancel, status)
+                && inside(status, frame)
+                && inside(frame, window),
+            "the line's progress, {progress:?}, and Cancel, {cancel:?}, stand whole on the \
+             footer, {status:?}, before {close:?}, inside the dialog, {frame:?}, and the window"
+        );
+        assert_eq!(
+            written::get("cancel-lfs-download")
+                .and_then(|node| node.node.label().map(str::to_owned))
+                .as_deref(),
+            Some("Cancel download of flow.mmd's Before object"),
+            "Cancel names what it cancels"
+        );
+        cx.update(|_, cx| {
+            browser
+                .read(cx)
+                .body
+                .scroll()
+                .set_offset(point(px(0.), px(0.)));
+        });
+        draw(cx);
+        end_download(&app, &browser, cx, None);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("series-download-status").is_none(),
+            "the line goes as the download ends"
+        );
+        assert_eq!(
+            placed(cx),
+            resting,
+            "and its going moves nothing in the body"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A download that ends while the review shows the series, Back to
-    /// series having left the commit, with Cancel download at the top of
-    /// the body focused, moves focus from the vanished Cancel to the series
+    /// series having left the commit, with Cancel download on the dialog's
+    /// footer focused, moves focus from the vanished Cancel to the series
     /// list, never the window's root, and reads nothing.
     #[gpui::test]
     async fn a_download_ending_over_the_series_moves_focus_to_the_list(
@@ -7225,7 +7378,7 @@ mod tests {
         cx.update(|window, cx| browser.update(cx, |browser, cx| browser.back(window, cx)));
         crate::tags::tests::draw(cx);
         cx.debug_bounds("series-download-status")
-            .expect("the top of the series says the download");
+            .expect("the dialog's footer says the download over the series");
         cx.update(|window, cx| browser.read(cx).download_cancel.clone().focus(window, cx));
         crate::tags::tests::draw(cx);
         let before = shown_key(&browser, cx);
