@@ -28,6 +28,19 @@ pub(crate) const CANCEL_NAME: &str = "Cancel the running Git operation";
 /// What Cancel's tooltip says it stops while a Git operation runs.
 pub(crate) const CANCEL_TOOLTIP: &str = "Stop Git and its child processes. Local or remote changes may already have applied; inspect before retrying.";
 
+/// What the running write's progress reads once its Cancel was pressed.
+const CANCELLING_PROGRESS: &str = "Cancelling… Inspect the result before retrying.";
+
+#[cfg(test)]
+thread_local! {
+    /// What the progress reads once Cancel was pressed, in place of
+    /// [`CANCELLING_PROGRESS`], for a test that whether it was pressed is
+    /// read from the write's state ([`GitTurtle::operation_cancelling`]),
+    /// never from these words.
+    pub(crate) static CANCELLING_WORDS: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// One string supplies the prompt's visible guidance and the static text it
 /// is read as.
 fn guidance(confirmation: bool) -> native_accessibility::StaticText<Stateful<Div>> {
@@ -147,12 +160,27 @@ impl GitTurtle {
     pub(super) fn operation_progress(&self) -> Option<String> {
         let control = self.authentication.control.as_ref()?;
         if control.is_cancelled() {
-            Some("Cancelling… Inspect the result before retrying.".into())
+            #[cfg(test)]
+            if let Some(words) = CANCELLING_WORDS.get() {
+                return Some(words.into());
+            }
+            Some(CANCELLING_PROGRESS.into())
         } else if self.authentication.prompt_open {
             Some("Waiting for your authentication response…".into())
         } else {
             control.progress()
         }
+    }
+
+    /// Whether the running write's Cancel was pressed, read from its
+    /// control, whatever its progress then reads: the review's Cancel
+    /// download learnt it from the progress starting "Cancelling", so new
+    /// words there would have left it pressable and reading "Cancel".
+    pub(crate) fn operation_cancelling(&self) -> bool {
+        self.authentication
+            .control
+            .as_ref()
+            .is_some_and(OperationControl::is_cancelled)
     }
 
     /// Cancel for the running write ([`Self::operation_cancel`]), or nothing

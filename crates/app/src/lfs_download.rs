@@ -714,7 +714,9 @@ pub(crate) type OnCancel = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
 #[derive(Clone)]
 pub(crate) struct RunningCancel {
     /// Its accessible name and tooltip, which say what it cancels ("Cancel
-    /// download of flow.mmd's Before object"), whatever its label reads.
+    /// download of flow.mmd's Before object"), whatever its label reads,
+    /// and once pressed that it is cancelling ("Cancelling download of
+    /// flow.mmd's Before object").
     pub(crate) name: SharedString,
     /// Whether it was pressed: it reads "Cancelling…" and is no longer
     /// pressable.
@@ -1036,6 +1038,19 @@ pub(crate) fn running_form(
         CancelForm::Icon => Pixels::ZERO,
         form => cancel_width(form == CancelForm::Short, window),
     };
+    // Its icon alone, its tooltip leads with the label it stands for, as
+    // the header's compact Cancel's does, so pressed it says it is
+    // cancelling.
+    let tooltip: SharedString = if form == CancelForm::Icon {
+        let label = if cancel.cancelling {
+            CANCELLING
+        } else {
+            CANCEL
+        };
+        format!("{label} · {}", cancel.name).into()
+    } else {
+        cancel.name.clone()
+    };
     let drawn = div()
         .flex_shrink(1.)
         .min_w_0()
@@ -1048,40 +1063,32 @@ pub(crate) fn running_form(
                 button("cancel-lfs-download", label, "close", false)
                     .debug_selector(|| "cancel-lfs-download".into())
                     .when(width > Pixels::ZERO, |cancel| cancel.min_w(width))
-                    .accessibility_label(cancel.name.clone())
-                    .tooltip(cancel.name)
+                    .accessibility_label(cancel.name)
+                    .tooltip(tooltip.clone())
                     .disabled(cancel.cancelling)
                     .track_focus(focus)
                     .on_click(move |_, window, cx| on_cancel(window, cx))
                     .node_recorded(),
             ),
         );
-    noted_cancel(drawn, label)
+    noted_cancel(drawn, label, tooltip)
 }
 
-/// `form`, which notes what its Cancel reads, `label`, where it is drawn,
-/// for a test: a form built and not drawn notes nothing.
-fn noted_cancel(form: Div, label: &'static str) -> Div {
+/// `form`, which notes what its Cancel reads, `label`, and its `tooltip`,
+/// where it is drawn, for a test: a form built and not drawn notes nothing.
+fn noted_cancel(form: Div, label: &'static str, tooltip: SharedString) -> Div {
     #[cfg(test)]
     {
         use gpui_kit::base::ElementExt as _;
         form.on_prepaint(move |_, _, _| {
-            crate::views::note_compact_label("cancel-lfs-download", &label.into())
+            crate::views::note_compact_label("cancel-lfs-download", &label.into());
+            crate::views::note_control_tooltip(&"cancel-lfs-download".into(), &tooltip);
         })
     }
     #[cfg(not(test))]
     {
-        let _ = label;
+        let _ = (label, tooltip);
         form
-    }
-}
-
-impl GitTurtle {
-    /// Whether the running write's Cancel has been pressed: its progress
-    /// then reads "Cancelling…" (`authentication::CANCEL_LABELS`).
-    pub(crate) fn operation_cancelling(&self) -> bool {
-        self.operation_progress()
-            .is_some_and(|progress| progress.starts_with(CANCELLING))
     }
 }
 

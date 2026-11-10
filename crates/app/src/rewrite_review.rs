@@ -106,7 +106,7 @@ fn open_series_dialog(form: Entity<SeriesBrowser>, window: &mut Window, cx: &mut
                             .flex_col()
                             .child(crate::in_frame::in_frame(move |bounds, window, cx| {
                                 line.read(cx)
-                                    .footer_line(line.entity_id(), bounds.size.width, window, cx)
+                                    .footer_line(line.downgrade(), bounds.size.width, window, cx)
                                     .unwrap_or_else(|| div().into_any_element())
                             })),
                     )
@@ -472,11 +472,17 @@ impl ReviewDownload {
     }
 
     /// Its Cancel download, named for the object it fetches whatever its
-    /// label reads, and whether `owner`'s write was cancelled.
+    /// label reads, and whether `owner`'s write was cancelled, which its
+    /// name then says too: "Cancelling download of flow.mmd's Before
+    /// object" (decision, 2026-11-10: pressed, it was still named "Cancel
+    /// download of …", so in its icon form nothing it said told that it was
+    /// cancelling).
     fn cancel(&self, owner: &GitTurtle) -> crate::lfs_download::RunningCancel {
+        let cancelling = owner.operation_cancelling();
+        let verb = if cancelling { "Cancelling" } else { "Cancel" };
         crate::lfs_download::RunningCancel {
-            name: format!("Cancel download of {}", self.object()).into(),
-            cancelling: owner.operation_cancelling(),
+            name: format!("{verb} download of {}", self.object()).into(),
+            cancelling,
         }
     }
 }
@@ -862,7 +868,7 @@ impl SeriesBrowser {
     /// the row's handle, so focus on it stays as it moves between the two.
     fn footer_line(
         &self,
-        me: EntityId,
+        view: WeakEntity<Self>,
         width: Pixels,
         window: &Window,
         cx: &App,
@@ -921,7 +927,9 @@ impl SeriesBrowser {
         }
         let owner = self.owner.upgrade()?;
         let owner = owner.read(cx);
-        if owner.lfs_downloads.running() != Some(crate::lfs_download::Asker::Review(me)) {
+        if owner.lfs_downloads.running()
+            != Some(crate::lfs_download::Asker::Review(view.entity_id()))
+        {
             return None;
         }
         owner.operation_shown()?;
@@ -934,7 +942,7 @@ impl SeriesBrowser {
             |progress| SharedString::from(format!("{name} · {progress}")),
         );
         let running = asked.cancel(owner);
-        let cancel = self.owner.clone();
+        let object = asked.object();
         let line = div()
             .id("series-download-line")
             .role(Role::Group)
@@ -953,8 +961,7 @@ impl SeriesBrowser {
                     (
                         &self.download_cancel,
                         std::rc::Rc::new(move |window, cx| {
-                            let _ =
-                                cancel.update(cx, |owner, cx| owner.cancel_operation(window, cx));
+                            Self::cancel_download(&view, &object, window, cx)
                         }),
                     ),
                     running,
@@ -964,6 +971,28 @@ impl SeriesBrowser {
                 ))
                 .into_any_element(),
         )
+    }
+    /// Cancel download's press, in the row or on the dialog's footer, its
+    /// Cancel naming `object`: it cancels the window's write only while that
+    /// is still the download this review asked for, of that object, and
+    /// otherwise does nothing, so a press on a Cancel drawn before its
+    /// download ended, as another review's or Compare's runs, cancels none
+    /// of theirs. It cancelled whatever write ran.
+    fn cancel_download(view: &WeakEntity<Self>, object: &str, window: &mut Window, cx: &mut App) {
+        let Some(view) = view.upgrade() else {
+            return;
+        };
+        let me = crate::lfs_download::Asker::Review(view.entity_id());
+        let browser = view.read(cx);
+        let named = browser.lfs_download.as_ref().is_some_and(|asked| {
+            asked.started && asked.failure.is_none() && asked.object() == object
+        });
+        let Some(owner) = browser.owner.upgrade().filter(|_| named) else {
+            return;
+        };
+        if owner.read(cx).lfs_downloads.running() == Some(me) {
+            owner.update(cx, |owner, cx| owner.cancel_operation(window, cx));
+        }
     }
     fn current(&self, cx: &App) -> bool {
         !self.closed
@@ -1941,13 +1970,19 @@ impl SeriesBrowser {
                 },
                 _ => AskedState::Resting,
             };
-            let cancel = self.owner.clone();
+            let (view, object) = (
+                cx.entity().downgrade(),
+                self.lfs_download
+                    .as_ref()
+                    .map(ReviewDownload::object)
+                    .unwrap_or_default(),
+            );
             let asked = crate::lfs_download::Asked {
                 focus: self.download_focus.clone(),
                 cancel: self.download_cancel.clone(),
                 state,
                 on_cancel: std::rc::Rc::new(move |window, cx| {
-                    let _ = cancel.update(cx, |owner, cx| owner.cancel_operation(window, cx));
+                    Self::cancel_download(&view, &object, window, cx)
                 }),
             };
             let (view, owner, chosen) = (
@@ -7208,6 +7243,194 @@ mod tests {
             Some(format!("After: {words}")),
             "beside both sides' Downloads the words name the side that failed"
         );
+    }
+
+    /// Whether Cancel download was pressed is read from the window's write,
+    /// never from the words its progress then reads: with those words
+    /// changed, a press still turns the review's Cancel to "Cancelling…",
+    /// no longer pressable, and the window says it was pressed. It was read
+    /// from the progress starting "Cancelling", so other words there left it
+    /// reading "Cancel download" and pressable.
+    #[gpui::test]
+    async fn a_pressed_cancel_is_read_from_the_write_not_its_words(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        let (_fixture, repo, files) = missing_before();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        let at = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Download Before… is offered")
+            .center();
+        start_download(&app, &browser, cx, at);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        crate::tags::tests::draw(cx);
+        let cancel = cx
+            .debug_bounds("cancel-lfs-download")
+            .expect("Cancel download stands in the row");
+        let name = || {
+            written::get("cancel-lfs-download")
+                .and_then(|node| node.node.label().map(str::to_owned))
+        };
+        assert_eq!(
+            name().as_deref(),
+            Some("Cancel download of flow.mmd's Before object"),
+            "before the press it is named for what it cancels"
+        );
+        crate::authentication::CANCELLING_WORDS.set(Some("Stopping the transfer…"));
+        cx.simulate_click(cancel.center(), Modifiers::none());
+        crate::tags::tests::draw(cx);
+        let pressed = (
+            crate::views::COMPACT_LABELS
+                .with(|labels| labels.borrow().get("cancel-lfs-download").cloned())
+                .map(|label| label.to_string()),
+            written::get("cancel-lfs-download").map(|node| node.node.is_disabled()),
+            name(),
+            app.read_with(cx, |app, _| {
+                (app.operation_cancelling(), app.operation_progress())
+            }),
+        );
+        crate::authentication::CANCELLING_WORDS.set(None);
+        assert_eq!(
+            pressed,
+            (
+                Some("Cancelling…".to_owned()),
+                Some(true),
+                Some("Cancelling download of flow.mmd's Before object".to_owned()),
+                (true, Some("Stopping the transfer…".to_owned())),
+            ),
+            "pressed, whatever the progress says, Cancel reads Cancelling…, unpressable, and \
+             its name says it is cancelling"
+        );
+        end_download(&app, &browser, cx, Some("Cancelled"));
+    }
+
+    /// Cancel download cancels the window's write only while it is still
+    /// the download the review asked for, of the object its Cancel names: a
+    /// click on the review's Cancel delivered before the frame that takes it
+    /// away, once its download has ended and Compare's or another review's
+    /// runs, cancels nothing. It cancelled whatever write ran.
+    #[gpui::test]
+    async fn a_cancel_left_from_an_ended_download_cancels_no_other(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::lfs_download::Asker;
+        let (_fixture, repo, files) = missing_before();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        for other in [Asker::Compare, Asker::Review(app.entity_id())] {
+            let at = cx
+                .debug_bounds("download-lfs-side-0")
+                .expect("Download Before… is offered")
+                .center();
+            start_download(&app, &browser, cx, at);
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            crate::tags::tests::draw(cx);
+            let cancel = cx
+                .debug_bounds("cancel-lfs-download")
+                .expect("Cancel download stands in the row");
+            // The review's download ends and another starts, and a click
+            // lands on its Cancel before a frame takes it away: the update
+            // that ends a write draws the next frame as it returns.
+            let [down, up] = click_at(cancel.center(), 1);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.simulate_lfs_download_end(
+                        Some("Git LFS could not reach origin"),
+                        window,
+                        cx,
+                    );
+                    app.simulate_lfs_download(other, window, cx);
+                });
+                window.dispatch_event(down, cx);
+                window.dispatch_event(up, cx);
+            });
+            crate::tags::tests::draw(cx);
+            assert!(
+                !app.read_with(cx, |app, _| app.operation_cancelling()),
+                "a click on the review's Cancel cancels none of {other:?}'s download"
+            );
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.simulate_lfs_download_end(None, window, cx)
+                })
+            });
+            crate::tags::tests::draw(cx);
+        }
+    }
+
+    /// On the dialog's footer, where at 18 pt in QA's 461 × 490 window
+    /// Cancel download gives way to its icon, its tooltip leads with the
+    /// label the icon stands for, as the header's compact Cancel's does:
+    /// "Cancel · Cancel download of flow.mmd's Before object", and once
+    /// pressed "Cancelling… · …", so the pressed icon says it is
+    /// cancelling. It said only what it cancels, pressed or not.
+    #[gpui::test]
+    async fn the_footer_s_cancel_icon_says_its_label_in_its_tooltip(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_before_with(&["notes.txt"]);
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        let at = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Download Before… is offered")
+            .center();
+        start_download(&app, &browser, cx, at);
+        choose(&browser, cx, file_index(&files, "notes.txt"));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, _| window.set_scale_factor(2.));
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        draw(cx);
+        let said = || {
+            (
+                crate::native_accessibility::written::get("cancel-lfs-download")
+                    .and_then(|node| node.node.label().map(str::to_owned)),
+                crate::views::COMPACT_LABELS
+                    .with(|labels| labels.borrow().get("cancel-lfs-download").cloned())
+                    .map(|label| label.to_string()),
+                crate::views::CONTROL_TOOLTIPS.with(|tooltips| {
+                    tooltips
+                        .borrow()
+                        .get(&SharedString::from("cancel-lfs-download"))
+                        .cloned()
+                }),
+            )
+        };
+        let name = "Cancel download of flow.mmd's Before object";
+        assert_eq!(
+            said(),
+            (
+                Some(name.to_owned()),
+                Some(String::new()),
+                Some(format!("Cancel · {name}"))
+            ),
+            "the footer's Cancel is its icon, its tooltip leading with its label"
+        );
+        let cancel = cx
+            .debug_bounds("cancel-lfs-download")
+            .expect("Cancel download stands on the footer");
+        cx.simulate_click(cancel.center(), Modifiers::none());
+        draw(cx);
+        let name = "Cancelling download of flow.mmd's Before object";
+        assert_eq!(
+            said(),
+            (
+                Some(name.to_owned()),
+                Some(String::new()),
+                Some(format!("Cancelling… · {name}"))
+            ),
+            "pressed, its name and its tooltip say it is cancelling"
+        );
+        end_download(&app, &browser, cx, None);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// The comparison the review shows, by its identity.
