@@ -196,53 +196,33 @@ impl ProjectHub {
                 _ => {}
             },
         ));
-        this.subscriptions.push(cx.subscribe_in(
-            &source,
-            window,
-            |this, field, event, window, cx| match event {
-                InputEvent::Change => {
+        this.subscriptions.push(
+            cx.subscribe_in(&source, window, |this, _, event, window, cx| {
+                if let InputEvent::Change = event {
                     this.error = None;
                     this.suggest_project_name(window, cx);
                     cx.notify();
                 }
-                InputEvent::PressEnter { secondary, .. } => {
-                    this.submit_on_enter(field, *secondary, window, cx)
-                }
-                _ => {}
-            },
-        ));
+            }),
+        );
         for input in [&parent, &name] {
-            this.subscriptions.push(cx.subscribe_in(
-                input,
-                window,
-                |this, field, event, window, cx| match event {
-                    InputEvent::Change => {
+            this.subscriptions
+                .push(cx.subscribe_in(input, window, |this, _, event, _, cx| {
+                    if let InputEvent::Change = event {
                         this.error = None;
                         cx.notify();
                     }
-                    InputEvent::PressEnter { secondary, .. } => {
-                        this.submit_on_enter(field, *secondary, window, cx)
-                    }
-                    _ => {}
-                },
-            ));
+                }));
         }
-        this.subscriptions.push(cx.subscribe_in(
-            &branch,
-            window,
-            |this, field, event, window, cx| match event {
-                InputEvent::Change => {
+        this.subscriptions
+            .push(cx.subscribe_in(&branch, window, |this, _, event, _, cx| {
+                if let InputEvent::Change = event {
                     this.branch_edited = true;
                     this.pending_default_branch = None;
                     this.error = None;
                     cx.notify();
                 }
-                InputEvent::PressEnter { secondary, .. } => {
-                    this.submit_on_enter(field, *secondary, window, cx)
-                }
-                _ => {}
-            },
-        ));
+            }));
         this
     }
 
@@ -685,29 +665,50 @@ impl ProjectHub {
         validate_destination(&parent, self.name.read(cx).value().as_ref())
     }
 
-    /// Return in a Clone or Create field submits the form once per press:
-    /// only for a plain Enter (Shift-Enter too) that went down in `field`
-    /// and does not repeat the press the toolkit recorded
-    /// (`enter_press_is_repeat`, `enter_press_began_on`). The field reports
-    /// every Enter key-down, a held key's repeats included on every
-    /// platform, and under X11 each repeat arrives as a fresh press, so a
-    /// held Return after a clone that failed at once began another clone, a
-    /// network action, on each repeat and said its failure again each time.
-    /// The secondary Enter (Command-Enter on macOS, Control-Enter elsewhere)
+    /// Return in a Clone or Create field submits the form once per press, on
+    /// the conditions a dialog's default action keeps (the toolkit's
+    /// `dialog.rs`): a plain Enter (Shift-Enter too) going down, not marked
+    /// held, not repeating the press the toolkit recorded
+    /// (`enter_press_is_repeat`), in the field focused as that press began
+    /// (`enter_press_began_on`). The form's key-down listener asks, after
+    /// the field's own Enter has let the key go on. A held key's Enter
+    /// key-downs repeat on every platform, and under X11 each arrives as a
+    /// fresh press, so a held Return after a clone that failed at once began
+    /// another clone, a network action, on each repeat. The fields submitted
+    /// on their own `PressEnter`, which carries no held mark, so a press the
+    /// window never saw (a Return that confirmed the native folder picker,
+    /// whose answer focuses the folder name, or one an input method took to
+    /// commit a composition) made its first held repeat look like a fresh
+    /// press, and it began one clone or create (decided 2026-11-10). The
+    /// secondary Enter (Command-Enter on macOS, Control-Enter elsewhere)
     /// submits nothing: on macOS it records no press, since Cocoa sends no
     /// key-up for a key pressed with Command held, so its repeats could not
-    /// be told from presses.
+    /// be told from presses. Neither does an Alt- or Fn-Enter.
     fn submit_on_enter(
         &mut self,
-        field: &Entity<InputState>,
-        secondary: bool,
-        window: &Window,
+        event: &KeyDownEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let began_here = field.read(cx).focus_handle(cx);
-        if secondary
-            || gpui_kit::base::enter_press_is_repeat(window, cx)
-            || !gpui_kit::base::enter_press_began_on(&began_here, window, cx)
+        let modifiers = &event.keystroke.modifiers;
+        if event.keystroke.key != "enter"
+            || event.is_held
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.platform
+            || modifiers.function
+        {
+            return;
+        }
+        let Some(field) = [&self.source, &self.parent, &self.name, &self.branch]
+            .into_iter()
+            .map(|field| field.read(cx).focus_handle(cx))
+            .find(|field| field.is_focused(window))
+        else {
+            return;
+        };
+        if gpui_kit::base::enter_press_is_repeat(window, cx)
+            || !gpui_kit::base::enter_press_began_on(&field, window, cx)
         {
             return;
         }
@@ -1326,6 +1327,9 @@ impl ProjectHub {
                 panel
                     .child(
                         div()
+                            // Return in a field submits from here, once per
+                            // press ([`Self::submit_on_enter`]).
+                            .on_key_down(cx.listener(Self::submit_on_enter))
                             .flex()
                             .flex_col()
                             .gap_4()
@@ -3391,10 +3395,10 @@ mod tests {
         assert_eq!(new.1.as_deref(), Some("a new reason"));
     }
 
-    /// One Enter key event as the platform delivers it, with no idle pass
-    /// after it: a key-down, marked held or not, or with `None` its key-up.
-    fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
-        let keystroke = Keystroke::parse("enter").expect("a keystroke");
+    /// One key event as the platform delivers it, with no idle pass after
+    /// it: `stroke` going down, marked held or not, or with `None` its key-up.
+    fn key(cx: &mut VisualTestContext, stroke: &str, down: Option<bool>) {
+        let keystroke = Keystroke::parse(stroke).expect("a keystroke");
         let input = match down {
             Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
                 keystroke,
@@ -3404,6 +3408,98 @@ mod tests {
             None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
         };
         cx.update(|window, cx| window.dispatch_event(input, cx));
+    }
+
+    /// One Enter key event, as [`key`] sends it.
+    fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+        key(cx, "enter", down);
+    }
+
+    type Field = fn(&ProjectHub) -> &Entity<InputState>;
+
+    /// A hub with the Clone and Create fields filled, whose owner answers
+    /// each clone or create as the hub asks for it, with a failure, as a
+    /// clone whose remote refuses at once does, so the hub is ready again
+    /// before the next key event.
+    struct FailingHub {
+        hub: Entity<ProjectHub>,
+        attempts: Rc<Cell<usize>>,
+        _failing: Subscription,
+    }
+
+    impl FailingHub {
+        const SOURCE: Field = |hub| &hub.source;
+        const PARENT: Field = |hub| &hub.parent;
+        const NAME: Field = |hub| &hub.name;
+        const BRANCH: Field = |hub| &hub.branch;
+
+        fn new(cx: &mut TestAppContext) -> (Self, &mut VisualTestContext) {
+            cx.update(gpui_kit::init);
+            let captured = Rc::new(RefCell::new(None));
+            let observed = captured.clone();
+            let (_, cx) = cx.add_window_view(move |window, cx| {
+                let hub =
+                    cx.new(|cx| ProjectHub::new(vec![], HashMap::new(), "main".into(), window, cx));
+                *captured.borrow_mut() = Some(hub.clone());
+                gpui_kit::component::Root::new(hub, window, cx)
+            });
+            let hub = observed.borrow_mut().take().unwrap();
+            cx.simulate_resize(size(px(1000.), px(680.)));
+            let attempts = Rc::new(Cell::new(0_usize));
+            let failing = cx.update(|_, cx| {
+                let attempts = attempts.clone();
+                cx.subscribe(&hub, move |hub, event: &ProjectEvent, cx| {
+                    if matches!(
+                        event,
+                        ProjectEvent::Clone { .. } | ProjectEvent::Create { .. }
+                    ) {
+                        attempts.set(attempts.get() + 1);
+                        hub.update(cx, |hub, cx| {
+                            hub.set_busy(false, cx);
+                            hub.set_error(Some("Could not read from the remote.".into()), cx);
+                        });
+                    }
+                })
+            });
+            let this = Self {
+                hub,
+                attempts,
+                _failing: failing,
+            };
+            this.set(cx, Self::SOURCE, "https://example.invalid/demo.git");
+            this.set(cx, Self::NAME, "demo");
+            this.set(cx, Self::PARENT, "/srv/projects");
+            (this, cx)
+        }
+
+        /// The clones or creates asked for, and the refusals said.
+        fn seen(&self, cx: &mut VisualTestContext) -> (usize, usize) {
+            let refusals = self.hub.read_with(cx, |hub, _| hub.errors_shown);
+            (self.attempts.get(), refusals)
+        }
+
+        fn set(&self, cx: &mut VisualTestContext, field: Field, value: &str) {
+            let value = value.to_owned();
+            cx.update(|window, cx| {
+                let input = field(self.hub.read(cx)).clone();
+                input.update(cx, |input, cx| input.set_value(value, window, cx));
+            });
+        }
+
+        /// Shows `mode` with focus in `field`.
+        fn focus(&self, cx: &mut VisualTestContext, mode: ProjectMode, field: Field) {
+            cx.update(|window, cx| {
+                self.hub
+                    .update(cx, |hub, cx| hub.change_mode(mode, window, cx));
+                let focus = field(self.hub.read(cx)).focus_handle(cx);
+                window.focus(&focus, cx);
+            });
+            crate::tags::tests::draw(cx);
+        }
+
+        fn focused(&self, cx: &mut VisualTestContext, field: Field) -> bool {
+            cx.update(|window, cx| field(self.hub.read(cx)).focus_handle(cx).is_focused(window))
+        }
     }
 
     /// A held Return in a Clone or Create field asks for one clone or
@@ -3420,76 +3516,45 @@ mod tests {
     /// action, and said its failure again.
     #[gpui::test]
     fn a_held_return_asks_for_one_clone_or_create(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        let captured = Rc::new(RefCell::new(None));
-        let observed = captured.clone();
-        let (_, cx) = cx.add_window_view(move |window, cx| {
-            let hub =
-                cx.new(|cx| ProjectHub::new(vec![], HashMap::new(), "main".into(), window, cx));
-            *captured.borrow_mut() = Some(hub.clone());
-            gpui_kit::component::Root::new(hub, window, cx)
-        });
-        let hub = observed.borrow_mut().take().unwrap();
-        cx.simulate_resize(size(px(1000.), px(680.)));
-        // The owner answers each attempt as the hub asks for it, with a
-        // failure, so the hub is ready again before the next key event.
-        let attempts = Rc::new(Cell::new(0_usize));
-        let _failing = cx.update(|_, cx| {
-            let attempts = attempts.clone();
-            cx.subscribe(&hub, move |hub, event: &ProjectEvent, cx| {
-                if matches!(
-                    event,
-                    ProjectEvent::Clone { .. } | ProjectEvent::Create { .. }
-                ) {
-                    attempts.set(attempts.get() + 1);
-                    hub.update(cx, |hub, cx| {
-                        hub.set_busy(false, cx);
-                        hub.set_error(Some("Could not read from the remote.".into()), cx);
-                    });
-                }
-            })
-        });
-        let seen = |cx: &mut VisualTestContext| {
-            (attempts.get(), hub.read_with(cx, |hub, _| hub.errors_shown))
-        };
-        type Field = fn(&ProjectHub) -> &Entity<InputState>;
-        let set = |cx: &mut VisualTestContext, field: Field, value: &str| {
-            let value = value.to_owned();
-            cx.update(|window, cx| {
-                let input = field(hub.read(cx)).clone();
-                input.update(cx, |input, cx| input.set_value(value, window, cx));
-            });
-        };
-        let source: Field = |hub| &hub.source;
-        let name: Field = |hub| &hub.name;
-        let parent: Field = |hub| &hub.parent;
-        let branch: Field = |hub| &hub.branch;
-        set(cx, source, "https://example.invalid/demo.git");
-        set(cx, name, "demo");
-        set(cx, parent, "/srv/projects");
+        let (hub, cx) = FailingHub::new(cx);
         let cases: [(ProjectMode, &str, Field, (usize, usize)); 5] = [
-            (ProjectMode::Clone, "the source", source, (1, 1)),
-            (ProjectMode::Clone, "the parent folder", parent, (1, 1)),
-            (ProjectMode::Create, "the folder name", name, (1, 1)),
-            (ProjectMode::Create, "the initial branch", branch, (1, 1)),
+            (ProjectMode::Clone, "the source", FailingHub::SOURCE, (1, 1)),
+            (
+                ProjectMode::Clone,
+                "the parent folder",
+                FailingHub::PARENT,
+                (1, 1),
+            ),
+            (
+                ProjectMode::Create,
+                "the folder name",
+                FailingHub::NAME,
+                (1, 1),
+            ),
+            (
+                ProjectMode::Create,
+                "the initial branch",
+                FailingHub::BRANCH,
+                (1, 1),
+            ),
             // Refused before the hub asks: an empty source.
-            (ProjectMode::Clone, "an empty source", source, (0, 1)),
+            (
+                ProjectMode::Clone,
+                "an empty source",
+                FailingHub::SOURCE,
+                (0, 1),
+            ),
         ];
         for (mode, at, field, step) in cases {
             if at == "an empty source" {
-                set(cx, source, "");
+                hub.set(cx, FailingHub::SOURCE, "");
             }
-            cx.update(|window, cx| {
-                hub.update(cx, |hub, cx| hub.change_mode(mode, window, cx));
-                let focus = field(hub.read(cx)).focus_handle(cx);
-                window.focus(&focus, cx);
-            });
-            crate::tags::tests::draw(cx);
-            let before = seen(cx);
+            hub.focus(cx, mode, field);
+            let before = hub.seen(cx);
             let after = (before.0 + step.0, before.1 + step.1);
             enter(cx, Some(false));
             crate::tags::tests::draw(cx);
-            assert_eq!(seen(cx), after, "{at}: the press answers once");
+            assert_eq!(hub.seen(cx), after, "{at}: the press answers once");
             let repeats: [(&str, &[Option<bool>]); 4] = [
                 ("an X11 repeat", &[Some(false)]),
                 ("another X11 repeat", &[Some(false)]),
@@ -3503,29 +3568,144 @@ mod tests {
                 }
                 crate::tags::tests::draw(cx);
                 assert_eq!(
-                    seen(cx),
+                    hub.seen(cx),
                     after,
                     "{at}, {repeat}: nothing more is asked or said"
                 );
-                cx.update(|window, cx| {
-                    assert!(
-                        field(hub.read(cx)).focus_handle(cx).is_focused(window),
-                        "{at}, {repeat}: focus stays in the field"
-                    );
-                });
+                assert!(
+                    hub.focused(cx, field),
+                    "{at}, {repeat}: focus stays in the field"
+                );
             }
             enter(cx, None);
             crate::tags::tests::draw(cx);
             enter(cx, Some(false));
             crate::tags::tests::draw(cx);
             assert_eq!(
-                seen(cx),
+                hub.seen(cx),
                 (after.0 + step.0, after.1 + step.1),
                 "{at}: a new press after the key-up answers again"
             );
             enter(cx, None);
             crate::tags::tests::draw(cx);
         }
+    }
+
+    /// A Return the hub's window never saw go down asks for nothing as its
+    /// held repeats arrive, marked held, as on macOS and in GPUI's own
+    /// Wayland repeat: one an input method took to commit a composition in
+    /// the folder name, and one that confirmed the native folder picker
+    /// from Browse, whose answer focuses the folder name. After the key-up
+    /// a new press asks once. The fields submitted on their own
+    /// `PressEnter`, which carries no held mark, so the first repeat, the
+    /// first Enter the window saw, looked like a fresh press and asked for
+    /// one clone (security review of FU41-B5, cases E1 and F2).
+    #[gpui::test]
+    fn held_repeats_of_a_return_the_hub_never_saw_ask_for_nothing(cx: &mut TestAppContext) {
+        let (hub, cx) = FailingHub::new(cx);
+        for case in ["an input method's commit", "the folder picker's answer"] {
+            if case == "the folder picker's answer" {
+                hub.focus(cx, ProjectMode::Clone, FailingHub::PARENT);
+                // Browse; Return goes down in the picker, another window.
+                cx.update(|window, cx| {
+                    hub.hub
+                        .update(cx, |hub, cx| hub.choose_folder(false, window, cx))
+                });
+                cx.simulate_path_prompt_response(|_| Some(vec![PathBuf::from("/srv/picked")]));
+                crate::tags::tests::draw(cx);
+                assert!(
+                    hub.focused(cx, FailingHub::NAME),
+                    "{case}: the folder name is focused"
+                );
+            } else {
+                // The press that commits the composition reaches the input
+                // method only.
+                hub.focus(cx, ProjectMode::Clone, FailingHub::NAME);
+            }
+            let before = hub.seen(cx);
+            for repeat in 0..3 {
+                enter(cx, Some(true));
+                crate::tags::tests::draw(cx);
+                assert_eq!(
+                    hub.seen(cx),
+                    before,
+                    "{case}, held repeat {repeat}: nothing is asked or said"
+                );
+            }
+            enter(cx, None);
+            crate::tags::tests::draw(cx);
+            enter(cx, Some(false));
+            crate::tags::tests::draw(cx);
+            assert_eq!(
+                hub.seen(cx),
+                (before.0 + 1, before.1 + 1),
+                "{case}: a new press after the key-up asks once"
+            );
+            enter(cx, None);
+            crate::tags::tests::draw(cx);
+        }
+    }
+
+    /// Shift-Return in a Clone field asks once per press, as Return does,
+    /// and Control-Return, the secondary Enter off macOS, asks nothing; the
+    /// held repeats of neither ask anything more, as X11 sends them and as
+    /// GPUI marks them held.
+    #[gpui::test]
+    fn shift_return_asks_once_and_control_return_asks_nothing(cx: &mut TestAppContext) {
+        let (hub, cx) = FailingHub::new(cx);
+        hub.focus(cx, ProjectMode::Clone, FailingHub::SOURCE);
+        for (stroke, step) in [("ctrl-enter", (0, 0)), ("shift-enter", (1, 1))] {
+            let before = hub.seen(cx);
+            let after = (before.0 + step.0, before.1 + step.1);
+            key(cx, stroke, Some(false));
+            crate::tags::tests::draw(cx);
+            assert_eq!(hub.seen(cx), after, "{stroke}: the press");
+            for held in [false, false, true] {
+                key(cx, stroke, Some(held));
+                crate::tags::tests::draw(cx);
+                assert_eq!(
+                    hub.seen(cx),
+                    after,
+                    "{stroke}: a repeat (held: {held}) asks nothing more"
+                );
+            }
+            key(cx, stroke, None);
+            crate::tags::tests::draw(cx);
+        }
+    }
+
+    /// A press the hub refuses leaves the next press free to ask: with the
+    /// source refused (a leading dash), Return says why once, the source is
+    /// fixed while the key is still down, as a paste with the pointer does,
+    /// and the key's repeats ask nothing; after the key-up a new press asks
+    /// for one clone.
+    #[gpui::test]
+    fn a_fresh_press_after_a_refused_one_asks_once(cx: &mut TestAppContext) {
+        let (hub, cx) = FailingHub::new(cx);
+        hub.focus(cx, ProjectMode::Clone, FailingHub::SOURCE);
+        hub.set(cx, FailingHub::SOURCE, "-oops");
+        crate::tags::tests::draw(cx);
+        enter(cx, Some(false));
+        crate::tags::tests::draw(cx);
+        assert_eq!(hub.seen(cx), (0, 1), "the refused press says why once");
+        hub.set(cx, FailingHub::SOURCE, "https://example.invalid/demo.git");
+        crate::tags::tests::draw(cx);
+        // An X11 repeat, a release and its press together, and a held repeat.
+        let repeats: [&[Option<bool>]; 3] = [&[Some(false)], &[None, Some(false)], &[Some(true)]];
+        for events in repeats {
+            for down in events {
+                enter(cx, *down);
+            }
+            crate::tags::tests::draw(cx);
+            assert_eq!(hub.seen(cx), (0, 1), "{events:?}: the repeat asks nothing");
+        }
+        enter(cx, None);
+        crate::tags::tests::draw(cx);
+        enter(cx, Some(false));
+        crate::tags::tests::draw(cx);
+        assert_eq!(hub.seen(cx), (1, 2), "a fresh press asks once");
+        enter(cx, None);
+        crate::tags::tests::draw(cx);
     }
 }
 
