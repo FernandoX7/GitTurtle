@@ -1274,6 +1274,26 @@ fn stash_row_id(stash: &StashEntry) -> ElementId {
     ElementId::NamedInteger("saved-stash".into(), commit.finish())
 }
 
+/// A saved stash's row's accessible name: its message, its date and its
+/// short commit, none of which renumbers, never its `stash@{n}`: two stashes
+/// saved with one message are told apart by when, then by what. Refresh after a
+/// stash saved elsewhere keeps the selected stash selected where the list
+/// renumbered it, its row the same node, and the refresh's one sentence says
+/// where it now stands ("4 saved stashes, stash@{2} selected"): Orca speaks
+/// any rename of the item it presents, so a name holding the `stash@{n}` was
+/// heard a second time 12 ms later ("On main: Stash 2: notes edit ·
+/// stash@{2}", QA-109). The row still shows its `stash@{n}`, and the
+/// selected stash's detail line says it, static text Orca does not present,
+/// so a renumber is still said once, by the refresh's sentence.
+fn stash_row_name(stash: &StashEntry) -> String {
+    format!(
+        "{} · {} · {}",
+        stash.name,
+        short_date(stash.timestamp),
+        short_oid(&stash.oid)
+    )
+}
+
 fn list_key_selection(key: &str, selected: Option<usize>, count: usize) -> Option<usize> {
     if count == 0 {
         return None;
@@ -1794,6 +1814,107 @@ pub(crate) struct StashBrowser {
     /// Where Review restore… lies in the stacked detail in the frame being
     /// prepainted, for [`reveal_note`].
     restore_at: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// How each drawn stash row's message, and the detail's title, was laid
+    /// out last ([`MessageLaidOut`]), which its tooltip reads as the pointer
+    /// rests on it: at most one entry for each row of a page, and the title's.
+    messages_laid_out: LaidOutMessages,
+}
+
+/// Where a saved stash's message is drawn cut to its room: a row of the list,
+/// by its index on the page, or the detail's title.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum MessageLine {
+    Row(usize),
+    Title,
+}
+
+type LaidOutMessages =
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<MessageLine, MessageLaidOut>>>;
+
+/// A saved stash's message as its line last laid it out: the room it had,
+/// the size, font and display scale it was drawn at, and whether that room
+/// cut it, measured only as one of them changes ([`measure_message`]). Keyed
+/// by its size alone, a line kept the answer a font family or a display
+/// scale since changed had given.
+struct MessageLaidOut {
+    message: String,
+    width: Pixels,
+    size: Pixels,
+    font: gpui::Font,
+    scale: f32,
+    cut: bool,
+}
+
+/// Measures `message` as `line` lays it out at `size`, in the text style the
+/// element that calls it prepaints in, so its font and weight measure it,
+/// and records whether its room cuts it ([`message_tooltip`]). It answers for
+/// the line as laid out last, so a hover after a resize, a text size or font
+/// change, or a move to a display of another scale answers for the line
+/// drawn.
+fn measure_message(
+    laid_out: &LaidOutMessages,
+    line: MessageLine,
+    message: String,
+    size: Pixels,
+) -> impl FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static {
+    let recorded = laid_out.clone();
+    move |room, window, _| {
+        let width = room.size.width;
+        let style = window.text_style();
+        let font = style.font();
+        let scale = window.scale_factor();
+        let mut laid = recorded.borrow_mut();
+        if laid.get(&line).is_some_and(|laid| {
+            laid.width == width
+                && laid.size == size
+                && laid.font == font
+                && laid.scale == scale
+                && laid.message == message
+        }) {
+            return;
+        }
+        let run = style.to_run(message.len());
+        let cut = window
+            .text_system()
+            .shape_line(message.clone().into(), size, &[run], None)
+            .width()
+            > width;
+        laid.insert(
+            line,
+            MessageLaidOut {
+                message,
+                width,
+                size,
+                font,
+                scale,
+                cut,
+            },
+        );
+    }
+}
+
+/// The tooltip of a stash's message drawn on `line`: the whole message
+/// where its room cut it as last laid out ([`measure_message`]), and
+/// otherwise nothing, as no line drawn whole has one (`DESIGN.md`, Image
+/// comparison's rule for a line's tooltip).
+fn message_tooltip(
+    laid_out: &LaidOutMessages,
+    line: MessageLine,
+) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    let laid_out = laid_out.clone();
+    move |window, cx| {
+        let cut = laid_out
+            .borrow()
+            .get(&line)
+            .filter(|laid| laid.cut)
+            .map(|laid| laid.message.clone());
+        match cut {
+            Some(message) => gpui_kit::component::tooltip::Tooltip::new(message).build(window, cx),
+            // Nothing to add to a whole message: an empty view, drawn as
+            // nothing.
+            None => cx.new(|_| gpui::EmptyView).into(),
+        }
+    }
 }
 
 impl Drop for StashBrowser {
@@ -2021,6 +2142,7 @@ impl StashBrowser {
             reveal_note: Default::default(),
             note_lines: std::rc::Rc::new(std::cell::Cell::new(2)),
             restore_at: Default::default(),
+            messages_laid_out: Default::default(),
         };
         // Released however its dialog closes, Stashes stops preparing a
         // Review restore… nobody is waiting for. A close callback of the
@@ -3025,14 +3147,16 @@ impl StashBrowser {
         let p = palette(cx);
         let selected = self.selected == Some(index);
         // Its node, which keeps its stash's ID, reports the part of the row
-        // the list draws, as History's changed files do.
+        // the list draws, as History's changed files do. It is named by what
+        // never renumbers, its message, date and commit
+        // ([`stash_row_name`]).
         native_accessibility::clips_children(
             div()
                 .id(stash_row_id(stash))
                 .debug_selector(move || format!("saved-stash-row-{index}"))
                 .role(Role::ListBoxOption)
                 .aria_selected(selected)
-                .aria_label(format!("{} · {}", stash.name, stash.selector))
+                .aria_label(stash_row_name(stash))
                 .h(crate::appearance::ui_size(58.))
                 .w_full()
                 .px_3()
@@ -3044,25 +3168,43 @@ impl StashBrowser {
                 .bg(rgb(if selected { p.selected } else { p.panel }))
                 .hover(|style| style.bg(rgb(p.row_hover(selected))))
                 .cursor_pointer()
-                .child(
+                // Where the row's width cuts the message, it is whole in its
+                // tooltip; a message drawn whole has none
+                // ([`message_tooltip`]).
+                .child({
+                    use gpui_kit::base::ElementExt as _;
+                    let size = crate::appearance::ui_text(12.);
+                    let line = MessageLine::Row(index);
                     div()
+                        .id(("saved-stash-message", index))
+                        .debug_selector(move || format!("saved-stash-message-{index}"))
                         .truncate()
-                        .text_size(crate::appearance::ui_text(12.))
+                        .text_size(size)
                         .font_weight(FontWeight::MEDIUM)
-                        .child(stash.name.clone()),
-                )
-                .child(
+                        .on_prepaint(measure_message(
+                            &self.messages_laid_out,
+                            line,
+                            stash.name.clone(),
+                            size,
+                        ))
+                        .tooltip(message_tooltip(&self.messages_laid_out, line))
+                        .child(stash.name.clone())
+                })
+                .child({
+                    let line = format!(
+                        "{} · {} · {}",
+                        stash.selector,
+                        short_oid(&stash.oid),
+                        short_date(stash.timestamp)
+                    );
+                    let drawn = line.clone();
                     div()
+                        .debug_selector(move || format!("saved-stash-line-{index}: {drawn}"))
                         .truncate()
                         .text_size(crate::appearance::ui_text(10.))
                         .text_color(rgb(p.muted))
-                        .child(format!(
-                            "{} · {} · {}",
-                            stash.selector,
-                            short_oid(&stash.oid),
-                            short_date(stash.timestamp)
-                        )),
-                )
+                        .child(line)
+                })
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.select_stash(index, window, cx)),
                 ),
@@ -3917,8 +4059,11 @@ impl Render for StashBrowser {
                 .children(self.error.as_ref().map(|error| form_error(error, cx)))
                 .when_some(snapshot, |element, snapshot| element
                     .child(div().flex().flex_col().gap_1()
-                        .child(native_accessibility::text("stash-detail-name", snapshot.stash.name.clone()).truncate().text_size(crate::appearance::ui_text(14.)).font_weight(FontWeight::SEMIBOLD))
-                        .child(native_accessibility::text("stash-detail-identity", format!("{} · base {} · saved index {}", short_oid(&snapshot.stash.oid), short_oid(&snapshot.base_oid), short_oid(&snapshot.index_oid))).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))))
+                        // The title, as a row's message, is whole in its
+                        // tooltip only where its room cuts it, measured in
+                        // its own style by the box it fills.
+                        .child({ use gpui_kit::base::ElementExt as _; let size = crate::appearance::ui_text(14.); div().min_w_0().text_size(size).font_weight(FontWeight::SEMIBOLD).on_prepaint(measure_message(&self.messages_laid_out, MessageLine::Title, snapshot.stash.name.clone(), size)).child(native_accessibility::text("stash-detail-name", snapshot.stash.name.clone()).truncate().tooltip(message_tooltip(&self.messages_laid_out, MessageLine::Title))) })
+                        .child(native_accessibility::text("stash-detail-identity", format!("{} · {} · base {} · saved index {}", snapshot.stash.selector, short_oid(&snapshot.stash.oid), short_oid(&snapshot.base_oid), short_oid(&snapshot.index_oid))).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))))
                     .child(div().flex().flex_wrap().items_center().gap_1().on_children_prepainted(self.detail.controls(areas.iter().cloned().map(Some).collect(), room)).children([StashArea::Staged, StashArea::Unstaged, StashArea::Untracked].into_iter().zip(areas).map(|(area, focus)| {
                         button(("stash-area", area as usize), format!("{} ({})", area.label(), area.files(&snapshot).len()), "", self.area == area).track_focus(&focus).debug_selector(move || format!("stash-area-{}", area as usize)).on_click(cx.listener(move |this, _, _, cx| this.choose_area(area, cx)))
                     })))
@@ -4551,9 +4696,10 @@ mod tests {
     /// A saved stash stays selected by its stash commit as the list is read
     /// again: Refresh after a stash saved from a terminal, which renumbers
     /// the list, keeps the stash that was selected selected one row down,
-    /// its saved changes read again and its row's node the same; Refresh
-    /// after it was dropped selects nothing. Refresh cleared the selection,
-    /// and the row's node took the stash that moved into its `stash@{n}`.
+    /// its saved changes read again and its row's node the same, by the same
+    /// name; Refresh after it was dropped selects nothing. Refresh cleared
+    /// the selection, and the row's node took the stash that moved into its
+    /// `stash@{n}`.
     #[gpui::test]
     async fn a_refresh_keeps_the_selected_stash_by_its_commit(cx: &mut gpui_kit::TestAppContext) {
         use crate::tags::tests::{draw, git, tagged_repository, window};
@@ -4600,7 +4746,21 @@ mod tests {
                 .and_then(|written| written.node.label().map(str::to_owned))
         };
         let named = node(cx).unwrap_or_else(|| panic!("the stash's row writes its node {id}"));
-        assert!(named.ends_with(": first · stash@{1}"), "{named}");
+        assert_eq!(
+            named,
+            stash_row_name(&stashes.read_with(cx, |this, _| {
+                this.page.as_ref().expect("the list").entries[1].clone()
+            })),
+            "named by its message, date and commit"
+        );
+        let (date, commit) = stashes.read_with(cx, |this, _| {
+            let stash = &this.page.as_ref().expect("the list").entries[1];
+            (short_date(stash.timestamp), short_oid(&stash.oid))
+        });
+        assert!(
+            named.contains(": first · ") && named.ends_with(&format!(" · {date} · {commit}")),
+            "message · date · short commit: {named}"
+        );
         // Another saved from a terminal, above it.
         std::fs::write(&notes, "third").unwrap();
         git(
@@ -4616,10 +4776,10 @@ mod tests {
             "the stash moved one row down and stays selected"
         );
         assert_eq!(kept, Some(oid.clone()), "by its commit");
-        let named = node(cx).unwrap_or_else(|| panic!("the stash's row keeps its node {id}"));
-        assert!(
-            named.ends_with(": first · stash@{2}"),
-            "the row's node stays with the stash, renumbered: {named}"
+        let renamed = node(cx).unwrap_or_else(|| panic!("the stash's row keeps its node {id}"));
+        assert_eq!(
+            renamed, named,
+            "the row's node stays with the stash, renumbered, by the same name"
         );
         assert!(
             stashes.read_with(cx, |this, _| this
@@ -6127,6 +6287,209 @@ mod tests {
             announced(cx).map(|(_, text)| text).as_deref(),
             Some("Saved stash no longer listed")
         );
+    }
+
+    /// QA-109: with `stash@{1}` selected and a stash saved from a terminal,
+    /// the Refresh key, and the Refresh control alike, say one result: the
+    /// refresh's sentence, which names where the selected stash now stands.
+    /// The row keeps its node and its name as the selection follows it, so
+    /// the AT-SPI adapter reports no rename of it, which Orca 51.1 spoke 12
+    /// ms after the sentence ("On main: Stash 2: notes edit · stash@{2}").
+    #[gpui::test]
+    async fn a_refresh_that_renumbers_the_selected_stash_says_it_once_by_key(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        refresh_that_renumbers_the_selected_stash(cx, "key").await;
+    }
+
+    /// As [`a_refresh_that_renumbers_the_selected_stash_says_it_once_by_key`],
+    /// with the dialog's Refresh control clicked.
+    #[gpui::test]
+    async fn a_refresh_that_renumbers_the_selected_stash_says_it_once_by_click(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        refresh_that_renumbers_the_selected_stash(cx, "click").await;
+    }
+
+    /// A saved stash's message, which its row and the detail's title cut to
+    /// their width, is whole in a tooltip on each; neither had one.
+    #[gpui::test]
+    async fn a_stash_message_is_whole_in_its_tooltips(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, hovered_tooltips};
+        let fixture = tempfile::tempdir().unwrap();
+        // Past the detail's width in a 1,480 px window, where the title of
+        // a message of about 75 characters stands whole.
+        let long = "a saved stash whose message runs on well past what its row and title show, \
+                    and on past the detail's own width, with the files it saved, the base it was \
+                    saved on and the index beside it, in any window this test opens";
+        let (_repo, browser, cx) = stashes_saved(cx, fixture.path(), &[long]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        select_row(&browser, 0, cx);
+        draw(cx);
+        assert_eq!(
+            hovered_tooltips(cx, "saved-stash-message-0"),
+            1,
+            "the row's message"
+        );
+        assert_eq!(
+            hovered_tooltips(cx, "stash-detail-name"),
+            1,
+            "the detail's title"
+        );
+    }
+
+    /// A stash row's message has a tooltip only where the row cuts it: the
+    /// same message, cut beside the detail in the 255 px list of a 1,480 ×
+    /// 980 window, is whole in the list stacked across a 461 × 490 window,
+    /// where a hover shows nothing, and the hover answers for the line laid
+    /// out last as the window changes. Every row's message had a tooltip,
+    /// repeating a message the row showed whole.
+    #[gpui::test]
+    async fn a_stash_rows_message_has_a_tooltip_only_where_the_row_cuts_it(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, hovered_tooltips};
+        let fixture = tempfile::tempdir().unwrap();
+        let message = "parser: keep each token's span";
+        let (_repo, browser, cx) = stashes_saved(cx, fixture.path(), &[message]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        select_row(&browser, 0, cx);
+        draw(cx);
+        assert_eq!(
+            hovered_tooltips(cx, "saved-stash-message-0"),
+            1,
+            "cut beside the detail"
+        );
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert_eq!(
+            hovered_tooltips(cx, "saved-stash-message-0"),
+            0,
+            "whole across the stacked list"
+        );
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        assert_eq!(
+            hovered_tooltips(cx, "saved-stash-message-0"),
+            1,
+            "and cut again beside the detail"
+        );
+    }
+
+    /// The detail's title has a tooltip only where its room cuts it, as a
+    /// row's message does: a short message, whole in the title of a 1,480 ×
+    /// 980 window, shows nothing on a hover, and a long one, cut there,
+    /// shows its whole text. The title's tooltip once showed always,
+    /// repeating a title drawn whole.
+    #[gpui::test]
+    async fn the_stash_titles_tooltip_shows_only_where_the_title_is_cut(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, hovered_tooltips};
+        let fixture = tempfile::tempdir().unwrap();
+        // Past the detail's width in a 1,480 px window, where the title of
+        // a message of about 75 characters stands whole.
+        let long = "a saved stash whose message runs on well past what its row and title show, \
+                    and on past the detail's own width, with the files it saved, the base it was \
+                    saved on and the index beside it, in any window this test opens";
+        let (_repo, browser, cx) = stashes_saved(cx, fixture.path(), &["short", long]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        // The newest stash, `long`, is listed first.
+        select_row(&browser, 1, cx);
+        draw(cx);
+        assert_eq!(
+            hovered_tooltips(cx, "stash-detail-name"),
+            0,
+            "a title drawn whole"
+        );
+        select_row(&browser, 0, cx);
+        draw(cx);
+        assert_eq!(
+            hovered_tooltips(cx, "stash-detail-name"),
+            1,
+            "a title cut to its room"
+        );
+    }
+
+    async fn refresh_that_renumbers_the_selected_stash(
+        cx: &mut gpui_kit::TestAppContext,
+        press: &str,
+    ) {
+        use crate::copy_feedback::tests::announced;
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, browser, cx) = stashes_saved(cx, fixture.path(), &["one", "two", "three"]);
+        select_row(&browser, 1, cx);
+        draw(cx);
+        let (id, oid) = browser.read_with(cx, |this, _| {
+            let stash = &this.page.as_ref().expect("the list").entries[1];
+            assert_eq!(stash.selector, "stash@{1}");
+            (stash_row_id(stash).to_string(), stash.oid.clone())
+        });
+        let name = |cx: &mut VisualTestContext| {
+            written::forget();
+            draw(cx);
+            written::get(&id).and_then(|written| written.node.label().map(str::to_owned))
+        };
+        let before = name(cx).expect("the selected row writes its node");
+        let mut heard = Heard::start(cx);
+
+        save_stash(&repo, "four");
+        if press == "key" {
+            press_refresh(cx);
+        } else {
+            crate::copy_feedback::tests::click(cx, "refresh-stashes");
+        }
+        StashBrowser::lands(&browser, cx);
+        draw(cx);
+        assert_eq!(
+            selected_stash(&browser, cx),
+            (Some(2), Some(oid)),
+            "{press}: the selection follows its stash"
+        );
+        assert_eq!(
+            announced(cx).map(|(_, text)| text).as_deref(),
+            Some("4 saved stashes, stash@{2} selected"),
+            "{press}: the refresh's sentence names where it stands"
+        );
+        assert_eq!(
+            name(cx).as_deref(),
+            Some(before.as_str()),
+            "{press}: the renumbered row keeps its name"
+        );
+        let (line, identity) = browser.read_with(cx, |this, _| {
+            let stash = &this.page.as_ref().expect("the list").entries[2];
+            (
+                format!(
+                    "saved-stash-line-2: stash@{{2}} · {} · {}",
+                    short_oid(&stash.oid),
+                    short_date(stash.timestamp)
+                ),
+                format!("stash@{{2}} · {} · base ", short_oid(&stash.oid)),
+            )
+        });
+        assert!(
+            cx.debug_bounds(line.clone().leak()).is_some(),
+            "{press}: its row still draws where it stands: {line}"
+        );
+        let detail = crate::native_accessibility::written::get("stash-detail-identity")
+            .and_then(|written| written.node.value().map(str::to_owned))
+            .expect("the detail's identity line");
+        assert!(
+            detail.starts_with(&identity),
+            "{press}: and the detail's line says it: {detail}"
+        );
+        if let Some(said) = heard.next(cx) {
+            assert_eq!(
+                said,
+                vec!["4 saved stashes, stash@{2} selected".to_owned()],
+                "{press}: AT-SPI announces the sentence once"
+            );
+        }
+        if let Some(renamed) = heard.renamed_items() {
+            assert_eq!(renamed, Vec::<String>::new(), "{press}: and renames no row");
+        }
     }
 
     /// The Stashes Refresh control does what the key does: it reads the
@@ -7690,6 +8053,28 @@ mod tests {
             #[cfg(not(target_os = "linux"))]
             {
                 crate::views::tests::draw(cx);
+                None
+            }
+        }
+
+        /// The list items the adapter reported renamed in the frames fed
+        /// since the last call, by the name each reads now, which Orca speaks
+        /// for the item it presents, on Linux; `None` elsewhere.
+        fn renamed_items(&mut self) -> Option<Vec<String>> {
+            #[cfg(target_os = "linux")]
+            {
+                use accesskit_atspi_common::Role;
+                Some(
+                    self.bus
+                        .renamed()
+                        .into_iter()
+                        .filter(|(role, _)| *role == Role::ListItem)
+                        .map(|(_, name)| name)
+                        .collect(),
+                )
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
                 None
             }
         }
