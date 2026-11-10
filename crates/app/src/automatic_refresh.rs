@@ -621,21 +621,30 @@ impl GitTurtle {
         // Another repository than the shown status and remotes were read
         // from, as a re-clone at the tab's path leaves, is a fresh capture,
         // as an accepted Refresh's is (`shows_another_repository`): what was
-        // read of the other goes, and the found one's status is read
-        // explicitly, since this read's went through the window's handle by
-        // path and may hold either's.
+        // read of the other goes, History's rows and selection with it, and
+        // the found one's status is read explicitly, since this read's went
+        // through the window's handle by path and may hold either's.
         let replaced = found.is_some_and(|found| self.shows_another_repository(found));
         if let Some(found) = found {
             self.repository_tabs.follow_read_repository(found);
         }
         let entries = if replaced {
-            self.forget_repository_state(window, cx);
+            self.forget_captured_history(window, cx);
             true
         } else {
             self.apply_worktree_state(refresh.working, true, from_write, requested, window, cx)
         };
         if let Some(snapshot) = refresh.snapshot {
             match snapshot {
+                // Installed whole wherever History stood, as an Open's
+                // snapshot is: the rows it would keep below the newest, or
+                // beside a search, went with the replaced repository.
+                Ok(worker::QuietHistory::Refreshed(snapshot)) if replaced => {
+                    self.history_updates
+                        .clear_scope_error(&mut self.operation_error);
+                    self.history_updates.captured(&snapshot);
+                    self.install_current_history(snapshot, true, window, cx);
+                }
                 Ok(worker::QuietHistory::Refreshed(snapshot)) => {
                     self.apply_quiet_snapshot(snapshot, window, cx)
                 }
@@ -665,8 +674,23 @@ impl GitTurtle {
             }
         }
         if replaced {
+            self.seed_navigation_folders();
+            self.rebuild_navigation(cx);
             // The comparison read for the other's row goes with its rows.
             self.refresh_worktree(window, cx);
+            // A commit's comparison was the other's: Compare goes back to
+            // History, as an Open's does, once the status read holds quiet
+            // reads off. A query typed in History's search runs again over
+            // the found repository's history, as after an Open.
+            if self.mode == WorkspaceMode::Compare && self.page == AppPage::Repository {
+                self.back_to_history(window, cx);
+            } else if self.mode == WorkspaceMode::Compare {
+                self.mode = WorkspaceMode::History;
+                self.sidebar = self.history_sidebar;
+            }
+            if !self.search.read(cx).value().is_empty() {
+                self.history_query_changed(window, cx);
+            }
             return entries;
         }
         if self.mode == WorkspaceMode::Working

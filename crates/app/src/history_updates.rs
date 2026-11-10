@@ -277,7 +277,7 @@ impl GitTurtle {
         self.install_current_history(snapshot, following, window, cx);
     }
 
-    fn install_current_history(
+    pub(super) fn install_current_history(
         &mut self,
         snapshot: worker::Snapshot,
         following: bool,
@@ -453,15 +453,19 @@ impl GitTurtle {
                                 // path is installed in place, as a fresh
                                 // capture, as an accepted Refresh's is
                                 // (`shows_another_repository`): what was read
-                                // of the other goes and the found one's
+                                // of the other goes, History's rows and
+                                // selection with it, and the found one's
                                 // status is read. Installed over the status
                                 // and remotes read before, Push pushed its
                                 // branch to its own remote while Targets
                                 // named the other's until a status read
-                                // landed (security probe S1, FU44-A).
+                                // landed (security probe S1, FU44-A), and
+                                // the other's selected commit stayed,
+                                // retained as a row, its menu offering to
+                                // revert it in the found one.
                                 let replaced = this.shows_another_repository(&snapshot.repository);
                                 if replaced {
-                                    this.forget_repository_state(window, cx);
+                                    this.forget_captured_history(window, cx);
                                 }
                                 this.repository_tabs
                                     .follow_read_repository(&snapshot.repository);
@@ -471,6 +475,8 @@ impl GitTurtle {
                                 this.status =
                                     "Latest local history · selected inspector retained".into();
                                 if replaced {
+                                    this.seed_navigation_folders();
+                                    this.rebuild_navigation(cx);
                                     this.refresh_worktree(window, cx);
                                 }
                             }

@@ -1444,25 +1444,14 @@ impl GitTurtle {
             self.forget_repository_state(window, cx);
         }
         self.back_to_history(window, cx);
-        self.history_updates.reset_history();
         if self.path.as_ref() != Some(&path) {
             self.history_updates.committed = None;
         }
-        self.automatic.retained_commit = None;
+        self.forget_history_rows();
         self.path = Some(path.clone());
         // A wait for a preparation another tab dropped says where it runs.
         self.hold_dropped_preparation();
-        self.refs = Default::default();
         self.scope = scope;
-        self.clear_preview();
-        self.files.clear();
-        self.file_paths.reset();
-        self.selected_file = None;
-        self.selected_commit = None;
-        self.commits.clear();
-        self.visible.clear();
-        self.graph.clear();
-        self.graph_notice = None;
         // A tab opened before finds its own repository again or none; only a
         // new tab's explicit open, or one of a marked tab's folder, may land
         // on the work tree enclosing `path`.
@@ -1533,6 +1522,57 @@ impl GitTurtle {
         self.seed_folders = true;
         self.preferred_file = None;
         self.nav_scroll.scroll_to_item(0, ScrollStrategy::Top);
+    }
+
+    /// Forgets History's rows as an Open does before its read: the rows
+    /// with their graph and refs, the selected commit with its changed
+    /// files and comparison, the row retained for that selection
+    /// (`automatic.retained_commit`), and the tips a cue compares a later
+    /// read with.
+    fn forget_history_rows(&mut self) {
+        self.history_updates.reset_history();
+        self.automatic.retained_commit = None;
+        self.refs = Default::default();
+        self.clear_preview();
+        self.files.clear();
+        self.file_paths.reset();
+        self.selected_file = None;
+        self.selected_commit = None;
+        self.commits.clear();
+        self.visible.clear();
+        self.graph.clear();
+        self.graph_notice = None;
+    }
+
+    /// Forgets, for a fresh capture that Show latest or a quiet read lands
+    /// (`GitTurtle::shows_another_repository`), what an Open of another
+    /// path forgets before its read: the inspections and History's search
+    /// over the replaced repository, what the window read of it
+    /// (`forget_repository_state`), its rows, the selected commit and the
+    /// row retained for it (`forget_history_rows`), the commit a write
+    /// created there and a selection a reopen would restore. The landing
+    /// then installs the found repository's history and opens its current
+    /// branch's folders (`seed_navigation_folders`). Installed over them,
+    /// the selected commit of the replaced repository stayed selected,
+    /// retained as a row at the list's end, and its row menu offered to
+    /// revert it in the found one.
+    fn forget_captured_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_inspections(window, cx);
+        self.discard_history_search();
+        self.forget_repository_state(window, cx);
+        self.restore_commit = None;
+        self.history_updates.committed = None;
+        self.forget_history_rows();
+    }
+
+    /// Opens the navigation's folders that hold the current branch, once
+    /// its folder state was forgotten (`forget_repository_state`), as an
+    /// Open's snapshot opens them as it lands.
+    fn seed_navigation_folders(&mut self) {
+        if self.seed_folders {
+            self.expanded_folders = navigation::current_ancestors(&self.branches);
+            self.seed_folders = false;
+        }
     }
 
     fn clear_preview(&mut self) {
@@ -1609,10 +1649,7 @@ impl GitTurtle {
                 );
                 self.refs = snapshot.refs;
                 self.branches = snapshot.branches;
-                if self.seed_folders {
-                    self.expanded_folders = navigation::current_ancestors(&self.branches);
-                    self.seed_folders = false;
-                }
+                self.seed_navigation_folders();
                 self.worktrees = snapshot.worktrees;
                 self.commits = snapshot.commits;
                 self.graph = snapshot.graph;

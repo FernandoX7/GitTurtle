@@ -7753,6 +7753,47 @@ pub(crate) mod tests {
                 "Targets' branch"
             );
         });
+        // History lists, selects and retains nothing of the replaced
+        // repository, so its row menu offers no write on one of its
+        // commits, and the navigation's folders are the found one's.
+        let found_row = |subject: &str| subject == "Third";
+        app.read_with(cx, |app, _| {
+            let subjects = (app.commits.iter())
+                .map(|commit| commit.subject.as_str())
+                .collect::<Vec<_>>();
+            assert!(
+                subjects.iter().all(|subject| found_row(subject)),
+                "no row from before: {subjects:?}"
+            );
+            assert_eq!(
+                app.automatic.retained_commit, None,
+                "no row retained from before"
+            );
+            assert_eq!(
+                app.expanded_folders,
+                crate::navigation::current_ancestors(&app.branches),
+                "the navigation's folders"
+            );
+        });
+        cx.update(|window, cx| {
+            let focus = app.read(cx).focus.clone();
+            window.focus(&focus, cx);
+            window.dispatch_action(Box::new(crate::native_accessibility::RowActions), cx);
+        });
+        frame(cx);
+        let offered = app.update(cx, |app, cx| {
+            let offered = (app.commit_menu.take()).and_then(|_| {
+                let commit = app.commits.get(app.selected_commit?)?;
+                Some(commit.subject.clone())
+            });
+            cx.notify();
+            offered
+        });
+        assert!(
+            offered.as_deref().is_none_or(found_row),
+            "the row menu offers a write on {offered:?}"
+        );
+        frame(cx);
         let actions = ["fetch", "pull", "push"].map(|id| (id, refuses(cx, id, "History")));
         for (id, bounds) in actions {
             nothing_runs(cx, bounds, id);
