@@ -6013,10 +6013,11 @@ mod tests {
     }
 
     /// A session saved on a repository whose `.git` was then swapped for a
-    /// gitfile to a third repository while the app was closed, restored cold
-    /// in a window that opens Projects on its first stop with the mark's
-    /// reason, the tab's folder among the recent projects. Returns the
-    /// fixture, the window and the third repository's Git directory.
+    /// gitfile to a third repository while the app was closed, and a file
+    /// added to its folder, restored cold in a window that opens Projects on
+    /// its first stop with the mark's reason, the tab's folder among the
+    /// recent projects. Returns the fixture, the window and the third
+    /// repository's Git directory.
     #[cfg(unix)]
     async fn restored_marked_with_its_row(
         cx: &mut TestAppContext,
@@ -6048,6 +6049,9 @@ mod tests {
             format!("gitdir: {}\n", third_git.display()),
         )
         .unwrap();
+        // A change for the header to count once the tab is captured afresh
+        // ([`assert_recaptured`]).
+        std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
         let (app, mut window_cx) = open_tab_window(
             cx,
             root.clone(),
@@ -6512,8 +6516,11 @@ mod tests {
 
     /// The History fixture with its `.git` swapped for a gitfile to a third
     /// repository's Git directory and quiet reads held, marked " ·
-    /// unavailable" by Refresh: the window, the tab's root and the third
-    /// repository's Git directory.
+    /// unavailable" by Refresh, then a file added to its folder that no read
+    /// has seen: the window, the tab's root and the third repository's Git
+    /// directory. The fixture's folder held nothing else to count, so a
+    /// header that read "Changes" after a fresh capture said nothing of
+    /// whether it was read ([`assert_recaptured`]).
     async fn marked_by_a_swapped_git(
         cx: &mut TestAppContext,
     ) -> (
@@ -6540,6 +6547,7 @@ mod tests {
             app.read_with(cx, |app, _| app.repository_tabs.tabs[0].error.is_some()),
             "Refresh marks the tab"
         );
+        std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
         (fixture, app, cx, root, third_git)
     }
 
@@ -6817,7 +6825,11 @@ mod tests {
 
     /// The tab at `index` took the repository found at its folder from a
     /// Projects row: the same tab, shown on the repository page, its mark
-    /// gone and that repository's Git directory captured.
+    /// gone and that repository's Git directory captured. In the first frame
+    /// drawn since, the one the mark clears in, the header says that
+    /// repository's working state again, as the mark had hidden it: the
+    /// count of the one file added while the tab was marked, which only a
+    /// status read since then finds, the branch and the edge.
     fn assert_recaptured(
         app: &Entity<GitTurtle>,
         cx: &mut VisualTestContext,
@@ -6825,6 +6837,35 @@ mod tests {
         root: &Path,
         git_dir: &Path,
     ) {
+        crate::views::tests::draw(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.changes_label(), "Changes · 1", "the header's count");
+            // Counted by a read since the mark: the status from before it,
+            // of the Git directory the tab had, counted another change.
+            let counted = app.header_status().map(|status| {
+                (status.entries.iter())
+                    .map(|entry| (entry.path.as_path(), entry.untracked))
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(
+                counted,
+                Some(vec![(Path::new("untracked.txt"), true)]),
+                "the file added while the tab was marked"
+            );
+            assert_eq!(
+                app.repository_edge(),
+                Some(crate::empty_state::RepositoryEdge::NoRemote),
+                "its edge"
+            );
+        });
+        assert_eq!(
+            crate::branch_actions::PICKER_LABEL
+                .with(|label| label.borrow().clone())
+                .as_deref(),
+            Some("main"),
+            "its branch"
+        );
+        assert!(cx.debug_bounds("branch-edge").is_some(), "its edge's line");
         app.read_with(cx, |app, _| {
             assert_eq!(app.page, AppPage::Repository, "the tab is shown");
             assert_eq!(app.repository_tabs.active, Some(index));
