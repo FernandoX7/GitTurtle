@@ -407,13 +407,19 @@ struct FailureBox<'a> {
 /// pressed, whether its write has started, and the failure's words once it
 /// failed, which the row says in place of its sentence
 /// (`lfs_download::AskedState`). It is said of that file of that commit
-/// only, while the review shows it ([`SeriesBrowser::shows`]).
+/// only, while the review shows it ([`SeriesBrowser::shows`]); while the
+/// review shows another, the top of its body says the progress and offers
+/// Cancel ([`SeriesBrowser::download_status`]).
 struct ReviewDownload {
     file: FileChange,
     commit: Option<String>,
     side: usize,
     started: bool,
     failure: Option<SharedString>,
+    /// Whether the row has said the failure: one that landed while the
+    /// review showed another file or commit waits for the person to come
+    /// back to its file, where the row says it.
+    seen: std::cell::Cell<bool>,
 }
 
 pub(crate) struct SeriesBrowser {
@@ -633,7 +639,15 @@ impl SeriesBrowser {
         let drawn = self
             .lfs_download
             .as_ref()
-            .is_some_and(|asked| self.shows(asked).is_some());
+            .is_some_and(|asked| self.row_draws(asked));
+        // Where focus goes from a Cancel download that the download's end
+        // takes away with nothing of its own in its place: left on it, focus
+        // rested on nothing drawn and keys reached the window's root.
+        let away = if self.inspecting {
+            self.back.clone()
+        } else {
+            self.focus.clone()
+        };
         let Some(asked) = self
             .lfs_download
             .as_mut()
@@ -655,8 +669,12 @@ impl SeriesBrowser {
         match ended.flatten() {
             Some(words) => {
                 asked.failure = Some(words.clone());
-                if cancel_focused {
+                // The Download comes back with focus where the row draws
+                // it; Cancel at the top of the body leaves nothing.
+                if cancel_focused && drawn {
                     self.download_focus[asked.side].focus(window, cx);
+                } else if cancel_focused {
+                    away.focus(window, cx);
                 }
                 let _ = crate::copy_feedback::alert(
                     window,
@@ -691,6 +709,8 @@ impl SeriesBrowser {
                         ),
                     );
                     self.file(index, window, cx);
+                } else if cancel_focused {
+                    away.focus(window, cx);
                 }
             }
         }
@@ -705,6 +725,63 @@ impl SeriesBrowser {
         }
         self.selected_file
             .filter(|index| self.files.get(*index) == Some(&asked.file))
+    }
+    /// Whether the preview's Download row draws what `asked` says: the
+    /// review shows its file of its commit, whose side still offers its
+    /// download.
+    fn row_draws(&self, asked: &ReviewDownload) -> bool {
+        let Some(index) = self.shows(asked) else {
+            return false;
+        };
+        self.messages.is_none()
+            && self.content.as_deref().is_some_and(|content| {
+                crate::lfs_download::preview_targets(content, &self.files[index])
+                    .iter()
+                    .any(|(side, _)| *side == asked.side)
+            })
+    }
+    /// The progress and Cancel download of the download a Download in the
+    /// preview asked for, at the top of the body while it runs and the
+    /// preview's row does not draw them: the review covers the operation
+    /// bar, so once the person chose another file or commit, or went back
+    /// to the series, nothing on screen said a download ran or offered its
+    /// Cancel. Cancel tracks the row's handle, so focus on it stays as it
+    /// moves between the two.
+    fn download_status(&self, room: Pixels, cx: &Context<Self>) -> Option<AnyElement> {
+        let asked = self
+            .lfs_download
+            .as_ref()
+            .filter(|asked| asked.started && asked.failure.is_none())?;
+        if self.row_draws(asked) {
+            return None;
+        }
+        let owner = self.owner.upgrade()?;
+        let owner = owner.read(cx);
+        if owner.lfs_downloads.running() != Some(crate::lfs_download::Asker::Review(cx.entity_id()))
+        {
+            return None;
+        }
+        let label = owner.operation_shown()?;
+        let progress = owner
+            .operation_progress()
+            .map_or_else(|| label.into(), SharedString::from);
+        let cancel = self.owner.clone();
+        Some(
+            div()
+                .debug_selector(|| "series-download-status".into())
+                .flex()
+                .min_w_0()
+                .on_children_prepainted(self.body.control(self.download_cancel.clone(), room))
+                .child(crate::lfs_download::running_form(
+                    progress,
+                    &self.download_cancel,
+                    std::rc::Rc::new(move |window, cx| {
+                        let _ = cancel.update(cx, |owner, cx| owner.cancel_operation(window, cx));
+                    }),
+                    cx,
+                ))
+                .into_any_element(),
+        )
     }
     fn current(&self, cx: &App) -> bool {
         !self.closed
@@ -754,11 +831,14 @@ impl SeriesBrowser {
         self.patch = None;
         self.selected_file = None;
         self.preview_error = None;
-        // A failure is said of the file it was asked for, while it shows.
+        // A failure is said of the file it was asked for, while it shows:
+        // once the row has said it, leaving that file drops it, and one that
+        // landed while the review showed another file or commit waits for
+        // the person to come back to its file.
         if self
             .lfs_download
             .as_ref()
-            .is_some_and(|asked| asked.failure.is_some())
+            .is_some_and(|asked| asked.failure.is_some() && asked.seen.get())
         {
             self.lfs_download = None;
         }
@@ -1651,8 +1731,12 @@ impl SeriesBrowser {
             {
                 Some(ReviewDownload {
                     failure: Some(words),
+                    seen,
                     ..
-                }) => AskedState::Failed(words.clone()),
+                }) => {
+                    seen.set(true);
+                    AskedState::Failed(words.clone())
+                }
                 Some(asked) if owner.lfs_downloads.running() == Some(me) => AskedState::Running {
                     side: asked.side,
                     progress: owner.operation_shown().map(|label| {
@@ -1719,6 +1803,7 @@ impl SeriesBrowser {
                             side,
                             started: false,
                             failure: None,
+                            seen: Default::default(),
                         });
                     });
                 },
@@ -2058,6 +2143,7 @@ impl Render for SeriesBrowser {
         div().debug_selector(|| "rewrite-review-content".into()).flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("rewrite-review-body").debug_selector(|| "rewrite-review-body".into()).min_w_0().min_h_0().p(room).m(-room).pl(lead).ml(-lead).when(self.inspecting, |element| element.h(cap)).overflow_y_scroll().track_scroll(self.body.scroll()).flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
+            .children(self.download_status(room, cx))
             .when(!self.inspecting, |element| element
                 .child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Original → rewritten · unique patch fingerprints identify likely correspondence. Changed patches may match by unique subject only. Ambiguous, combined and empty commits remain explicit; inspect both sides before publishing."))
                 .when_some(self.review.as_ref(), |element, review| element.child(div().text_size(appearance::ui_text(11.)).child(format!("{} · original {} → rewritten {} · base {}", review.branch, short_oid(&review.original_head), short_oid(&review.rewritten_head), short_oid(&review.base)))))
@@ -6016,6 +6102,12 @@ mod tests {
     /// A Git LFS fixture whose `flow.mmd` lost only its old object, its new
     /// object in the local store, with the changed files of its last commit.
     fn missing_before() -> (tempfile::TempDir, GitRepository, Vec<FileChange>) {
+        missing_before_with(&[])
+    }
+
+    /// [`missing_before`], its last commit also adding each of `others`, a
+    /// text file, so the review can show another file of that commit.
+    fn missing_before_with(others: &[&str]) -> (tempfile::TempDir, GitRepository, Vec<FileChange>) {
         use crate::tags::tests::{git, tagged_repository};
         use sha2::{Digest, Sha256};
         let fixture = tempfile::tempdir().unwrap();
@@ -6041,6 +6133,9 @@ mod tests {
         git(repo.path(), &["add", "."]);
         git(repo.path(), &["commit", "--quiet", "-m", "Before"]);
         std::fs::write(repo.path().join("flow.mmd"), pointer(diagram)).unwrap();
+        for other in others {
+            std::fs::write(repo.path().join(other), "Notes\n").unwrap();
+        }
         git(repo.path(), &["add", "."]);
         git(repo.path(), &["commit", "--quiet", "-m", "After"]);
         let files = last_commit_files(&repo);
@@ -6893,6 +6988,144 @@ mod tests {
             announced, "Downloaded flow.mmd's Before object",
             "once, politely"
         );
+    }
+
+    /// Starts the review's download of `flow.mmd`'s Before object from its
+    /// Download, focused, and lets its write look busy, Cancel download
+    /// taking focus in the row.
+    fn running_with_cancel_focused(
+        app: &Entity<GitTurtle>,
+        browser: &Entity<SeriesBrowser>,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        let at = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Download Before… is offered")
+            .center();
+        start_download(app, browser, cx, at);
+        cx.update(|window, cx| browser.read(cx).download_focus[0].clone().focus(window, cx));
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        crate::tags::tests::draw(cx);
+        app.update(cx, |_, cx| cx.notify());
+        crate::tags::tests::draw(cx);
+        assert!(
+            cx.debug_bounds("lfs-download-progress").is_some()
+                && holds_focus(browser, cx, |browser| &browser.download_cancel),
+            "the progress stands in the row, Cancel download focused"
+        );
+    }
+
+    /// The download stays in view while the review shows another file: the
+    /// top of its body says the progress and offers Cancel download, focus
+    /// on Cancel staying on it as it moves there. A failure that lands
+    /// meanwhile is announced at once, focus going from the vanished Cancel
+    /// to Back to series, never the window's root, and kept: the row says
+    /// it once the person comes back to the file, and only leaving that
+    /// file again drops it. The review covers the operation bar, so it said
+    /// nothing of a download that ran for a file it no longer showed, and
+    /// the failure that landed meanwhile was dropped unsaid.
+    #[gpui::test]
+    async fn the_review_keeps_its_download_in_view_while_it_shows_another_file(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        let (_fixture, repo, files) = missing_before_with(&["notes.txt"]);
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        running_with_cancel_focused(&app, &browser, cx);
+        assert!(
+            cx.debug_bounds("series-download-status").is_none(),
+            "the row says it while the review shows its file"
+        );
+        choose(&browser, cx, file_index(&files, "notes.txt"));
+        let status = cx
+            .debug_bounds("series-download-status")
+            .expect("the top of the body says the download");
+        let progress = cx
+            .debug_bounds("lfs-download-progress")
+            .expect("its progress");
+        let cancel = cx
+            .debug_bounds("cancel-lfs-download")
+            .expect("and its Cancel download");
+        let back = cx
+            .debug_bounds("back-rewrite-series")
+            .expect("Back to series");
+        assert!(
+            cx.debug_bounds("download-lfs-side-0").is_none()
+                && status.contains(&progress.center())
+                && status.contains(&cancel.center())
+                && status.bottom() <= back.top(),
+            "the progress, {progress:?}, and Cancel, {cancel:?}, stand at the top of the \
+             body, {status:?}, above {back:?}"
+        );
+        assert!(
+            holds_focus(&browser, cx, |browser| &browser.download_cancel),
+            "focus stays on Cancel download where it moved"
+        );
+        let words = "Git LFS could not reach origin";
+        end_download(&app, &browser, cx, Some(words));
+        assert!(
+            cx.debug_bounds("series-download-status").is_none()
+                && cx.debug_bounds("cancel-lfs-download").is_none(),
+            "the download's end takes the line away"
+        );
+        let alert = crate::copy_feedback::tests::alerted(cx).expect("the failure is announced");
+        assert_eq!(alert.1, words, "at once, in its own words");
+        assert!(
+            holds_focus(&browser, cx, |browser| &browser.back),
+            "focus goes from the vanished Cancel to Back to series"
+        );
+        let said = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("lfs-download-failure")?;
+            written::get("lfs-download-failure")
+                .and_then(|node| node.node.value().map(str::to_owned))
+        };
+        choose(&browser, cx, file_index(&files, "flow.mmd"));
+        assert_eq!(
+            said(cx).as_deref(),
+            Some(words),
+            "back on its file, the row says the failure kept for it"
+        );
+        assert_eq!(
+            crate::copy_feedback::tests::alerted(cx),
+            Some(alert),
+            "and it is announced once, as it landed"
+        );
+        choose(&browser, cx, file_index(&files, "notes.txt"));
+        choose(&browser, cx, file_index(&files, "flow.mmd"));
+        assert!(
+            said(cx).is_none() && cx.debug_bounds("download-lfs-side-0").is_some(),
+            "once said, leaving the file drops it"
+        );
+    }
+
+    /// A download that ends while the review shows the series, Back to
+    /// series having left the commit, with Cancel download at the top of
+    /// the body focused, moves focus from the vanished Cancel to the series
+    /// list, never the window's root, and reads nothing.
+    #[gpui::test]
+    async fn a_download_ending_over_the_series_moves_focus_to_the_list(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_fixture, repo, files) = missing_before();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        running_with_cancel_focused(&app, &browser, cx);
+        cx.update(|window, cx| browser.update(cx, |browser, cx| browser.back(window, cx)));
+        crate::tags::tests::draw(cx);
+        cx.debug_bounds("series-download-status")
+            .expect("the top of the series says the download");
+        cx.update(|window, cx| browser.read(cx).download_cancel.clone().focus(window, cx));
+        crate::tags::tests::draw(cx);
+        let before = shown_key(&browser, cx);
+        end_download(&app, &browser, cx, None);
+        assert!(
+            cx.debug_bounds("cancel-lfs-download").is_none()
+                && holds_focus(&browser, cx, |browser| &browser.focus),
+            "focus goes from the vanished Cancel to the series list"
+        );
+        assert_eq!(shown_key(&browser, cx), before, "and nothing is read again");
     }
 
     /// A press acts only while the review is current, as Publish does: the

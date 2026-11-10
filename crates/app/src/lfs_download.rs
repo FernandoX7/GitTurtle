@@ -626,7 +626,6 @@ pub(crate) fn download_row(
     let one_line = !line_above && fits && !short;
     let sentence_moves = !one_line || failure.is_some();
     let warning = appearance::labels(cx).warning;
-    let accent = palette(cx).accent;
     let share = buttons_share_line(quick_source, &sides, short, asks, column, window);
     let download = std::rc::Rc::new(download);
     let asked = asked.map(std::rc::Rc::new);
@@ -669,40 +668,8 @@ pub(crate) fn download_row(
             running.as_ref().filter(|(running, _)| *running == side),
             asked.as_ref(),
         ) {
-            // Where the pressed Download stood: the window's progress
-            // text, giving way first, and Cancel download.
-            let (whole, on_cancel) = (progress.clone(), asked.on_cancel.clone());
-            let text = div()
-                .id("lfs-download-progress")
-                .debug_selector(|| "lfs-download-progress".into())
-                .role(Role::Status)
-                .aria_label(progress.clone())
-                .live_region(gpui::accesskit::Live::Off, false)
-                .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
-                .min_w_0()
-                .truncate()
-                .text_size(appearance::ui_text(12.))
-                .text_color(rgb(accent))
-                .child(progress.clone());
-            // Tests assemble the window's tree from what they record.
-            #[cfg(test)]
-            crate::native_accessibility::written::built(&text);
-            return div()
-                .flex_shrink(1.)
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(text)
-                .child(
-                    div().flex_none().child(
-                        button("cancel-lfs-download", CANCEL_DOWNLOAD, "close", false)
-                            .debug_selector(|| "cancel-lfs-download".into())
-                            .track_focus(&asked.cancel)
-                            .on_click(move |_, window, cx| on_cancel(window, cx))
-                            .node_recorded(),
-                    ),
-                )
+            // Where the pressed Download stood.
+            return running_form(progress.clone(), &asked.cancel, asked.on_cancel.clone(), cx)
                 .into_any_element();
         }
         let download = download.clone();
@@ -777,6 +744,52 @@ pub(crate) fn download_row(
                 .children(line)
         }))
         .into_any_element()
+}
+
+/// A running download's progress and its Cancel download, as the
+/// rewritten-series review draws them for the download it asked for: in its
+/// Download row where the pressed Download stood, and at the top of its
+/// body while it shows another file or commit. The progress, the window's
+/// progress text, gives way first, ending in an ellipsis, whole in its
+/// tooltip.
+pub(crate) fn running_form(
+    progress: SharedString,
+    cancel: &FocusHandle,
+    on_cancel: OnCancel,
+    cx: &App,
+) -> Div {
+    let whole = progress.clone();
+    let text = div()
+        .id("lfs-download-progress")
+        .debug_selector(|| "lfs-download-progress".into())
+        .role(Role::Status)
+        .aria_label(progress.clone())
+        .live_region(gpui::accesskit::Live::Off, false)
+        .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
+        .min_w_0()
+        .truncate()
+        .text_size(appearance::ui_text(12.))
+        .text_color(rgb(palette(cx).accent))
+        .child(progress);
+    // Tests assemble the window's tree from what they record.
+    #[cfg(test)]
+    crate::native_accessibility::written::built(&text);
+    div()
+        .flex_shrink(1.)
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(text)
+        .child(
+            div().flex_none().child(
+                button("cancel-lfs-download", CANCEL_DOWNLOAD, "close", false)
+                    .debug_selector(|| "cancel-lfs-download".into())
+                    .track_focus(cancel)
+                    .on_click(move |_, window, cx| on_cancel(window, cx))
+                    .node_recorded(),
+            ),
+        )
 }
 
 impl GitTurtle {
