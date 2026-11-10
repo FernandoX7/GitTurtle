@@ -512,6 +512,9 @@ pub(crate) struct ScrollCue {
     reveal: Option<FocusReveal>,
     /// The track takes no fill and no edge ([`ScrollCue::over_rows`]).
     clear_track: bool,
+    /// The fades dissolve into the panel, not the canvas
+    /// ([`ScrollCue::on_panel`]).
+    on_panel: bool,
 }
 
 /// The shortest track a scrollbar's thumb moves along: the kit's shortest
@@ -546,7 +549,17 @@ impl ScrollCue {
             rows,
             reveal: None,
             clear_track: false,
+            on_panel: false,
         }
+    }
+
+    /// The cue for a list drawn on the palette's panel rather than its
+    /// canvas, as File History's header and footer are: its fades dissolve
+    /// into that panel, where the canvas's darker or lighter band would lie
+    /// across its rows' edge.
+    pub(crate) fn on_panel(mut self) -> Self {
+        self.on_panel = true;
+        self
     }
 
     /// The cue for a list whose rows, and the edge that draws its focus
@@ -623,7 +636,11 @@ impl ScrollCue {
             ))
             // In every frame, so a list that shrinks below the shortest
             // track fades in the frame that shrinks it.
-            .child(edge_fades(self.rows.clone(), self.reveal.clone()));
+            .child(edge_fades(
+                self.rows.clone(),
+                self.reveal.clone(),
+                self.on_panel,
+            ));
         if scrollbar {
             // The scrollbar is built as the frame paints (`in_frame`), after
             // the list has laid out in it, and only along a track a thumb
@@ -701,7 +718,8 @@ fn edge_fade(rows: &RowColumn) -> Pixels {
 /// ([`ScrollCue`]): at each edge its rows continue past, a band as wide as
 /// the list and [`EDGE_FADE`] tall, opaque at the edge in the theme's
 /// background colour (the palette's canvas, which panes and dialogs are
-/// drawn on) and clear inward, so the rows there dissolve into the surface
+/// drawn on, or its panel for a list on one, [`ScrollCue::on_panel`]) and
+/// clear inward, so the rows there dissolve into the surface
 /// rather than end at a cut, as macOS fades content scrolled beneath a
 /// window's edge. It draws none at an end the list is scrolled to, and
 /// none on a list whose rows fit.
@@ -720,7 +738,7 @@ fn edge_fade(rows: &RowColumn) -> Pixels {
 /// the list, and a row under one takes its hover and click. It does not
 /// move: a fade comes and goes with the scroll that reveals an edge, in
 /// that frame.
-fn edge_fades(rows: RowColumn, reveal: Option<FocusReveal>) -> impl IntoElement {
+fn edge_fades(rows: RowColumn, reveal: Option<FocusReveal>, on_panel: bool) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |_, _, window, cx| {
@@ -739,7 +757,13 @@ fn edge_fades(rows: RowColumn, reveal: Option<FocusReveal>) -> impl IntoElement 
             // two decimals.
             let slack = px(0.5);
             let scrolled = -scroll.offset().y;
-            let surface: Hsla = rgb(appearance::palette(cx).canvas).into();
+            let palette = appearance::palette(cx);
+            let surface: Hsla = rgb(if on_panel {
+                palette.panel
+            } else {
+                palette.canvas
+            })
+            .into();
             let band = |angle: f32| {
                 linear_gradient(
                     angle,
@@ -4129,13 +4153,33 @@ pub(crate) mod tests {
         cx.update(|window, cx| fades_in(window, cx, list))
     }
 
+    /// [`painted_fades`] for fades in `surface`, a palette colour other than
+    /// its canvas.
+    pub(crate) fn painted_fades_on(
+        cx: &mut VisualTestContext,
+        list: Bounds<Pixels>,
+        surface: u32,
+    ) -> (Option<Pixels>, Option<Pixels>) {
+        cx.update(|window, _| fades_over(window, list, surface))
+    }
+
     /// [`painted_fades`] in the frame `window` drew last.
     fn fades_in(
         window: &Window,
         cx: &App,
         list: Bounds<Pixels>,
     ) -> (Option<Pixels>, Option<Pixels>) {
-        let surface: Hsla = rgb(appearance::palette(cx).canvas).into();
+        fades_over(window, list, appearance::palette(cx).canvas)
+    }
+
+    /// The fades in `surface` the frame `window` drew last painted over the
+    /// list drawn at `list`.
+    fn fades_over(
+        window: &Window,
+        list: Bounds<Pixels>,
+        surface: u32,
+    ) -> (Option<Pixels>, Option<Pixels>) {
+        let surface: Hsla = rgb(surface).into();
         // A gradient toward `angle` (0° the top, 180° the bottom), clear
         // where it starts and the surface where it ends.
         let toward = |angle: f32| {

@@ -528,6 +528,22 @@ impl GitTurtle {
         }
     }
 
+    /// The width the header's rows are laid out in: the room the message
+    /// toolbar has (`commit_message::State::details_room`), inside the
+    /// header's `px_3` as inside the toolbar's, less `gutter`, what the
+    /// header's own scroll cue keeps at its right in place of its trailing
+    /// `px_3` while it scrolls (`tags::ScrollCue::list`): its scrollbar's
+    /// gutter and the ring's room before it, none where it fits. `None`
+    /// where no window lays the inspector out.
+    fn file_history_header_room(&self, gutter: Pixels, window: &Window) -> Option<Pixels> {
+        let room = self.inspector_message.details_room()?;
+        Some(if gutter > Pixels::ZERO {
+            room + window.rem_size() * 0.75 - gutter
+        } else {
+            room
+        })
+    }
+
     /// The header's top row for the room the inspector gives it, measured
     /// from the interface font at the interface size (`TopRow`): inside the
     /// panel's left border and the header's `px_3`, the room the message
@@ -535,11 +551,13 @@ impl GitTurtle {
     /// row's half-rem gap and Close, as the shared `button` helper draws it
     /// (10 px either side of its 16 px icon, 6 px gap and label, or a 28 px
     /// square), each on whole device pixels. Close's focus ring lies in the
-    /// gap and the header's padding, inside the header's clip. Labelled
-    /// where no window lays the inspector out.
-    fn file_history_top_row(&self, window: &Window) -> TopRow {
+    /// gap and the header's padding, inside the header's clip, or, while the
+    /// header scrolls its own rows, its ring's room before the cue's gutter
+    /// (`file_history_header_room`). Labelled where no window lays the
+    /// inspector out.
+    fn file_history_top_row(&self, gutter: Pixels, window: &Window) -> TopRow {
         use crate::views::{LineKey, cached_width, line_widths, shaped_width};
-        let Some(room) = self.inspector_message.details_room() else {
+        let Some(room) = self.file_history_header_room(gutter, window) else {
             return TopRow::Labelled;
         };
         let key = LineKey::current(window);
@@ -1066,7 +1084,6 @@ impl GitTurtle {
         let path = copy_path.clone();
         let path_mark = copy_feedback::Mark::new("copy-history-path", &lineage.path);
         let path_copy = path_mark.clone();
-        let top_row = self.file_history_top_row(window);
         let least = PanelLeast::of(self, entry.is_some(), lineage.error.is_some(), window);
         let reveals = &self.file_history.reveals;
         let room = crate::appearance::button_ring_room(cx);
@@ -1081,6 +1098,18 @@ impl GitTurtle {
         // which its toolbar and message are laid out without
         // (`file_history_gutter`).
         let cue = crate::tags::ScrollCue::revealing(&reveals.panel, Pixels::ZERO);
+        // The header and the footer cue their own rows' scroll on the
+        // panel's surface, a scrollbar along a track a thumb moves on and
+        // otherwise a fade at each edge their rows continue past, their rows
+        // keeping the ring's room before the gutter, as Blame's footer does.
+        let header_cue = crate::tags::ScrollCue::revealing(&reveals.header, room).on_panel();
+        let footer_cue = crate::tags::ScrollCue::revealing(&reveals.footer, room).on_panel();
+        let header_gutter = if header_cue.kept() {
+            crate::tags::ScrollCue::gutter() + room
+        } else {
+            Pixels::ZERO
+        };
+        let top_row = self.file_history_top_row(header_gutter, window);
         cue.list(div()
             .on_children_prepainted(cue.observe(reveals.panel.observe()))
             // A panel shorter than its parts' least heights scrolls.
@@ -1096,22 +1125,17 @@ impl GitTurtle {
             .border_l_1()
             .border_color(rgb(p.border))
             .child(
-                crate::native_accessibility::clips_children(div()
-                    .on_children_prepainted(reveals.header.observe())
+                header_cue.list(div()
+                    .on_children_prepainted(header_cue.observe(reveals.header.observe()))
                     .id("file-history-header")
-                    .debug_selector(|| "file-history-header".into())
-                    .max_h(relative(0.30))
                     .overflow_y_scroll()
                     .track_scroll(reveals.header.scroll())
-                    .flex_shrink(1.)
-                    .min_h(least.header)
+                    .min_h_0()
                     .px_3()
                     .py_3()
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .border_b_1()
-                    .border_color(rgb(p.border))
                     // DESIGN.md's responsive order: Close becomes its icon,
                     // then the title goes; Close is never cut (`TopRow`).
                     .child(
@@ -1244,7 +1268,15 @@ impl GitTurtle {
                                         format!("Revision {}", lineage.offset + index + 1)
                                     })),
                             ),
-                    )),
+                    ), "file-history-header-scrollbar")
+                    // The cue's own node gives way and carries the divider,
+                    // inside which its track lies, so it paints over no line.
+                    .debug_selector(|| "file-history-header".into())
+                    .max_h(relative(0.30))
+                    .flex_shrink(1.)
+                    .min_h(least.header)
+                    .border_b_1()
+                    .border_color(rgb(p.border)),
             )
             .child(div().flex_1().min_h(least.body).flex().flex_col()
                 // As tall as the message and the revision's details where
@@ -1349,17 +1381,12 @@ impl GitTurtle {
             )
             )
             .child(
-                crate::native_accessibility::clips_children(div()
-                    .on_children_prepainted(reveals.footer.observe())
+                footer_cue.list(div()
+                    .on_children_prepainted(footer_cue.observe(reveals.footer.observe()))
                     .id("file-history-footer")
-                    .debug_selector(|| "file-history-footer".into())
-                    .max_h(relative(0.25))
                     .overflow_y_scroll()
                     .track_scroll(reveals.footer.scroll())
-                    .flex_shrink(1.)
-                    .min_h(least.footer)
-                    .border_t_1()
-                    .border_color(rgb(p.border))
+                    .min_h_0()
                     .p_3()
                     .flex()
                     .flex_col()
@@ -1392,7 +1419,15 @@ impl GitTurtle {
                             .items_center()
                             .gap_2()
                             .child({
+                                // Whole inside the room the footer's gutter
+                                // leaves, a label too long for it ending in
+                                // an ellipsis, as Blame's footer actions do:
+                                // at 18 pt in a 461 × 490 window Older page,
+                                // 128 px, ran 8 px into its 120 px room's
+                                // gutter.
                                 let newer = button("newer-file-page", "Newer page", "", false)
+                                    .max_w_full()
+                                    .flex_shrink(1.)
                                     .disabled(busy || previous_page.is_none())
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if let Some(offset) = previous_page {
@@ -1408,6 +1443,8 @@ impl GitTurtle {
                             })
                             .child({
                                 let older = button("older-file-page", "Older page", "", false)
+                                    .max_w_full()
+                                    .flex_shrink(1.)
                                     .disabled(busy || next_page.is_none())
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if let Some(offset) = next_page {
@@ -1421,7 +1458,13 @@ impl GitTurtle {
                                     }));
                                 reveals.track(&reveals.footer, "older-file-page", older, room, cx)
                             }),
-                    )),
+                    ), "file-history-footer-scrollbar")
+                    .debug_selector(|| "file-history-footer".into())
+                    .max_h(relative(0.25))
+                    .flex_shrink(1.)
+                    .min_h(least.footer)
+                    .border_t_1()
+                    .border_color(rgb(p.border)),
             ), "file-history-panel-scrollbar")
             .size_full()
             .min_w_0()
@@ -2799,6 +2842,101 @@ pub(crate) mod tests {
             cx.set_reduce_motion(false);
             crate::appearance::apply_text_sizes(13, 12, window, cx);
         });
+    }
+
+    /// File History's header and its footer each cue their own scroll with
+    /// the shared cue, as every other scrolling region does: at 18 pt in a
+    /// 461 × 490 window and a 1,200 × 490 one both scroll, the header along
+    /// a track a thumb moves on, so it draws its scrollbar, and the footer,
+    /// shorter than the shortest track, by a fade at the edge its rows
+    /// continue past, in the panel they lie on. What each holds ends short
+    /// of the gutter the cue keeps, its ring included. Where they fit, at
+    /// 13 pt in a 1,480 × 980 window, neither draws a cue. Both once
+    /// scrolled hundreds of pixels with nothing to say so.
+    #[gpui::test]
+    async fn file_history_header_and_footer_cue_their_own_scrolls(cx: &mut TestAppContext) {
+        use crate::tags::tests::painted_fades_on;
+        use crate::tags::{SHORTEST_SCROLL_TRACK, ScrollCue};
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let reveals = app.read_with(cx, |app, _| app.file_history.reveals.clone());
+        let (surface, ring) = cx.update(|_, cx| {
+            (
+                crate::appearance::palette(cx).panel,
+                crate::appearance::button_ring_room(cx),
+            )
+        });
+        let slack = px(0.5);
+        let regions = [
+            (
+                &reveals.header,
+                "file-history-header-scrollbar",
+                "close-file-history",
+            ),
+            (
+                &reveals.footer,
+                "file-history-footer-scrollbar",
+                "older-file-page",
+            ),
+        ];
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        for width in [461., 1200.] {
+            cx.simulate_resize(size(px(width), px(490.)));
+            draw(cx);
+            draw(cx);
+            for (reveal, scrollbar, stop) in regions {
+                let at = format!("18 pt in {width} × 490, {scrollbar}");
+                let scroll = reveal.scroll();
+                assert!(scroll.max_offset().y > px(0.), "{at}: scrolls its rows");
+                let list = scroll.bounds();
+                let drawn = cx.debug_bounds(scrollbar);
+                let fades = painted_fades_on(cx, list, surface);
+                if list.size.height >= SHORTEST_SCROLL_TRACK {
+                    assert!(drawn.is_some(), "{at}: draws its scrollbar along {list:?}");
+                    assert_eq!(fades, (None, None), "{at}: and no fade");
+                } else {
+                    assert!(drawn.is_none(), "{at}: no scrollbar along {list:?}");
+                    assert!(
+                        fades.0.is_none() && fades.1.is_some(),
+                        "{at}: a fade at the edge its rows continue past, in the panel: {fades:?}"
+                    );
+                }
+                let control = cx
+                    .debug_bounds(stop)
+                    .unwrap_or_else(|| panic!("{at}: {stop} drawn"));
+                assert!(
+                    control.right() + ring <= list.right() - ScrollCue::gutter() + slack,
+                    "{at}: {stop} {control:?} with its ring clear of the gutter of {list:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        draw(cx);
+        for (reveal, scrollbar, _) in regions {
+            let at = format!("13 pt in 1480 × 980, {scrollbar}");
+            let scroll = reveal.scroll();
+            assert_eq!(scroll.max_offset().y, px(0.), "{at}: fits");
+            assert!(cx.debug_bounds(scrollbar).is_none(), "{at}: no scrollbar");
+            assert_eq!(
+                painted_fades_on(cx, scroll.bounds(), surface),
+                (None, None),
+                "{at}: no fade"
+            );
+        }
+        cx.update(|_, cx| cx.set_reduce_motion(false));
     }
 
     /// A failed page's notice leaves nothing in its reveal once no notice

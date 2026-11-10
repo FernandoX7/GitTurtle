@@ -108,7 +108,11 @@ and the top row are laid out in the width its gutter leaves
 Tab stop whole: a control in the header's, the failure's or the footer's own
 scroll there first and then in the panel (`FocusReveal::control_within`), and
 the message panel, whose controls keep their own focus handles, as one region
-(`FocusReveal::region`).
+(`FocusReveal::region`). The header and the footer cue their own scrolls with
+the same `tags::ScrollCue`, drawn on the panel (`ScrollCue::on_panel`), their
+rows keeping the ring's room before its gutter, as Blame's footer does, and the
+header's top row is chosen for the room that cue leaves
+(`GitTurtle::file_history_header_room`).
 Reading order is title, available body, then author/date/parent/path metadata.
 Empty bodies add neither filler nor a blank clipboard suffix.
 
