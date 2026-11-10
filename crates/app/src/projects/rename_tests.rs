@@ -128,6 +128,45 @@ fn invalid_project_name_keeps_the_dialog_and_typed_text(cx: &mut TestAppContext)
     });
 }
 
+/// An invalid name is refused once per press: a fresh Return gives one
+/// refusal, and the key's repeats, as X11 sends them (fresh presses with no
+/// key-up between them, and a release and its press together) and as GPUI
+/// marks them held on macOS and Wayland, give none more, until a new press
+/// after the key-up gives the next. The field's own `PressEnter` submitted
+/// the form beside the dialog's default action, so each press refused the
+/// name twice and each repeat once more.
+#[gpui::test]
+fn an_invalid_name_is_refused_once_per_press(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = test_app(cx);
+    let path = fixture.path().join("client-folder");
+    let form = open_form(&app, &path, cx);
+    cx.simulate_input(&"x".repeat(129));
+    let refusals = |cx: &mut VisualTestContext| form.read_with(cx, |form, _| form.errors_shown);
+    for press in ["first", "second"] {
+        let before = refusals(cx);
+        enter(cx, Some(false));
+        settle(cx);
+        assert_eq!(refusals(cx), before + 1, "{press} press: one refusal");
+        for down in [Some(false), Some(false), None, Some(false), Some(true)] {
+            enter(cx, down);
+        }
+        settle(cx);
+        assert_eq!(
+            refusals(cx),
+            before + 1,
+            "{press} press: its repeats refuse nothing more"
+        );
+        cx.update(|window, cx| {
+            assert!(
+                window.has_active_dialog(cx),
+                "{press} press: the dialog stays"
+            )
+        });
+        enter(cx, None);
+        settle(cx);
+    }
+}
+
 /// A name refused again, asked for again without an edit, is said on a
 /// fresh node, announced at once again: the error line kept one node, which
 /// an assistive technology announces only as it is added or its text
