@@ -6688,11 +6688,28 @@ mod render_tests {
                 );
                 enter_down(cx, false);
                 draw(cx);
-                assert!(
-                    !cx.update(|window, cx| window.has_active_dialog(cx)),
-                    "{at}: a fresh Return acts in the dialog, which closes"
-                );
-                enter_up(cx);
+                if command == CommandId::Reflog {
+                    // Return in the Reflog's filter is the filter's own: it
+                    // selects the first entry it matches and leaves the
+                    // Reflog open (`reflog::ReflogBrowser::confirm_in_field`).
+                    assert!(
+                        cx.update(|window, cx| window.has_active_dialog(cx)),
+                        "{at}: a fresh Return acts in the filter, the Reflog open"
+                    );
+                    enter_up(cx);
+                    cx.simulate_keystrokes("escape");
+                    draw(cx);
+                    assert!(
+                        !cx.update(|window, cx| window.has_active_dialog(cx)),
+                        "{at}: Escape closes the Reflog"
+                    );
+                } else {
+                    assert!(
+                        !cx.update(|window, cx| window.has_active_dialog(cx)),
+                        "{at}: a fresh Return acts in the dialog, which closes"
+                    );
+                    enter_up(cx);
+                }
                 draw(cx);
                 if command == CommandId::QuickOpen {
                     assert!(compare(&app, cx), "{at}: Quick Open opened its file");
@@ -6700,7 +6717,7 @@ mod render_tests {
                     cx.simulate_keystrokes("escape");
                     draw(cx);
                 }
-                // The Reflog's Done took the Return, so History shows on.
+                // The Reflog's Escape closed it, so History shows on.
                 assert!(
                     app.read_with(cx, |app, _| app.mode == WorkspaceMode::History),
                     "{at}: History shows"

@@ -6,6 +6,7 @@ use gpui_kit::{
     base::ElementExt,
     component::{
         WindowExt,
+        dialog::Confirm,
         scroll::{Scrollbar, ScrollbarMode},
     },
     prelude::FluentBuilder,
@@ -508,22 +509,14 @@ impl ReflogBrowser {
         let query = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Filter log by message, object ID, or selector")
         });
-        let scope_subscription =
-            cx.subscribe_in(&scope, window, |this: &mut Self, _, event, window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.refresh(window, cx);
-                }
-                cx.notify();
-            });
-        let query_subscription =
-            cx.subscribe_in(&query, window, |this: &mut Self, _, event, window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. })
-                    && let Some(entry) = this.matches(cx).first()
-                {
-                    this.select(entry.clone(), window, cx);
-                }
-                cx.notify();
-            });
+        // Return in either field acts through the dialog's default action,
+        // routed by focus ([`Self::confirm_in_field`]).
+        let scope_subscription = cx.subscribe(&scope, |_: &mut Self, _, _: &InputEvent, cx| {
+            cx.notify();
+        });
+        let query_subscription = cx.subscribe(&query, |_: &mut Self, _, _: &InputEvent, cx| {
+            cx.notify();
+        });
         Self {
             owner,
             repo,
@@ -844,6 +837,38 @@ impl ReflogBrowser {
             });
         }));
         cx.notify();
+    }
+    /// Return, delivered as the dialog's Confirm action and routed by focus:
+    /// in the scope field it reads that log, in the filter it selects the
+    /// first entry the filter matches, and in either it does nothing more,
+    /// so the Reflog stays open; anywhere else it is the dialog's own, Done.
+    /// The dialog confirms once per press, as the key goes down, never on a
+    /// held key's repeats, under X11 too, and never for a modified Enter;
+    /// a press that began elsewhere does nothing here. Each field acted on
+    /// its own `PressEnter`, which it sends for every Enter key-down, so a
+    /// held Return read the log or the entry's commit again on each repeat,
+    /// while the dialog's Done took the first press too and closed the
+    /// Reflog.
+    fn confirm_in_field(&mut self, confirm: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        let scope = self.scope.read(cx).focus_handle(cx);
+        let filter = self.query.read(cx).focus_handle(cx);
+        let Some(field) = [scope, filter]
+            .into_iter()
+            .find(|field| !confirm.secondary && field.is_focused(window))
+        else {
+            cx.propagate();
+            return;
+        };
+        if gpui_kit::base::enter_press_is_repeat(window, cx)
+            || !gpui_kit::base::enter_press_began_on(&field, window, cx)
+        {
+            return;
+        }
+        if field == self.scope.read(cx).focus_handle(cx) {
+            self.refresh(window, cx);
+        } else if let Some(entry) = self.matches(cx).first() {
+            self.select(entry.clone(), window, cx);
+        }
     }
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Until the log lands, its read takes away the entries and the
@@ -1226,6 +1251,8 @@ impl Render for ReflogBrowser {
                 .children(loading_after_review)
                 .children(error_after_review) });
         div()
+            // Return in a field is the field's own ([`Self::confirm_in_field`]).
+            .on_action(cx.listener(Self::confirm_in_field))
             .relative()
             .min_h_0()
             .flex()
@@ -2003,6 +2030,67 @@ mod tests {
         });
         settle_reads(cx, &browser);
         alerted(cx, "the log's read", Some(&review));
+    }
+
+    /// Return in the scope field reads its log, and in the filter selects
+    /// the first entry it matches and reads that entry's commit, once per
+    /// press, under X11 too, and neither closes the Reflog: the key's
+    /// repeats (`REPEATS`), each waited out until any read has answered,
+    /// read nothing, and after the key-up a new press reads again, with
+    /// the Reflog open and focus in the field throughout. Each field acted
+    /// on its own `PressEnter`, which it sends for every Enter key-down, so
+    /// each repeat read again, and the dialog's default action, Done, took
+    /// the first press too and closed the Reflog.
+    #[gpui::test]
+    async fn return_in_a_field_reads_once_per_press_and_keeps_the_reflog_open(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        let fields = browser.read_with(cx, |this, _| {
+            [
+                (this.scope.clone(), "the scope"),
+                (this.query.clone(), "the filter"),
+            ]
+        });
+        let submitted =
+            |cx: &mut VisualTestContext| browser.read_with(cx, |this, _| this.submitted);
+        for (field, which) in fields {
+            cx.update(|window, cx| field.read(cx).focus_handle(cx).focus(window, cx));
+            draw(cx);
+            let held = |cx: &mut VisualTestContext, at: &str| {
+                cx.update(|window, cx| {
+                    assert!(window.has_active_dialog(cx), "{at}: the Reflog stays open");
+                    assert!(
+                        field.read(cx).focus_handle(cx).is_focused(window),
+                        "{at}: focus stays in the field"
+                    );
+                });
+            };
+            for press in ["the first press", "a new press after the key-up"] {
+                let at = format!("{which}, {press}");
+                let after = submitted(cx) + 1;
+                enter(cx, Some(false));
+                settle_reads(cx, &browser);
+                assert_eq!(submitted(cx), after, "{at}: one read");
+                held(cx, &at);
+                for (repeat, events) in REPEATS {
+                    for down in events {
+                        enter(cx, *down);
+                    }
+                    settle_reads(cx, &browser);
+                    let at = format!("{at}, {repeat}");
+                    assert_eq!(submitted(cx), after, "{at}: no other read");
+                    held(cx, &at);
+                }
+                enter(cx, None);
+                draw(cx);
+            }
+        }
+        let selected = browser.read_with(cx, |this, _| this.selected.is_some());
+        assert!(selected, "the filter's press selects its first match");
     }
 
     /// Down held past the last entry while a commit's read is slow selects
