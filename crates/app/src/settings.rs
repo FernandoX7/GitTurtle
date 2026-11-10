@@ -9956,9 +9956,16 @@ mod display_row_tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
-    /// What the settings file on disk holds for `setting`, once its save
-    /// has landed.
-    fn stored(setting: DisplaySetting) -> serde_json::Value {
+    /// What the settings file on disk holds for `setting` once every save
+    /// asked for so far has landed. A save is the preference writer's job on
+    /// its own thread, which settling the window does not wait for: read at
+    /// once, the file held the save before (hosted run 42696574651) or none.
+    fn stored(
+        app: &Entity<GitTurtle>,
+        setting: DisplaySetting,
+        cx: &mut VisualTestContext,
+    ) -> serde_json::Value {
+        crate::theme_editor::tests::drain_preference_writer(cx, app);
         let path = preferences::settings_path().expect("the test settings path");
         let stored: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path).expect("a saved store")).expect("a store");
@@ -10039,14 +10046,14 @@ mod display_row_tests {
             (DisplayChoice::On, unchosen, true, false, own),
             "a click on Reduce motion: On"
         );
-        assert_eq!(stored(motion), "on");
+        assert_eq!(stored(&app, motion, cx), "on");
         space(cx, motion, index(DisplayChoice::Off));
         assert_eq!(
             state(cx),
             (DisplayChoice::Off, unchosen, false, false, own),
             "Space on Reduce motion: Off"
         );
-        assert_eq!(stored(motion), "off");
+        assert_eq!(stored(&app, motion, cx), "off");
 
         let applied = platform_polish::appearance_applications();
         space(cx, contrast, index(DisplayChoice::On));
@@ -10061,7 +10068,7 @@ mod display_row_tests {
             ),
             "Space on Increase contrast: On"
         );
-        assert_eq!(stored(contrast), "on");
+        assert_eq!(stored(&app, contrast, cx), "on");
         assert_eq!(platform_polish::appearance_applications() - applied, 1);
         click(cx, contrast, index(DisplayChoice::On));
         assert_eq!(
@@ -10075,10 +10082,10 @@ mod display_row_tests {
             (DisplayChoice::Off, DisplayChoice::Off, false, false, own),
             "a click on Increase contrast: Off"
         );
-        assert_eq!(stored(contrast), "off");
+        assert_eq!(stored(&app, contrast, cx), "off");
         assert_eq!(platform_polish::appearance_applications() - applied, 2);
         click(cx, contrast, index(DisplayChoice::Follow));
-        assert_eq!(stored(contrast), "follow");
+        assert_eq!(stored(&app, contrast, cx), "follow");
     }
 
     /// The accessibility node `segment` writes as it is drawn: its base

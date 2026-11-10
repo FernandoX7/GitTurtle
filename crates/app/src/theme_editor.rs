@@ -3215,8 +3215,9 @@ pub(crate) mod tests {
     /// Wait until the preference writer has answered everything submitted so
     /// far, without drawing. The executor is serialized, so a job queued now
     /// runs after the pending save, and parking then delivers that save's
-    /// reply to the window.
-    fn drain_preference_writer(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
+    /// reply to the window. A test reads a store on disk only after this:
+    /// settling or parking alone does not wait for the writer's thread.
+    pub(crate) fn drain_preference_writer(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
         cx.read(|cx| app.read(cx).preferences_writer.drain());
         cx.run_until_parked();
     }
@@ -3435,6 +3436,7 @@ pub(crate) mod tests {
         assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_none()));
         assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
         assert_eq!(applied(cx), draft, "Escape re-applied the saved selection");
+        drain_preference_writer(cx, &app);
         assert_eq!(
             Preferences::load().custom_themes,
             vec![theme.clone()],
@@ -3730,6 +3732,7 @@ pub(crate) mod tests {
             "Return rewrites the field as lowercase #rrggbb"
         );
         assert_eq!(cx.read(|cx| form.read(cx).draft.accent), 0x12ab34);
+        drain_preference_writer(cx, &app);
         assert!(Preferences::load().custom_themes.is_empty());
 
         // Shift-Tab from Name wraps to Save, then Cancel.
