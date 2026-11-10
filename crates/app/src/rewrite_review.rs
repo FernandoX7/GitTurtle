@@ -1602,6 +1602,9 @@ impl SeriesBrowser {
         // the comparison keeps a whole row in the box. With both sides'
         // objects missing at 18 pt in a 461 × 490 window, the two buttons
         // stacked with their word and cut the comparison's row by 1.5 px.
+        // Measured at rest as the review draws it, saying what it asked for,
+        // which keeps its lines in every state (`download_row`): there two
+        // sides' running forms now stack them with their word too.
         let short = !targets.is_empty() && {
             let line = if failure.is_some() {
                 crate::empty_state::block_height(1, false, window) + appearance::ui_size(16.)
@@ -1616,7 +1619,12 @@ impl SeriesBrowser {
                     short,
                     width,
                     (false, false),
-                    None,
+                    Some(crate::lfs_download::Asked {
+                        focus: self.download_focus.clone(),
+                        cancel: self.download_cancel.clone(),
+                        state: crate::lfs_download::AskedState::Resting,
+                        on_cancel: std::rc::Rc::new(|_, _| {}),
+                    }),
                     |_, _, _, _| {},
                     window,
                     cx,
@@ -6279,10 +6287,12 @@ mod tests {
     /// on the button's line and end in an ellipsis, whole in their tooltip,
     /// so a failure landing never grows the row: wrapped, they took a line
     /// of their own, about 25 px at 18 pt, as they landed. With both sides'
-    /// objects missing, whose buttons share no line there with their word,
-    /// the sentence and then the word give way, the two sharing a line with
-    /// their whole names as accessible names: stacked, they cut the
-    /// comparison's row by 1.5 px. Where they share one with their word, at
+    /// objects missing, whose running forms share no line there, the two
+    /// stack with their word in every state, the sentence given way, their
+    /// whole names their accessible names (the word's going once let them
+    /// share a line at rest, which a running form then overran; stacked,
+    /// the comparison's least row ends 1.5 px past the box's foot). Where
+    /// they share one with their word, at
     /// 18 pt in a 1,000 × 680 window, the sentence a measurement stands
     /// beside them stands on their line, ending inside the row.
     #[gpui::test]
@@ -6433,16 +6443,18 @@ mod tests {
             "a failure landing keeps the row's height: {button:?} for {pressed:?}, {body:?} \
              for {rest:?}"
         );
-        // Both sides missing: Download Before… and Download After…, 218.5
-        // and 208.5 px at scale 2, share no line in the preview's 358 px,
-        // and stacked they cut the comparison's row by 1.5 px, so the row
-        // gives way in Compare's order: the sentence, though a measurement
-        // stands it beside them, then the word, the two sharing a line
-        // without it, their whole names their accessible names.
+        // Both sides missing: the review keeps each side's widest state, its
+        // Download or the running form, the progress whole beside Cancel
+        // download, so in the preview's 358 px at scale 2 the two stack in
+        // every state, keeping their word, whose going no longer lets them
+        // share a line, and their whole names their accessible names
+        // (`both_sides_keep_their_lines_as_either_runs_or_fails_at_18_pt`).
+        // Stacking is the order's last step: beneath them the comparison
+        // keeps its least row, which ends 1.5 px past the box's foot here.
         use crate::native_accessibility::written;
-        let both = |cx: &mut gpui::VisualTestContext| {
+        let both = |fits: Option<bool>, cx: &mut gpui::VisualTestContext| {
             choose(&browser, cx, file_index(&files, "both.mmd"));
-            crate::lfs_download::SENTENCE_FITS.set(Some(true));
+            crate::lfs_download::SENTENCE_FITS.set(fits);
             patch(cx);
             reveal(cx);
             let sentence = cx.debug_bounds("lfs-preview-download-explanation");
@@ -6453,30 +6465,37 @@ mod tests {
                 .map(|id| written::get(id).and_then(|node| node.node.label().map(str::to_owned)));
             (sentence, before, after, names)
         };
-        let (sentence, before, after, names) = both(cx);
+        let (sentence, before, after, names) = both(None, cx);
         let inset = cx.update(|window, _| window.pixel_snap(window.rem_size() * 0.75));
         let preview = cx
             .debug_bounds("series-file-preview")
             .expect("the preview's box");
         assert!(
             sentence.is_none()
-                && (after.center().y - before.center().y).abs() <= device / 2.
-                && before.right() <= after.left() + device / 2.
-                && after.right() <= preview.right() - inset + device / 2.,
-            "the sentence, {sentence:?}, and the word give way, {before:?} and {after:?} \
-             sharing a line inside {preview:?}"
+                && after.top() >= before.bottom()
+                && (after.left() - before.left()).abs() <= device / 2.
+                && before.right() <= preview.right() - inset + device / 2.,
+            "the sentence, {sentence:?}, gives way and {before:?} and {after:?} stack inside \
+             {preview:?}"
         );
         assert_eq!(
             names,
             ["Download Before…", "Download After…"].map(|name| Some(name.to_owned())),
             "the whole names stay their accessible names"
         );
-        drawn("both sides", cx);
+        let floor = cx.update(|window, _| crate::views::comparison_floor(1., window));
+        let body = cx
+            .debug_bounds("lfs-comparison")
+            .expect("the comparison beneath the row");
+        assert!(
+            after.bottom() <= body.top() + device / 2. && body.size.height >= floor - device / 2.,
+            "beneath {after:?} the comparison, {body:?}, keeps its least row, {floor:?}"
+        );
         // Where they share a line with their word, at 18 pt in a 1,000 ×
         // 680 window, the sentence a measurement stands beside them stands
         // there on their line, ending inside the row.
         cx.simulate_resize(size(px(1000.), px(680.)));
-        let (sentence, before, after, _) = both(cx);
+        let (sentence, before, after, _) = both(Some(true), cx);
         let preview = cx
             .debug_bounds("series-file-preview")
             .expect("the preview's box");
@@ -6491,6 +6510,168 @@ mod tests {
             "{sentence:?} stands beside {before:?} and {after:?} on one line, inside {preview:?}"
         );
         drawn("both sides at 1,000 × 680", cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A repository whose last commit changes `both.mmd`, a Git LFS pointer
+    /// whose objects on both sides are missing from the local store, and
+    /// that commit's changed files.
+    fn missing_both() -> (tempfile::TempDir, GitRepository, Vec<FileChange>) {
+        use crate::tags::tests::{git, tagged_repository};
+        use sha2::{Digest, Sha256};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for (message, name) in [("Before", "Two"), ("After", "Three")] {
+            let text = format!("flowchart LR\n  {name} --> Gone\n");
+            let pointer = format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{:x}\nsize {}\n",
+                Sha256::digest(&text),
+                text.len()
+            );
+            std::fs::write(repo.path().join("both.mmd"), pointer).unwrap();
+            git(repo.path(), &["add", "."]);
+            git(repo.path(), &["commit", "--quiet", "-m", message]);
+        }
+        let files = last_commit_files(&repo);
+        (fixture, repo, files)
+    }
+
+    /// The review's two Download buttons share a line only where they would
+    /// in every state its row takes: each side in its widest state, its
+    /// Download or its running form, the progress whole beside Cancel
+    /// download, and a failure's words kept at least "Failed…" wide beside
+    /// them (`lfs_download::buttons_share_line`). With both sides' objects
+    /// missing at 18 pt in QA's 461 × 490 window, and in a 600 × 490 one,
+    /// where they would share a line with their word at rest, they stack:
+    /// as either side's download runs, Cancel download and the other
+    /// Download stand apart and the progress is whole (at 461 px, whose line
+    /// is narrower than the form, 111.5 of its 150 px, the whole line Cancel
+    /// leaves it), and as it fails its words keep that width, the row
+    /// keeping its height throughout.
+    /// Decided from the Downloads alone, Before's running form drew Cancel
+    /// over After… by 7 px, its progress 0 px wide, and a failure's words
+    /// were squeezed beside the two.
+    #[gpui::test]
+    async fn both_sides_keep_their_lines_as_either_runs_or_fails_at_18_pt(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_both();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, _| window.set_scale_factor(2.));
+        let browser = inspecting(&app, cx, &files);
+        let device = cx.update(|window, _| px(1. / window.scale_factor()));
+        let [gap, inset] = cx
+            .update(|window, _| [0.5, 0.75].map(|rem| window.pixel_snap(window.rem_size() * rem)));
+        let [whole, failed] = cx.update(|window, _| {
+            ["Download object", "Failed…"].map(|text| {
+                crate::views::laid_out_text_width(
+                    crate::views::line_widths(&[(text, appearance::ui_text(12.))], window),
+                    window,
+                )
+            })
+        });
+        // Patch, its preview revealed below the body's fold by its own
+        // handle, focused, as Tab into it does.
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.text_mode = 0;
+                    browser.prepare_editor(window, cx);
+                    let body = &browser.body;
+                    body.reveal_next_focus();
+                    body.focus("series-file-preview", cx).focus(window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+        };
+        let apart = |a: Bounds<Pixels>, b: Bounds<Pixels>| {
+            a.right() <= b.left() + device / 2.
+                || b.right() <= a.left() + device / 2.
+                || a.bottom() <= b.top() + device / 2.
+                || b.bottom() <= a.top() + device / 2.
+        };
+        let words = "Git LFS could not reach origin: the remote refused the batch request";
+        for width in [461., 600.] {
+            cx.simulate_resize(size(px(width), px(490.)));
+            choose(&browser, cx, file_index(&files, "both.mmd"));
+            shown(cx);
+            let downloads = |cx: &mut gpui::VisualTestContext| {
+                ["download-lfs-side-0", "download-lfs-side-1"].map(|id| cx.debug_bounds(id))
+            };
+            let rest = downloads(cx).map(|side| side.expect("both sides offer a download"));
+            let body = cx
+                .debug_bounds("lfs-comparison")
+                .expect("the comparison beneath the row");
+            for side in [0, 1] {
+                let at = format!("{width} px wide, side {side}");
+                start_download(&app, &browser, cx, rest[side].center());
+                cx.executor()
+                    .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+                shown(cx);
+                let progress = cx
+                    .debug_bounds("lfs-download-progress")
+                    .expect("the progress stands in the row");
+                let cancel = cx
+                    .debug_bounds("cancel-lfs-download")
+                    .expect("beside Cancel download");
+                let other = downloads(cx)[1 - side].expect("the other side's Download");
+                // Whole, or, where the line itself is narrower than the
+                // form, as at 461 px, given the whole line Cancel leaves.
+                let full = (cancel.left() - progress.right() - gap).abs() <= device / 2.
+                    && (cancel.right() - (body.right() - inset)).abs() <= device / 2.;
+                assert!(
+                    progress.size.width > Pixels::ZERO
+                        && (progress.size.width >= whole - device / 2. || full)
+                        && apart(progress, cancel)
+                        && apart(cancel, other)
+                        && apart(progress, other),
+                    "{at}: the progress, {progress:?}, is whole, {whole:?}, or fills its line, \
+                     and Cancel, {cancel:?}, stands apart from the other Download, {other:?}"
+                );
+                if width > 461. {
+                    assert!(
+                        progress.size.width >= whole - device / 2.,
+                        "{at}: the progress, {progress:?}, is whole, {whole:?}"
+                    );
+                }
+                let running = cx.debug_bounds("lfs-comparison").expect("the comparison");
+                assert!(
+                    (running.top() - body.top()).abs() <= device / 2.
+                        && (other.top() - rest[1 - side].top()).abs() <= device / 2.,
+                    "{at}: running, the row keeps its height and lines: {running:?} for \
+                     {body:?}, {other:?} for {:?}",
+                    rest[1 - side]
+                );
+                end_download(&app, &browser, cx, Some(words));
+                shown(cx);
+                let failure = cx
+                    .debug_bounds("lfs-download-failure")
+                    .expect("the failure is said in the row");
+                let sides = downloads(cx).map(|side| side.expect("both Downloads are back"));
+                assert!(
+                    failure.size.width >= failed - device / 2.
+                        && sides.iter().all(|side| apart(failure, *side)),
+                    "{at}: the failure's words, {failure:?}, keep at least {failed:?} beside \
+                     {sides:?}"
+                );
+                let ended = cx.debug_bounds("lfs-comparison").expect("the comparison");
+                assert!(
+                    (ended.top() - body.top()).abs() <= device / 2.
+                        && sides
+                            .iter()
+                            .zip(&rest)
+                            .all(|(side, rest)| (side.top() - rest.top()).abs() <= device / 2.),
+                    "{at}: failed, the row keeps its height and lines: {ended:?} for {body:?}, \
+                     {sides:?} for {rest:?}"
+                );
+            }
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

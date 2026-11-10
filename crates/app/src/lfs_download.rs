@@ -308,6 +308,15 @@ pub(super) fn above_comparison_with_row<V: 'static>(
 /// line, in each button's tooltip and accessible description.
 pub(crate) const DOWNLOAD_EXPLANATION: &str = "LFS preview objects require an explicit download.";
 
+/// What a download's write is called, which its progress reads until Git
+/// LFS reports more: the room a Download row that says its own progress
+/// keeps for it whole beside Cancel download ([`buttons_share_line`]).
+const DOWNLOAD_OBJECT: &str = "Download object";
+const CANCEL_DOWNLOAD: &str = "Cancel download";
+/// The least a failure's words keep beside the buttons: their first word
+/// and the ellipsis they end in where they give way.
+const FAILED: &str = "Failed…";
+
 const DOWNLOAD_BEFORE: &str = "Download Before…";
 const DOWNLOAD_AFTER: &str = "Download After…";
 const DOWNLOAD_SOURCE: &str = "Download Source…";
@@ -343,6 +352,22 @@ thread_local! {
     static BEFORE_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static SOURCE_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static PROGRESS_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static CANCEL_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static FAILED_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// `text` at the row's 12 pt as layout places it, laid out once per font
+/// and size in `cache`.
+fn row_text_width(
+    text: &'static str,
+    cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
+    window: &Window,
+) -> Pixels {
+    let width = crate::views::cached_text_width(cache, text, window, || {
+        crate::views::line_widths(&[(text, appearance::ui_text(12.))], window)
+    });
+    crate::views::laid_out_text_width(width, window)
 }
 
 /// The label a Download button reads, with the cache of its width.
@@ -364,63 +389,101 @@ fn download_label(
 
 /// Whether a Download row `column` wide draws its sentence, which it draws
 /// only on one line beside the buttons of all its `sides`, measured from
-/// the interface font in the frame the row is drawn. Wrapped inside the
-/// pane, at 18 pt in a 461 × 490 window, it took three lines above one
-/// button and left the comparison 4.5 px, and above two stacked buttons it
-/// pushed Compare's footer under the status bar; wherever it would not fit
-/// beside them, what it says moves to the buttons, as it does beside a line.
+/// the interface font in the frame the row is drawn, each side in its
+/// widest state where the row says what it `asks` for ([`side_widths`]).
+/// Wrapped inside the pane, at 18 pt in a 461 × 490 window, it took three
+/// lines above one button and left the comparison 4.5 px, and above two
+/// stacked buttons it pushed Compare's footer under the status bar;
+/// wherever it would not fit beside them, what it says moves to the
+/// buttons, as it does beside a line.
 fn sentence_fits_beside(
     quick_source: bool,
-    sides: impl IntoIterator<Item = usize>,
+    sides: &[usize],
+    asks: bool,
     column: Pixels,
     window: &Window,
 ) -> bool {
-    let rem = window.rem_size();
-    let gap = window.pixel_snap(rem * 0.5);
-    let room = column - window.pixel_snap(rem * 0.75) * 2. + px(1e-3);
-    let sentence =
-        crate::views::cached_text_width(&EXPLANATION_WIDTH, DOWNLOAD_EXPLANATION, window, || {
-            crate::views::line_widths(&[(DOWNLOAD_EXPLANATION, appearance::ui_text(12.))], window)
-        });
-    let buttons = sides
-        .into_iter()
-        .map(|side| {
-            let (label, cache) = download_label(quick_source, side);
-            gap + crate::labelled_button_width(label, cache, window)
-        })
-        .sum::<Pixels>();
-    crate::views::laid_out_text_width(sentence, window) + buttons <= room
+    let (gap, room) = row_room(column, window);
+    let sentence = row_text_width(DOWNLOAD_EXPLANATION, &EXPLANATION_WIDTH, window);
+    let [_, widest] = side_widths(quick_source, sides, false, asks, window);
+    sentence + widest.iter().map(|&width| gap + width).sum::<Pixels>() <= room
 }
 
-/// Whether the Download buttons of `sides`, their word given way where
-/// `short`, share one line in a row `column` wide, measured as layout
+/// A Download row's gap between its items and the room its line has
+/// between the row's insets, in a row `column` wide.
+fn row_room(column: Pixels, window: &Window) -> (Pixels, Pixels) {
+    let rem = window.rem_size();
+    let gap = window.pixel_snap(rem * 0.5);
+    (gap, column - window.pixel_snap(rem * 0.75) * 2. + px(1e-3))
+}
+
+/// The width of each side's Download among `sides`, its word given way
+/// where `short`, measured as layout places them in the frame the row is
+/// drawn, and each side's widest state: where the row says what it `asks`
+/// for, the review's, that is its Download or, while its download runs,
+/// the running form, the progress text whole beside Cancel download,
+/// whichever is wider.
+fn side_widths(
+    quick_source: bool,
+    sides: &[usize],
+    short: bool,
+    asks: bool,
+    window: &Window,
+) -> [Vec<Pixels>; 2] {
+    let (gap, _) = row_room(px(0.), window);
+    let buttons = sides
+        .iter()
+        .map(|&side| {
+            let (label, cache) = download_label(quick_source, side);
+            if !short {
+                return crate::labelled_button_width(label, cache, window);
+            }
+            let cache = if quick_source {
+                &SOURCE_WIDTH
+            } else if side == 0 {
+                &BEFORE_WIDTH
+            } else {
+                &AFTER_WIDTH
+            };
+            crate::labelled_button_width(short_label(label), cache, window)
+        })
+        .collect::<Vec<_>>();
+    let running = asks.then(|| {
+        row_text_width(DOWNLOAD_OBJECT, &PROGRESS_WIDTH, window)
+            + gap
+            + crate::labelled_button_width(CANCEL_DOWNLOAD, &CANCEL_WIDTH, window)
+    });
+    let widest = buttons
+        .iter()
+        .map(|&button| running.map_or(button, |running| button.max(running)))
+        .collect();
+    [buttons, widest]
+}
+
+/// Whether the sides of `sides`, their Download buttons' word given way
+/// where `short`, share one line in a row `column` wide, measured as layout
 /// places them in the frame the row is drawn. Where they do not, they
-/// stack one to a line.
+/// stack one to a line. A row that says what it `asks` for, the review's,
+/// decides it from each side's widest state ([`side_widths`]), and keeps
+/// its failure's words at least "Failed…" wide beside the Downloads: where
+/// the sides would not share a line in every state they stack, so a
+/// download starting, failing or ending never changes the row's lines.
+/// Decided from the Downloads alone, at 18 pt in a 461 × 490 window with
+/// both sides missing, Before's running form drew Cancel download over
+/// After… by 7 px, its progress 0 px wide.
 fn buttons_share_line(
     quick_source: bool,
     sides: &[usize],
     short: bool,
+    asks: bool,
     column: Pixels,
     window: &Window,
 ) -> bool {
-    let rem = window.rem_size();
-    let gap = window.pixel_snap(rem * 0.5);
-    let room = column - window.pixel_snap(rem * 0.75) * 2. + px(1e-3);
-    let widths = sides.iter().map(|&side| {
-        let (label, cache) = download_label(quick_source, side);
-        if !short {
-            return crate::labelled_button_width(label, cache, window);
-        }
-        let cache = if quick_source {
-            &SOURCE_WIDTH
-        } else if side == 0 {
-            &BEFORE_WIDTH
-        } else {
-            &AFTER_WIDTH
-        };
-        crate::labelled_button_width(short_label(label), cache, window)
-    });
-    widths.fold(-gap, |line, width| line + gap + width) <= room
+    let (gap, room) = row_room(column, window);
+    let [buttons, widest] = side_widths(quick_source, sides, short, asks, window);
+    let line = |widths: &[Pixels]| widths.iter().fold(-gap, |line, &width| line + gap + width);
+    line(&widest) <= room
+        && (!asks || row_text_width(FAILED, &FAILED_WIDTH, window) + gap + line(&buttons) <= room)
 }
 
 /// `row`, which notes, where it is drawn with its buttons' word given way,
@@ -545,12 +608,9 @@ pub(crate) fn download_row(
     if targets.is_empty() {
         return div().into_any_element();
     }
-    let fits = sentence_fits_beside(
-        quick_source,
-        targets.iter().map(|(side, _)| *side),
-        column,
-        window,
-    );
+    let sides = targets.iter().map(|(side, _)| *side).collect::<Vec<_>>();
+    let asks = asked.is_some();
+    let fits = sentence_fits_beside(quick_source, &sides, asks, column, window);
     #[cfg(test)]
     let fits = SENTENCE_FITS.get().unwrap_or(fits);
     let (failure, running) = match asked.as_ref().map(|asked| &asked.state) {
@@ -567,8 +627,7 @@ pub(crate) fn download_row(
     let sentence_moves = !one_line || failure.is_some();
     let warning = appearance::labels(cx).warning;
     let accent = palette(cx).accent;
-    let sides = targets.iter().map(|(side, _)| *side).collect::<Vec<_>>();
-    let share = buttons_share_line(quick_source, &sides, short, column, window);
+    let share = buttons_share_line(quick_source, &sides, short, asks, column, window);
     let download = std::rc::Rc::new(download);
     let asked = asked.map(std::rc::Rc::new);
     // What stands in the sentence's place: the sentence, where it is drawn
@@ -637,7 +696,7 @@ pub(crate) fn download_row(
                 .child(text)
                 .child(
                     div().flex_none().child(
-                        button("cancel-lfs-download", "Cancel download", "close", false)
+                        button("cancel-lfs-download", CANCEL_DOWNLOAD, "close", false)
                             .debug_selector(|| "cancel-lfs-download".into())
                             .track_focus(&asked.cancel)
                             .on_click(move |_, window, cx| on_cancel(window, cx))
@@ -868,7 +927,7 @@ impl GitTurtle {
     ) -> Option<crate::workspace::LfsView> {
         self.lfs_downloads.confirming = Some(asker);
         let selection = self.lfs_download_begins();
-        self.operation_busy = Some("Download object");
+        self.operation_busy = Some(DOWNLOAD_OBJECT);
         let _ = self.begin_operation_control(window, cx);
         cx.notify();
         selection
@@ -1120,7 +1179,7 @@ impl LfsDownloadForm {
             window.close_dialog(cx);
             // The write this confirmation starts runs for who asked.
             owner.lfs_downloads.confirming = Some(asker);
-            owner.confirm_git_write("Download selected LFS object".into(), format!("File: {}\nObject: sha256:{}\nSize: {}\nRemote: {}\n{}\n\nThis explicit transfer fetches only this object's pointer. Git LFS uses your configured credentials and SSH host verification. {}\n\nGitTurtle verifies the object's SHA-256 and size before previewing it. Working files and the index remain unchanged; no checkout, smudge, prune, or push is performed.", plan.target.path.display(), plan.oid, crate::counted(plan.size, "byte", "bytes"), plan.remote, plan.source, asker.cancel_place()), "Download object", WriteCommand::DownloadLfs(Arc::new(plan)), window, cx);
+            owner.confirm_git_write("Download selected LFS object".into(), format!("File: {}\nObject: sha256:{}\nSize: {}\nRemote: {}\n{}\n\nThis explicit transfer fetches only this object's pointer. Git LFS uses your configured credentials and SSH host verification. {}\n\nGitTurtle verifies the object's SHA-256 and size before previewing it. Working files and the index remain unchanged; no checkout, smudge, prune, or push is performed.", plan.target.path.display(), plan.oid, crate::counted(plan.size, "byte", "bytes"), plan.remote, plan.source, asker.cancel_place()), DOWNLOAD_OBJECT, WriteCommand::DownloadLfs(Arc::new(plan)), window, cx);
         });
     }
 }
