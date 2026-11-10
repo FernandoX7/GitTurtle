@@ -1900,7 +1900,7 @@ mod tests {
         assert!(cx.debug_bounds("working-unavailable").is_none());
         assert_eq!(
             app.read_with(cx, |app, cx| app.commit_action_label(cx)),
-            "Reading working changes…"
+            crate::workspace::READING_WORKING_TREE
         );
 
         quiet_reads_land(&app, cx);

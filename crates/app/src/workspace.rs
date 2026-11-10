@@ -1785,15 +1785,18 @@ impl GitTurtle {
         // character and ellipsis, a truncated line keeping the characters
         // that fit strictly before its ellipsis, as `scope_name_min_width`
         // measures a cut scope name.
-        // A marked tab's composer has no staged count to show.
+        // A marked tab's composer, and one whose status is not read yet,
+        // has no staged count to show, and the heading measures only what it
+        // draws.
         let branch = self.composer_branch();
-        let (mut heading_icon, mut heading_badge) = (true, branch.is_some());
+        let (mut heading_icon, mut heading_badge) = (true, self.composer_counted());
         if short {
-            let heading = composer_heading(branch);
+            let heading = branch.heading();
             let heading_min = cached_text_width(&HEADING_MIN, &heading, window, || {
                 let size = ui_text(13.);
                 let whole = shaped_width(&heading, size, FontWeight::SEMIBOLD, window).ceil();
                 branch
+                    .name()
                     .and_then(|branch| branch.chars().next())
                     .map_or(whole, |first| {
                         let cut = format!("Commit to {first}…");
@@ -1801,14 +1804,18 @@ impl GitTurtle {
                             .min(whole)
                     })
             });
-            let text = format!("{} staged", self.working_paths.staged_count);
-            let badge = rem * 0.375 * 2.
-                + cached_text_width(&STAGED_BADGE, &text, window, || {
-                    measure(&text, ui_text(10.), FontWeight::MEDIUM)
-                });
-            if sum(&[px(16.), heading_min, badge], gap) > body_room {
+            if heading_badge {
+                let text = format!("{} staged", self.working_paths.staged_count);
+                let badge = rem * 0.375 * 2.
+                    + cached_text_width(&STAGED_BADGE, &text, window, || {
+                        measure(&text, ui_text(10.), FontWeight::MEDIUM)
+                    });
+                if sum(&[px(16.), heading_min, badge], gap) > body_room {
+                    heading_icon = false;
+                    heading_badge = sum(&[heading_min, badge], gap) <= body_room;
+                }
+            } else if sum(&[px(16.), heading_min], gap) > body_room {
                 heading_icon = false;
-                heading_badge &= sum(&[heading_min, badge], gap) <= body_room;
             }
         }
 
@@ -1878,16 +1885,33 @@ impl GitTurtle {
         )
     }
 
-    /// The branch the composer commits to, as the header reads it: the one
-    /// checked out, or "detached HEAD". None where the shown tab is marked,
-    /// whose branch would be the one from the last read
-    /// ([`GitTurtle::header_status`]).
-    fn composer_branch(&self) -> Option<&str> {
-        (!self.shown_tab_unavailable()).then(|| {
-            self.header_status()
-                .and_then(|status| status.branch.as_deref())
-                .unwrap_or("detached HEAD")
-        })
+    /// The branch the composer commits to, as the branch picker reads it:
+    /// the one checked out, or "detached HEAD"; while the status is not read
+    /// yet ([`Self::working_status_unread`]), the one the accepted snapshot
+    /// found checked out, or no claim where it found none, as no status read
+    /// says yet whether HEAD is detached. Unavailable where the shown tab is
+    /// marked, whose branch would be the one from the last read
+    /// ([`GitTurtle::header_status`]). With no status read yet, it said
+    /// "Commit to detached HEAD" while the picker named the branch.
+    fn composer_branch(&self) -> ComposerBranch<'_> {
+        if self.shown_tab_unavailable() {
+            return ComposerBranch::Unavailable;
+        }
+        match (self.header_status())
+            .and_then(|status| status.branch.as_deref())
+            .or_else(|| self.unread_branch())
+        {
+            Some(branch) => ComposerBranch::Named(branch),
+            None if self.working_status_unread() => ComposerBranch::Reading,
+            None => ComposerBranch::Named("detached HEAD"),
+        }
+    }
+
+    /// Whether the composer's staged count is read: none on a marked tab,
+    /// whose count would be the last read's, nor while the status is not
+    /// read yet, which it once counted as "0 staged".
+    fn composer_counted(&self) -> bool {
+        !self.shown_tab_unavailable() && !self.working_status_unread()
     }
 
     /// The commit action's label: what it commits, or why it cannot. It
@@ -1909,8 +1933,8 @@ impl GitTurtle {
             // the action keeps its label (disabled until they land).
             if self.working_filter_waiting() {
                 "Filtering working paths…"
-            } else if self.working_read_pending() {
-                "Reading working changes…"
+            } else if self.working_read_pending() || self.working_status_unread() {
+                READING_WORKING_TREE
             } else {
                 "Changes unavailable"
             }
@@ -5288,6 +5312,7 @@ impl GitTurtle {
         }
         let (gap, padding) = (metrics.gap, metrics.padding);
         let branch = self.composer_branch();
+        let counted = self.composer_counted();
         let summary_length = title_length;
         #[cfg(test)]
         let (composer_probe, rows_probe) = (
@@ -5418,9 +5443,10 @@ impl GitTurtle {
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .tooltip({
                                                 // Without its badge the heading names the count,
-                                                // which a marked tab has none of.
-                                                let heading = composer_heading(branch);
-                                                let tooltip = if forms.heading_badge || branch.is_none() {
+                                                // which a marked tab has none of, nor one
+                                                // whose status is not read yet.
+                                                let heading = branch.heading();
+                                                let tooltip = if forms.heading_badge || !counted {
                                                     heading
                                                 } else {
                                                     format!("{heading} · {staged} staged")
@@ -5435,7 +5461,7 @@ impl GitTurtle {
                                                 }
                                             })
                                             .child(if short {
-                                                composer_heading(branch)
+                                                branch.heading()
                                             } else {
                                                 "Create a commit".into()
                                             }),
@@ -5503,12 +5529,16 @@ impl GitTurtle {
                                                     .text_size(crate::appearance::ui_text(11.))
                                                     .text_color(rgb(p.muted))
                                                     .child(icon("branch", 13., p.muted))
-                                                    // A marked tab's, in the picker's word.
-                                                    .child(div().truncate().child(
-                                                        branch
-                                                            .unwrap_or(crate::branch_actions::UNAVAILABLE)
-                                                            .to_owned(),
-                                                    )),
+                                                    // In the picker's word.
+                                                    .child({
+                                                        let line = branch.line();
+                                                        div()
+                                                            .debug_selector(move || {
+                                                                format!("commit-composer-branch/{line}")
+                                                            })
+                                                            .truncate()
+                                                            .child(line.to_owned())
+                                                    }),
                                             )
                                         })
                                         // The title's label, field and any note,
@@ -5832,10 +5862,7 @@ impl GitTurtle {
                                             )
                                         });
                                     let label = self.commit_action_label(cx);
-                                    let detail = branch.map_or_else(
-                                        || crate::branch_actions::UNAVAILABLE_REASON.to_owned(),
-                                        |branch| format!("Commit staged changes to {branch}"),
-                                    );
+                                    let detail = branch.detail();
                                     // While only the rows being prepared refuse it,
                                     // its name and tooltip say why once it dims
                                     // (`rows_wait`); a label that says why it
@@ -5844,7 +5871,9 @@ impl GitTurtle {
                                         "commit-staged",
                                         !shown || commit_unavailable,
                                         &label,
-                                        Some(if forms.compact_commit {
+                                        // Said once where they say the same, as
+                                        // while the status is not read yet.
+                                        Some(if forms.compact_commit && detail != label {
                                             format!("{label} · {detail}")
                                         } else {
                                             detail
@@ -7580,14 +7609,58 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// The composer's heading where it names its branch
-/// (`GitTurtle::composer_branch`): "Commit to" that branch, or, on a marked
-/// tab, the mark's reason as the branch picker says it.
-fn composer_heading(branch: Option<&str>) -> String {
-    branch.map_or_else(
-        || crate::branch_actions::UNAVAILABLE_REASON.to_owned(),
-        |branch| format!("Commit to {branch}"),
-    )
+/// What the composer says it commits to (`GitTurtle::composer_branch`).
+#[derive(Clone, Copy)]
+enum ComposerBranch<'a> {
+    /// The branch checked out, or "detached HEAD" where the status read
+    /// found none; while that read runs, the branch the accepted snapshot
+    /// found checked out.
+    Named(&'a str),
+    /// The status not read yet and the accepted snapshot found no branch
+    /// checked out: no branch and no detached HEAD, as the branch picker
+    /// reads "Reading…".
+    Reading,
+    /// A marked tab, whose branch would be the one from the last read.
+    Unavailable,
+}
+
+impl<'a> ComposerBranch<'a> {
+    /// The branch named, if any.
+    fn name(self) -> Option<&'a str> {
+        match self {
+            Self::Named(branch) => Some(branch),
+            Self::Reading | Self::Unavailable => None,
+        }
+    }
+
+    /// The heading where it names its branch: "Commit to" that branch; one
+    /// that claims none while the status is read; on a marked tab, the
+    /// mark's reason as the branch picker says it.
+    fn heading(self) -> String {
+        match self {
+            Self::Named(branch) => format!("Commit to {branch}"),
+            Self::Reading => "Create a commit".to_owned(),
+            Self::Unavailable => crate::branch_actions::UNAVAILABLE_REASON.to_owned(),
+        }
+    }
+
+    /// The wide composer's branch line, in the branch picker's word.
+    fn line(self) -> &'a str {
+        match self {
+            Self::Named(branch) => branch,
+            Self::Reading => crate::branch_actions::READING,
+            Self::Unavailable => crate::branch_actions::UNAVAILABLE,
+        }
+    }
+
+    /// Commit's detail: where it commits, or why it says nowhere.
+    fn detail(self) -> String {
+        match self {
+            Self::Named(branch) => format!("Commit staged changes to {branch}"),
+            Self::Reading => READING_WORKING_TREE.to_owned(),
+            Self::Unavailable => crate::branch_actions::UNAVAILABLE_REASON.to_owned(),
+        }
+    }
 }
 
 /// `input`'s text without the whitespace around it, borrowed from its rope
@@ -8076,6 +8149,115 @@ mod tests {
     use core::prelude::v1::test;
     use gitturtle_core::ChangeArea;
     use gpui_kit::gpui;
+
+    /// Until an Open's status is read, the composer claims nothing that read
+    /// decides: it draws no staged count, and its heading, branch line and
+    /// Commit's detail name the branch the accepted snapshot found checked
+    /// out, or, where it found none, claim no branch and no detached HEAD,
+    /// "Create a commit", "Reading…" and "Reading the working tree…", which
+    /// Commit's label says too. It said "Commit to detached HEAD" with
+    /// "0 staged" while the branch picker named the branch. Once the read
+    /// lands, the composer names the branch read and counts.
+    #[gpui::test]
+    async fn the_composer_claims_nothing_until_an_open_s_status_is_read(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::views::tests::{fixture_git, fixture_repository, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        // Tall enough for the composer's full form, with its branch line.
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(1200.)));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let topic = fixture_repository(fixture.path().join("topic"));
+        fixture_git(
+            topic.path(),
+            &["commit", "-q", "--allow-empty", "-m", "Topic"],
+        );
+        fixture_git(topic.path(), &["switch", "-q", "-c", "topic"]);
+        let detached = fixture_repository(fixture.path().join("detached"));
+        fixture_git(
+            detached.path(),
+            &["commit", "-q", "--allow-empty", "-m", "One"],
+        );
+        fixture_git(detached.path(), &["switch", "-q", "--detach"]);
+        let heading = || {
+            crate::views::CONTROL_TOOLTIPS
+                .with(|tooltips| tooltips.borrow().get("commit-composer-heading").cloned())
+        };
+        let detail = || super::refusals::waiting("commit-staged").and_then(|(_, tooltip)| tooltip);
+        let line = |cx: &mut gpui::VisualTestContext, line: &str| {
+            cx.debug_bounds(format!("commit-composer-branch/{line}").leak())
+                .is_some()
+        };
+        let reading = super::READING_WORKING_TREE;
+        for (repository, unread, read) in [
+            (
+                &topic,
+                ["Commit to topic", "topic", "Commit staged changes to topic"],
+                ["Commit to topic", "topic"],
+            ),
+            (
+                &detached,
+                ["Create a commit", crate::branch_actions::READING, reading],
+                ["Commit to detached HEAD", "detached HEAD"],
+            ),
+        ] {
+            let [heading_unread, line_unread, detail_unread] = unread;
+            let held = app.read_with(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.open_repository_tab(repository.path().to_owned(), window, cx)
+                })
+            });
+            for _ in 0..16 {
+                let installed = app.read_with(cx, |app, _| {
+                    app.repository.as_ref().map(|repo| repo.git_dir()) == Some(repository.git_dir())
+                });
+                if installed {
+                    break;
+                }
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+            }
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            assert!(
+                app.read_with(cx, |app, _| app.working_status_unread()),
+                "{line_unread}: its status read waits"
+            );
+            assert_eq!(heading().as_deref(), Some(heading_unread), "the heading");
+            assert!(line(cx, line_unread), "{line_unread}: the branch line");
+            assert!(
+                cx.debug_bounds("commit-staged-count").is_none(),
+                "{line_unread}: no staged count"
+            );
+            assert_eq!(
+                app.read_with(cx, |app, cx| app.commit_action_label(cx)),
+                reading,
+                "{line_unread}: Commit's label"
+            );
+            assert_eq!(
+                detail().as_deref(),
+                Some(detail_unread),
+                "{line_unread}: Commit's detail"
+            );
+
+            drop(held);
+            settle(&app, cx).await;
+            let [heading_read, line_read] = read;
+            assert_eq!(heading().as_deref(), Some(heading_read), "once read");
+            assert!(
+                line(cx, line_read),
+                "{line_read}: the branch line once read"
+            );
+            assert!(
+                cx.debug_bounds("commit-staged-count").is_some(),
+                "{line_read}: the staged count once read"
+            );
+        }
+    }
 
     /// Where the tab is marked, the banner beneath the Git action bar offers
     /// nothing from before: a merge stopped on a conflict, read before the
