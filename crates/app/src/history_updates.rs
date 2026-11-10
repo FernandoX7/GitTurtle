@@ -449,6 +449,20 @@ impl GitTurtle {
                             .update(cx, |input, cx| input.set_value("", window, cx));
                         match output {
                             Output::Snapshot(snapshot) => {
+                                // A repository cloned again at the tab's
+                                // path is installed in place, as a fresh
+                                // capture, as an accepted Refresh's is
+                                // (`shows_another_repository`): what was read
+                                // of the other goes and the found one's
+                                // status is read. Installed over the status
+                                // and remotes read before, Push pushed its
+                                // branch to its own remote while Targets
+                                // named the other's until a status read
+                                // landed (security probe S1, FU44-A).
+                                let replaced = this.shows_another_repository(&snapshot.repository);
+                                if replaced {
+                                    this.forget_repository_state(window, cx);
+                                }
                                 this.repository_tabs
                                     .follow_read_repository(&snapshot.repository);
                                 this.accept_snapshot_scope(&snapshot);
@@ -456,6 +470,9 @@ impl GitTurtle {
                                 this.install_current_history(snapshot, true, window, cx);
                                 this.status =
                                     "Latest local history · selected inspector retained".into();
+                                if replaced {
+                                    this.refresh_worktree(window, cx);
+                                }
                             }
                             Output::HistoryPage(result) => {
                                 if let Some(commit) = result.page.commits.into_iter().next() {

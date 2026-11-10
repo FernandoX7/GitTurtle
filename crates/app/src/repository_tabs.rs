@@ -7679,6 +7679,21 @@ pub(crate) mod tests {
         .await;
     }
 
+    /// Show latest that finds a re-clone at the tab's path installs it in
+    /// place as a fresh capture, as an accepted Refresh does: what was read
+    /// of the replaced repository goes and the found one's status is read,
+    /// so Push and Commit refuse until it lands and Targets then name the
+    /// found one's remote. Installed over the status and remotes read
+    /// before, Push pushed the found repository's `main` to its own remote
+    /// while Targets named the other's (security probe S1, FU44-A).
+    #[gpui::test]
+    async fn show_latest_over_a_re_clone_captures_it_afresh(cx: &mut TestAppContext) {
+        assert_a_capture_shows_nothing_from_before(cx, Replaced::InPlace, |app, cx, _| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)));
+        })
+        .await;
+    }
+
     /// A Refresh that finds the tab's repository through a folder above its
     /// root re-pointed at a folder holding another repository by the same
     /// name, which the reopen follows (`worker::FoldersAbove`), captures it
