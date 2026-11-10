@@ -847,6 +847,11 @@ impl CompareForm {
             return_focus,
             body: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
         };
+        // Return compares through the dialog's default action alone, which
+        // runs once per press, as the key goes down, never on a held key's
+        // repeats, under X11 too. The field's own `PressEnter`, which it
+        // sends for every Enter key-down, submitted the form as well, so
+        // after a comparison that failed at once each repeat read another.
         for (side, input) in [form.before.clone(), form.after.clone()]
             .into_iter()
             .enumerate()
@@ -854,13 +859,11 @@ impl CompareForm {
             form.subscriptions.push(cx.subscribe_in(
                 &input,
                 window,
-                move |this, _, event, window, cx| match event {
-                    InputEvent::Change | InputEvent::Focus => {
+                move |this, _, event, _, cx| {
+                    if let InputEvent::Change | InputEvent::Focus = event {
                         this.selected_side = side;
                         cx.notify();
                     }
-                    InputEvent::PressEnter { .. } => this.submit(window, cx),
-                    _ => {}
                 },
             ));
         }
@@ -1413,6 +1416,99 @@ mod tests {
         closed.store(true, Ordering::Release);
         assert!(!claim_modal_result(&closed, &accepted));
         assert!(!accepted.load(Ordering::Acquire));
+    }
+
+    /// A held Return in Compare local revisions reads one comparison per
+    /// press, under X11 too: with a revision that does not resolve, Enter
+    /// goes down in the field and the comparison fails at once, then the
+    /// key's repeats arrive (`REPEATS`), each waited out until the form's
+    /// reader has answered and the field has focus again. The form reads
+    /// once and says why; after the key-up a new press reads again. The
+    /// field's own `PressEnter` submitted the form as well as the dialog's
+    /// default action, so after the quick failure each repeat read another
+    /// comparison.
+    #[gpui::test]
+    async fn a_held_return_in_compare_revisions_reads_once_per_press(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        use crate::focus_ring::sweep::Opened;
+        use crate::tags::tests::{draw, tagged_repository, window};
+        use std::{cell::Cell, rc::Rc};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        let form = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_compare_form(window, cx)))
+            .expect("the form opens");
+        draw(cx);
+        Some(form.clone()).finish(cx);
+        cx.update(|window, cx| {
+            let before = form.read(cx).before.clone();
+            before.update(cx, |input, cx| {
+                input.set_value("missing-revision", window, cx)
+            });
+            before.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        draw(cx);
+        // Comparisons read, counted as the form begins each.
+        let reads = Rc::new(Cell::new(0_usize));
+        let _counting = cx.update(|_, cx| {
+            let reads = reads.clone();
+            let mut was = false;
+            cx.observe(&form, move |form, cx| {
+                let now = form.read(cx).busy;
+                reads.set(reads.get() + usize::from(now && !was));
+                was = now;
+            })
+        });
+        // The reader's answer lands, and the frame after it gives the field
+        // focus back.
+        let lands = |cx: &mut VisualTestContext| {
+            form.read_with(cx, |form, _| form.worker.wait_idle());
+            cx.run_until_parked();
+            draw(cx);
+        };
+        let field_focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                form.read(cx)
+                    .before
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            })
+        };
+        for press in ["the first press", "a new press after the key-up"] {
+            let after = reads.get() + 1;
+            enter(cx, Some(false));
+            lands(cx);
+            assert_eq!(reads.get(), after, "{press}: one comparison is read");
+            assert_eq!(
+                form.read_with(cx, |form, _| (form.busy, form.error.is_some())),
+                (false, true),
+                "{press}: it fails"
+            );
+            assert!(field_focused(cx), "{press}: the field has focus again");
+            for (repeat, events) in REPEATS {
+                for down in events {
+                    enter(cx, *down);
+                }
+                lands(cx);
+                assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+                assert!(
+                    field_focused(cx),
+                    "{press}, {repeat}: focus stays in the field"
+                );
+                assert_eq!(
+                    reads.get(),
+                    after,
+                    "{press}, {repeat}: no other comparison is read"
+                );
+            }
+            enter(cx, None);
+            draw(cx);
+        }
     }
 
     /// Quick Open's failure, here a chosen revision that does not resolve,

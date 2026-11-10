@@ -2235,4 +2235,4 @@ pub(crate) fn open_remote_lists(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

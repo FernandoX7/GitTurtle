@@ -487,8 +487,9 @@ async fn a_reopened_branch_or_remote_form_announces_why_afresh(cx: &mut TestAppC
 }
 
 /// One Enter key event as the platform delivers it, with no idle pass after
-/// it: a key-down, marked held or not, or with `None` its key-up.
-fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+/// it: a key-down, marked held or not, or with `None` its key-up. The other
+/// dialog forms' held-Return tests drive their fields with it too.
+pub(crate) fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
     let keystroke = gpui::Keystroke::parse("enter").expect("a keystroke");
     let input = match down {
         Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
@@ -505,7 +506,7 @@ fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
 /// fresh presses with no key-up between them, a release and its press
 /// together, as an input method such as fcitx5 sends them on Wayland and as
 /// X11 can, and as GPUI marks them held on macOS and Wayland.
-const REPEATS: [(&str, &[Option<bool>]); 4] = [
+pub(crate) const REPEATS: [(&str, &[Option<bool>]); 4] = [
     ("an X11 repeat", &[Some(false)]),
     ("another X11 repeat", &[Some(false)]),
     ("a release and its press", &[None, Some(false)]),
