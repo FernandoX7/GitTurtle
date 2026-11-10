@@ -4070,16 +4070,19 @@ impl GitTurtle {
             return;
         }
         let downloading_lfs = matches!(&command, WriteCommand::DownloadLfs(_));
-        let lfs_selection = if downloading_lfs {
-            self.lfs_download_begins()
-        } else {
-            None
-        };
         if !downloading_lfs {
             self.close_inspections(window, cx);
         }
         let Some(repo) = self.repository.clone() else {
             return;
+        };
+        // Once the write will run: begun before this return, a download
+        // stayed running for whoever asked, which waited for its end for
+        // good.
+        let lfs_selection = if downloading_lfs {
+            self.lfs_download_begins()
+        } else {
+            None
         };
         let path = repo.path().to_owned();
         let ending_integration = matches!(
@@ -9401,6 +9404,44 @@ mod write_outcome_tests {
             file.len(),
             file.len() + 1,
         )
+    }
+
+    /// An LFS download begins only once its write will run: with no
+    /// repository the write returns before it is submitted, and begun
+    /// before that return, the download stayed running for whoever asked,
+    /// which waited for its end for good.
+    #[gpui::test]
+    async fn a_download_that_cannot_run_never_begins(cx: &mut gpui_kit::TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = crate::tags::tests::tagged_repository(fixture.path());
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let target = gitturtle_core::LfsDownloadTarget {
+            path: "flow.mmd".into(),
+            blob_oid: None,
+            pointer: b"version https://git-lfs.github.com/spec/v1\noid sha256:aa\nsize 1\n"
+                .to_vec(),
+        };
+        let plan = gitturtle_core::LfsDownloadPlan::stand_in(target, "origin");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.repository = None;
+                app.write_from(
+                    gitturtle_core::WriteCommand::DownloadLfs(std::sync::Arc::new(plan)),
+                    "Download object",
+                    None,
+                    window,
+                    cx,
+                );
+            })
+        });
+        assert_eq!(
+            app.read_with(cx, |app, _| (
+                app.lfs_downloads.running(),
+                app.operation_busy
+            )),
+            (None, None),
+            "nothing runs, and no download is left running"
+        );
     }
 
     /// A rebase in the app reports its outcome line alone, in the status
