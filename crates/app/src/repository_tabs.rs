@@ -7178,6 +7178,89 @@ pub(crate) mod tests {
         .await;
     }
 
+    /// Until an Open's status read lands, the branch picker names the branch
+    /// the accepted snapshot found checked out, or claims none where it
+    /// found none, and Fetch, Pull and Push refuse saying the read, as
+    /// Changes says it. With no status they read a detached HEAD and no
+    /// remote: "Detached HEAD", "Switch to a local branch before pulling or
+    /// pushing" and "No configured remote selected · Check Targets".
+    #[gpui::test]
+    async fn an_open_says_its_status_is_being_read_until_it_lands(cx: &mut TestAppContext) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let topic = fixture_repository(fixture.path().join("topic"));
+        fixture_git(
+            topic.path(),
+            &["commit", "-q", "--allow-empty", "-m", "Topic"],
+        );
+        fixture_git(topic.path(), &["switch", "-q", "-c", "topic"]);
+        let detached = fixture_repository(fixture.path().join("detached"));
+        fixture_git(
+            detached.path(),
+            &["commit", "-q", "--allow-empty", "-m", "One"],
+        );
+        fixture_git(detached.path(), &["switch", "-q", "--detach"]);
+        let picker = || crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
+        let tooltip = |id: &str| {
+            crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(id).cloned())
+        };
+        let reading = crate::workspace::READING_WORKING_TREE;
+        for (repository, while_read, read) in [
+            (&topic, "topic", "topic"),
+            (&detached, crate::branch_actions::READING, "Detached HEAD"),
+        ] {
+            let held = app.read_with(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.open_repository_tab(repository.path().to_owned(), window, cx);
+                    app.git_actions_open = true;
+                })
+            });
+            for _ in 0..16 {
+                let installed = app.read_with(cx, |app, _| {
+                    app.repository.as_ref().map(|repo| repo.git_dir()) == Some(repository.git_dir())
+                });
+                if installed {
+                    break;
+                }
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+            }
+            assert!(
+                app.read_with(cx, |app, _| app.work_status.is_none()
+                    && app.status_task.is_some()),
+                "{while_read}: its status read waits"
+            );
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            assert_eq!(
+                picker().as_deref(),
+                Some(while_read),
+                "the picker while read"
+            );
+            for id in ["fetch", "pull", "push"] {
+                assert!(cx.debug_bounds(id).is_some(), "{while_read}: {id} drawn");
+                let refusal = crate::workspace::refusals::get(id).expect("drawn");
+                assert!(
+                    refusal.announced && refusal.dimmed,
+                    "{while_read}: {id} refuses"
+                );
+                let said = tooltip(id).unwrap_or_default();
+                assert!(said.ends_with(reading), "{while_read}: {id} says {said}");
+            }
+            drop(held);
+            settle_tab_test(&app, cx).await;
+            assert_eq!(picker().as_deref(), Some(read), "the picker once read");
+            for id in ["fetch", "pull", "push"] {
+                let said = tooltip(id).unwrap_or_default();
+                assert!(!said.ends_with(reading), "{read}: {id} says {said}");
+            }
+        }
+    }
+
     /// A row whose fresh capture fails keeps the tab's root, Git directories
     /// and mark, and says what the Open found, as Open and the Local
     /// workspaces row do: the tab shown with that failure, which the Projects

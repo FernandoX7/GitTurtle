@@ -3199,6 +3199,31 @@ impl GitTurtle {
             || (self.working_read_deferred.is_some() && self.working_read_deferred == self.path)
     }
 
+    /// Whether the shown tab's working status is not read yet: none read,
+    /// its read running, the tab not marked, as on every Open until the
+    /// read lands. The branch picker then names the branch the accepted
+    /// snapshot found checked out ([`Self::unread_branch`]), and Fetch,
+    /// Pull and Push wait for the read, saying it as Changes does
+    /// ([`READING_WORKING_TREE`]). With no status they once read a
+    /// detached HEAD and no remote: "Detached HEAD", "Switch to a local
+    /// branch before pulling or pushing" and "No configured remote
+    /// selected · Check Targets".
+    pub(crate) fn working_status_unread(&self) -> bool {
+        self.work_status.is_none() && !self.shown_tab_unavailable() && self.working_read_pending()
+    }
+
+    /// The local branch the accepted snapshot found checked out, while the
+    /// working status is not read yet ([`Self::working_status_unread`]),
+    /// if it found one.
+    pub(crate) fn unread_branch(&self) -> Option<&str> {
+        if !self.working_status_unread() {
+            return None;
+        }
+        (self.branches.iter())
+            .find(|branch| branch.current && !branch.remote)
+            .map(|branch| branch.name.as_str())
+    }
+
     /// Records `notice`, the outcome Git reported for a write in
     /// `repository`, in the status line, which keeps it for
     /// [`copy_feedback::RESTORE_AFTER`], the time the control that asked
@@ -4521,7 +4546,7 @@ impl GitTurtle {
             } else if !marked && self.working_read_pending() {
                 // Its read may wait for a running write
                 // (`Self::refresh_worktree`).
-                EmptyState::new("working-reading", "Reading the working tree…").pane(cx)
+                EmptyState::new("working-reading", READING_WORKING_TREE).pane(cx)
             } else {
                 // Refresh, in the header just above, reads it again.
                 EmptyState::new("working-unavailable", "Changes unavailable")
@@ -6717,6 +6742,7 @@ impl GitTurtle {
         let looks_busy = self.operation_shown().is_some();
         let detached = self.header_status().is_none_or(|s| s.branch.is_none());
         let marked = self.shown_tab_unavailable();
+        let reading = self.working_status_unread();
         // Where the compact bar has no room for the edge's line, it draws
         // the line's glyph, and a detached HEAD's picker says the line's
         // word, the line leaving, so the bar draws one commit glyph.
@@ -6893,8 +6919,11 @@ impl GitTurtle {
             .zip(marks)
             .map(|(((id, label), action), mark)| {
                 // A marked tab's repository is not the one Targets name.
-                let missing =
-                    marked || !remote_set || (id != "fetch" && (!remote_branch_set || detached));
+                // One whose status no read has given yet waits for it.
+                let missing = marked
+                    || reading
+                    || !remote_set
+                    || (id != "fetch" && (!remote_branch_set || detached));
                 let unavailable = looks_busy || missing;
                 // Each reads its confirmation where it was touched once Git
                 // reports success, for the target it acted on: labelled in its
@@ -7288,6 +7317,7 @@ impl GitTurtle {
             push_url,
             busy: self.operation_shown(),
             unavailable: self.shown_tab_unavailable(),
+            reading: self.working_status_unread(),
         }
     }
 }
@@ -7323,6 +7353,9 @@ struct GitActionsInputs<'a> {
     /// Whether the shown tab is marked, which Fetch, Pull and Push refuse
     /// for, saying the mark ahead of any remote or branch from before.
     unavailable: bool,
+    /// Whether the working status is not read yet, which Fetch, Pull and
+    /// Push wait for, saying so (`GitTurtle::working_status_unread`).
+    reading: bool,
 }
 
 /// The parts of the working status the action bar's text shows
@@ -7361,9 +7394,14 @@ impl GitActionsInputs<'_> {
             push_url: self.push_url.as_ref().map(text),
             busy: self.busy,
             unavailable: self.unavailable,
+            reading: self.reading,
         }
     }
 }
+
+/// What Changes, and Fetch, Pull and Push, say while the shown tab's
+/// working status is not read yet ([`GitTurtle::working_status_unread`]).
+pub(crate) const READING_WORKING_TREE: &str = "Reading the working tree…";
 
 /// The Git action bar's text, as [`GitActionsInputs`] make it, each string
 /// shared, so a frame hands it to its element without copying it.
@@ -7469,6 +7507,10 @@ impl GitActionsText {
                     // status is absent, which read as a detached HEAD, and
                     // Fetch named the remote from before.
                     crate::branch_actions::UNAVAILABLE_REASON.into()
+                } else if inputs.reading {
+                    // No status read yet, which read as a detached HEAD,
+                    // and no remotes, as no remote configured.
+                    READING_WORKING_TREE.into()
                 } else if inputs.push_url.is_none() {
                     "No configured remote selected · Check Targets".into()
                 } else if id != "fetch" && detached {

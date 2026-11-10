@@ -20,6 +20,11 @@ pub(crate) const UNAVAILABLE_REASON: &str = "Repository unavailable";
 /// (`worker::RepositoryGone`, `repository_access::explain`).
 pub(crate) const UNAVAILABLE_WAY_BACK: &str =
     "Refresh, or choose a repository with Open Repository";
+/// What the branch picker reads while the working status is not read yet
+/// and the accepted snapshot found no branch checked out: no branch and no
+/// detached HEAD, which only that read can tell
+/// (`GitTurtle::working_status_unread`).
+pub(crate) const READING: &str = "Reading…";
 const CHOICE_LIMIT: usize = 40;
 type PreparationFailure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTurtle>)>;
 
@@ -66,6 +71,10 @@ struct PickerInputs<'a> {
     /// Whether the shown tab is marked, where the picker says so in place of
     /// a branch from before (`GitTurtle::header_status`).
     unavailable: bool,
+    /// Whether the working status is not read yet, where the branch is the
+    /// one the accepted snapshot found checked out, if any
+    /// (`GitTurtle::working_status_unread`).
+    reading: bool,
     /// The branch checked out, if any.
     branch: Option<Cow<'a, str>>,
     /// HEAD's commit where no branch is checked out.
@@ -82,6 +91,7 @@ impl PickerInputs<'_> {
         let text = |text: &Cow<str>| Cow::Owned(String::from(&**text));
         PickerInputs {
             unavailable: self.unavailable,
+            reading: self.reading,
             branch: self.branch.as_ref().map(text),
             detached: self.detached.as_ref().map(text),
             done: self.done,
@@ -129,6 +139,22 @@ impl PickerText {
             return Self {
                 labels: [label.clone(), label.clone(), label],
                 name: "Current branch unavailable".into(),
+                narrow_tooltip: tooltip.clone(),
+                tooltip,
+            };
+        }
+        if inputs.reading && inputs.branch.is_none() {
+            // The snapshot found no branch checked out, and no status read
+            // yet says whether HEAD is detached: the picker claims neither.
+            let label = SharedString::from(READING);
+            let tooltip: SharedString = format!(
+                "{} · Switch branch and repository actions",
+                crate::workspace::READING_WORKING_TREE
+            )
+            .into();
+            return Self {
+                labels: [label.clone(), label.clone(), label],
+                name: "Current branch not read yet. Switch or manage branches".into(),
                 narrow_tooltip: tooltip.clone(),
                 tooltip,
             };
@@ -339,8 +365,10 @@ impl GitTurtle {
         let unavailable = self.shown_tab_unavailable();
         let inputs = PickerInputs {
             unavailable,
+            reading: self.working_status_unread(),
             branch: status
                 .and_then(|status| status.branch.as_deref())
+                .or_else(|| self.unread_branch())
                 .map(Cow::Borrowed),
             detached: status
                 .filter(|status| status.branch.is_none())

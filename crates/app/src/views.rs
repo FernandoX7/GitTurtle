@@ -4684,6 +4684,11 @@ struct ChromeInputs<'a> {
     status: Option<StatusInputs<'a>>,
     /// Whether the shown tab is marked, whose branch reads as the mark does.
     unavailable: bool,
+    /// Whether the working status is not read yet, and the branch the
+    /// accepted snapshot found checked out then, if any, which the branch
+    /// picker names (`GitTurtle::working_status_unread`).
+    reading: bool,
+    unread_branch: Option<Cow<'a, str>>,
     /// Whether a remote is configured, which decides the edge with them
     /// (`RepositoryEdge::of`).
     remotes: bool,
@@ -4752,6 +4757,8 @@ impl ChromeInputs<'_> {
                 operation: status.operation.as_ref().map(text),
             }),
             unavailable: self.unavailable,
+            reading: self.reading,
+            unread_branch: self.unread_branch.as_ref().map(text),
             remotes: self.remotes,
             profile: self.profile.owned(),
             repository: self.repository.as_ref().map(named),
@@ -5910,6 +5917,8 @@ impl GitTurtle {
         let names = &self.project_names;
         ChromeInputs {
             unavailable: self.shown_tab_unavailable(),
+            reading: self.working_status_unread(),
+            unread_branch: self.unread_branch().map(Cow::Borrowed),
             status: self.header_status().map(|status| StatusInputs {
                 entries: status.entries.len(),
                 branch: status.branch.as_deref().map(Cow::Borrowed),
@@ -5935,12 +5944,15 @@ impl GitTurtle {
         CHROME_TEXT_BUILT.with(|built| built.set(built.get() + 1));
         let status = self.header_status();
         let edge = self.repository_edge();
+        // The branch picker's own word ([`crate::branch_actions`]).
         let branch = if self.shown_tab_unavailable() {
             crate::branch_actions::UNAVAILABLE.into()
+        } else if let Some(branch) = status.and_then(|status| status.branch.clone()) {
+            branch
+        } else if self.working_status_unread() {
+            (self.unread_branch()).map_or(crate::branch_actions::READING.into(), str::to_owned)
         } else {
-            status
-                .and_then(|status| status.branch.clone())
-                .unwrap_or("Detached HEAD".into())
+            "Detached HEAD".into()
         };
         let changes = self.changes_label();
         let (heading, heading_tooltip) = self.heading_text();
