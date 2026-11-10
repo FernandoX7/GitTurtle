@@ -1000,23 +1000,26 @@ impl Palette {
             InputState::new(window, cx)
                 .placeholder("Search commands, such as profiles, blame, or themes…")
         });
-        let subscription =
-            cx.subscribe_in(&query, window, |this, _, event, window, cx| match event {
-                InputEvent::Change => {
-                    let was = this.selected_command();
-                    this.results = matches(&this.query.read(cx).value());
-                    this.highlight_first_available();
-                    if this.selected_command() != was {
-                        this.selection_moved();
-                    }
-                    this.error = None;
-                    this.queried = true;
-                    this.settle(true, cx);
-                    cx.notify();
+        // Return runs the selected command through the dialog's default
+        // action alone (`Self::show`'s `on_ok`), once per press, as the key
+        // goes down, never on a held key's repeats, under X11 too. The
+        // query's own `PressEnter`, which it sends for every Enter key-down,
+        // ran it as well, so a command a write refused ran on the first
+        // repeat after the write ended.
+        let subscription = cx.subscribe(&query, |this, _, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                let was = this.selected_command();
+                this.results = matches(&this.query.read(cx).value());
+                this.highlight_first_available();
+                if this.selected_command() != was {
+                    this.selection_moved();
                 }
-                InputEvent::PressEnter { .. } => this.activate(window, cx),
-                _ => {}
-            });
+                this.error = None;
+                this.queried = true;
+                this.settle(true, cx);
+                cx.notify();
+            }
+        });
         // Notifications run after the owner update has ended. Rendering only
         // reads this owned snapshot because the dialog layer itself is rendered
         // while GitTurtle is mutably borrowed.
@@ -3456,7 +3459,11 @@ mod render_tests {
                     "{at}: the first match for {query:?} is Browse stashes…"
                 );
             }
+            // Each press comes up, as a person's does: `simulate_keystrokes`
+            // sends no key-up, and a dialog opened while Enter is down takes
+            // no Enter until it comes up, the palette opened next included.
             cx.simulate_keystrokes("enter");
+            enter_up(cx);
             draw(cx);
             let (browser, list) = app
                 .read_with(cx, crate::recovery::open_stash_list)
@@ -3519,6 +3526,7 @@ mod render_tests {
                     "{at}: {state}, the highlighted Browse stashes… says why it waits"
                 );
                 cx.simulate_keystrokes("enter");
+                enter_up(cx);
                 draw(cx);
                 assert!(
                     cx.debug_bounds("palette-command-0").is_some()
@@ -6723,6 +6731,72 @@ mod render_tests {
                     "{at}: History shows"
                 );
             }
+        }
+    }
+
+    /// A held Return on a palette command a write refuses runs it once per
+    /// press, under X11 too: refused as the key goes down, the command does
+    /// not run once the write ends during the hold, however the repeats
+    /// arrive, and the palette stays open; after the key-up a new press
+    /// runs it. The query's own `PressEnter`, which it sends for every Enter
+    /// key-down, ran the command as well as the dialog's default action, so
+    /// the first repeat after the write ended opened the Reflog.
+    #[gpui::test]
+    async fn a_held_return_runs_a_command_a_write_refused_once_per_press(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, history_script, history_window_from};
+        use gpui_kit::component::WindowExt as _;
+        let (_fixture, app, cx) = history_window_from(cx, history_script(2, 3)).await;
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            crate::shortcuts::bind_keys(cx);
+        });
+        let reflog = |cx: &mut VisualTestContext| cx.debug_bounds("reflog-title").is_some();
+        let palette = |cx: &mut VisualTestContext| cx.debug_bounds("palette-command-0").is_some();
+        let busy = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext, busy: bool| {
+            app.update(cx, |app, cx| {
+                app.operation_busy = busy.then_some("Testing");
+                cx.notify();
+            });
+            draw(cx);
+        };
+        for repeats in [Repeats::Held, Repeats::Fresh, Repeats::InputMethod] {
+            let at = format!("repeats {repeats:?}");
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+            draw(cx);
+            cx.simulate_input("reflog");
+            draw(cx);
+            assert_eq!(
+                matches("reflog").first().map(|&index| COMMANDS[index].id),
+                Some(CommandId::Reflog),
+                "{at}: the highlighted command"
+            );
+            // A write runs as the key goes down and ends during the hold.
+            busy(&app, cx, true);
+            enter_down(cx, false);
+            draw(cx);
+            assert!(
+                palette(cx) && !reflog(cx),
+                "{at}: the write refuses the command"
+            );
+            busy(&app, cx, false);
+            repeat_enter(cx, repeats);
+            assert!(
+                !reflog(cx),
+                "{at}: the held key runs nothing once the write ends"
+            );
+            assert!(palette(cx), "{at}: the palette stays open");
+            enter_up(cx);
+            draw(cx);
+            enter_down(cx, false);
+            draw(cx);
+            assert!(reflog(cx), "{at}: a new press runs the command");
+            enter_up(cx);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: Escape closes the Reflog"
+            );
         }
     }
 

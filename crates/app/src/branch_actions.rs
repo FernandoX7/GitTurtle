@@ -1559,15 +1559,18 @@ impl BranchChooser {
         cx: &mut Context<Self>,
     ) -> Self {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Find a branch"));
-        let subscription =
-            cx.subscribe_in(&query, window, |this, _, event, window, cx| match event {
-                InputEvent::Change => {
-                    this.list.scroll().set_offset(Point::default());
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => this.activate_first(window, cx),
-                _ => {}
-            });
+        // Return uses the first match through the dialog's default action
+        // alone (`on_ok`), once per press, as the key goes down, never on a
+        // held key's repeats, under X11 too. The search's own `PressEnter`,
+        // which it sends for every Enter key-down, used it as well, so a
+        // choice a write refused was made on the first repeat after the
+        // write ended.
+        let subscription = cx.subscribe(&query, |this, _, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                this.list.scroll().set_offset(Point::default());
+                cx.notify();
+            }
+        });
         Self {
             owner,
             path,

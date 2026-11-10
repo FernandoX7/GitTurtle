@@ -1184,14 +1184,20 @@ impl QuickForm {
             accepted: Arc::new(AtomicBool::new(false)),
             return_focus,
         };
+        // Return opens the selected path through the dialog's default action
+        // alone (`on_ok`), once per press, as the key goes down, never on a
+        // held key's repeats, under X11 too. Each field's own `PressEnter`,
+        // which it sends for every Enter key-down, opened it as well, so a
+        // hold that outlasted a pending search opened the first path on a
+        // repeat.
         for input in [form.query.clone(), form.revision.clone()] {
             form.subscriptions.push(cx.subscribe_in(
                 &input,
                 window,
-                |this, _, event, window, cx| match event {
-                    InputEvent::Change => this.search(window, cx),
-                    InputEvent::PressEnter { .. } => this.activate(window, cx),
-                    _ => {}
+                |this, _, event, window, cx| {
+                    if let InputEvent::Change = event {
+                        this.search(window, cx);
+                    }
                 },
             ));
         }
@@ -1509,6 +1515,75 @@ mod tests {
             enter(cx, None);
             draw(cx);
         }
+    }
+
+    /// A held Return in Quick Open opens the first path once per press,
+    /// under X11 too: pressed while the search is still pending, it opens
+    /// nothing, and once the search lands during the hold the key's repeats
+    /// (`REPEATS`) still open nothing, Quick Open open with focus in its
+    /// query; after the key-up a new press opens the path. Each field opened
+    /// it on its own `PressEnter`, which it sends for every Enter key-down,
+    /// as well as through the dialog's default action, so a hold that
+    /// outlasted the search opened the first path on a repeat.
+    #[gpui::test]
+    async fn a_held_return_in_quick_open_opens_once_per_press(cx: &mut gpui::TestAppContext) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("tracked.txt"), "tracked\n").unwrap();
+        crate::tags::tests::git(repo.path(), &["add", "tracked.txt"]);
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        let form = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_quick_form(window, cx)))
+            .expect("Quick Open opens");
+        draw(cx);
+        let query = form.read_with(cx, |form, _| form.query.clone());
+        let opened = |cx: &mut VisualTestContext| {
+            form.read_with(cx, |form, _| form.accepted.load(Ordering::Acquire))
+        };
+        let held = |cx: &mut VisualTestContext, at: &str| {
+            assert!(!opened(cx), "{at}: nothing opens");
+            cx.update(|window, cx| {
+                assert!(window.has_active_dialog(cx), "{at}: Quick Open stays open");
+                assert!(
+                    query.read(cx).focus_handle(cx).is_focused(window),
+                    "{at}: focus stays in its query"
+                );
+            });
+        };
+        assert!(
+            form.read_with(cx, |form, _| form.busy),
+            "the search waits for typing to pause"
+        );
+        enter(cx, Some(false));
+        draw(cx);
+        held(cx, "the press while the search is pending");
+        // The search lands while the key is held.
+        super::QuickForm::lands(&form, cx);
+        draw(cx);
+        assert!(
+            form.read_with(cx, |form, _| form
+                .page
+                .as_ref()
+                .is_some_and(|page| !page.entries.is_empty())),
+            "the search lists the tracked path"
+        );
+        for (repeat, events) in REPEATS {
+            for down in events {
+                enter(cx, *down);
+            }
+            draw(cx);
+            held(cx, repeat);
+        }
+        enter(cx, None);
+        draw(cx);
+        enter(cx, Some(false));
+        draw(cx);
+        enter(cx, None);
+        draw(cx);
+        assert!(opened(cx), "a new press opens the first path");
     }
 
     /// Quick Open's failure, here a chosen revision that does not resolve,

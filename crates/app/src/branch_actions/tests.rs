@@ -629,6 +629,57 @@ async fn a_held_return_in_a_branch_form_reviews_once_per_press(cx: &mut TestAppC
     }
 }
 
+/// A held Return in the branch chooser's search uses its first match once
+/// per press, under X11 too: refused while a write runs, the press chooses
+/// nothing, and once the write ends during the hold the key's repeats
+/// (`REPEATS`) still choose nothing, the chooser open with focus in its
+/// search; after the key-up a new press chooses the first match. The
+/// search's own `PressEnter`, which it sends for every Enter key-down,
+/// chose the first match as well as the dialog's default action, so the
+/// first repeat after the write ended chose it.
+#[gpui::test]
+async fn a_held_return_in_the_branch_chooser_chooses_once_per_press(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (app, _, cx) = open_branch_chooser(cx, fixture.path(), 2).await;
+    let search = app
+        .read_with(cx, |app, _| app.branch_actions.query.clone())
+        .expect("the chooser's search");
+    cx.update(|window, cx| search.read(cx).focus_handle(cx).focus(window, cx));
+    draw(cx);
+    let open = |cx: &mut VisualTestContext| cx.debug_bounds("branch-chooser-list").is_some();
+    let focused = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| search.read(cx).focus_handle(cx).is_focused(window))
+    };
+    let busy = |cx: &mut VisualTestContext, busy: bool| {
+        app.update(cx, |app, cx| {
+            app.operation_busy = busy.then_some("Testing");
+            cx.notify();
+        });
+        draw(cx);
+    };
+    // A write runs as the key goes down and ends during the hold.
+    busy(cx, true);
+    enter(cx, Some(false));
+    draw(cx);
+    assert!(open(cx) && focused(cx), "the write refuses the choice");
+    busy(cx, false);
+    for (repeat, events) in REPEATS {
+        for down in events {
+            enter(cx, *down);
+        }
+        draw(cx);
+        assert!(open(cx), "{repeat}: the held key chooses nothing");
+        assert!(focused(cx), "{repeat}: focus stays in the search");
+    }
+    enter(cx, None);
+    draw(cx);
+    enter(cx, Some(false));
+    draw(cx);
+    assert!(!open(cx), "a new press chooses the first match");
+    enter(cx, None);
+    draw(cx);
+}
+
 /// A branch preparation that has ended no longer runs, so Changes opened
 /// after it drops no plan: a plan is dropped only while its preparation runs
 /// (`dismiss_branch_action`), as a recovery's is. The ended task stayed, and
