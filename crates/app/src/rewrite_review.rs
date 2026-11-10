@@ -232,6 +232,13 @@ const READING_FILES: &str = "Reading changed files…";
 /// What the preview's box says while a chosen file's preview is read.
 const READING_PREVIEW: &str = "Reading preview…";
 
+/// What the line on the review's footer and its alert say of a download of
+/// `object` that failed with `words` while the review showed another file
+/// or commit: "Couldn't download flow.mmd's Before object: …".
+fn failed_sentence(object: &str, words: &str) -> String {
+    format!("Couldn't download {object}: {words}")
+}
+
 /// The least the download's line on the dialog's footer keeps of its text
 /// ("Downloading flow.mmd's Before object") before Cancel download's word
 /// gives way: its first word and an ellipsis
@@ -542,6 +549,10 @@ pub(crate) struct SeriesBrowser {
     download_focus: [FocusHandle; 2],
     /// Cancel download's focus, in the row while the download runs.
     download_cancel: FocusHandle,
+    /// What the dialog's footer says for 1.5 s in place of the download's
+    /// line once it succeeded while the review showed another file or
+    /// commit, and the timer that ends it ([`Self::footer_line`]).
+    downloaded: Option<(SharedString, Task<()>)>,
     /// Why the inspected commit's changed files could not be read, which
     /// their box says and the text modes give as their reason.
     files_error: Option<String>,
@@ -625,6 +636,7 @@ impl SeriesBrowser {
             lfs_download: None,
             download_focus: [cx.focus_handle(), cx.focus_handle()],
             download_cancel: cx.focus_handle(),
+            downloaded: None,
             files_error: None,
             files_failure_scroll: ScrollHandle::new(),
             files_failure_focus: cx.focus_handle(),
@@ -710,6 +722,7 @@ impl SeriesBrowser {
         } else {
             self.focus.clone()
         };
+        let current = self.current(cx);
         let Some(asked) = self
             .lfs_download
             .as_mut()
@@ -738,10 +751,17 @@ impl SeriesBrowser {
                 } else if cancel_focused {
                     away.focus(window, cx);
                 }
+                // Where the row does not say it, the line on the dialog's
+                // footer does, naming what failed, and so does the alert.
+                let said = if drawn {
+                    words.to_string()
+                } else {
+                    failed_sentence(&asked.object(), &words)
+                };
                 let _ = crate::copy_feedback::alert(
                     window,
                     cx,
-                    native_accessibility::bounded_accessible_text(words.to_string()),
+                    native_accessibility::bounded_accessible_text(said),
                 );
                 cx.notify();
             }
@@ -771,8 +791,26 @@ impl SeriesBrowser {
                         ),
                     );
                     self.file(index, window, cx);
-                } else if cancel_focused {
-                    away.focus(window, cx);
+                } else if current {
+                    if cancel_focused {
+                        away.focus(window, cx);
+                    }
+                    // Its line on the dialog's footer, where the progress
+                    // stood, says it for 1.5 s with a check, said once,
+                    // politely, as a Git action's feedback in place is.
+                    let said: SharedString = format!("Downloaded {}", asked.object()).into();
+                    crate::copy_feedback::announce(window, cx, said.clone());
+                    let ends = cx.spawn(async move |this, cx| {
+                        cx.background_executor()
+                            .timer(crate::copy_feedback::RESTORE_AFTER)
+                            .await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.downloaded = None;
+                            cx.notify();
+                        });
+                    });
+                    self.downloaded = Some((said, ends));
+                    cx.notify();
                 }
             }
         }
@@ -829,12 +867,57 @@ impl SeriesBrowser {
         window: &Window,
         cx: &App,
     ) -> Option<AnyElement> {
+        if let Some((said, _)) = &self.downloaded {
+            return Some(
+                div()
+                    .debug_selector(|| "series-download-done".into())
+                    .size_full()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_none().child(crate::control_icon("check")))
+                    .child(
+                        native_accessibility::text("series-download-done", said.clone())
+                            .min_w_0()
+                            .truncate()
+                            .text_size(appearance::ui_text(12.)),
+                    )
+                    .into_any_element(),
+            );
+        }
         let asked = self
             .lfs_download
             .as_ref()
-            .filter(|asked| asked.started && asked.failure.is_none())?;
+            .filter(|asked| asked.started && !asked.seen.get())?;
         if self.row_says(asked) {
             return None;
+        }
+        if let Some(words) = &asked.failure {
+            // Kept until the person returns to its file, where the row says
+            // it ([`Self::clear_content`]).
+            let said: SharedString = failed_sentence(&asked.object(), words).into();
+            let whole = said.clone();
+            return Some(
+                div()
+                    .debug_selector(|| "series-download-status".into())
+                    .size_full()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .child(
+                        native_accessibility::text("series-download-failure", said)
+                            .debug_selector(|| "series-download-failure".into())
+                            .min_w_0()
+                            .truncate()
+                            .text_size(appearance::ui_text(12.))
+                            .text_color(rgb(appearance::labels(cx).warning))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(whole.clone()).build(window, cx)
+                            }),
+                    )
+                    .into_any_element(),
+            );
         }
         let owner = self.owner.upgrade()?;
         let owner = owner.read(cx);
@@ -1904,6 +1987,7 @@ impl SeriesBrowser {
                             return;
                         }
                         let (file, commit) = chosen.clone();
+                        this.downloaded = None;
                         this.lfs_download = file.map(|file| ReviewDownload {
                             file,
                             commit,
@@ -7071,7 +7155,8 @@ mod tests {
     /// every file's row tracks the same handles, so after Back and another
     /// commit, whose file's Download held focus as the download asked from
     /// the first looked busy, focus moved onto a Cancel no row drew. Its
-    /// success there reads nothing, moves no focus and says nothing.
+    /// success there reads nothing and moves no focus, said only where its
+    /// line stood, on the dialog's footer.
     #[gpui::test]
     async fn focus_moves_only_onto_a_cancel_the_review_draws(cx: &mut gpui_kit::TestAppContext) {
         let (_fixture, repo, files) = missing_before();
@@ -7111,10 +7196,10 @@ mod tests {
             holds_focus(&browser, cx, |browser| &browser.download_focus[0]),
             "the success elsewhere moves no focus"
         );
-        assert!(
-            crate::copy_feedback::tests::announced(cx)
-                .is_none_or(|(_, said)| !said.starts_with("Downloaded")),
-            "and says nothing of a file the review does not show"
+        assert_eq!(
+            crate::copy_feedback::tests::announced(cx).map(|(_, said)| said),
+            Some("Downloaded flow.mmd's Before object".to_owned()),
+            "and is said where its line stood, naming the file it read nothing of"
         );
     }
 
@@ -7184,10 +7269,13 @@ mod tests {
     /// The download stays in view while the review shows another file: the
     /// dialog's footer says the progress and offers Cancel download, focus
     /// on Cancel staying on it as it moves there. A failure that lands
-    /// meanwhile is announced at once, focus going from the vanished Cancel
-    /// to Back to series, never the window's root, and kept: the row says
-    /// it once the person comes back to the file, and only leaving that
-    /// file again drops it. The review covers the operation bar, so it said
+    /// meanwhile is announced at once, naming what failed, focus going from
+    /// the vanished Cancel to Back to series, never the window's root, and
+    /// kept: the footer says it in its warning words, "Couldn't download
+    /// flow.mmd's Before object: …", until the person comes back to the
+    /// file, where the row says it, and only leaving that file again drops
+    /// it. The line vanished, nothing on screen said the download failed,
+    /// and the alert said the words alone. The review covers the operation bar, so it said
     /// nothing of a download that ran for a file it no longer showed, and
     /// the failure that landed meanwhile was dropped unsaid.
     #[gpui::test]
@@ -7231,13 +7319,19 @@ mod tests {
         );
         let words = "Git LFS could not reach origin";
         end_download(&app, &browser, cx, Some(words));
+        let failed = format!("Couldn't download flow.mmd's Before object: {words}");
+        let footer = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("series-download-failure")?;
+            written::get("series-download-failure")
+                .and_then(|node| node.node.value().map(str::to_owned))
+        };
         assert!(
-            cx.debug_bounds("series-download-status").is_none()
-                && cx.debug_bounds("cancel-lfs-download").is_none(),
-            "the download's end takes the line away"
+            cx.debug_bounds("cancel-lfs-download").is_none()
+                && footer(cx).as_deref() == Some(failed.as_str()),
+            "the download's end takes Cancel away, the footer saying what failed"
         );
         let alert = crate::copy_feedback::tests::alerted(cx).expect("the failure is announced");
-        assert_eq!(alert.1, words, "at once, in its own words");
+        assert_eq!(alert.1, failed, "at once, naming what failed");
         assert!(
             holds_focus(&browser, cx, |browser| &browser.back),
             "focus goes from the vanished Cancel to Back to series"
@@ -7249,9 +7343,9 @@ mod tests {
         };
         choose(&browser, cx, file_index(&files, "flow.mmd"));
         assert_eq!(
-            said(cx).as_deref(),
-            Some(words),
-            "back on its file, the row says the failure kept for it"
+            (said(cx).as_deref(), footer(cx)),
+            (Some(words), None),
+            "back on its file, the row says the failure kept for it, the footer no more"
         );
         assert_eq!(
             crate::copy_feedback::tests::alerted(cx),
@@ -7389,7 +7483,10 @@ mod tests {
     /// A download that ends while the review shows the series, Back to
     /// series having left the commit, with Cancel download on the dialog's
     /// footer focused, moves focus from the vanished Cancel to the series
-    /// list, never the window's root, and reads nothing.
+    /// list, never the window's root, and reads nothing. Its success is said
+    /// where the line stood: "Downloaded flow.mmd's Before object" with a
+    /// check for 1.5 s, announced once, politely. The line vanished and
+    /// nothing said the download had succeeded.
     #[gpui::test]
     async fn a_download_ending_over_the_series_moves_focus_to_the_list(
         cx: &mut gpui_kit::TestAppContext,
@@ -7412,6 +7509,30 @@ mod tests {
             "focus goes from the vanished Cancel to the series list"
         );
         assert_eq!(shown_key(&browser, cx), before, "and nothing is read again");
+        let done = "Downloaded flow.mmd's Before object";
+        let said = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("series-download-done")?;
+            crate::native_accessibility::written::get("series-download-done")
+                .and_then(|node| node.node.value().map(str::to_owned))
+        };
+        assert_eq!(
+            said(cx).as_deref(),
+            Some(done),
+            "the footer says the success"
+        );
+        assert_eq!(
+            crate::copy_feedback::tests::announced(cx).map(|(_, said)| said),
+            Some(done.to_owned()),
+            "once, politely"
+        );
+        crate::copy_feedback::tests::wait(cx, crate::copy_feedback::RESTORE_AFTER);
+        crate::tags::tests::draw(cx);
+        assert!(
+            said(cx).is_none()
+                && cx.debug_bounds("series-download-status").is_none()
+                && crate::copy_feedback::tests::announced(cx).is_none(),
+            "for 1.5 s"
+        );
     }
 
     /// A press acts only while the review is current, as Publish does: the
