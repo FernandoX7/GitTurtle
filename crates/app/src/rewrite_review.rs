@@ -1408,7 +1408,7 @@ impl SeriesBrowser {
         &self,
         width: Pixels,
         height: Pixels,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let Some(messages) = &self.messages {
@@ -1572,6 +1572,38 @@ impl SeriesBrowser {
             _ => Vec::new(),
         };
         let me = crate::lfs_download::Asker::Review(cx.entity_id());
+        // The row gives way in Compare's order (`views::DownloadRegion`),
+        // which has no footer here: the line first, to its one line, then
+        // the buttons' word "Download", wherever its going lets two buttons
+        // that stack with it share a line, and the buttons stack last, so
+        // the comparison keeps a whole row in the box. With both sides'
+        // objects missing at 18 pt in a 461 × 490 window, the two buttons
+        // stacked with their word and cut the comparison's row by 1.5 px.
+        let short = !targets.is_empty() && {
+            let line = if failure.is_some() {
+                crate::empty_state::block_height(1, false, window) + appearance::ui_size(16.)
+            } else {
+                px(0.)
+            };
+            let [full, without] = [false, true].map(|short| {
+                let row = crate::lfs_download::download_row(
+                    targets.clone(),
+                    false,
+                    failure.is_some(),
+                    short,
+                    width,
+                    (false, false),
+                    None,
+                    |_, _, _, _| {},
+                    window,
+                    cx,
+                );
+                crate::in_frame::measured_height(row, width, window, cx)
+            });
+            let device = px(1. / window.scale_factor());
+            without < full
+                && height - line - full < crate::views::comparison_floor(1., window) - device / 2.
+        };
         let row = owner.filter(|_| !targets.is_empty()).map(|owner| {
             let owner = owner.read(cx);
             let busy = (
@@ -1623,7 +1655,7 @@ impl SeriesBrowser {
                 targets,
                 false,
                 failure.is_some(),
-                false,
+                short,
                 width,
                 busy,
                 Some(asked),
@@ -6123,6 +6155,230 @@ mod tests {
         let (_, alerted) =
             crate::copy_feedback::tests::alerted(cx).expect("the failure is announced");
         assert_eq!(alerted, words, "at once");
+    }
+
+    /// The review's Download row in QA's window, 18 pt in 461 × 490 at
+    /// scales 2 and 1.2, gives way in Compare's order: beneath a failing
+    /// After's line in Patch, the line gives way first, the row keeps its
+    /// height, its sentence in the button's tooltip and description, and the
+    /// comparison keeps one whole row inside the preview's box, whether the
+    /// row rests, its download runs or it failed. A failure's words stand
+    /// on the button's line and end in an ellipsis, whole in their tooltip,
+    /// so a failure landing never grows the row: wrapped, they took a line
+    /// of their own, about 25 px at 18 pt, as they landed. With both sides'
+    /// objects missing, whose buttons share no line there with their word,
+    /// the sentence and then the word give way, the two sharing a line with
+    /// their whole names as accessible names: stacked, they cut the
+    /// comparison's row by 1.5 px. Where they share one with their word, at
+    /// 18 pt in a 1,000 × 680 window, the sentence a measurement stands
+    /// beside them stands on their line, ending inside the row.
+    #[gpui::test]
+    async fn the_review_s_download_row_keeps_its_height_and_a_row_at_18_pt(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        use sha2::{Digest, Sha256};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let pointer = |text: &str| {
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{:x}\nsize {}\n",
+                Sha256::digest(text),
+                text.len()
+            )
+        };
+        // After's object stored with the wrong bytes: damaged.
+        let damaged = "flowchart LR\n  C --> D\n";
+        let oid = format!("{:x}", Sha256::digest(damaged));
+        let directory = repo
+            .path()
+            .join(".git/lfs/objects")
+            .join(&oid[..2])
+            .join(&oid[2..4]);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(&oid), "x".repeat(damaged.len())).unwrap();
+        let gone = |name: &str| pointer(&format!("flowchart LR\n  {name} --> Gone\n"));
+        let sides = [
+            ("damaged.mmd", gone("One"), pointer(damaged)),
+            ("both.mmd", gone("Two"), gone("Three")),
+        ];
+        for (path, before, _) in &sides {
+            std::fs::write(repo.path().join(path), before).unwrap();
+        }
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Before"]);
+        for (path, _, after) in &sides {
+            std::fs::write(repo.path().join(path), after).unwrap();
+        }
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "--quiet", "-m", "After"]);
+        let files = last_commit_files(&repo);
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let browser = inspecting(&app, cx, &files);
+        let patch = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.text_mode = 0;
+                    browser.prepare_editor(window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+        };
+        // The preview lies below the body's fold here: its own handle,
+        // focused, reveals it, as Tab into it does.
+        let reveal = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                let body = &browser.read(cx).body;
+                body.reveal_next_focus();
+                body.focus("series-file-preview", cx).focus(window, cx);
+            });
+            draw(cx);
+            draw(cx);
+        };
+        // The row's bounds, its first button's, and the comparison's,
+        // checked to stand in order inside the preview's box.
+        let drawn = |at: &str, cx: &mut gpui::VisualTestContext| {
+            let device = cx.update(|window, _| px(1. / window.scale_factor()));
+            let floor = cx.update(|window, _| crate::views::comparison_floor(1., window));
+            let preview = cx
+                .debug_bounds("series-file-preview")
+                .expect("the preview's box");
+            let button = cx
+                .debug_bounds("download-lfs-side-0")
+                .or_else(|| cx.debug_bounds("cancel-lfs-download"))
+                .expect("the row's first control");
+            let body = cx
+                .debug_bounds("lfs-comparison")
+                .expect("the comparison beneath the row");
+            if let Some(line) = cx.debug_bounds("series-lfs-failure-region") {
+                assert!(
+                    line.top() >= preview.top() - device / 2.
+                        && line.bottom() <= button.top() + device / 2.,
+                    "{at}: the line, {line:?}, stands above the row, {button:?}, in {preview:?}"
+                );
+            }
+            assert!(
+                button.bottom() <= body.top() + device / 2.
+                    && body.size.height >= floor - device / 2.
+                    && body.bottom() <= preview.bottom() + device / 2.,
+                "{at}: beneath {button:?} the comparison, {body:?}, keeps a whole row, \
+                 {floor:?}, inside {preview:?}"
+            );
+            (button, body, device)
+        };
+        choose(&browser, cx, file_index(&files, "damaged.mmd"));
+        patch(cx);
+        for scale in [2.0f32, 1.2] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            reveal(cx);
+            drawn(&format!("damaged.mmd at scale {scale}"), cx);
+            assert!(
+                cx.debug_bounds("lfs-preview-download-explanation")
+                    .is_none(),
+                "scale {scale}: beside the line the sentence moves to the button"
+            );
+        }
+        cx.update(|window, _| window.set_scale_factor(2.));
+        reveal(cx);
+        let (pressed, rest, device) = drawn("resting", cx);
+        // Running: the progress and Cancel where Download stood.
+        start_download(&app, &browser, cx, pressed.center());
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        draw(cx);
+        let (cancel, body, _) = drawn("running", cx);
+        cx.debug_bounds("lfs-download-progress")
+            .expect("the progress stands in the row");
+        assert!(
+            (cancel.top() - pressed.top()).abs() <= device / 2.
+                && (body.top() - rest.top()).abs() <= device / 2.,
+            "running, the row keeps its height: {cancel:?} for {pressed:?}, {body:?} for {rest:?}"
+        );
+        // Failed: words longer than the row ends on the button's line.
+        let words = "Git LFS could not reach origin: the remote refused the batch \
+                     request for this object after three attempts";
+        end_download(&app, &browser, cx, Some(words));
+        draw(cx);
+        let (button, body, _) = drawn("failed", cx);
+        let failure = cx
+            .debug_bounds("lfs-download-failure")
+            .expect("the failure is said in the row");
+        assert!(
+            (failure.center().y - button.center().y).abs() <= device / 2.
+                && failure.right() <= button.left() + device / 2.,
+            "the failure's words, {failure:?}, stand on the button's line, {button:?}"
+        );
+        assert!(
+            (button.top() - pressed.top()).abs() <= device / 2.
+                && (body.top() - rest.top()).abs() <= device / 2.,
+            "a failure landing keeps the row's height: {button:?} for {pressed:?}, {body:?} \
+             for {rest:?}"
+        );
+        // Both sides missing: Download Before… and Download After…, 218.5
+        // and 208.5 px at scale 2, share no line in the preview's 358 px,
+        // and stacked they cut the comparison's row by 1.5 px, so the row
+        // gives way in Compare's order: the sentence, though a measurement
+        // stands it beside them, then the word, the two sharing a line
+        // without it, their whole names their accessible names.
+        use crate::native_accessibility::written;
+        let both = |cx: &mut gpui::VisualTestContext| {
+            choose(&browser, cx, file_index(&files, "both.mmd"));
+            crate::lfs_download::SENTENCE_FITS.set(Some(true));
+            patch(cx);
+            reveal(cx);
+            let sentence = cx.debug_bounds("lfs-preview-download-explanation");
+            let before = cx.debug_bounds("download-lfs-side-0").expect("Before");
+            let after = cx.debug_bounds("download-lfs-side-1").expect("After");
+            crate::lfs_download::SENTENCE_FITS.set(None);
+            let names = ["download-lfs-side-0", "download-lfs-side-1"]
+                .map(|id| written::get(id).and_then(|node| node.node.label().map(str::to_owned)));
+            (sentence, before, after, names)
+        };
+        let (sentence, before, after, names) = both(cx);
+        let inset = cx.update(|window, _| window.pixel_snap(window.rem_size() * 0.75));
+        let preview = cx
+            .debug_bounds("series-file-preview")
+            .expect("the preview's box");
+        assert!(
+            sentence.is_none()
+                && (after.center().y - before.center().y).abs() <= device / 2.
+                && before.right() <= after.left() + device / 2.
+                && after.right() <= preview.right() - inset + device / 2.,
+            "the sentence, {sentence:?}, and the word give way, {before:?} and {after:?} \
+             sharing a line inside {preview:?}"
+        );
+        assert_eq!(
+            names,
+            ["Download Before…", "Download After…"].map(|name| Some(name.to_owned())),
+            "the whole names stay their accessible names"
+        );
+        drawn("both sides", cx);
+        // Where they share a line with their word, at 18 pt in a 1,000 ×
+        // 680 window, the sentence a measurement stands beside them stands
+        // there on their line, ending inside the row.
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        let (sentence, before, after, _) = both(cx);
+        let preview = cx
+            .debug_bounds("series-file-preview")
+            .expect("the preview's box");
+        let sentence = sentence.expect("the sentence is stood beside the buttons");
+        assert!(
+            sentence.left() >= preview.left() + inset - device / 2.
+                && sentence.right() <= before.left() + device / 2.
+                && before.right() <= after.left() + device / 2.
+                && after.right() <= preview.right() - inset + device / 2.
+                && (before.center().y - sentence.center().y).abs() <= device / 2.
+                && (after.center().y - sentence.center().y).abs() <= device / 2.,
+            "{sentence:?} stands beside {before:?} and {after:?} on one line, inside {preview:?}"
+        );
+        drawn("both sides at 1,000 × 680", cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// The comparison the review shows, by its identity.

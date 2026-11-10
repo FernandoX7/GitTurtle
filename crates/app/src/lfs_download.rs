@@ -293,7 +293,13 @@ pub(super) fn above_comparison_with_row<V: 'static>(
         .flex_col()
         .children(sentence.map(|sentence| line.render(key, sentence, ring, window, cx)))
         .children(row)
-        .child(div().flex_1().min_h(floor).child(body))
+        .child(
+            div()
+                .debug_selector(|| "lfs-comparison".into())
+                .flex_1()
+                .min_h(floor)
+                .child(body),
+        )
         .into_any_element()
 }
 
@@ -334,6 +340,9 @@ thread_local! {
     static DOWNLOAD_AFTER_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static DOWNLOAD_SOURCE_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static EXPLANATION_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static BEFORE_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static SOURCE_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
 /// The label a Download button reads, with the cache of its width.
@@ -381,6 +390,37 @@ fn sentence_fits_beside(
         })
         .sum::<Pixels>();
     crate::views::laid_out_text_width(sentence, window) + buttons <= room
+}
+
+/// Whether the Download buttons of `sides`, their word given way where
+/// `short`, share one line in a row `column` wide, measured as layout
+/// places them in the frame the row is drawn. Where they do not, they
+/// stack one to a line.
+fn buttons_share_line(
+    quick_source: bool,
+    sides: &[usize],
+    short: bool,
+    column: Pixels,
+    window: &Window,
+) -> bool {
+    let rem = window.rem_size();
+    let gap = window.pixel_snap(rem * 0.5);
+    let room = column - window.pixel_snap(rem * 0.75) * 2. + px(1e-3);
+    let widths = sides.iter().map(|&side| {
+        let (label, cache) = download_label(quick_source, side);
+        if !short {
+            return crate::labelled_button_width(label, cache, window);
+        }
+        let cache = if quick_source {
+            &SOURCE_WIDTH
+        } else if side == 0 {
+            &BEFORE_WIDTH
+        } else {
+            &AFTER_WIDTH
+        };
+        crate::labelled_button_width(short_label(label), cache, window)
+    });
+    widths.fold(-gap, |line, width| line + gap + width) <= room
 }
 
 /// `row`, which notes, where it is drawn with its buttons' word given way,
@@ -527,8 +567,138 @@ pub(crate) fn download_row(
     let sentence_moves = !one_line || failure.is_some();
     let warning = appearance::labels(cx).warning;
     let accent = palette(cx).accent;
+    let sides = targets.iter().map(|(side, _)| *side).collect::<Vec<_>>();
+    let share = buttons_share_line(quick_source, &sides, short, column, window);
     let download = std::rc::Rc::new(download);
     let asked = asked.map(std::rc::Rc::new);
+    // What stands in the sentence's place: the sentence, where it is drawn
+    // (beside a line, or where it would not fit on one line beside the
+    // buttons, it moves to each button's tooltip and description), or the
+    // failure's words. Either shrinks, ending in an ellipsis and whole in
+    // its tooltip, so the buttons keep their size and their line: should
+    // the measurement that stood the sentence there disagree with layout,
+    // it ends inside the pane rather than running past it, and a failure
+    // landing never grows the row (wrapped, the words took a line of their
+    // own, about 25 px at 18 pt, as they landed).
+    let said = if let Some(words) = failure {
+        let whole = words.clone();
+        Some(
+            label("lfs-download-failure", words)
+                .debug_selector(|| "lfs-download-failure".into())
+                .flex_shrink(1.)
+                .min_w_0()
+                .truncate()
+                .text_size(appearance::ui_text(12.))
+                .text_color(rgb(warning))
+                .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
+                .into_any_element(),
+        )
+    } else {
+        (!sentence_moves).then(|| {
+            label("lfs-preview-download-explanation", DOWNLOAD_EXPLANATION)
+                .debug_selector(|| "lfs-preview-download-explanation".into())
+                .flex_shrink(1.)
+                .min_w_0()
+                .truncate()
+                .tooltip(|window, cx| Tooltip::new(DOWNLOAD_EXPLANATION).build(window, cx))
+                .text_size(appearance::ui_text(12.))
+                .into_any_element()
+        })
+    };
+    let items = targets.into_iter().map(|(side, target)| {
+        if let (Some((_, progress)), Some(asked)) = (
+            running.as_ref().filter(|(running, _)| *running == side),
+            asked.as_ref(),
+        ) {
+            // Where the pressed Download stood: the window's progress
+            // text, giving way first, and Cancel download.
+            let (whole, on_cancel) = (progress.clone(), asked.on_cancel.clone());
+            let text = div()
+                .id("lfs-download-progress")
+                .debug_selector(|| "lfs-download-progress".into())
+                .role(Role::Status)
+                .aria_label(progress.clone())
+                .live_region(gpui::accesskit::Live::Off, false)
+                .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
+                .min_w_0()
+                .truncate()
+                .text_size(appearance::ui_text(12.))
+                .text_color(rgb(accent))
+                .child(progress.clone());
+            // Tests assemble the window's tree from what they record.
+            #[cfg(test)]
+            crate::native_accessibility::written::built(&text);
+            return div()
+                .flex_shrink(1.)
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(text)
+                .child(
+                    div().flex_none().child(
+                        button("cancel-lfs-download", "Cancel download", "close", false)
+                            .debug_selector(|| "cancel-lfs-download".into())
+                            .track_focus(&asked.cancel)
+                            .on_click(move |_, window, cx| on_cancel(window, cx))
+                            .node_recorded(),
+                    ),
+                )
+                .into_any_element();
+        }
+        let download = download.clone();
+        let focus = asked.as_ref().map(|asked| asked.focus[side].clone());
+        let full = download_label(quick_source, side).0;
+        div()
+            .debug_selector(move || format!("download-lfs-side-{side}"))
+            .flex_none()
+            .child(
+                button(
+                    ("download-lfs-side", side),
+                    if short { short_label(full) } else { full },
+                    "pull",
+                    false,
+                )
+                .when_some(focus, |button, focus| button.track_focus(&focus))
+                .when(sentence_moves, |button| {
+                    crate::branch_actions::Described(button)
+                        .aria_description(DOWNLOAD_EXPLANATION)
+                        .0
+                })
+                // Its whole name stays in its accessible name and
+                // tooltip, beside the sentence where that moved here.
+                .when(short, |button| button.accessibility_label(full))
+                .map(|button| match (short, sentence_moves) {
+                    (true, true) => button.tooltip(format!("{full} · {DOWNLOAD_EXPLANATION}")),
+                    (true, false) => button.tooltip(full),
+                    (false, true) => button.tooltip(DOWNLOAD_EXPLANATION),
+                    (false, false) => button,
+                })
+                // `open_lfs_download` refuses while a write runs.
+                .map(|button| {
+                    crate::workspace::refusing(
+                        button,
+                        || format!("download-lfs-side-{side}"),
+                        refused,
+                        dimmed,
+                    )
+                })
+                .on_click(move |_, window, cx| download(side, target.clone(), window, cx))
+                .node_recorded(),
+            )
+            .into_any_element()
+    });
+    // Its lines are its buttons': one where they share it, otherwise one
+    // each, with what stands in the sentence's place beside the first; so
+    // the row keeps its lines whether it rests, runs or failed.
+    let mut lines = if share {
+        vec![items.collect::<Vec<_>>()]
+    } else {
+        items.map(|item| vec![item]).collect()
+    };
+    if let (Some(said), Some(first)) = (said, lines.first_mut()) {
+        first.insert(0, said);
+    }
     noted_short(div(), short)
         .flex_none()
         .px_3()
@@ -536,135 +706,16 @@ pub(crate) fn download_row(
         .when(!line_above, |row| row.pt_2())
         .pb_2()
         .flex()
-        // Beside its sentence the buttons keep their line, the sentence
-        // giving way with an ellipsis: wrapped, where measurement and
-        // layout disagreed, they wrapped beneath it and took the
-        // comparison's room.
-        .map(|row| {
-            if one_line {
-                row.flex_nowrap()
-            } else {
-                row.flex_wrap()
-            }
-        })
-        .items_center()
+        .flex_col()
         .gap_2()
-        // Beside a line, or where it would not fit on one line beside the
-        // buttons, the row gives the comparison its height: what this says
-        // moves to each button's tooltip and description.
-        .when(!sentence_moves, |row| {
-            row.child(
-                label("lfs-preview-download-explanation", DOWNLOAD_EXPLANATION)
-                    .debug_selector(|| "lfs-preview-download-explanation".into())
-                    // The room the buttons leave it, and cut there with an
-                    // ellipsis, whole in its tooltip: should the measurement
-                    // that stood it here disagree with layout, it ends
-                    // inside the pane beside them rather than running past
-                    // it or pushing them onto a line of their own.
-                    .flex_shrink(1.)
-                    .min_w_0()
-                    .truncate()
-                    .tooltip(|window, cx| Tooltip::new(DOWNLOAD_EXPLANATION).build(window, cx))
-                    .text_size(appearance::ui_text(12.)),
-            )
-        })
-        // In the sentence's place, whole where it fits, otherwise cut with
-        // an ellipsis and whole in its tooltip.
-        .when_some(failure, |row, words| {
-            let whole = words.clone();
-            row.child(
-                label("lfs-download-failure", words)
-                    .debug_selector(|| "lfs-download-failure".into())
-                    .flex_shrink(1.)
-                    .min_w_0()
-                    .truncate()
-                    .text_size(appearance::ui_text(12.))
-                    .text_color(rgb(warning))
-                    .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx)),
-            )
-        })
-        .children(targets.into_iter().map(|(side, target)| {
-            if let (Some((_, progress)), Some(asked)) = (
-                running.as_ref().filter(|(running, _)| *running == side),
-                asked.as_ref(),
-            ) {
-                // Where the pressed Download stood: the window's progress
-                // text, giving way first, and Cancel download.
-                let (whole, on_cancel) = (progress.clone(), asked.on_cancel.clone());
-                let text = div()
-                    .id("lfs-download-progress")
-                    .debug_selector(|| "lfs-download-progress".into())
-                    .role(Role::Status)
-                    .aria_label(progress.clone())
-                    .live_region(gpui::accesskit::Live::Off, false)
-                    .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
-                    .min_w_0()
-                    .truncate()
-                    .text_size(appearance::ui_text(12.))
-                    .text_color(rgb(accent))
-                    .child(progress.clone());
-                // Tests assemble the window's tree from what they record.
-                #[cfg(test)]
-                crate::native_accessibility::written::built(&text);
-                return div()
-                    .flex_shrink(1.)
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(text)
-                    .child(
-                        div().flex_none().child(
-                            button("cancel-lfs-download", "Cancel download", "close", false)
-                                .debug_selector(|| "cancel-lfs-download".into())
-                                .track_focus(&asked.cancel)
-                                .on_click(move |_, window, cx| on_cancel(window, cx))
-                                .node_recorded(),
-                        ),
-                    )
-                    .into_any_element();
-            }
-            let download = download.clone();
-            let focus = asked.as_ref().map(|asked| asked.focus[side].clone());
-            let full = download_label(quick_source, side).0;
+        .children(lines.into_iter().map(|line| {
             div()
-                .debug_selector(move || format!("download-lfs-side-{side}"))
-                .when(one_line, |button| button.flex_none())
-                .child(
-                    button(
-                        ("download-lfs-side", side),
-                        if short { short_label(full) } else { full },
-                        "pull",
-                        false,
-                    )
-                    .when_some(focus, |button, focus| button.track_focus(&focus))
-                    .when(sentence_moves, |button| {
-                        crate::branch_actions::Described(button)
-                            .aria_description(DOWNLOAD_EXPLANATION)
-                            .0
-                    })
-                    // Its whole name stays in its accessible name and
-                    // tooltip, beside the sentence where that moved here.
-                    .when(short, |button| button.accessibility_label(full))
-                    .map(|button| match (short, sentence_moves) {
-                        (true, true) => button.tooltip(format!("{full} · {DOWNLOAD_EXPLANATION}")),
-                        (true, false) => button.tooltip(full),
-                        (false, true) => button.tooltip(DOWNLOAD_EXPLANATION),
-                        (false, false) => button,
-                    })
-                    // `open_lfs_download` refuses while a write runs.
-                    .map(|button| {
-                        crate::workspace::refusing(
-                            button,
-                            || format!("download-lfs-side-{side}"),
-                            refused,
-                            dimmed,
-                        )
-                    })
-                    .on_click(move |_, window, cx| download(side, target.clone(), window, cx))
-                    .node_recorded(),
-                )
-                .into_any_element()
+                .min_w_0()
+                .flex()
+                .flex_nowrap()
+                .items_center()
+                .gap_2()
+                .children(line)
         }))
         .into_any_element()
 }
