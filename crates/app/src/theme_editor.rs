@@ -65,6 +65,11 @@ pub(super) struct State {
     /// A delete finished: New theme… takes focus once a frame has drawn the
     /// card without the row (`return_focus_after_delete`).
     focus_after_delete: Option<DeleteFocus>,
+    /// What the open editor was opened from: New theme… (`Some(None)`) or
+    /// the edited theme's Edit… (`Some(Some(id))`). The editor's close gives
+    /// focus back to that control and brings it into view
+    /// (`GitTurtle::reveal_theme_editor_opener`).
+    opened_from: Option<Option<u32>>,
     /// Custom-theme saves submitted from this window and not yet answered.
     /// Only their replies replace `GitTurtle::custom_themes`.
     pending_saves: usize,
@@ -765,6 +770,19 @@ impl GitTurtle {
         self.preview_theme_draft(palette, started, window, cx);
         let focus = form.read(cx).name.read(cx).focus_handle(cx);
         let focus_form = form.downgrade();
+        // The dialog's close gives focus back to the focus it opened with,
+        // which is the control that opened it: a press on New theme… or
+        // Edit… focuses neither, and the close gave focus back to the page's
+        // first control, Follow system appearance, scrolled out of view
+        // (QA-110, found outside the checks, 5).
+        let opener = match editing {
+            None => self.page_focus("custom-themes-new", cx),
+            Some(id) => self.theme_editor.action_focus(id, 0, cx),
+        };
+        if !opener.is_focused(window) {
+            window.focus(&opener, cx);
+        }
+        self.theme_editor.opened_from = Some(editing);
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let viewport = window.viewport_size();
             let wide = viewport.width >= appearance::ui_size(1060.);
@@ -1010,7 +1028,34 @@ impl GitTurtle {
     fn close_theme_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.theme_editor.form = None;
         self.theme_editor.preview = None;
+        self.reveal_theme_editor_opener(cx);
         self.apply_appearance(window, cx);
+    }
+
+    /// The editor is closing, and its close gives focus back to the control
+    /// that opened it (`open_theme_editor`): the Settings page reveals that
+    /// control with its ring's room in the first frame after the close,
+    /// whatever closed the editor, a pointer press on Save or Cancel
+    /// included, and an edited theme's row comes into the list's view, so
+    /// a window resized while the editor was open still shows the control
+    /// focus lands on.
+    fn reveal_theme_editor_opener(&mut self, cx: &mut Context<Self>) {
+        let Some(editing) = self.theme_editor.opened_from.take() else {
+            return;
+        };
+        self.theme_editor.page().reveal_next_focus();
+        if let Some(row) =
+            editing.and_then(|id| self.custom_themes.iter().position(|theme| theme.id == id))
+        {
+            // The row reveals itself, in the list and in the page, once per
+            // focus change; the one before the editor opened may have been
+            // this same action.
+            self.theme_editor.revealed_row.borrow_mut().take();
+            self.theme_editor
+                .rows_scroll()
+                .scroll_to_item(row, ScrollStrategy::Nearest);
+        }
+        self.notify_settings_page(cx);
     }
 
     /// Submit the editor's theme. Errors are returned to the form, which shows
@@ -1494,6 +1539,7 @@ impl GitTurtle {
                 {
                     self.theme_editor.form = None;
                     self.theme_editor.preview = None;
+                    self.reveal_theme_editor_opener(cx);
                     window.close_dialog(cx);
                 }
                 // The window keeps what the editor showed: the saved theme is selected.
@@ -4814,6 +4860,89 @@ pub(crate) mod tests {
             } else {
                 assert_eq!(ring, None, "{close}: a pointer close draws no ring");
             }
+        }
+    }
+
+    /// Closing the editor gives focus back to the control that opened it,
+    /// New theme… or the edited theme's Edit…, and the Settings page shows
+    /// that control whole with its ring's room in the first frame after the
+    /// close, whatever closed the editor: a pointer press on Save or
+    /// Cancel, or Escape, with a pointer press having opened it and the
+    /// window shrunk meanwhile. A press on either focused nothing, so the
+    /// close gave focus back to the page's first control, Follow system
+    /// appearance, scrolled out of view (QA-110, found outside the checks,
+    /// 5).
+    #[gpui::test]
+    fn closing_the_editor_gives_focus_back_to_its_opener_in_view(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(vec![harbor], cx)));
+        settle(cx);
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        for (opener, close) in [
+            ("custom-themes-new", "theme-editor-cancel"),
+            ("edit-custom-theme-7", "theme-editor-cancel"),
+            ("edit-custom-theme-7", "escape"),
+            ("custom-themes-new", "theme-editor-save"),
+        ] {
+            cx.simulate_resize(size(px(1440.), px(2400.)));
+            settle(cx);
+            cx.update(|window, cx| {
+                // Settings opens with focus on its first control.
+                app.update(cx, |app, cx| app.show_settings(window, cx));
+            });
+            settle(cx);
+            let expected = cx.update(|_, cx| {
+                app.update(cx, |app, cx| match opener {
+                    "custom-themes-new" => app.page_focus("custom-themes-new", cx),
+                    _ => app.theme_editor.action_focus(7, 0, cx),
+                })
+            });
+            assert_ne!(
+                focused_stop(cx),
+                expected,
+                "{opener}: focus starts elsewhere"
+            );
+            click(cx, opener);
+            assert!(
+                cx.read(|cx| app.read(cx).theme_editor.form.is_some()),
+                "{opener}: the press opens the editor"
+            );
+            if close == "theme-editor-save" {
+                let form = form(cx, &app);
+                cx.update(|window, cx| {
+                    form.read(cx)
+                        .name
+                        .clone()
+                        .update(cx, |input, cx| input.replace_all("Lagoon", window, cx))
+                });
+                settle(cx);
+            }
+            // The card lies below the fold of the shrunk window.
+            cx.simulate_resize(size(px(1000.), px(680.)));
+            settle(cx);
+            if close == "escape" {
+                press(cx, "escape");
+            } else {
+                click(cx, close);
+            }
+            wait_for(cx, &app, |cx| {
+                cx.read(|cx| {
+                    app.read(cx).theme_editor.form.is_none()
+                        && !app.read(cx).theme_editor.save_pending()
+                })
+            });
+            assert_eq!(
+                focused_stop(cx),
+                expected,
+                "{opener}, {close}: focus is back on the control that opened the editor"
+            );
+            let page = bounds(cx, "settings-scroll".into());
+            let at = bounds(cx, opener.into());
+            assert!(
+                at.top() - ring >= page.top() && at.bottom() + ring <= page.bottom(),
+                "{opener}, {close}: {at:?} lies whole with its ring's room in the page {page:?}"
+            );
         }
     }
 
