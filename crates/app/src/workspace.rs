@@ -2983,6 +2983,7 @@ impl GitTurtle {
             profile,
             remotes,
             operation,
+            read_from,
         } = state;
         let path = self.path.clone();
         // A paused integration read again as ended: a recovery refusal that
@@ -3099,12 +3100,13 @@ impl GitTurtle {
             }
         };
         self.work_status = Some(Arc::new(status));
-        // Read through the window's handle, explicit and quiet reads alike,
-        // whose landing is dropped once another generation of either was
-        // asked for: the repository the status and remotes are of, which
-        // every capture accepted later is compared with
-        // (`shows_another_repository`).
-        self.working_identity = self.repository.as_ref().map(worker::GitDirectories::of);
+        // The repository the status and remotes are of, which every capture
+        // accepted later is compared with (`shows_another_repository`): the
+        // one whose handle read them, as the window held it when it asked,
+        // explicit and quiet reads alike. Taken from the handle held as the
+        // read lands, a status read of one repository that landed after the
+        // handle had moved to another was labelled with that other.
+        self.working_identity = Some(read_from);
         self.working_read_failure = None;
         // A quiet refresh that changed nothing leaves the line to whatever it
         // last reported, an operation's outcome included.

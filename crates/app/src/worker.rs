@@ -486,6 +486,12 @@ pub struct WorkingState {
     pub profile: Result<gitturtle_core::GitProfile>,
     pub remotes: Result<Vec<gitturtle_core::Remote>>,
     pub operation: Result<Option<gitturtle_core::OperationState>>,
+    /// The Git directories of the handle that read this state, the one the
+    /// window held as it asked for the read (`refresh_worktree`,
+    /// `try_automatic_refresh`): the shown status is labelled with them
+    /// (`GitTurtle::working_identity`), never with whichever handle the
+    /// window holds as the read lands.
+    pub read_from: GitDirectories,
 }
 
 impl WorkingState {
@@ -535,6 +541,7 @@ impl WorkingState {
             profile,
             remotes,
             operation,
+            read_from: GitDirectories::of(repo),
         })
     }
 }

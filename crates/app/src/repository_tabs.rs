@@ -7946,6 +7946,39 @@ pub(crate) mod tests {
         });
     }
 
+    /// A working status is labelled with the repository whose handle read
+    /// it, the one the window held as it asked for the read, never with the
+    /// handle it holds as the read lands: a read of one repository that
+    /// lands after the handle moved to another names the one it read, which
+    /// every later capture is compared with. Labelled at its landing, it
+    /// named the other.
+    #[gpui::test]
+    async fn a_status_read_names_the_repository_that_read_it(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+        let read = app.read_with(cx, |app, _| {
+            worker::GitDirectories::of(app.repository.as_ref().expect("opened"))
+        });
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        // The handle moves while the read waits.
+        app.update(cx, |app, _| app.repository = Some(other.clone()));
+        drop(held);
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            if app.read_with(cx, |app, _| app.status_task.is_none()) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.operations.drain());
+        }
+        app.read_with(cx, |app, _| {
+            assert!(app.status_task.is_none(), "the status read landed");
+            assert_eq!(app.working_identity.as_ref(), Some(&read));
+            assert_ne!(read, worker::GitDirectories::of(&other));
+        });
+    }
+
     /// Show latest that finds a re-clone at the tab's path installs it in
     /// place as a fresh capture, as an accepted Refresh does: what was read
     /// of the replaced repository goes and the found one's status is read,
