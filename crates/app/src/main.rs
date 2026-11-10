@@ -1566,6 +1566,14 @@ impl GitTurtle {
                 self.selected_file = Some(0);
                 self.receive(Output::Preview(content, elapsed), window, cx);
             }
+            Output::TrackedPreview {
+                mode,
+                content,
+                elapsed,
+            } => {
+                self.land_quick_source(mode);
+                self.receive(Output::Preview(content, elapsed), window, cx);
+            }
             Output::Snapshot(snapshot) => {
                 if self.tab_snapshot_accepted(&snapshot.repository, window, cx) {
                     return;
@@ -1752,6 +1760,32 @@ impl GitTurtle {
 
     fn ensure_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.prepare_editor(true, window, cx);
+    }
+
+    /// Shows the comparison in `mode`, chosen by the person from its mode
+    /// buttons, building its editor unless built; focus in Quick source's
+    /// text pane moves to what the mode shows, and anywhere else stays
+    /// ([`Self::keep_quick_source_pane_focus`]).
+    fn choose_text_mode(&mut self, mode: TextMode, window: &mut Window, cx: &mut Context<Self>) {
+        let held = self.quick_source_text_pane_is_focused(window, cx);
+        self.choose_text_mode_held(mode, held, window, cx);
+    }
+
+    /// [`Self::choose_text_mode`] where `held` says whether focus was in
+    /// Quick source's text pane as the person reached for the mode: the
+    /// collapsed modes' menu holds focus while its choice acts, so it passes
+    /// where focus was as it opened ([`Self::take_mode_menu_held`]).
+    fn choose_text_mode_held(
+        &mut self,
+        mode: TextMode,
+        held: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.text_mode = mode;
+        self.ensure_editor(window, cx);
+        self.keep_quick_source_pane_focus(held, window, cx);
+        cx.notify();
     }
 
     /// Builds the shown preview's editor, unless built. A conflict's result

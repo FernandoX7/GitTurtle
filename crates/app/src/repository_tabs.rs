@@ -1410,16 +1410,33 @@ impl GitTurtle {
         if let Some(saved) = warm.document_restore {
             self.resume_tab_documents(saved, window, cx);
         }
+        // A preview that landed while Settings or Projects showed, before
+        // the tab was left, draws its editor now, as Back builds it
+        // (`resume_repository_page`): restored unbuilt, it read "Loading
+        // text…" until its next read.
+        if self.mode != WorkspaceMode::History {
+            self.prepare_editor(false, window, cx);
+        }
         // The tab's focus goes back to the control it was left with as the
         // frame that draws the tab is built (`return_tab_focus`), so that
         // frame draws it focused. Until then application shortcuts stay
         // attached through the window's root: the control may not be in the
         // tree the last tab drew, where a key would reach no shortcut.
+        // Quick source's read that landed so owes nothing, and its text
+        // takes the focus its pane held as the window left, as Back gives
+        // it (`quick_source_return_focus`); where nothing is focused, the
+        // tab's fallback is that pane's (`files_focus`). Settled with the
+        // text's handle thrown away, the tab gave focus to the information
+        // where Back gave it to the text.
+        let focus = match window.focused(cx) {
+            Some(focus) => Some(self.quick_source_return_focus(focus, cx)),
+            None => self.settle_quick_source_landing(cx),
+        };
         self.repository_tabs.focus_return = Some(FocusReturn {
             page: AppPage::Repository,
             path: self.path.clone(),
             held: self.app_focus.clone(),
-            focus: window.focused(cx),
+            focus,
         });
         self.app_focus.focus(window, cx);
         self.repository_tabs.switching = false;
@@ -14693,6 +14710,59 @@ pub(crate) mod tests {
             assert_eq!(app.repository_tabs.active, Some(0), "the first tab shows");
             assert!(app.page == AppPage::Repository, "on the repository page");
             assert!(app.page_return_focus.is_none(), "forgotten");
+        });
+    }
+
+    /// A comparison whose preview landed while Settings showed, its tab then
+    /// left from Settings and shown again, draws its text in the frame that
+    /// draws the tab, as Back builds it (`resume_repository_page`): built only
+    /// by Back, the tab came back reading "Loading text…" until the file's
+    /// next read.
+    #[gpui::test]
+    async fn a_preview_landed_under_settings_draws_as_its_tab_returns(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, fixture_repository, history_window, settle};
+        let (fixture, app, cx) = history_window(cx).await;
+        let other = fixture_repository(fixture.path().join("other"));
+        let held = app.read_with(cx, |app, _| app.worker.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        draw(cx);
+        drop(held);
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        settle(&app, cx).await;
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.page == AppPage::Settings
+                    && app.content.is_some()
+                    && app.text_mode == crate::TextMode::Unified,
+                "the preview lands while Settings shows"
+            );
+            assert!(
+                app.patch_editor.is_none(),
+                "with no editor on a hidden page"
+            );
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(other.path().to_owned(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        // The frame that draws the tab.
+        crate::width_walk::frame(cx);
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.page == AppPage::Repository && app.mode == WorkspaceMode::Compare,
+                "the tab returns to its comparison"
+            );
+            assert!(
+                app.patch_editor.is_some(),
+                "its text is built in the frame that draws the tab"
+            );
         });
     }
 

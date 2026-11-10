@@ -3,6 +3,11 @@ use crate::*;
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::prelude::FluentBuilder;
 
+/// The image comparison's root element ID, which Quick source's reading
+/// placeholder takes while a re-read holds the focus the image held
+/// (`GitTurtle::quick_source_pane`), so one node holds it throughout.
+pub(crate) const IMAGE_ROOT: &str = "image-comparison-root";
+
 /// The comparison modes, in their group's order.
 const MODES: [(Mode, &str); 3] = [
     (Mode::SideBySide, "Side by side"),
@@ -1478,73 +1483,93 @@ impl GitTurtle {
                 .into_any_element()
         })
         .named("image-comparison");
-        div()
+        // Quick source's image holds the focus its reading frame rang, as any
+        // file with no text does (`GitTurtle::quick_source_holds_pane`): the
+        // comparison's own root, named by its format and size, with its
+        // sides' names inside it. A wrapper over its areas moved the nodes
+        // they write under another; held by the information beside it, the
+        // ring jumped there as the image landed.
+        let holds = source && self.quick_source_image_holds();
+        let root = div()
+            .id(IMAGE_ROOT)
             .size_full()
             .flex()
             .flex_col()
-            // Only copies of literal source have a row of their own; each
-            // open control sits in its side's caption or the toolbar's row.
-            .when(!copies.is_empty(), |element| {
-                element.child(
+            .when(holds, |root| {
+                root.debug_selector(|| "quick-source-image".into())
+                    .role(Role::Group)
+                    .aria_label(self.quick_source_reason().0)
+                    .track_focus(&self.source_focus.clone().tab_stop(true))
+                    .children(native_accessibility::node_path_probe(|| {
+                        crate::revision_inspection::QUICK_SOURCE_FOCUS_PATH.into()
+                    }))
+            });
+        native_accessibility::recorded(
+            root
+                // Only copies of literal source have a row of their own; each
+                // open control sits in its side's caption or the toolbar's row.
+                .when(!copies.is_empty(), |element| {
+                    element.child(
+                        div()
+                            .debug_selector(|| "image-captured-actions".into())
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .px_3()
+                            .py_1()
+                            .children(copies),
+                    )
+                })
+                .children(self.gif_controls(cx))
+                .child(crate::in_frame::probed(
                     div()
-                        .debug_selector(|| "image-captured-actions".into())
                         .flex()
                         .flex_wrap()
+                        .items_center()
                         .gap_2()
                         .px_3()
-                        .py_1()
-                        .children(copies),
-                )
-            })
-            .children(self.gif_controls(cx))
-            .child(crate::in_frame::probed(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .bg(rgb(p.panel))
-                    .border_b_1()
-                    .border_color(rgb(p.border))
-                    .debug_selector(|| "image-toolbar".into())
-                    // Where the zooms lead the next row, the modes take
-                    // theirs whole, so the zooms never share it; where the
-                    // zoom menu shares the modes' row, the two are one run
-                    // that never breaks, so the rows are the ones decided
-                    // here, whatever fraction of a pixel the layout rounds
-                    // the column's width by.
-                    .map(|element| {
-                        if source {
-                            element.child(zoom_group)
-                        } else if zooms_lead {
-                            element
-                                .child(div().w_full().flex().child(modes))
-                                .child(zoom_group)
-                        } else if !forms.zooms_labelled {
-                            element.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(modes)
-                                    .child(zoom_group),
-                            )
-                        } else {
-                            element.child(modes).child(zoom_group)
-                        }
-                    })
-                    .children(open_group)
-                    // Only overlaid or wiped does the adjustment have controls;
-                    // side by side it takes no place in the row.
-                    .when(!source && state.mode != Mode::SideBySide, |element| {
-                        element.child(adjust)
-                    }),
-                "image-toolbar",
-            ))
-            .child(beneath)
-            .into_any_element()
+                        .py_2()
+                        .bg(rgb(p.panel))
+                        .border_b_1()
+                        .border_color(rgb(p.border))
+                        .debug_selector(|| "image-toolbar".into())
+                        // Where the zooms lead the next row, the modes take
+                        // theirs whole, so the zooms never share it; where the
+                        // zoom menu shares the modes' row, the two are one run
+                        // that never breaks, so the rows are the ones decided
+                        // here, whatever fraction of a pixel the layout rounds
+                        // the column's width by.
+                        .map(|element| {
+                            if source {
+                                element.child(zoom_group)
+                            } else if zooms_lead {
+                                element
+                                    .child(div().w_full().flex().child(modes))
+                                    .child(zoom_group)
+                            } else if !forms.zooms_labelled {
+                                element.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(modes)
+                                        .child(zoom_group),
+                                )
+                            } else {
+                                element.child(modes).child(zoom_group)
+                            }
+                        })
+                        .children(open_group)
+                        // Only overlaid or wiped does the adjustment have controls;
+                        // side by side it takes no place in the row.
+                        .when(!source && state.mode != Mode::SideBySide, |element| {
+                            element.child(adjust)
+                        }),
+                    "image-toolbar",
+                ))
+                .child(beneath),
+        )
+        .into_any_element()
     }
     fn image_canvas(&self, side: Option<usize>, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
@@ -1711,6 +1736,28 @@ impl GitTurtle {
             );
         }
         view.into_any_element()
+    }
+}
+
+/// Quick source's image named by its format and its source's size, "PNG
+/// image · 640 × 480", or, decoded into nothing, by the first line of why.
+pub(crate) fn source_image_name(side: &worker::ImageSide) -> SharedString {
+    match &side.image {
+        Some(image) => format!(
+            "{} image · {} × {}",
+            image.format.split(" · ").next().unwrap_or_default(),
+            image.original_width,
+            image.original_height
+        )
+        .into(),
+        None => side
+            .message
+            .as_deref()
+            .and_then(crate::recovery::first_line)
+            .map_or(
+                SharedString::new_static("Image · no preview"),
+                native_accessibility::bounded_accessible_text,
+            ),
     }
 }
 

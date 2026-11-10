@@ -2021,10 +2021,11 @@ async fn quick_source_rings_its_text_and_keeps_the_windows_keys(cx: &mut TestApp
     );
 }
 
-/// A tracked file with no text to show leaves focus on Quick source's
-/// information, which then draws the ring, so focus is never left unseen.
+/// A tracked file with no text to show keeps focus in Quick source's text
+/// pane, on the notice it draws there, ringed on the pane's edge, so focus
+/// is never left unseen and never moves without a key.
 #[gpui::test]
-async fn quick_source_of_a_binary_rings_its_information(cx: &mut TestAppContext) {
+async fn quick_source_of_a_binary_rings_its_pane(cx: &mut TestAppContext) {
     let (_fixture, app, cx) = quick_source_window(cx).await;
     let path = app.read_with(cx, |app, _| app.path.clone().unwrap());
     std::fs::write(path.join("data.bin"), [0_u8, 1, 2, 0, 255, 0]).unwrap();
@@ -2034,15 +2035,17 @@ async fn quick_source_of_a_binary_rings_its_information(cx: &mut TestAppContext)
     show_quick_source(&app, cx, "data.bin");
     settle(&app, cx).await;
     views::tests::draw(cx);
-    let information = app.read_with(cx, |app, _| app.source_focus.clone());
+    let pane = app.read_with(cx, |app, _| app.source_focus.clone());
     assert!(
-        cx.update(|window, _| information.is_focused(window)),
-        "focus rests on the information"
+        cx.update(|window, _| pane.is_focused(window)),
+        "focus rests on the pane"
     );
-    assert!(
-        cx.debug_bounds("quick-source-information-ring").is_some(),
-        "the information draws the ring"
+    assert_eq!(
+        cx.debug_bounds("compare-text-ring"),
+        cx.debug_bounds("preview-content"),
+        "the pane draws the ring on its edge"
     );
+    assert!(cx.debug_bounds("quick-source-information-ring").is_none());
 }
 
 /// Refresh in Quick source, and a write's landing with no key pressed, read
@@ -2136,43 +2139,92 @@ async fn quick_source_re_read_leaves_focus_the_person_placed(cx: &mut TestAppCon
     assert!(!cx.update(|window, _| text.is_focused(window)));
 }
 
-/// A re-read that fails settles what it owed the text: focus left on the
-/// information stays there when a later read of the file succeeds.
-#[gpui::test]
-async fn quick_source_failed_re_read_owes_the_text_nothing(cx: &mut TestAppContext) {
-    let (_fixture, app, cx) = quick_source_window(cx).await;
-    show_quick_source(&app, cx, "notes");
-    settle(&app, cx).await;
+/// Quick source with its file gone: the text shown, the file deleted, and
+/// Refresh's read of it failed, its pane holding focus, named by the
+/// failure. Returns the source's path and its saved bytes.
+async fn quick_source_failed(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+) -> (std::path::PathBuf, Vec<u8>) {
+    show_quick_source(app, cx, "notes");
+    settle(app, cx).await;
     views::tests::draw(cx);
-    assert!(quick_source_text(&app, cx).1, "opened on its text");
-    let source = app.read_with(cx, |app, _| app.source_focus.clone());
+    assert!(quick_source_text(app, cx).1, "opened on its text");
     let file = app.read_with(cx, |app, _| app.path.clone().unwrap().join("notes.txt"));
     let saved = std::fs::read(&file).unwrap();
-
-    // The file goes, and Refresh's read of it fails.
     std::fs::remove_file(&file).unwrap();
     cx.update(|window, cx| window.dispatch_action(Box::new(Refresh), cx));
-    settle(&app, cx).await;
+    settle(app, cx).await;
     views::tests::draw(cx);
     assert!(
         app.read_with(cx, |app, _| app.error.is_some() && app.content.is_none()),
         "the read failed"
     );
+    let source = app.read_with(cx, |app, _| app.source_focus.clone());
+    assert!(
+        cx.update(|window, _| source.is_focused(window)),
+        "the pane, named by the failure, holds focus"
+    );
+    (file, saved)
+}
 
-    // Back again, with focus placed on the information, a read succeeds.
+/// A re-read that fails settles what it owed the text: focus Tab has moved
+/// past the failure's pane stays where Tab put it when a later read of the
+/// file succeeds. Only a pane still holding focus is owed its text.
+#[gpui::test]
+async fn quick_source_failed_re_read_owes_the_text_nothing(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = quick_source_window(cx).await;
+    let (file, saved) = quick_source_failed(&app, cx).await;
+    let source = app.read_with(cx, |app, _| app.source_focus.clone());
+    cx.simulate_keystrokes("tab");
+    let moved = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("Tab finds a stop");
+    assert_ne!(moved, source, "Tab leaves the pane");
+
+    // Back again, a read succeeds.
     std::fs::write(&file, saved).unwrap();
-    cx.update(|window, cx| window.focus(&source, cx));
-    views::tests::draw(cx);
     cx.update(|window, cx| app.update(cx, |app, cx| app.read_selected_preview(window, cx)));
     settle(&app, cx).await;
     views::tests::draw(cx);
+    let (text, _) = quick_source_text(&app, cx);
     assert!(
-        app.read_with(cx, |app, _| app.content.is_some()),
-        "the read succeeded"
+        cx.update(|window, _| moved.is_focused(window)),
+        "focus stays where Tab put it"
+    );
+    assert!(!cx.update(|window, _| text.is_focused(window)));
+}
+
+/// A re-read that fails leaves its pane holding focus, and a later read
+/// that succeeds while focus still rests there gives it to the text, ringed
+/// on the same edge: the pane stays owed its text over a failure, as
+/// focus never moved. Settled by the failure, the text that landed left
+/// focus to the information beside it, which took it and its ring with no
+/// key pressed, a second focus spoken.
+#[gpui::test]
+async fn quick_source_failed_re_read_keeps_the_pane_owed_its_text(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = quick_source_window(cx).await;
+    let (file, saved) = quick_source_failed(&app, cx).await;
+    let ring = cx
+        .debug_bounds("compare-text-ring")
+        .expect("the failure's pane is ringed");
+
+    std::fs::write(&file, saved).unwrap();
+    cx.update(|window, cx| window.dispatch_action(Box::new(Refresh), cx));
+    settle(&app, cx).await;
+    views::tests::draw(cx);
+    assert!(
+        quick_source_text(&app, cx).1,
+        "the text takes focus as it lands, ringed"
+    );
+    assert_eq!(
+        cx.debug_bounds("compare-text-ring"),
+        Some(ring),
+        "on the same edge"
     );
     assert!(
-        cx.update(|window, _| source.is_focused(window)),
-        "focus stays where it was placed"
+        cx.debug_bounds("quick-source-information-ring").is_none(),
+        "and none on the information"
     );
 }
 

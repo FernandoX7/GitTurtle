@@ -660,6 +660,10 @@ impl GitTurtle {
             Some(focus) => focus,
             None => self.take_mode_list(),
         };
+        // Quick source's read that landed meanwhile is settled as its
+        // landing here would be, whatever it shows: its text takes the focus
+        // its pane held as the window left, and it is owed nothing else.
+        let focus = self.quick_source_return_focus(focus, cx);
         // The page draws the focus it returns to with its ring, as Settings
         // marks the control it opens on, whether a key or a click went
         // back: "Back to repository" pressed with the pointer ended the

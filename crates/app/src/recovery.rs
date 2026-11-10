@@ -61,7 +61,7 @@ const RESTORE_UNEXPLAINED: &str = "Git could not prepare this restoration.";
 
 /// The first line of a Review restore… answer that says anything; `None`
 /// where no line does.
-fn first_line(answer: &str) -> Option<&str> {
+pub(crate) fn first_line(answer: &str) -> Option<&str> {
     answer.lines().map(str::trim).find(|line| !line.is_empty())
 }
 

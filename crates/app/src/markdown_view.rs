@@ -929,8 +929,9 @@ impl View {
         self.ring = Some(ring);
         self
     }
-    /// The rendered text's focus handle.
-    #[cfg(test)]
+    /// The rendered text's focus handle, its own stop, which a change of
+    /// Quick source's mode moves focus from to what the new mode shows
+    /// (`GitTurtle::quick_source_text_pane_is_focused`).
     pub(crate) fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
     }

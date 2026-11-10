@@ -454,6 +454,14 @@ pub enum Output {
     FileHistory(gitturtle_core::FileHistoryPage),
     QuietRefresh(Box<QuietRefresh>),
     WorkingPreview(FileChange, Arc<Content>, Duration),
+    /// A Quick Open source's read (`Job::TrackedPreview`): its content and
+    /// the file's mode as read, the working file's own where the source is
+    /// the working tree, where a `chmod +x` shows before anything is staged.
+    TrackedPreview {
+        mode: String,
+        content: Arc<Content>,
+        elapsed: Duration,
+    },
     Snapshot(Snapshot),
     Changes(Vec<FileChange>, Duration),
     Preview(Arc<Content>, Duration),
@@ -1932,7 +1940,8 @@ fn execute(
         Job::TrackedPreview { repo, entry, scope } => {
             let mut file = repo.tracked_path_change(&entry);
             if matches!(scope, gitturtle_core::PathScope::Revision(_)) {
-                return execute(
+                let mode = file.new_mode.clone();
+                let preview = execute(
                     Job::Preview {
                         repo,
                         file,
@@ -1947,7 +1956,15 @@ fn execute(
                     cache,
                     cancellation,
                     session,
-                );
+                )?;
+                let Output::Preview(content, elapsed) = preview else {
+                    anyhow::bail!("A revision's tracked file was read as something else");
+                };
+                return Ok(Output::TrackedPreview {
+                    mode,
+                    content,
+                    elapsed,
+                });
             }
             let (mode, bytes) = repo.read_tracked_working_file(&entry)?;
             cancellation.check()?;
@@ -1988,7 +2005,11 @@ fn execute(
                 cancellation,
             )?;
             cancellation.check()?;
-            Ok(Output::Preview(Arc::new(content), start.elapsed()))
+            Ok(Output::TrackedPreview {
+                mode: file.new_mode,
+                content: Arc::new(content),
+                elapsed: start.elapsed(),
+            })
         }
         Job::SearchHistory {
             repo,
@@ -5419,7 +5440,7 @@ mod image_tests {
                 &gitturtle_core::HistoryCancellation::default(),
             )
             .unwrap();
-        let Output::Preview(quick, _) = execute(
+        let Output::TrackedPreview { content: quick, .. } = execute(
             Job::TrackedPreview {
                 repo,
                 entry: paths.entries[0].clone(),
@@ -5570,7 +5591,7 @@ mod image_tests {
                 &gitturtle_core::HistoryCancellation::default(),
             )
             .unwrap();
-        let Output::Preview(content, _) = execute(
+        let Output::TrackedPreview { content, .. } = execute(
             Job::TrackedPreview {
                 repo,
                 entry: paths.entries[0].clone(),
@@ -6749,7 +6770,7 @@ mod image_tests {
             .unwrap();
         let entry = paths.entries[0].clone();
         let file = repo.tracked_path_change(&entry);
-        let Output::Preview(content, _) = execute(
+        let Output::TrackedPreview { content, .. } = execute(
             Job::TrackedPreview {
                 repo,
                 entry,

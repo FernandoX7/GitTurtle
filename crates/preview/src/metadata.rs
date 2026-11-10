@@ -237,11 +237,16 @@ pub fn container(bytes: &[u8]) -> Option<Container> {
     })
 }
 
+/// The format [`inspect`] gives bytes of no encoding it knows, which an
+/// application may name in words of its own (GitTurtle's Quick source says
+/// "Binary file · no preview").
+pub const UNKNOWN_ENCODING: &str = "Binary / unknown encoding";
+
 /// Useful bounded metadata with explicit container/codec uncertainty. Filename
 /// hints never count as content detection. Exact original bytes stay in the app.
 pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
     let mut result = Metadata {
-        format: "Binary / unknown encoding".into(),
+        format: UNKNOWN_ENCODING.into(),
         details: vec![counted(bytes.len(), "captured byte", "captured bytes")],
         source: None,
     };

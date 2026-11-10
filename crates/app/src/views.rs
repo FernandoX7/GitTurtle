@@ -3661,35 +3661,32 @@ impl GitTurtle {
         // line. Narrower than its line, the footer drops the object IDs first
         // and then truncates with an ellipsis; its tooltip keeps the whole
         // line. An image comparison draws it at its own foot, where it gives
-        // way before the image's minimum ([`CompareFooter`]).
-        let mut footer = file.map(|file| {
-            let (line, short) = if quick_source {
-                let line = format!("Tracked source · mode {}", file.new_mode);
-                (line.clone(), line)
-            } else {
-                let modes = format!(
-                    "{}   ·   {} → {}",
-                    file.status.label(),
-                    if file.old_mode == "000000" {
-                        "absent"
-                    } else {
-                        &file.old_mode
-                    },
-                    if file.new_mode == "000000" {
-                        "absent"
-                    } else {
-                        &file.new_mode
-                    },
-                );
-                (
-                    format!(
-                        "{modes}   ·   {} → {}",
-                        file.old_oid.as_deref().map(short_oid).unwrap_or("—".into()),
-                        file.new_oid.as_deref().map(short_oid).unwrap_or("—".into())
-                    ),
-                    modes,
-                )
-            };
+        // way before the image's minimum ([`CompareFooter`]). Quick source
+        // draws none: its one file's mode leads the information's
+        // identities ("Mode 100644"), so nothing beneath the pane changes
+        // as a file lands there, and an image's minimum gives way only to
+        // its own labels (drawn beneath the pane, its line outlasted the
+        // image).
+        let mut footer = file.filter(|_| !quick_source).map(|file| {
+            let short = format!(
+                "{}   ·   {} → {}",
+                file.status.label(),
+                if file.old_mode == "000000" {
+                    "absent"
+                } else {
+                    &file.old_mode
+                },
+                if file.new_mode == "000000" {
+                    "absent"
+                } else {
+                    &file.new_mode
+                },
+            );
+            let line = format!(
+                "{short}   ·   {} → {}",
+                file.old_oid.as_deref().map(short_oid).unwrap_or("—".into()),
+                file.new_oid.as_deref().map(short_oid).unwrap_or("—".into())
+            );
             let fits = cached_text_width(&FOOTER_LINE, &line, window, || {
                 line_widths(&[(&line, appearance::ui_text(10.))], window)
             }) <= column - window.rem_size() * 1.5;
@@ -3733,9 +3730,13 @@ impl GitTurtle {
         });
         // The editor the text pane shows, which draws no edge of its own, so
         // the pane rings its edge for it ([`Self::shown_text`]).
+        // So does Quick source's pane while it holds focus with no text
+        // (`GitTurtle::quick_source_holds_pane`), on the same edge.
         let text_focus = match self.shown_text() {
             Some(ShownText::Editor(editor)) => Some(editor.read(cx).focus_handle(cx)),
-            _ => None,
+            _ => self
+                .quick_source_holds_pane()
+                .then(|| self.source_focus.clone()),
         };
         // Split's text, which shares its room with the footer
         // ([`split_room`]).
@@ -3830,9 +3831,7 @@ impl GitTurtle {
                                 .debug_selector(move || name.into())
                                 .toggled(self.text_mode == mode)
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.text_mode = mode;
-                                    this.ensure_editor(window, cx);
-                                    cx.notify();
+                                    this.choose_text_mode(mode, window, cx);
                                 })),
                         );
                     }
@@ -3868,9 +3867,26 @@ impl GitTurtle {
                         })
                         .dropdown_caret(true)
                         .tooltip(format!("Comparison mode · {}", names.join(", ")))
-                        .app_menu(move |menu, _, _| {
+                        // Where focus is as a press opens the menu, before
+                        // the menu takes it, which a choice acts on.
+                        .capture_any_mouse_down({
+                            let owner = owner.clone();
+                            move |event, window, cx| {
+                                if event.button == MouseButton::Left
+                                    && let Some(app) = owner.upgrade()
+                                {
+                                    app.read(cx).note_mode_menu_press(window, cx);
+                                }
+                            }
+                        })
+                        .app_menu(move |menu, _, cx| {
                             // Built when opened; a choice acts on the page
-                            // as it is then, as a mode button does.
+                            // as it is then, as a mode button does, and on
+                            // focus where it was as the menu opened, since
+                            // the menu holds it while the choice acts.
+                            let held = owner
+                                .upgrade()
+                                .is_some_and(|app| app.read(cx).take_mode_menu_held());
                             available.iter().fold(menu, |menu, &(mode, name)| {
                                 let owner = owner.clone();
                                 menu.item(
@@ -3878,9 +3894,9 @@ impl GitTurtle {
                                         move |_, window, cx| {
                                             let _ = owner.update(cx, |this, cx| {
                                                 if this.page == AppPage::Repository {
-                                                    this.text_mode = mode;
-                                                    this.ensure_editor(window, cx);
-                                                    cx.notify();
+                                                    this.choose_text_mode_held(
+                                                        mode, held, window, cx,
+                                                    );
                                                 }
                                             });
                                         },
@@ -3967,6 +3983,7 @@ impl GitTurtle {
         } else {
             empty(self.loading.unwrap_or("No preview"), "")
         };
+        let content = self.quick_source_pane(content);
         // Beneath a failing Git LFS side's line the comparison keeps its
         // rows and the line gives way first. Beside a Download row, which
         // keeps its height and must stay pressable, it keeps one row.
@@ -4031,7 +4048,10 @@ impl GitTurtle {
                 // over its lines, so none of them moves.
                 let edge = text_focus
                     .and_then(|focus| self.focus_ring.edge(&focus, rgb(colors.accent)))
-                    .map(IntoElement::into_any_element);
+                    .map(|edge| {
+                        edge.debug_selector(|| "compare-text-ring".into())
+                            .into_any_element()
+                    });
                 let reason = self
                     .content
                     .as_ref()
@@ -38863,14 +38883,22 @@ pub(crate) mod tests {
     }
 
     /// The lines `text` takes when the window lays it out `room` wide at
-    /// `size` in the interface font, the bundled IBM Plex Sans a Linux
-    /// session draws `.SystemUIFont` in.
+    /// `size` and `weight` in the interface font, the bundled IBM Plex Sans
+    /// a Linux session draws `.SystemUIFont` in.
     #[cfg(target_os = "linux")]
-    fn interface_lines(text: &str, size: Pixels, room: Pixels) -> Vec<String> {
+    pub(crate) fn interface_lines(
+        text: &str,
+        size: Pixels,
+        weight: FontWeight,
+        room: Pixels,
+    ) -> Vec<String> {
         let system = gpui_kit::WindowTextSystem::new(crate::desktop_text::interface_text());
         let run = gpui_kit::TextRun {
             len: text.len(),
-            font: gpui_kit::font(".SystemUIFont"),
+            font: gpui_kit::Font {
+                weight,
+                ..gpui_kit::font(".SystemUIFont")
+            },
             color: gpui_kit::Hsla::default(),
             background_color: None,
             underline: None,
@@ -38923,7 +38951,12 @@ pub(crate) mod tests {
             let padding = cx.update(|window, _| window.rem_size() * 1.5);
             let room = (state.size.width - padding * 2.).min(px(600.));
             (
-                interface_lines(CHOOSE_A_FILE, appearance::ui_text(12.), room),
+                interface_lines(
+                    CHOOSE_A_FILE,
+                    appearance::ui_text(12.),
+                    FontWeight::NORMAL,
+                    room,
+                ),
                 room,
             )
         };

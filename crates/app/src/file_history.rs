@@ -576,8 +576,17 @@ impl GitTurtle {
     /// history focused it once the menu was gone, where AT-SPI read only the
     /// window's frame focused and no key, Escape and the command palette's
     /// shortcut among them, reached anything until a click. A popup outside
-    /// the window's tree gives back the shown pane's list.
+    /// the window's tree gives back the shown pane's list. While Settings or
+    /// Projects shows, as a tab is left from there (`retain_active_tab`), it
+    /// is the control Back would return focus to, so the tab shown again
+    /// gives focus where Back gives it: the other page's control, which the
+    /// tab does not draw, gave way to the shown mode's list.
     pub(super) fn inspection_opener(&self, window: &Window, cx: &App) -> Option<FocusHandle> {
+        if self.page != AppPage::Repository
+            && let Some(back) = &self.page_return_focus
+        {
+            return Some(back.clone());
+        }
         if let Some(list) = [&self.file_menu, &self.commit_menu, &self.nav_menu]
             .into_iter()
             .flatten()
