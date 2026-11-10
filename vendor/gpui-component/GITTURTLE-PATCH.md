@@ -2671,7 +2671,9 @@ single-line Input passes its Enter on, so the popover's own Enter binding
 dispatches `Confirm`, which closes it through `PopoverState::toggle_open`
 outside a draw, as Escape's Cancel does, and gives focus back there; the
 commit the Input's `PressEnter` then makes finds the picker closed and
-focus on the trigger, and the watch only clears the preview. `cargo test
+focus on the trigger, and the watch only clears the preview and has the
+window draw before its next input (`root::draw_after_popup_close`), as for
+every close. `cargo test
 --locked -p gitturtle
 theme_editor::tests::choosing_a_swatch_by_key_rings_the_trigger_in_the_next_frame`
 checks the theme editor's trigger ring in the one frame the key-up draws,
@@ -2719,8 +2721,23 @@ stops one dispatched with focus inside the popover for a key-down that
 repeats the recorded press (gpui-base's `enter_press_is_repeat`), so a held
 Enter that opened the picker does nothing more until its key-up, and a fresh
 press inside it closes it as before. Space, which records no Enter press,
-is unchanged. `cargo test --locked -p gitturtle
+is unchanged, and needs no such filter: a held Space closes the popover
+once onto the trigger, which binds no Space (FU41-B3's security re-check).
+`cargo test --locked -p gitturtle
 theme_editor::tests::a_held_enter_that_opened_the_picker_does_nothing_more`
 holds Enter on the trigger through GPUI's held repeats, X11's fresh presses
-and a release with its press. Remove it when upstream's picker opens only on
-a fresh press and its popover acts only on one.
+and a release with its press. Residuals, none of which writes anything
+(FU41-B3's re-checks): it inherits gpui-base's press record's, so under X11
+a repeat whose release ends a poll batch, with its press in the next, is a
+fresh press and closes the picker once, and on macOS a Command pressed
+during the hold ends the record of where the press began (gpui-base's
+patch note, unverified without a Mac); with focus in the hex field a
+repeat still closes the picker, since the field's own Enter emits
+`PressEnter`, whose commit (gpui-base's `ColorPickerState::commit_hex`)
+chooses the field's value through `select_color`, which closes it, whatever
+becomes of the
+`Confirm` it passes on; and a pointer press that closes the picker
+mid-hold leaves the press recorded on the trigger, so the next X11 repeat,
+not marked held and begun there, opens it once more (`fresh_enter`), after
+which the popover's filter holds. Remove it when upstream's picker opens
+only on a fresh press and its popover acts only on one.
