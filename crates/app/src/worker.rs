@@ -2764,11 +2764,14 @@ fn captured_model_side(
     Ok(side)
 }
 
+/// A history comparison that is not text, read from both blobs: a side over
+/// the 32 MiB captured preview limit, or that cannot be read, says so beside
+/// the other. Whether the result is cached is `Job::Preview`'s one decision.
 fn nontext_history_content(
     repo: &GitRepository,
     file: &FileChange,
     cancellation: &Cancellation,
-) -> Result<Option<(Content, bool)>> {
+) -> Result<Option<Content>> {
     if !regular_preview(file) {
         return Ok(None);
     }
@@ -2790,18 +2793,7 @@ fn nontext_history_content(
     let new = read(file.new_oid.as_deref());
     cancellation.check()?;
     if let (Ok(old), Ok(new)) = (&old, &new) {
-        return Ok(
-            supplied_nontext_content(repo, file, old, new, cancellation)?.map(|content| {
-                let cacheable = match &content {
-                    Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
-                    Content::Rich(preview) => {
-                        preview.old.error.is_none() && preview.new.error.is_none()
-                    }
-                    _ => true,
-                };
-                (content, cacheable)
-            }),
-        );
+        return supplied_nontext_content(repo, file, old, new, cancellation);
     }
     if image_change(file)
         || [old.as_ref().ok(), new.as_ref().ok()]
@@ -2830,13 +2822,10 @@ fn nontext_history_content(
         cancellation.check()?;
         let new = side(new, file.new_path.as_deref());
         cancellation.check()?;
-        return Ok(Some((
-            Content::Images {
-                old: Box::new(old),
-                new: Box::new(new),
-            },
-            false,
-        )));
+        return Ok(Some(Content::Images {
+            old: Box::new(old),
+            new: Box::new(new),
+        }));
     }
     let model = [file.old_path.as_deref(), file.new_path.as_deref()]
         .into_iter()
@@ -2862,13 +2851,10 @@ fn nontext_history_content(
             }
         }))
     };
-    Ok(Some((
-        Content::Rich(crate::rich_preview::Comparison {
-            old: side(old, file.old_path.as_deref())?,
-            new: side(new, file.new_path.as_deref())?,
-        }),
-        false,
-    )))
+    Ok(Some(Content::Rich(crate::rich_preview::Comparison {
+        old: side(old, file.old_path.as_deref())?,
+        new: side(new, file.new_path.as_deref())?,
+    })))
 }
 
 fn prepared_text(patch: String, old: String, new: String) -> Content {
@@ -2906,13 +2892,17 @@ struct LfsSides {
 
 impl LfsSides {
     /// Whether what these sides say could change under the same pointers: a
-    /// corrupt object or a store that cannot be read can be repaired, so
-    /// neither is kept. Being over the preview limit is the pointer's alone.
+    /// missing object can still arrive, and a corrupt object or a store that
+    /// cannot be read can be repaired, so none of them is kept, whatever the
+    /// other side holds, a notice that shows neither side included. Being
+    /// over the preview limit is the pointer's alone.
     fn store_can_change(self) -> bool {
-        self.failed
-            .iter()
-            .flatten()
-            .any(|failure| *failure != gitturtle_core::LfsObjectFailure::TooLarge)
+        self.missing.contains(&true)
+            || self
+                .failed
+                .iter()
+                .flatten()
+                .any(|failure| *failure != gitturtle_core::LfsObjectFailure::TooLarge)
     }
 
     /// Records them on `content`. Text shows each side beside these marks;
@@ -3090,7 +3080,7 @@ fn text_content(
     let sources = match repo.text_preview_with_sources(file) {
         Ok(sources) => sources,
         Err(error) => {
-            if let Some((content, _)) = nontext_history_content(repo, file, cancellation)? {
+            if let Some(content) = nontext_history_content(repo, file, cancellation)? {
                 return Ok(content);
             }
             return Err(error);
@@ -3098,7 +3088,7 @@ fn text_content(
     };
     cancellation.check()?;
     if matches!(sources.preview, TextPreview::TooLarge { .. }) {
-        if let Some((content, _)) = nontext_history_content(repo, file, cancellation)? {
+        if let Some(content) = nontext_history_content(repo, file, cancellation)? {
             return Ok(content);
         }
     } else if let Some(content) =
@@ -6606,6 +6596,88 @@ mod image_tests {
             matches!(shown, Output::Preview(content, _) if matches!(content.as_ref(), Content::Text { old, new, partial, lfs_missing, .. } if old.as_bytes() == SVG && new == &missing && partial.is_none() && *lfs_missing == [false, true]))
         );
         assert!(cache.entries.is_empty());
+    }
+
+    /// A pointer whose object the local store lacks, beside a binary blob,
+    /// leaves the comparison a notice that shows neither side; it is not
+    /// cached either, whichever side the pointer is on, so an object that
+    /// arrives is read the next time: the object's text beside the binary
+    /// blob, cached as any comparison whose sides both resolved.
+    #[test]
+    fn a_missing_lfs_side_beside_a_binary_notice_is_not_cached() {
+        use sha2::{Digest, Sha256};
+        let object = b"downloaded text\n";
+        let oid = format!("{:x}", Sha256::digest(object));
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            object.len()
+        );
+        let binary = b"\0\x01\x02binary\xff";
+        for pointer_is_old in [true, false] {
+            let at = if pointer_is_old {
+                "the pointer before"
+            } else {
+                "the pointer after"
+            };
+            let fixture = Fixture::new();
+            let repo = GitRepository::open(&fixture.0).unwrap();
+            let (old, new) = if pointer_is_old {
+                (pointer.as_bytes(), &binary[..])
+            } else {
+                (&binary[..], pointer.as_bytes())
+            };
+            let file = FileChange {
+                old_path: Some("data.bin".into()),
+                new_path: Some("data.bin".into()),
+                old_oid: Some(fixture.blob(old)),
+                new_oid: Some(fixture.blob(new)),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let mut cache = PreviewCache::default();
+            let mut session = RepositorySession::default();
+            let mut preview = |cache: &mut PreviewCache| match execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file: file.clone(),
+                },
+                cache,
+                &active(),
+                &mut session,
+            )
+            .unwrap()
+            {
+                Output::Preview(content, _) => content,
+                _ => panic!("{at}: expected a preview"),
+            };
+            let missing = preview(&mut cache);
+            assert!(
+                matches!(missing.as_ref(), Content::Notice(_)),
+                "{at}: the comparison is a notice"
+            );
+            assert!(cache.entries.is_empty(), "{at}: nothing is cached");
+            let directory = fixture
+                .0
+                .join(".git/lfs/objects")
+                .join(&oid[..2])
+                .join(&oid[2..4]);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(&oid), object).unwrap();
+            let resolved = preview(&mut cache);
+            let side = if pointer_is_old { 0 } else { 1 };
+            assert!(
+                matches!(resolved.as_ref(), Content::Rich(preview)
+                    if [&preview.old, &preview.new][side].captured.as_deref() == Some(&object[..])),
+                "{at}: the arrived object is read"
+            );
+            assert_eq!(
+                cache.entries.len(),
+                1,
+                "{at}: both sides resolved are cached"
+            );
+        }
     }
 
     /// A committed text file whose working copy is now a Git LFS pointer to
