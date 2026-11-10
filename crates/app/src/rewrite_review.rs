@@ -422,6 +422,27 @@ struct ReviewDownload {
     seen: std::cell::Cell<bool>,
 }
 
+impl ReviewDownload {
+    /// The object it fetches, as its controls and outcomes name it:
+    /// "flow.mmd's Before object".
+    fn object(&self) -> String {
+        format!(
+            "{}'s {} object",
+            self.file.path().display(),
+            ["Before", "After"][self.side]
+        )
+    }
+
+    /// Its Cancel download, named for the object it fetches whatever its
+    /// label reads, and whether `owner`'s write was cancelled.
+    fn cancel(&self, owner: &GitTurtle) -> crate::lfs_download::RunningCancel {
+        crate::lfs_download::RunningCancel {
+            name: format!("Cancel download of {}", self.object()).into(),
+            cancelling: owner.operation_cancelling(),
+        }
+    }
+}
+
 pub(crate) struct SeriesBrowser {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
@@ -757,7 +778,12 @@ impl SeriesBrowser {
     /// to the series, nothing on screen said a download ran or offered its
     /// Cancel. Cancel tracks the row's handle, so focus on it stays as it
     /// moves between the two.
-    fn download_status(&self, room: Pixels, cx: &Context<Self>) -> Option<AnyElement> {
+    fn download_status(
+        &self,
+        room: Pixels,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
         let asked = self
             .lfs_download
             .as_ref()
@@ -775,6 +801,7 @@ impl SeriesBrowser {
         let progress = owner
             .operation_progress()
             .map_or_else(|| label.into(), SharedString::from);
+        let running = asked.cancel(owner);
         let cancel = self.owner.clone();
         Some(
             div()
@@ -784,10 +811,16 @@ impl SeriesBrowser {
                 .on_children_prepainted(self.body.control(self.download_cancel.clone(), room))
                 .child(crate::lfs_download::running_form(
                     progress,
-                    &self.download_cancel,
-                    std::rc::Rc::new(move |window, cx| {
-                        let _ = cancel.update(cx, |owner, cx| owner.cancel_operation(window, cx));
-                    }),
+                    (
+                        &self.download_cancel,
+                        std::rc::Rc::new(move |window, cx| {
+                            let _ =
+                                cancel.update(cx, |owner, cx| owner.cancel_operation(window, cx));
+                        }),
+                    ),
+                    running,
+                    false,
+                    window,
                     cx,
                 ))
                 .into_any_element(),
@@ -1698,8 +1731,10 @@ impl SeriesBrowser {
         // objects missing at 18 pt in a 461 × 490 window, the two buttons
         // stacked with their word and cut the comparison's row by 1.5 px.
         // Measured at rest as the review draws it, saying what it asked for,
-        // which keeps its lines in every state (`download_row`): there two
-        // sides' running forms now stack them with their word too.
+        // which keeps its lines in every state (`download_row`): Cancel
+        // download's word gives way with the buttons', the progress and a
+        // failure's words first, so two sides that share a line without
+        // their word share it running and failed too.
         let short = !targets.is_empty() && {
             let line = if failure.is_some() {
                 crate::empty_state::block_height(1, false, window) + appearance::ui_size(16.)
@@ -1759,6 +1794,7 @@ impl SeriesBrowser {
                             .operation_progress()
                             .map_or_else(|| label.into(), SharedString::from)
                     }),
+                    cancel: asked.cancel(owner),
                 },
                 _ => AskedState::Resting,
             };
@@ -2158,7 +2194,7 @@ impl Render for SeriesBrowser {
         div().debug_selector(|| "rewrite-review-content".into()).flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("rewrite-review-body").debug_selector(|| "rewrite-review-body".into()).min_w_0().min_h_0().p(room).m(-room).pl(lead).ml(-lead).when(self.inspecting, |element| element.h(cap)).overflow_y_scroll().track_scroll(self.body.scroll()).flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
-            .children(self.download_status(room, cx))
+            .children(self.download_status(room, window, cx))
             .when(!self.inspecting, |element| element
                 .child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Original → rewritten · unique patch fingerprints identify likely correspondence. Changed patches may match by unique subject only. Ambiguous, combined and empty commits remain explicit; inspect both sides before publishing."))
                 .when_some(self.review.as_ref(), |element, review| element.child(div().text_size(appearance::ui_text(11.)).child(format!("{} · original {} → rewritten {} · base {}", review.branch, short_oid(&review.original_head), short_oid(&review.rewritten_head), short_oid(&review.base)))))
@@ -6397,12 +6433,13 @@ mod tests {
     /// on the button's line and end in an ellipsis, whole in their tooltip,
     /// so a failure landing never grows the row: wrapped, they took a line
     /// of their own, about 25 px at 18 pt, as they landed. With both sides'
-    /// objects missing, whose running forms share no line there, the two
-    /// stack with their word in every state, the sentence given way, their
-    /// whole names their accessible names (the word's going once let them
-    /// share a line at rest, which a running form then overran; stacked,
-    /// the comparison's least row ends 1.5 px past the box's foot). Where
-    /// they share one with their word, at
+    /// objects missing, the buttons' word gives way, Cancel download's with
+    /// it, and the two share a line in every state, the sentence given way,
+    /// their whole names their accessible names, the comparison keeping a
+    /// whole row (kept "Cancel download", whose running form left them no
+    /// shared line, they stacked with their word and the comparison's least
+    /// row ended 1.5 px past the box's foot). Where they share one with
+    /// their word, at
     /// 18 pt in a 1,000 × 680 window, the sentence a measurement stands
     /// beside them stands on their line, ending inside the row.
     #[gpui::test]
@@ -6554,13 +6591,12 @@ mod tests {
              for {rest:?}"
         );
         // Both sides missing: the review keeps each side's widest state, its
-        // Download or the running form, the progress whole beside Cancel
-        // download, so in the preview's 358 px at scale 2 the two stack in
-        // every state, keeping their word, whose going no longer lets them
-        // share a line, and their whole names their accessible names
-        // (`both_sides_keep_their_lines_as_either_runs_or_fails_at_18_pt`).
-        // Stacking is the order's last step: beneath them the comparison
-        // keeps its least row, which ends 1.5 px past the box's foot here.
+        // Download or the running form, so in the preview's 358 px at scale
+        // 2 the buttons' word gives way, and with it Cancel download's, the
+        // progress and a failure's words giving way first, and the two share
+        // a line in every state, their whole names their accessible names
+        // (`both_sides_keep_their_lines_as_either_runs_or_fails_at_18_pt`):
+        // beneath them the comparison keeps a whole row inside the box.
         use crate::native_accessibility::written;
         let both = |fits: Option<bool>, cx: &mut gpui::VisualTestContext| {
             choose(&browser, cx, file_index(&files, "both.mmd"));
@@ -6582,11 +6618,11 @@ mod tests {
             .expect("the preview's box");
         assert!(
             sentence.is_none()
-                && after.top() >= before.bottom()
-                && (after.left() - before.left()).abs() <= device / 2.
-                && before.right() <= preview.right() - inset + device / 2.,
-            "the sentence, {sentence:?}, gives way and {before:?} and {after:?} stack inside \
-             {preview:?}"
+                && (after.center().y - before.center().y).abs() <= device / 2.
+                && before.right() <= after.left() + device / 2.
+                && after.right() <= preview.right() - inset + device / 2.,
+            "the sentence, {sentence:?}, gives way and {before:?} and {after:?} share a line \
+             inside {preview:?}"
         );
         assert_eq!(
             names,
@@ -6598,8 +6634,11 @@ mod tests {
             .debug_bounds("lfs-comparison")
             .expect("the comparison beneath the row");
         assert!(
-            after.bottom() <= body.top() + device / 2. && body.size.height >= floor - device / 2.,
-            "beneath {after:?} the comparison, {body:?}, keeps its least row, {floor:?}"
+            after.bottom() <= body.top() + device / 2.
+                && body.size.height >= floor - device / 2.
+                && body.bottom() <= preview.bottom() + device / 2.,
+            "beneath {after:?} the comparison, {body:?}, keeps a whole row, {floor:?}, inside \
+             {preview:?}"
         );
         // Where they share a line with their word, at 18 pt in a 1,000 ×
         // 680 window, the sentence a measurement stands beside them stands
@@ -6648,23 +6687,26 @@ mod tests {
 
     /// The review's two Download buttons share a line only where they would
     /// in every state its row takes: each side in its widest state, its
-    /// Download or its running form, the progress whole beside Cancel
-    /// download, and a failure's words kept at least "Failed…" wide beside
-    /// them (`lfs_download::buttons_share_line`). With both sides' objects
-    /// missing at 18 pt in QA's 461 × 490 window, and in a 600 × 490 one,
-    /// where they would share a line with their word at rest, they stack:
-    /// as either side's download runs, Cancel download and the other
-    /// Download stand apart and the progress is whole (at 461 px, whose line
-    /// is narrower than the form, 111.5 of its 150 px, the whole line Cancel
-    /// leaves it), and as it fails its words keep that width, the row
-    /// keeping its height throughout.
-    /// Decided from the Downloads alone, Before's running form drew Cancel
-    /// over After… by 7 px, its progress 0 px wide, and a failure's words
-    /// were squeezed beside the two.
+    /// Download or its running form, one side running at a time, and a
+    /// failure's words kept beside them (`lfs_download::buttons_share_line`).
+    /// With both sides' objects missing at 18 pt in QA's 461 × 490 window at
+    /// scale 2, the comparison's row takes the buttons' word, and with it
+    /// Cancel download's, which reads "Cancel" (its accessible name and
+    /// tooltip saying what it cancels), the progress and a failure's words
+    /// giving way first: so the two sides share one line at rest, as either
+    /// side's download runs and as it fails, Cancel and the other Download
+    /// apart, and the comparison keeps a whole row inside the preview's box
+    /// throughout. Pressed, Cancel reads "Cancelling…", as wide as before,
+    /// and no longer cancels. In a 600 × 490 window the progress stays whole.
+    /// Kept "Cancel download", whose running form left the two no shared
+    /// line, the two stacked in every state and the comparison's row ended
+    /// 1.5 px past the box's foot; before that, decided from the Downloads
+    /// alone, Before's running form drew Cancel over After… by 7 px.
     #[gpui::test]
     async fn both_sides_keep_their_lines_as_either_runs_or_fails_at_18_pt(
         cx: &mut gpui_kit::TestAppContext,
     ) {
+        use crate::native_accessibility::written;
         use crate::tags::tests::draw;
         let (_fixture, repo, files) = missing_both();
         let (app, cx) = crate::tags::tests::window(cx, &repo);
@@ -6674,15 +6716,12 @@ mod tests {
         cx.update(|window, _| window.set_scale_factor(2.));
         let browser = inspecting(&app, cx, &files);
         let device = cx.update(|window, _| px(1. / window.scale_factor()));
-        let [gap, inset] = cx
-            .update(|window, _| [0.5, 0.75].map(|rem| window.pixel_snap(window.rem_size() * rem)));
-        let [whole, failed] = cx.update(|window, _| {
-            ["Download object", "Failed…"].map(|text| {
-                crate::views::laid_out_text_width(
-                    crate::views::line_widths(&[(text, appearance::ui_text(12.))], window),
-                    window,
-                )
-            })
+        let floor = cx.update(|window, _| crate::views::comparison_floor(1., window));
+        let whole = cx.update(|window, _| {
+            crate::views::laid_out_text_width(
+                crate::views::line_widths(&[("Download object", appearance::ui_text(12.))], window),
+                window,
+            )
         });
         // Patch, its preview revealed below the body's fold by its own
         // handle, focused, as Tab into it does.
@@ -6706,6 +6745,31 @@ mod tests {
                 || a.bottom() <= b.top() + device / 2.
                 || b.bottom() <= a.top() + device / 2.
         };
+        let one_line = |parts: &[Bounds<Pixels>]| {
+            parts
+                .iter()
+                .all(|part| (part.center().y - parts[0].center().y).abs() <= device / 2.)
+        };
+        // The comparison beneath the row keeps a whole row inside the box.
+        let comparison = |at: &str, cx: &mut gpui::VisualTestContext| {
+            let preview = cx
+                .debug_bounds("series-file-preview")
+                .expect("the preview's box");
+            let body = cx
+                .debug_bounds("lfs-comparison")
+                .expect("the comparison beneath the row");
+            assert!(
+                body.size.height >= floor - device / 2.
+                    && body.bottom() <= preview.bottom() + device / 2.,
+                "{at}: the comparison, {body:?}, keeps a whole row, {floor:?}, inside \
+                 {preview:?}"
+            );
+            body
+        };
+        let label = || {
+            crate::views::COMPACT_LABELS
+                .with(|labels| labels.borrow().get("cancel-lfs-download").cloned())
+        };
         let words = "Git LFS could not reach origin: the remote refused the batch request";
         for width in [461., 600.] {
             cx.simulate_resize(size(px(width), px(490.)));
@@ -6715,12 +6779,18 @@ mod tests {
                 ["download-lfs-side-0", "download-lfs-side-1"].map(|id| cx.debug_bounds(id))
             };
             let rest = downloads(cx).map(|side| side.expect("both sides offer a download"));
-            let body = cx
-                .debug_bounds("lfs-comparison")
-                .expect("the comparison beneath the row");
+            let body = comparison(&format!("{width} px wide, at rest"), cx);
+            let shares = one_line(&rest);
+            assert!(
+                width > 461. || shares,
+                "at 461 px the two share a line: {rest:?}"
+            );
             for side in [0, 1] {
                 let at = format!("{width} px wide, side {side}");
-                start_download(&app, &browser, cx, rest[side].center());
+                // Where it stands now: a failure's words before the two on
+                // their shared line move them along it.
+                let pressed = downloads(cx)[side].expect("the side's Download");
+                start_download(&app, &browser, cx, pressed.center());
                 cx.executor()
                     .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
                 shown(cx);
@@ -6731,26 +6801,36 @@ mod tests {
                     .debug_bounds("cancel-lfs-download")
                     .expect("beside Cancel download");
                 let other = downloads(cx)[1 - side].expect("the other side's Download");
-                // Whole, or, where the line itself is narrower than the
-                // form, as at 461 px, given the whole line Cancel leaves.
-                let full = (cancel.left() - progress.right() - gap).abs() <= device / 2.
-                    && (cancel.right() - (body.right() - inset)).abs() <= device / 2.;
                 assert!(
                     progress.size.width > Pixels::ZERO
-                        && (progress.size.width >= whole - device / 2. || full)
                         && apart(progress, cancel)
                         && apart(cancel, other)
-                        && apart(progress, other),
-                    "{at}: the progress, {progress:?}, is whole, {whole:?}, or fills its line, \
-                     and Cancel, {cancel:?}, stands apart from the other Download, {other:?}"
+                        && apart(progress, other)
+                        && (!shares || one_line(&[progress, cancel, other])),
+                    "{at}: the progress, {progress:?}, Cancel, {cancel:?}, and the other \
+                     Download, {other:?}, stand apart, on one line where the two share it"
                 );
                 if width > 461. {
                     assert!(
                         progress.size.width >= whole - device / 2.,
                         "{at}: the progress, {progress:?}, is whole, {whole:?}"
                     );
+                } else {
+                    let name = ["Before", "After"][side];
+                    assert_eq!(
+                        (
+                            label().as_ref().map(|label| label.to_string()),
+                            written::get("cancel-lfs-download")
+                                .and_then(|node| node.node.label().map(str::to_owned)),
+                        ),
+                        (
+                            Some("Cancel".to_owned()),
+                            Some(format!("Cancel download of both.mmd's {name} object")),
+                        ),
+                        "{at}: Cancel's word gives way with the Downloads', its name whole"
+                    );
                 }
-                let running = cx.debug_bounds("lfs-comparison").expect("the comparison");
+                let running = comparison(&format!("{at}, running"), cx);
                 assert!(
                     (running.top() - body.top()).abs() <= device / 2.
                         && (other.top() - rest[1 - side].top()).abs() <= device / 2.,
@@ -6758,6 +6838,21 @@ mod tests {
                      {body:?}, {other:?} for {:?}",
                     rest[1 - side]
                 );
+                if width == 461. && side == 0 {
+                    // Pressed, it reads "Cancelling…" at its width and no
+                    // longer cancels.
+                    cx.simulate_click(cancel.center(), Modifiers::none());
+                    shown(cx);
+                    assert_eq!(
+                        (
+                            label().as_ref().map(|label| label.to_string()),
+                            cx.debug_bounds("cancel-lfs-download"),
+                            written::get("cancel-lfs-download").map(|node| node.node.is_disabled()),
+                        ),
+                        (Some("Cancelling…".to_owned()), Some(cancel), Some(true)),
+                        "{at}: pressed, Cancel reads Cancelling… where it stood, unpressable"
+                    );
+                }
                 end_download(&app, &browser, cx, Some(words));
                 shown(cx);
                 let failure = cx
@@ -6765,12 +6860,12 @@ mod tests {
                     .expect("the failure is said in the row");
                 let sides = downloads(cx).map(|side| side.expect("both Downloads are back"));
                 assert!(
-                    failure.size.width >= failed - device / 2.
-                        && sides.iter().all(|side| apart(failure, *side)),
-                    "{at}: the failure's words, {failure:?}, keep at least {failed:?} beside \
-                     {sides:?}"
+                    failure.size.width > Pixels::ZERO
+                        && sides.iter().all(|side| apart(failure, *side))
+                        && (!shares || one_line(&[failure, sides[0], sides[1]])),
+                    "{at}: the failure's words, {failure:?}, stand beside {sides:?}"
                 );
-                let ended = cx.debug_bounds("lfs-comparison").expect("the comparison");
+                let ended = comparison(&format!("{at}, failed"), cx);
                 assert!(
                     (ended.top() - body.top()).abs() <= device / 2.
                         && sides

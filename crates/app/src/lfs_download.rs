@@ -313,9 +313,19 @@ pub(crate) const DOWNLOAD_EXPLANATION: &str = "LFS preview objects require an ex
 /// keeps for it whole beside Cancel download ([`buttons_share_line`]).
 const DOWNLOAD_OBJECT: &str = "Download object";
 const CANCEL_DOWNLOAD: &str = "Cancel download";
+/// What Cancel download reads where its word has given way, as the
+/// Downloads' has beside it ([`download_row`]'s `short`): its accessible
+/// name and tooltip still say what it cancels.
+const CANCEL: &str = "Cancel";
+/// What Cancel download reads once pressed, no longer pressable, as the
+/// header's Cancel does (`authentication::CANCEL_LABELS`).
+const CANCELLING: &str = crate::authentication::CANCEL_LABELS[1];
 /// The least a failure's words keep beside the buttons: their first word
 /// and the ellipsis they end in where they give way.
 const FAILED: &str = "Failed…";
+/// The least the progress or a failure's words keep where the row's
+/// buttons' word has given way ([`said_least`]).
+const ELLIPSIS: &str = "…";
 
 const DOWNLOAD_BEFORE: &str = "Download Before…";
 const DOWNLOAD_AFTER: &str = "Download After…";
@@ -354,7 +364,27 @@ thread_local! {
     static SOURCE_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static PROGRESS_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static CANCEL_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static SHORT_CANCEL_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static CANCELLING_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static FAILED_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static ELLIPSIS_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// Cancel download's width, its word given way where `short`: as wide as
+/// the wider of its labels, "Cancelling…", which it reads once pressed,
+/// among them, so a press moves nothing, as the header's Cancel is
+/// (`GitTurtle::render_operation_cancel`).
+fn cancel_width(short: bool, window: &Window) -> Pixels {
+    let label = if short {
+        crate::labelled_button_width(CANCEL, &SHORT_CANCEL_WIDTH, window)
+    } else {
+        crate::labelled_button_width(CANCEL_DOWNLOAD, &CANCEL_WIDTH, window)
+    };
+    label.max(crate::labelled_button_width(
+        CANCELLING,
+        &CANCELLING_WIDTH,
+        window,
+    ))
 }
 
 /// `text` at the row's 12 pt as layout places it, laid out once per font
@@ -421,8 +451,10 @@ fn row_room(column: Pixels, window: &Window) -> (Pixels, Pixels) {
 /// where `short`, measured as layout places them in the frame the row is
 /// drawn, and each side's widest state: where the row says what it `asks`
 /// for, the review's, that is its Download or, while its download runs,
-/// the running form, the progress text whole beside Cancel download,
-/// whichever is wider.
+/// the running form, whichever is wider. The running form keeps its
+/// progress text whole beside Cancel download; where `short`, the progress
+/// has given way first, to its ellipsis, and Cancel's word with the
+/// Downloads', Cancel as wide as "Cancelling…" ([`cancel_width`]).
 fn side_widths(
     quick_source: bool,
     sides: &[usize],
@@ -448,11 +480,8 @@ fn side_widths(
             crate::labelled_button_width(short_label(label), cache, window)
         })
         .collect::<Vec<_>>();
-    let running = asks.then(|| {
-        row_text_width(DOWNLOAD_OBJECT, &PROGRESS_WIDTH, window)
-            + gap
-            + crate::labelled_button_width(CANCEL_DOWNLOAD, &CANCEL_WIDTH, window)
-    });
+    let running =
+        asks.then(|| said_least(false, short, window) + gap + cancel_width(short, window));
     let widest = buttons
         .iter()
         .map(|&button| running.map_or(button, |running| button.max(running)))
@@ -460,17 +489,35 @@ fn side_widths(
     [buttons, widest]
 }
 
+/// The least what a row that says what it asked for stands beside its
+/// buttons keeps, `failed` a failure's words, else a running download's
+/// progress: the progress whole, and the words' first word with the
+/// ellipsis they end in where they give way; where `short`, the
+/// comparison's row having taken the buttons' word, either gives way to its
+/// ellipsis first, whole in its tooltip and its accessible name, as the
+/// alert that said a failure was (decision, 2026-11-10: kept whole, at 18
+/// pt in a 461 × 490 window both sides' objects missing stacked the two
+/// Downloads in every state and cut the comparison's row by 1.5 px).
+fn said_least(failed: bool, short: bool, window: &Window) -> Pixels {
+    match (short, failed) {
+        (true, _) => row_text_width(ELLIPSIS, &ELLIPSIS_WIDTH, window),
+        (false, true) => row_text_width(FAILED, &FAILED_WIDTH, window),
+        (false, false) => row_text_width(DOWNLOAD_OBJECT, &PROGRESS_WIDTH, window),
+    }
+}
+
 /// Whether the sides of `sides`, their Download buttons' word given way
 /// where `short`, share one line in a row `column` wide, measured as layout
 /// places them in the frame the row is drawn. Where they do not, they
 /// stack one to a line. A row that says what it `asks` for, the review's,
-/// decides it from each side's widest state ([`side_widths`]), and keeps
-/// its failure's words at least "Failed…" wide beside the Downloads: where
-/// the sides would not share a line in every state they stack, so a
-/// download starting, failing or ending never changes the row's lines.
-/// Decided from the Downloads alone, at 18 pt in a 461 × 490 window with
-/// both sides missing, Before's running form drew Cancel download over
-/// After… by 7 px, its progress 0 px wide.
+/// decides it from each side's widest state ([`side_widths`]), one side
+/// running at a time beside the others' Downloads, and keeps its failure's
+/// words at least "Failed…" wide beside the Downloads, or where `short` its
+/// ellipsis ([`said_least`]): where the sides would not share a line in
+/// every state they stack, so a download starting, failing or ending never
+/// changes the row's lines. Decided from the Downloads alone, at 18 pt in a
+/// 461 × 490 window with both sides missing, Before's running form drew
+/// Cancel download over After… by 7 px, its progress 0 px wide.
 fn buttons_share_line(
     quick_source: bool,
     sides: &[usize],
@@ -481,9 +528,15 @@ fn buttons_share_line(
 ) -> bool {
     let (gap, room) = row_room(column, window);
     let [buttons, widest] = side_widths(quick_source, sides, short, asks, window);
-    let line = |widths: &[Pixels]| widths.iter().fold(-gap, |line, &width| line + gap + width);
-    line(&widest) <= room
-        && (!asks || row_text_width(FAILED, &FAILED_WIDTH, window) + gap + line(&buttons) <= room)
+    let line = buttons.iter().fold(-gap, |line, &width| line + gap + width);
+    // The most one side's running form adds to the line.
+    let running = widest
+        .iter()
+        .zip(&buttons)
+        .fold(Pixels::ZERO, |most, (&widest, &button)| {
+            most.max(widest - button)
+        });
+    line + running <= room && (!asks || said_least(true, short, window) + gap + line <= room)
 }
 
 /// `row`, which notes, where it is drawn with its buttons' word given way,
@@ -583,6 +636,18 @@ pub(crate) struct Asked {
 /// What Cancel download calls.
 pub(crate) type OnCancel = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// What a running download's Cancel download says and whether it still
+/// cancels ([`running_form`]).
+#[derive(Clone)]
+pub(crate) struct RunningCancel {
+    /// Its accessible name and tooltip, which say what it cancels ("Cancel
+    /// download of flow.mmd's Before object"), whatever its label reads.
+    pub(crate) name: SharedString,
+    /// Whether it was pressed: it reads "Cancelling…" and is no longer
+    /// pressable.
+    pub(crate) cancelling: bool,
+}
+
 pub(crate) enum AskedState {
     /// Nothing it asked for runs or failed: the row as Compare draws it.
     Resting,
@@ -592,6 +657,7 @@ pub(crate) enum AskedState {
     Running {
         side: usize,
         progress: Option<SharedString>,
+        cancel: RunningCancel,
     },
     /// It failed, saying these words, and its Download is back.
     Failed(SharedString),
@@ -637,7 +703,8 @@ pub(crate) fn download_row(
         Some(AskedState::Running {
             side,
             progress: Some(progress),
-        }) => (None, Some((*side, progress.clone()))),
+            cancel,
+        }) => (None, Some((*side, progress.clone(), cancel.clone()))),
         _ => (None, None),
     };
     // The line the sentence is drawn on, where it is, or its failure's:
@@ -683,13 +750,21 @@ pub(crate) fn download_row(
         })
     };
     let items = targets.into_iter().map(|(side, target)| {
-        if let (Some((_, progress)), Some(asked)) = (
-            running.as_ref().filter(|(running, _)| *running == side),
+        if let (Some((_, progress, cancel)), Some(asked)) = (
+            running.as_ref().filter(|(running, ..)| *running == side),
             asked.as_ref(),
         ) {
-            // Where the pressed Download stood.
-            return running_form(progress.clone(), &asked.cancel, asked.on_cancel.clone(), cx)
-                .into_any_element();
+            // Where the pressed Download stood, its Cancel's word giving way
+            // with the Downloads'.
+            return running_form(
+                progress.clone(),
+                (&asked.cancel, asked.on_cancel.clone()),
+                cancel.clone(),
+                short,
+                window,
+                cx,
+            )
+            .into_any_element();
         }
         let download = download.clone();
         let focus = asked.as_ref().map(|asked| asked.focus[side].clone());
@@ -770,11 +845,20 @@ pub(crate) fn download_row(
 /// Download row where the pressed Download stood, and at the top of its
 /// body while it shows another file or commit. The progress, the window's
 /// progress text, gives way first, ending in an ellipsis, whole in its
-/// tooltip.
+/// tooltip; then, where `short`, Cancel download's word, as the Downloads'
+/// does beside it, so it reads "Cancel", its accessible name and tooltip
+/// saying what it cancels. Once pressed it reads "Cancelling…" and is no
+/// longer pressable, drawn as wide as the wider of its labels so the press
+/// moves nothing, as the header's Cancel is (decision, 2026-11-10: kept
+/// whole, "Cancel download" stacked a missing After… under a running
+/// Before… at 18 pt in a 461 × 490 window and cut the comparison's row by
+/// 1.5 px; and it stayed "Cancel download" and pressable after a press).
 pub(crate) fn running_form(
     progress: SharedString,
-    cancel: &FocusHandle,
-    on_cancel: OnCancel,
+    (focus, on_cancel): (&FocusHandle, OnCancel),
+    cancel: RunningCancel,
+    short: bool,
+    window: &Window,
     cx: &App,
 ) -> Div {
     let whole = progress.clone();
@@ -793,7 +877,12 @@ pub(crate) fn running_form(
     // Tests assemble the window's tree from what they record.
     #[cfg(test)]
     crate::native_accessibility::written::built(&text);
-    div()
+    let label = match (cancel.cancelling, short) {
+        (true, _) => CANCELLING,
+        (false, true) => CANCEL,
+        (false, false) => CANCEL_DOWNLOAD,
+    };
+    let form = div()
         .flex_shrink(1.)
         .min_w_0()
         .flex()
@@ -802,13 +891,44 @@ pub(crate) fn running_form(
         .child(text)
         .child(
             div().flex_none().child(
-                button("cancel-lfs-download", CANCEL_DOWNLOAD, "close", false)
+                button("cancel-lfs-download", label, "close", false)
                     .debug_selector(|| "cancel-lfs-download".into())
-                    .track_focus(cancel)
+                    .min_w(cancel_width(short, window))
+                    .accessibility_label(cancel.name.clone())
+                    .tooltip(cancel.name)
+                    .disabled(cancel.cancelling)
+                    .track_focus(focus)
                     .on_click(move |_, window, cx| on_cancel(window, cx))
                     .node_recorded(),
             ),
-        )
+        );
+    noted_cancel(form, label)
+}
+
+/// `form`, which notes what its Cancel reads, `label`, where it is drawn,
+/// for a test: a form built and not drawn notes nothing.
+fn noted_cancel(form: Div, label: &'static str) -> Div {
+    #[cfg(test)]
+    {
+        use gpui_kit::base::ElementExt as _;
+        form.on_prepaint(move |_, _, _| {
+            crate::views::note_compact_label("cancel-lfs-download", &label.into())
+        })
+    }
+    #[cfg(not(test))]
+    {
+        let _ = label;
+        form
+    }
+}
+
+impl GitTurtle {
+    /// Whether the running write's Cancel has been pressed: its progress
+    /// then reads "Cancelling…" (`authentication::CANCEL_LABELS`).
+    pub(crate) fn operation_cancelling(&self) -> bool {
+        self.operation_progress()
+            .is_some_and(|progress| progress.starts_with(CANCELLING))
+    }
 }
 
 impl GitTurtle {
