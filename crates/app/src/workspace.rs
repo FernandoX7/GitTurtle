@@ -7570,9 +7570,12 @@ impl GitActionsText {
             operation: (status.and_then(|status| status.operation.as_deref()))
                 .map(|operation| format!("{operation} in progress").into()),
             // A marked tab's remote and branch are those from before, which
-            // the line once named as where Push goes.
+            // the line once named as where Push goes. With no status read
+            // yet, it said "No remote configured" before the read.
             destination: if inputs.unavailable {
                 crate::branch_actions::UNAVAILABLE_REASON.into()
+            } else if inputs.reading {
+                READING_WORKING_TREE.into()
             } else {
                 inputs.push_url.as_deref().map_or_else(
                     || {

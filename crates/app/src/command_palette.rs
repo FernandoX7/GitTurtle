@@ -331,6 +331,9 @@ struct Availability {
     /// Whether the shown tab is marked, whose branch would be the one from
     /// before (`GitTurtle::header_status`).
     unavailable: bool,
+    /// Whether the shown tab's working status is not read yet, which says
+    /// whether a branch is checked out (`GitTurtle::working_status_unread`).
+    reading: bool,
     branch: bool,
     file: bool,
     working_file: bool,
@@ -426,6 +429,12 @@ impl CommandId {
         // Said as the branch picker says it, which opens no menu there.
         if self == Self::Branch && context.unavailable {
             return Some(crate::branch_actions::UNAVAILABLE_REASON);
+        }
+        // Said as Fetch, Pull and Push say it: with no status read yet it
+        // said "Check out a named local branch first" while the picker named
+        // the branch.
+        if self == Self::Branch && context.reading {
+            return Some(crate::workspace::READING_WORKING_TREE);
         }
         if self == Self::Branch && !context.branch {
             return Some("Check out a named local branch first");
@@ -654,6 +663,7 @@ impl GitTurtle {
             projects_ends_busy: self.projects_ends_busy(),
             unsettled: self.write_unsettled(),
             unavailable: self.shown_tab_unavailable(),
+            reading: self.working_status_unread(),
             branch: self
                 .header_status()
                 .is_some_and(|status| status.branch.is_some()),

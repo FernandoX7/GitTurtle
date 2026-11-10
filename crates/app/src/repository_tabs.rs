@@ -7181,9 +7181,11 @@ pub(crate) mod tests {
     /// Until an Open's status read lands, the branch picker names the branch
     /// the accepted snapshot found checked out, or claims none where it
     /// found none, and Fetch, Pull and Push refuse saying the read, as
-    /// Changes says it. With no status they read a detached HEAD and no
-    /// remote: "Detached HEAD", "Switch to a local branch before pulling or
-    /// pushing" and "No configured remote selected · Check Targets".
+    /// Changes says it, as do Targets' destination line and the palette's
+    /// Branch. With no status they read a detached HEAD and no remote:
+    /// "Detached HEAD", "Switch to a local branch before pulling or
+    /// pushing", "No configured remote selected · Check Targets", "No
+    /// remote configured" and "Check out a named local branch first".
     #[gpui::test]
     async fn an_open_says_its_status_is_being_read_until_it_lands(cx: &mut TestAppContext) {
         use crate::views::tests::{fixture_git, fixture_repository};
@@ -7206,9 +7208,27 @@ pub(crate) mod tests {
             crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(id).cloned())
         };
         let reading = crate::workspace::READING_WORKING_TREE;
-        for (repository, while_read, read) in [
-            (&topic, "topic", "topic"),
-            (&detached, crate::branch_actions::READING, "Detached HEAD"),
+        let destination = || {
+            crate::workspace::TARGETS_DESTINATION
+                .with(|line| line.borrow().as_ref().map(ToString::to_string))
+        };
+        let branch_reason = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                (app.read(cx)).menu_command_reason(
+                    crate::command_palette::CommandId::Branch,
+                    window,
+                    cx,
+                )
+            })
+        };
+        for (repository, while_read, read, branch_once_read) in [
+            (&topic, "topic", "topic", None),
+            (
+                &detached,
+                crate::branch_actions::READING,
+                "Detached HEAD",
+                Some("Check out a named local branch first"),
+            ),
         ] {
             let held = app.read_with(cx, |app, _| app.operations.hold());
             cx.update(|window, cx| {
@@ -7251,6 +7271,16 @@ pub(crate) mod tests {
                 let said = tooltip(id).unwrap_or_default();
                 assert!(said.ends_with(reading), "{while_read}: {id} says {said}");
             }
+            assert_eq!(
+                destination().as_deref(),
+                Some(reading),
+                "{while_read}: Targets' destination"
+            );
+            assert_eq!(
+                branch_reason(cx),
+                Some(reading),
+                "{while_read}: the palette's Branch"
+            );
             drop(held);
             settle_tab_test(&app, cx).await;
             assert_eq!(picker().as_deref(), Some(read), "the picker once read");
@@ -7258,6 +7288,16 @@ pub(crate) mod tests {
                 let said = tooltip(id).unwrap_or_default();
                 assert!(!said.ends_with(reading), "{read}: {id} says {said}");
             }
+            let line = destination().unwrap_or_default();
+            assert!(
+                line.starts_with("No remote configured"),
+                "{read}: Targets once read says {line}"
+            );
+            assert_eq!(
+                branch_reason(cx),
+                branch_once_read,
+                "{read}: Branch once read"
+            );
         }
     }
 
