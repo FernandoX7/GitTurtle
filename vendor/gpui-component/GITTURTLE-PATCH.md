@@ -2653,3 +2653,20 @@ gitturtle theme_editor::` drives the theme editor's real picker
 `enter_and_space_choose_the_focused_swatch_once`,
 `a_focused_swatch_draws_the_kit_ring_whole`). Remove it when upstream gives a
 palette roving focus, names its swatches and lets Enter and Space choose one.
+
+The colour-picker close patch also modifies `src/color_picker.rs`
+(`ClosingWatch`). A choice, a swatch's click or keyboard click or Enter in the
+hex field, closes the picker through `ColorPickerState`, and gpui-base's
+`PopoverState` gave focus back to the trigger only as the next frame built
+the popover (`sync_open` in `Popover::render`), where GPUI's `Window::refresh`
+does nothing: that frame drew the trigger unfocused, no frame followed, and a
+trigger that draws a ring for focus waited for an unrelated redraw (QA-110
+check 2, after Enter or Space, three of three; Escape, which closes through
+the popover's own Cancel outside a draw, drew it at once). Patched, the
+watch's observer, which runs as the close's notification is flushed and
+before that frame, moves focus still inside the closing popover to the
+trigger, so the focus change asks for the frame and that frame draws focus on
+the trigger. `cargo test --locked -p gitturtle
+theme_editor::tests::choosing_a_swatch_by_key_rings_the_trigger_in_the_next_frame`
+checks the theme editor's trigger ring in the one frame the key-up draws.
+Remove it when upstream's popover gives focus back outside the draw.

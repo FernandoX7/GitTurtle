@@ -4372,6 +4372,68 @@ pub(crate) mod tests {
         }
     }
 
+    /// Enter or Space choosing a swatch, or Enter in the popover's hex field,
+    /// closes the picker with the trigger's ring drawn in the first frame
+    /// after the key that closed it, as Escape's close draws it, with no
+    /// other redraw (QA-110 check 2). The popover gave focus back only while
+    /// that frame was being built, where GPUI asks for no further frame, so
+    /// the trigger kept its resting 1 px border until an unrelated redraw.
+    #[gpui::test]
+    fn choosing_a_swatch_by_key_rings_the_trigger_in_the_next_frame(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (_, picker, trigger, hex) = first_picker(cx, &app);
+        for key in ["enter", "space", "hex enter"] {
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            press(cx, "enter");
+            press(cx, "tab");
+            let keystroke = Keystroke::parse(if key == "space" { "space" } else { "enter" })
+                .expect("a keystroke");
+            let down = KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            };
+            let draws = if key == "hex enter" {
+                press(cx, "tab");
+                assert_eq!(focused_stop(cx), hex, "{key}: the hex field holds focus");
+                let input = cx.read(|cx| picker.read(cx).hex_input().clone());
+                cx.update(|window, cx| {
+                    input.update(cx, |input, cx| input.set_value("#3b82f6", window, cx))
+                });
+                settle(cx);
+                let draws = draw_count(cx, &app);
+                // The field commits as the key goes down. Only the frames
+                // the key and its key-up draw: no settle.
+                cx.simulate_event(down);
+                draws
+            } else {
+                press(cx, "right");
+                assert!(in_popover(cx, &trigger), "{key}: a swatch holds focus");
+                cx.simulate_event(down);
+                settle(cx);
+                draw_count(cx, &app)
+            };
+            // A swatch chooses as the key comes up: only the frames the
+            // key-up itself draws, no settle.
+            cx.simulate_event(KeyUpEvent { keystroke });
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{key}: the choice closed the picker"
+            );
+            assert_eq!(focused_stop(cx), trigger, "{key}: focus is on the trigger");
+            assert_eq!(
+                draw_count(cx, &app),
+                draws + 1,
+                "{key}: the close drew one frame"
+            );
+            assert!(
+                whole_trigger_ring(cx).is_some(),
+                "{key}: that frame draws the trigger's ring"
+            );
+        }
+    }
+
     /// The picker's field shows the digits choosing a colour saves, and Enter
     /// in the field with no edit saves that same value. The field truncated
     /// each channel where the saved token rounds it, so Enter there saved a
