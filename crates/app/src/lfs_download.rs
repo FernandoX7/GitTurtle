@@ -298,6 +298,15 @@ const DOWNLOAD_BEFORE: &str = "Download Before…";
 const DOWNLOAD_AFTER: &str = "Download After…";
 const DOWNLOAD_SOURCE: &str = "Download Source…";
 
+#[cfg(test)]
+thread_local! {
+    /// Whether a Download row's sentence fits beside its buttons, in place
+    /// of [`sentence_fits_beside`]'s measurement, for a test of a
+    /// measurement that disagrees with layout.
+    pub(crate) static SENTENCE_FITS: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
 thread_local! {
     static DOWNLOAD_BEFORE_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static DOWNLOAD_AFTER_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
@@ -378,6 +387,8 @@ pub(crate) fn download_row(
         column,
         window,
     );
+    #[cfg(test)]
+    let fits = SENTENCE_FITS.get().unwrap_or(fits);
     let sentence_moves = line_above || !fits;
     let download = std::rc::Rc::new(download);
     div()
@@ -398,6 +409,13 @@ pub(crate) fn download_row(
                 label("lfs-preview-download-explanation", DOWNLOAD_EXPLANATION)
                     .debug_selector(|| "lfs-preview-download-explanation".into())
                     .whitespace_nowrap()
+                    // No wider than the row, and cut there with an ellipsis:
+                    // should the measurement that stood it here disagree
+                    // with layout, it ends inside the pane rather than
+                    // running past it.
+                    .max_w_full()
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .text_size(appearance::ui_text(12.)),
             )
         })

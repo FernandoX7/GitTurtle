@@ -11331,6 +11331,129 @@ pub(crate) mod tests {
         });
     }
 
+    /// A Download row's sentence, stood beside its buttons by a measurement
+    /// that disagrees with layout, ends inside the pane, where without a
+    /// bound its one line ran past the pane's edge; and beside a Download
+    /// row alone Diff, Before and After keep a whole row in a 461 × 440
+    /// window as in 461 × 490, at 13 and 18 pt.
+    #[gpui::test]
+    async fn a_download_row_alone_keeps_its_sentence_in_the_pane_and_a_row_below(
+        cx: &mut TestAppContext,
+    ) {
+        let pointer = |digit: &str| {
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+                digit.repeat(64)
+            )
+        };
+        let (old, new) = (pointer("b"), pointer("c"));
+        let input = file_commits(&[
+            (
+                "before",
+                &[("both.txt", old.as_bytes()), ("one.txt", old.as_bytes())],
+            ),
+            (
+                "after",
+                &[("both.txt", new.as_bytes()), ("one.txt", b"plain text\n")],
+            ),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        let select = |path: &str, cx: &mut VisualTestContext| {
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+                    .expect("the commit changes it")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+        };
+        let mode = |mode: TextMode, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.text_mode = mode;
+                    app.ensure_editor(window, cx);
+                    cx.notify();
+                })
+            });
+        };
+        for path in ["both.txt", "one.txt"] {
+            select(path, cx);
+            settle(&app, cx).await;
+            for text in [18, 13] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                for scale in [2.0f32, 1.2] {
+                    let device = px(1. / scale);
+                    for height in [490., 480., 440.] {
+                        cx.simulate_resize(size(px(461.), px(height)));
+                        cx.update(|window, _| window.set_scale_factor(scale));
+                        for (shown, name) in [
+                            (TextMode::Unified, "Diff"),
+                            (TextMode::Before, "Before"),
+                            (TextMode::After, "After"),
+                        ] {
+                            let at = format!("{path}, {text} pt, 461 × {height}, {name}");
+                            mode(shown, cx);
+                            settle(&app, cx).await;
+                            draw(cx);
+                            draw(cx);
+                            let row = cx.update(|window, _| comparison_floor(1., window));
+                            let comparison = cx
+                                .debug_bounds("preview-content")
+                                .expect("the comparison is drawn");
+                            let button = cx
+                                .debug_bounds("download-lfs-side-0")
+                                .expect("Before offers its download");
+                            let footer = cx
+                                .debug_bounds("compare-footer")
+                                .expect("Compare's footer is drawn");
+                            let status = cx.debug_bounds("status-bar").expect("the status bar");
+                            // Both sides' buttons stack at 18 pt, so there
+                            // the row holds down to 480 px, as DESIGN.md says.
+                            if path == "both.txt" && text == 18 && height < 480. {
+                                assert!(
+                                    comparison.size.height < row,
+                                    "{at}: {comparison:?} holds a row below 480 px; say so"
+                                );
+                                continue;
+                            }
+                            assert!(
+                                button.bottom() <= comparison.top() + device / 2.
+                                    && comparison.size.height >= row - device / 2.
+                                    && footer.bottom() <= status.top() + device / 2.,
+                                "{at}: {comparison:?} keeps a whole row, {row:?}, beneath \
+                                 {button:?} and above {footer:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Stood beside its buttons whatever they measure, the sentence ends
+        // inside the pane.
+        crate::lfs_download::SENTENCE_FITS.set(Some(true));
+        select("both.txt", cx);
+        mode(TextMode::Unified, cx);
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(18, 12, window, cx)
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        settle(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        let pane = cx.debug_bounds("compare-toolbar").expect("the pane");
+        let inset = cx.update(|window, _| window.pixel_snap(window.rem_size() * 0.75));
+        let sentence = cx
+            .debug_bounds(DOWNLOAD_SENTENCE)
+            .expect("the sentence is stood beside the buttons");
+        crate::lfs_download::SENTENCE_FITS.set(None);
+        assert!(
+            sentence.right() <= pane.right() - inset + px(0.5),
+            "{sentence:?} ends inside the pane, {pane:?}"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     const DOWNLOAD_SENTENCE: &str = "lfs-preview-download-explanation";
 
     /// Draws Compare at `width` × 490 at `scale` in `mode` and checks its
