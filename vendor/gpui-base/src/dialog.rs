@@ -180,6 +180,16 @@ pub fn init(cx: &mut App) {
     // Command is unverified without a Mac). The input method's pairing
     // assumes the compositor delivers its release and press together, as
     // every one of 426 recorded fcitx5 pairs arrived (3 to 54 µs apart).
+    //
+    // Registered once per application, however often `init` runs, as it
+    // does for each app a test builds: a second interceptor saw every Enter
+    // key-down again, after the first had recorded it, and took it for a
+    // repeat of its own press, so nothing that asks
+    // [`enter_press_is_repeat`] acted on any press, in any window.
+    if cx.has_global::<EnterInterceptor>() {
+        return;
+    }
+    cx.set_global(EnterInterceptor);
     cx.intercept_keystrokes(|event, window, cx| {
         let id = window.window_handle().window_id();
         if event.keystroke.key == ENTER {
@@ -271,6 +281,12 @@ struct EnterPress {
 }
 
 impl Global for EnterPress {}
+
+/// GitTurtle patch: marks the application whose Enter key-downs [`init`]'s
+/// interceptor records, so a later `init` registers no second one.
+struct EnterInterceptor;
+
+impl Global for EnterInterceptor {}
 
 /// GitTurtle patch: a dialog opened in `window` while Enter is down takes
 /// no Enter, neither its default action nor a press of its Buttons, until

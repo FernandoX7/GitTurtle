@@ -1316,6 +1316,19 @@ key); the application's is
 `theme_editor::tests::a_held_return_in_name_begins_one_save`. Remove it with
 the rest of this part.
 
+`init` registers the interceptor once per application, however often it
+runs (`EnterInterceptor`, a marker global; 2026-11-10, FU41-B5E). The
+application runs it once, but its tests run it for every app they build,
+and a test that builds a second app in one test context registered a
+second interceptor: it saw each Enter key-down again after the first had
+recorded it, took it for a repeat, and so the dialog's default action, a
+Button and every application handler that asks `enter_press_is_repeat`
+acted on no press in that context. The application's regression is
+`rewrite_review::tests::the_actions_stand_still_from_open_to_settled`,
+whose second app's command palette opened nothing once the palette's
+field no longer acted on its own Enter. Remove it with the rest of this
+part.
+
 The kit's own Enter handlers ask it too (decided by the coordinator,
 owner-delegated, 2026-11-10, after FU41-B3's security re-check: every kit
 control that acts on Enter as the key goes down also requires a key-down
