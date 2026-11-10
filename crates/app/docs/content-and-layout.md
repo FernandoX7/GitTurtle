@@ -126,9 +126,12 @@ page controls are chosen for the room that cue leaves
 the shared chevron turned up and down, named and tooltipped by their labels,
 where the wider label does not fit (`GitTurtle::file_history_page_labels`).
 Whether each scrolls is decided before layout, never from its last frame
-(`ScrollCue::decided`): their rows' heights are measured once a frame, with
-the toolbar, in the room its form leaves without the gutter
-(`file_history::Rows`), and given their shares of the panel's height in this
+(`ScrollCue::decided`): their rows' heights are measured with the toolbar
+in the room its form leaves without the gutter (`file_history::Rows`), once
+for each change of what decides them (`file_history::RegionsInputs`: the
+inspector's size, the font, sizes and scale, the anchor's and status line's
+texts, the revision and the page's state), so a wheel step over the
+revisions lays out no line, and given their shares of the panel's height in this
 frame, as a column's flex items take them (`file_history::Regions`,
 `PanelLeast::shares`), for each toolbar form the panel weighs, and the footer takes Newer page's and Older page's
 labels, else their icons, where it then holds them, and only otherwise

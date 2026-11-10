@@ -211,9 +211,60 @@ impl Regions {
     }
 }
 
+/// What decides File History's message toolbar and its `Regions`
+/// (`GitTurtle::message_toolbar`): the inspector's width and height and
+/// whether the window pins it, the font, sizes, line height and scale factor
+/// its rows are laid out in, the anchor's and the status line's texts, the
+/// revision's number, and whether a revision is shown and a page failed. A
+/// frame whose inputs are the last decision's, as every wheel step's are,
+/// takes that decision and shapes nothing: measured again, the header's
+/// and the footer's rows laid out six lines in each frame at 13 pt in a
+/// 1,480 × 980 window, where History's did none.
+#[derive(Clone, PartialEq)]
+struct RegionsInputs {
+    width: Pixels,
+    tall: Pixels,
+    pinned: bool,
+    line: crate::views::LineKey,
+    line_height: DefiniteLength,
+    scale: u32,
+    anchor: String,
+    status: String,
+    revision: Option<usize>,
+    shown: bool,
+    failed: bool,
+}
+
+impl RegionsInputs {
+    fn of(lineage: &Lineage, width: Pixels, tall: Pixels, pinned: bool, window: &Window) -> Self {
+        Self {
+            width,
+            tall,
+            pinned,
+            line: crate::views::LineKey::current(window),
+            line_height: crate::views::LineKey::line_height(window),
+            scale: window.scale_factor().to_bits(),
+            anchor: lineage.anchor_line(),
+            status: lineage.status(),
+            revision: lineage.selected.map(|index| lineage.offset + index + 1),
+            shown: lineage.entry().is_some(),
+            failed: lineage.error.is_some(),
+        }
+    }
+}
+
+/// The last message toolbar and `Regions` File History's panel decided, with
+/// the inputs it decided them from (`RegionsInputs`).
+struct Decided {
+    inputs: RegionsInputs,
+    toolbar: commit_message::Toolbar,
+    regions: Regions,
+}
+
 /// File History's header's and footer's rows laid out in one room without
-/// their gutters, measured once a frame in the room of the toolbar the
-/// panel weighs its forms in (`GitTurtle::message_toolbar`), so weighing
+/// their gutters, measured once for a frame's inputs (`RegionsInputs`), in
+/// the room of the toolbar the panel weighs its forms in
+/// (`GitTurtle::message_toolbar`), so weighing
 /// Copy message's and Hash's labels against their icons shapes nothing
 /// more: the two take the same width, and only the panel's least heights
 /// differ between them (`Rows::regions`).
@@ -764,6 +815,9 @@ pub(super) struct State {
     /// the inspector's whole height (`GitTurtle::message_toolbar`); `None`
     /// where no window lays the inspector out.
     regions: std::cell::Cell<Option<Regions>>,
+    /// The last toolbar and regions decided, which a frame with the same
+    /// inputs takes rather than measuring the rows again (`RegionsInputs`).
+    decided: std::cell::RefCell<Option<Decided>>,
     previous: Option<Box<State>>,
 }
 
@@ -984,6 +1038,19 @@ impl GitTurtle {
         else {
             return whole;
         };
+        // Decided once for its inputs (`RegionsInputs`): a wheel step over
+        // the revisions takes the last decision and lays out no line.
+        let inputs = RegionsInputs::of(lineage, width, tall, pinned, window);
+        if let Some(decided) = self
+            .file_history
+            .decided
+            .borrow()
+            .as_ref()
+            .filter(|decided| decided.inputs == inputs)
+        {
+            self.file_history.regions.set(Some(decided.regions));
+            return decided.toolbar;
+        }
         // The panel takes the inspector's whole height, which the window
         // lays out in this frame: read from the panel's last frame, a
         // one-step resize from 511 × 490 to 511 × 520 at 18 pt kept the
@@ -1026,6 +1093,11 @@ impl GitTurtle {
             (gutter, rows.regions(&least(&gutter), tall))
         };
         self.file_history.regions.set(Some(regions));
+        self.file_history.decided.replace(Some(Decided {
+            inputs,
+            toolbar,
+            regions,
+        }));
         toolbar
     }
 
