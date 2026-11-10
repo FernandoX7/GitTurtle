@@ -6691,8 +6691,9 @@ mod picker_tests {
     /// rows around them keep their bounds, at 0.875, 1 and 1.25 of
     /// the desktop text scale (Linux) and at 18 pt, and through the code font
     /// row's off, pending, found and unavailable descriptions, which wrap to
-    /// different line counts in a 1,000 px window. Show the project list is
-    /// left out: narrowing the page for its pane is what it does.
+    /// different line counts in a 1,000 px window, with each toggle's save
+    /// answered before the page is measured. Show the project list is left
+    /// out: narrowing the page for its pane is what it does.
     #[gpui::test]
     fn toggling_a_settings_switch_moves_nothing(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
@@ -6773,8 +6774,16 @@ mod picker_tests {
                         now.len()
                     );
                 };
+                // A click saves the settings on the preference writer, a
+                // thread `run_until_parked` does not wait for. Drained, each
+                // save answers before the page is measured; undrained, a
+                // loaded host's writer fell a queue's length behind the
+                // clicks, its bounded queue refused the next save, and the
+                // refusal's "Could not save settings" notice stood above
+                // every switch (hosted run 42902520118).
                 let toggle = |cx: &mut VisualTestContext| {
                     cx.simulate_click(track.center(), Modifiers::default());
+                    cx.read(|cx| app.read(cx).preferences_writer.drain());
                     settle(cx);
                 };
                 toggle(cx);
