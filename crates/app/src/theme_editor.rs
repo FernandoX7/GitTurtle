@@ -1968,11 +1968,18 @@ impl ThemeForm {
     /// a picker closed by Enter in its hex field once gave focus to Save,
     /// saved the theme or closed the editor. Such a press acts on nothing
     /// until its key-up and a new key-down.
+    ///
+    /// It acts once for a held Enter where focus stays, too: a repeat, which
+    /// X11 sends as a fresh press the dialog confirms, began on the control
+    /// it lands on, so a held Return in Name began another save after each
+    /// failed or refused one, each announcing its error again.
     fn confirm_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(focused) = window.focused(cx) else {
             return;
         };
-        if !gpui_kit::base::enter_press_began_on(&focused, window, cx) {
+        if gpui_kit::base::enter_press_is_repeat(window, cx)
+            || !gpui_kit::base::enter_press_began_on(&focused, window, cx)
+        {
             return;
         }
         if focused == self.name.read(cx).focus_handle(cx) {
@@ -3894,6 +3901,91 @@ pub(crate) mod tests {
                 }),
             }
         }
+    }
+
+    /// A held Return in Name begins one save, under X11 too: with the store
+    /// refusing writes, Enter goes down in Name and its save fails, then the
+    /// key's repeats arrive as X11 sends them, fresh presses with no key-up
+    /// between them and a release and its press together, each one waited
+    /// out until the writer has answered. The form submits once and shows
+    /// its error once; after the key-up a new press begins a second save.
+    /// Every X11 repeat began on Name, where focus stays, so each began
+    /// another write after the last one failed and announced its error
+    /// again.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_held_return_in_name_begins_one_save(cx: &mut TestAppContext) {
+        fn enter(cx: &mut VisualTestContext, down: bool) {
+            let keystroke = Keystroke::parse("enter").expect("a keystroke");
+            let input = if down {
+                PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke,
+                    is_held: false,
+                    prefer_character_input: false,
+                })
+            } else {
+                PlatformInput::KeyUp(KeyUpEvent { keystroke })
+            };
+            cx.update(|window, cx| window.dispatch_event(input, cx));
+        }
+        let (app, cx) = open_at_rest(cx);
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        let name = cx.read(|cx| form.read(cx).name.read(cx).focus_handle(cx));
+        assert!(
+            cx.update(|window, _| name.is_focused(window)),
+            "the editor opens in Name"
+        );
+        // Saves begun and errors shown, counted as the form changes.
+        let counts = Rc::new(std::cell::Cell::new((0_usize, 0_usize)));
+        let _counting = cx.update(|_, cx| {
+            let counts = counts.clone();
+            let mut was = (false, false);
+            cx.observe(&form, move |form, cx| {
+                let form = form.read(cx);
+                let now = (form.pending, form.error.is_some());
+                let (saves, errors) = counts.get();
+                counts.set((
+                    saves + usize::from(now.0 && !was.0),
+                    errors + usize::from(now.1 && !was.1),
+                ));
+                was = now;
+            })
+        });
+        let failed = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let form = form.read(cx);
+                !form.pending && form.error.is_some()
+            })
+        };
+        let refused = ReadOnlyPreferences::new();
+        enter(cx, true);
+        wait_for(cx, &app, failed);
+        assert_eq!(counts.get(), (1, 1), "the press began a save, which failed");
+        for repeat in 0..6 {
+            if repeat % 2 == 1 {
+                // A release and its press together, with no idle pass between.
+                enter(cx, false);
+            }
+            enter(cx, true);
+            settle(cx);
+            drain_preference_writer(cx, &app);
+            assert!(failed(cx), "repeat {repeat}: the error stays");
+            assert_eq!(counts.get(), (1, 1), "repeat {repeat}: no other save began");
+        }
+        enter(cx, false);
+        settle(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the editor stays open"
+        );
+        enter(cx, true);
+        wait_for(cx, &app, failed);
+        assert_eq!(counts.get(), (2, 2), "a new press begins another save");
+        drop(refused);
+        enter(cx, false);
+        settle(cx);
     }
 
     /// Keep colors and Replace colors leave the tree when answered; focus

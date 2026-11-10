@@ -194,6 +194,11 @@ pub fn init(cx: &mut App) {
                 || (press.down.contains(&id) && press.began.contains_key(&id));
             press.down.insert(id);
             press.began.entry(id).or_insert(focused);
+            if repeat {
+                press.repeats.insert(id);
+            } else {
+                press.repeats.remove(&id);
+            }
             if repeat && press.blocked.contains(&id) {
                 cx.stop_propagation();
             }
@@ -205,6 +210,7 @@ pub fn init(cx: &mut App) {
             // whose key-up came before it has ended.
             let press = cx.global_mut::<EnterPress>();
             press.began.remove(&id);
+            press.repeats.remove(&id);
             if press.released.remove(&id).is_some() {
                 press.blocked.remove(&id);
             }
@@ -237,6 +243,10 @@ struct EnterPress {
     /// under X11 is the one key-down of a held Enter that is not a repeat
     /// ([`enter_press_began_on`]).
     began: HashMap<WindowId, Option<WeakFocusHandle>>,
+    /// The windows whose latest Enter key-down repeated the press recorded
+    /// there ([`enter_press_is_repeat`]), until another key or the press's
+    /// end.
+    repeats: HashSet<WindowId>,
     /// The windows whose Enter came up while a press was recorded, with the
     /// key-up's number: the press ends once the application next runs a
     /// task ([`end_released`]), unless an Enter goes down first, in that
@@ -380,6 +390,7 @@ fn end_released(window: WindowId, key_up: u64, key_downs: Option<u64>, cx: &mut 
         } else {
             press.blocked.remove(&window);
             press.began.remove(&window);
+            press.repeats.remove(&window);
         }
     }
 }
@@ -395,6 +406,25 @@ pub fn enter_press_began_on(focus: &FocusHandle, window: &Window, cx: &App) -> b
     cx.try_global::<EnterPress>()
         .and_then(|press| press.began.get(&window.window_handle().window_id()))
         .is_none_or(|began| began.as_ref().is_some_and(|began| began == focus))
+}
+
+/// GitTurtle patch: whether the Enter key-down `window` is dispatching
+/// repeats the press recorded there: it went down again with no Enter
+/// key-up or other key since, as a held key repeats on every platform
+/// (marked held on macOS and Wayland, not under X11, where each repeat
+/// arrives as a fresh press), or right after a key-up that came with it, as
+/// an input method's repeat on Wayland and an X11 repeat's release and press
+/// arrive. A control that acts on Enter as the key goes down, whatever the
+/// focus it began on, asks this as well as [`enter_press_began_on`], so a
+/// held Enter acts once under X11 too: a held Enter in a form's field that
+/// submits it, whose focus stays put, began on that field on every repeat,
+/// so after a refused save each repeat began another. The residual is
+/// [`EnterPress::released`]'s: an X11 repeat whose release ends a poll batch
+/// and whose press arrives in the next, after the idle pass that ends the
+/// press, is a fresh press.
+pub fn enter_press_is_repeat(window: &Window, cx: &App) -> bool {
+    cx.try_global::<EnterPress>()
+        .is_some_and(|press| press.repeats.contains(&window.window_handle().window_id()))
 }
 
 /// GitTurtle patch: whether `window`'s dialogs wait for an Enter press that
@@ -1542,6 +1572,68 @@ mod tests {
             );
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// A focused root that records, for each Enter going down,
+    /// [`enter_press_is_repeat`] as its listeners see it, and notes every
+    /// key-up, as the component `Root` does.
+    struct RepeatProbe {
+        focus: FocusHandle,
+        seen: Rc<RefCell<Vec<bool>>>,
+    }
+
+    impl Render for RepeatProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let seen = self.seen.clone();
+            div()
+                .size_full()
+                .track_focus(&self.focus)
+                .capture_key_up(|event, window, cx| note_key_up(event, window, cx))
+                .on_key_down(move |event, window, cx| {
+                    if event.keystroke.key == ENTER {
+                        seen.borrow_mut().push(enter_press_is_repeat(window, cx));
+                    }
+                })
+        }
+    }
+
+    /// GitTurtle patch: a key-down that repeats the recorded Enter press is
+    /// one to its window's listeners, whether marked held, as macOS and
+    /// Wayland mark a held key's repeats, or not, as X11 sends them, and
+    /// whether alone or right after a key-up that came with it; the first
+    /// key-down after the press's key-up, or after another key, is not. A
+    /// form whose focus stays on the field a held Enter submits began
+    /// another submission on each X11 repeat.
+    #[gpui::test]
+    fn a_key_down_knows_it_repeats_the_enter_press(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let (_, cx) = cx.add_window_view({
+            let seen = seen.clone();
+            |window, cx| {
+                let focus = cx.focus_handle();
+                window.focus(&focus, cx);
+                RepeatProbe { focus, seen }
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        // Each key-down and whether its listeners saw it repeat the press.
+        let down = |cx: &mut gpui::VisualTestContext, is_held| {
+            enter(cx, Some(is_held));
+            seen.borrow().last().copied().expect("the root saw the key-down")
+        };
+        assert!(!down(cx, false), "the first key-down is the press");
+        assert!(down(cx, true), "a held repeat");
+        assert!(down(cx, false), "an X11 repeat, not marked held");
+        input_method_repeat(cx);
+        assert_eq!(seen.borrow().last(), Some(&true), "a release and its press together");
+        enter(cx, None);
+        assert!(!down(cx, false), "the first key-down after the key-up");
+        assert!(down(cx, false), "its X11 repeat");
+        cx.simulate_keystrokes("a");
+        assert!(!down(cx, false), "the first key-down after another key");
+        enter(cx, None);
+        assert_eq!(seen.borrow().len(), 7, "every Enter reached the root");
     }
 
     /// GitTurtle patch: a dialog an Enter press opened takes none of that

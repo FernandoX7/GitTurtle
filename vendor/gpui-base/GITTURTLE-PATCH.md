@@ -1295,6 +1295,25 @@ out an Enter still down the same way, since the close gives focus back to a
 control that press's repeats would press (`src/dialog.rs`; the component
 patch's dialog-close Enter tests cover it).
 
+The same patch tells a key-down that repeats the recorded press from a
+fresh one (`enter_press_is_repeat`, exported from `src/lib.rs`; decided by
+the coordinator, owner-delegated, 2026-11-10, after FU41-B2's design
+re-check). `enter_press_began_on` holds on every repeat while focus stays
+where the press began, so a form that submits from the field a held Enter
+began in, the application's theme editor's Name, began another save on
+each X11 repeat once the last one had failed or been refused, each
+announcing its error again. The interceptor already decided whether each
+Enter key-down repeats the window's press, to keep a dialog's repeats out;
+it now records that decision for the window until another key or the
+press's end, and an Enter handler that acts as the key goes down asks it
+too. Its residual is the X11 one above: a repeat whose release ends a poll
+batch is a fresh press. The kit test is
+`dialog::tests::a_key_down_knows_it_repeats_the_enter_press` (held, X11 and
+input-method repeats, then the first key-down after a key-up or another
+key); the application's is
+`theme_editor::tests::a_held_return_in_name_begins_one_save`. Remove it with
+the rest of this part.
+
 Remove this part with the rest of the patch when upstream leaves Enter on a
 focused Button to the Button.
 
