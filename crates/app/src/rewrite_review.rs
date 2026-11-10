@@ -6722,10 +6722,13 @@ mod tests {
         let failure = cx
             .debug_bounds("lfs-download-failure")
             .expect("the failure is said in the row");
+        // After the button, which keeps the place where it was pressed.
         assert!(
             (failure.center().y - button.center().y).abs() <= device / 2.
-                && failure.right() <= button.left() + device / 2.,
-            "the failure's words, {failure:?}, stand on the button's line, {button:?}"
+                && failure.left() >= button.right() - device / 2.
+                && (button.left() - pressed.left()).abs() <= device / 2.,
+            "the failure's words, {failure:?}, stand after the button on its line, \
+             {button:?}, which stays where it was pressed, {pressed:?}"
         );
         assert!(
             (button.top() - pressed.top()).abs() <= device / 2.
@@ -6998,8 +7001,11 @@ mod tests {
                 }
                 end_download(&app, &browser, cx, Some(words));
                 shown(cx);
+                // Its words, or where they would not keep "Failed…" the
+                // warning icon that stands for them.
                 let failure = cx
                     .debug_bounds("lfs-download-failure")
+                    .or_else(|| cx.debug_bounds("lfs-download-failure-icon"))
                     .expect("the failure is said in the row");
                 let sides = downloads(cx).map(|side| side.expect("both Downloads are back"));
                 assert!(
@@ -7026,10 +7032,12 @@ mod tests {
     /// A failure's words stand on the line of the side that failed, where
     /// the person pressed: with both sides' objects missing at 18 pt in a
     /// 461 × 680 window, where the two Downloads keep their word and stack,
-    /// After…'s failure stands beside Download After…, and while it is
-    /// drawn that Download's accessible description says it ("Failed: …"),
-    /// Before… keeping the row's sentence. The words stood beside the first
-    /// line's Download Before…, which had not failed.
+    /// After…'s failure stands after Download After…, which keeps the place
+    /// where it was pressed, and while it is drawn that Download's
+    /// accessible description says it ("Failed: …"), Before… keeping the
+    /// row's sentence. The words stood beside the first line's Download
+    /// Before…, which had not failed, and then before Download After…,
+    /// which moved right by their width as it failed, its ring with it.
     #[gpui::test]
     async fn a_failure_stands_beside_the_download_that_failed(cx: &mut gpui_kit::TestAppContext) {
         use crate::native_accessibility::written;
@@ -7062,12 +7070,12 @@ mod tests {
             ["download-lfs-side-0", "download-lfs-side-1"]
                 .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")))
         };
-        let [before, after] = downloads(cx);
+        let [before, pressed] = downloads(cx);
         assert!(
-            after.top() >= before.bottom() - device / 2.,
-            "the two stack: {before:?}, {after:?}"
+            pressed.top() >= before.bottom() - device / 2.,
+            "the two stack: {before:?}, {pressed:?}"
         );
-        start_download(&app, &browser, cx, after.center());
+        start_download(&app, &browser, cx, pressed.center());
         cx.executor()
             .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
         shown(cx);
@@ -7080,9 +7088,13 @@ mod tests {
         let [before, after] = downloads(cx);
         assert!(
             (failure.center().y - after.center().y).abs() <= device / 2.
-                && failure.right() <= after.left() + device / 2.,
-            "the words, {failure:?}, stand beside Download After…, {after:?}, not \
+                && failure.left() >= after.right() - device / 2.,
+            "the words, {failure:?}, stand after Download After…, {after:?}, not \
              {before:?}"
+        );
+        assert!(
+            (after.left() - pressed.left()).abs() <= device / 2.,
+            "Download After…, {after:?}, keeps the place where it was pressed, {pressed:?}"
         );
         let described =
             |id: &str| written::get(id).and_then(|node| node.node.description().map(str::to_owned));
@@ -7098,6 +7110,104 @@ mod tests {
             "the Download that failed says the words it stands beside"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A failure never shrinks to a bare ellipsis (decision, 2026-11-10):
+    /// with both sides' objects missing at 18 pt in QA's 461 × 490 window at
+    /// scale 2, where the two Downloads share a line without their word, a
+    /// long failure of After… leaves its words no room for "Failed…", so a
+    /// warning icon stands in their place, drawn whole, the whole words in
+    /// its tooltip and in Download After…'s accessible description, said
+    /// nowhere else on screen. At 13 pt in a 1480 × 973 window the words are
+    /// drawn, no icon needed, naming the side that failed, as two sides on
+    /// one line would not tell which did. The words were drawn as "…".
+    #[gpui::test]
+    async fn a_failure_never_shrinks_to_a_bare_ellipsis(cx: &mut gpui_kit::TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_both();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, _| window.set_scale_factor(2.));
+        let browser = inspecting(&app, cx, &files);
+        choose(&browser, cx, file_index(&files, "both.mmd"));
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.text_mode = 0;
+                    browser.prepare_editor(window, cx);
+                    let body = &browser.body;
+                    body.reveal_next_focus();
+                    body.focus("series-file-preview", cx).focus(window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+        };
+        shown(cx);
+        let after = cx
+            .debug_bounds("download-lfs-side-1")
+            .expect("Download After… is offered");
+        start_download(&app, &browser, cx, after.center());
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        shown(cx);
+        let words = "Git LFS could not reach origin: the remote refused the batch request \
+                     for this object because its credentials have expired";
+        end_download(&app, &browser, cx, Some(words));
+        shown(cx);
+        let device = cx.update(|window, _| px(1. / window.scale_factor()));
+        let icon = cx
+            .debug_bounds("lfs-download-failure-icon")
+            .expect("a warning icon stands for the words");
+        let whole = cx.update(|window, _| window.pixel_snap(appearance::ui_size(16.)));
+        let [before, after] = ["download-lfs-side-0", "download-lfs-side-1"]
+            .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
+        let preview = cx
+            .debug_bounds("series-file-preview")
+            .expect("the preview's box");
+        assert!(
+            cx.debug_bounds("lfs-download-failure").is_none()
+                && icon.size.width >= whole - device / 2.
+                && icon.left() >= preview.left() - device / 2.
+                && [before, after]
+                    .iter()
+                    .all(|side| icon.right() <= side.left() + device / 2.
+                        || icon.left() >= side.right() - device / 2.),
+            "the icon, {icon:?}, is drawn whole, {whole:?}, in the row beside {before:?} \
+             and {after:?}, in place of the words"
+        );
+        assert!(
+            hover_shows(cx, "lfs-download-failure-icon", words),
+            "its tooltip says the whole words"
+        );
+        assert_eq!(
+            written::get("download-lfs-side-1")
+                .and_then(|node| node.node.description().map(str::to_owned)),
+            Some(format!("Failed: {words}")),
+            "Download After…'s accessible description says them"
+        );
+        cx.update(|window, _| window.set_scale_factor(1.));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        shown(cx);
+        let failure = cx
+            .debug_bounds("lfs-download-failure")
+            .expect("the words are drawn");
+        assert!(
+            failure.size.width > Pixels::ZERO
+                && cx.debug_bounds("lfs-download-failure-icon").is_none(),
+            "at 13 pt in a 1480 × 973 window the words, {failure:?}, need no icon"
+        );
+        assert_eq!(
+            written::get("lfs-download-failure")
+                .and_then(|node| node.node.value().map(str::to_owned)),
+            Some(format!("After: {words}")),
+            "beside both sides' Downloads the words name the side that failed"
+        );
     }
 
     /// The comparison the review shows, by its identity.
@@ -7506,7 +7616,6 @@ mod tests {
             "close-series-review",
         ]
         .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
-        eprintln!();
         let inside = |part: Bounds<Pixels>, outer: Bounds<Pixels>| {
             part.left() >= outer.left()
                 && part.right() <= outer.right()

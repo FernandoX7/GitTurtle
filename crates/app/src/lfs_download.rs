@@ -323,8 +323,8 @@ const CANCELLING: &str = crate::authentication::CANCEL_LABELS[1];
 /// The least a failure's words keep beside the buttons: their first word
 /// and the ellipsis they end in where they give way.
 const FAILED: &str = "Failed…";
-/// The least the progress or a failure's words keep where the row's
-/// buttons' word has given way ([`said_least`]).
+/// The least the progress keeps where the row's buttons' word has given way
+/// ([`said_least`]); a failure's words give way to a warning icon instead.
 const ELLIPSIS: &str = "…";
 
 const DOWNLOAD_BEFORE: &str = "Download Before…";
@@ -494,17 +494,89 @@ fn side_widths(
 /// buttons keeps, `failed` a failure's words, else a running download's
 /// progress: the progress whole, and the words' first word with the
 /// ellipsis they end in where they give way; where `short`, the
-/// comparison's row having taken the buttons' word, either gives way to its
-/// ellipsis first, whole in its tooltip and its accessible name, as the
-/// alert that said a failure was (decision, 2026-11-10: kept whole, at 18
-/// pt in a 461 × 490 window both sides' objects missing stacked the two
-/// Downloads in every state and cut the comparison's row by 1.5 px).
+/// comparison's row having taken the buttons' word, the progress gives way
+/// to its ellipsis first, whole in its tooltip and its accessible name
+/// (decision, 2026-11-10: kept whole, at 18 pt in a 461 × 490 window both
+/// sides' objects missing stacked the two Downloads in every state and cut
+/// the comparison's row by 1.5 px), and the words to the warning icon that
+/// stands for them, never to a bare ellipsis ([`failure_icon`]).
 fn said_least(failed: bool, short: bool, window: &Window) -> Pixels {
     match (short, failed) {
-        (true, _) => row_text_width(ELLIPSIS, &ELLIPSIS_WIDTH, window),
+        (true, true) => failure_icon_width(window),
+        (true, false) => row_text_width(ELLIPSIS, &ELLIPSIS_WIDTH, window),
         (false, true) => row_text_width(FAILED, &FAILED_WIDTH, window),
         (false, false) => row_text_width(DOWNLOAD_OBJECT, &PROGRESS_WIDTH, window),
     }
+}
+
+/// Whether a failure's words keep at least "Failed…" beside the buttons on
+/// the line of the side that `failed`, among `sides` that `share` one line
+/// or stack one to a line, their word given way where `short`, in a row
+/// `column` wide. Where they would not, a warning icon stands in their
+/// place ([`failure_icon`]): a failure never shrinks to a bare ellipsis
+/// (decision, 2026-11-10: at 18 pt in a 461 × 490 window the words of a
+/// failure beside both sides' Downloads were drawn as "…" alone).
+fn failure_words_fit(
+    quick_source: bool,
+    sides: &[usize],
+    failed: usize,
+    share: bool,
+    short: bool,
+    column: Pixels,
+    window: &Window,
+) -> bool {
+    let (gap, room) = row_room(column, window);
+    let [buttons, _] = side_widths(quick_source, sides, short, false, window);
+    let line = sides
+        .iter()
+        .zip(&buttons)
+        .filter(|(side, _)| share || **side == failed)
+        .map(|(_, &button)| gap + button)
+        .sum::<Pixels>();
+    row_text_width(FAILED, &FAILED_WIDTH, window) + line <= room
+}
+
+/// The width layout gives [`failure_icon`]'s icon, the shared 16 px control
+/// icon on a whole device pixel.
+fn failure_icon_width(window: &Window) -> Pixels {
+    window.pixel_snap(appearance::ui_size(16.))
+}
+
+/// What a side's name is in the row, `quick_source` calling its one side
+/// Source.
+fn side_name(quick_source: bool, side: usize) -> &'static str {
+    if quick_source {
+        "Source"
+    } else {
+        ["Before", "After"][side]
+    }
+}
+
+/// The warning icon that stands for a failure's `words` where they would
+/// not keep "Failed…" beside the buttons ([`failure_words_fit`]): it never
+/// gives way, the last thing standing in their place, the whole words in
+/// its tooltip and in the failed side's Download's accessible description
+/// ("Failed: …"), so assistive technology hears them as before, once, as
+/// the alert that said they landed.
+fn failure_icon(words: SharedString, warning: u32) -> AnyElement {
+    div()
+        .id("lfs-download-failure-icon")
+        .debug_selector(|| "lfs-download-failure-icon".into())
+        .flex_none()
+        .flex()
+        .items_center()
+        .child(crate::control_icon("file-conflict").text_color(rgb(warning)))
+        .tooltip(move |window, cx| {
+            let text = words.clone();
+            Tooltip::element(move |_, _| {
+                let probe = text.clone();
+                div()
+                    .debug_selector(move || format!("lfs-download-failure-icon/tooltip/{probe}"))
+                    .child(text.clone())
+            })
+            .build(window, cx)
+        })
+        .into_any_element()
 }
 
 /// Whether the sides of `sides`, their Download buttons' word given way
@@ -727,18 +799,29 @@ pub(crate) fn download_row(
     // it ends inside the pane rather than running past it, and a failure
     // landing never grows the row (wrapped, the words took a line of their
     // own, about 25 px at 18 pt, as they landed).
-    let said = if let Some((_, words)) = failure.clone() {
+    let said = if let Some((failed, words)) = failure.clone() {
         let whole = words.clone();
         Some(
-            label("lfs-download-failure", words)
-                .debug_selector(|| "lfs-download-failure".into())
-                .flex_shrink(1.)
-                .min_w_0()
-                .truncate()
-                .text_size(appearance::ui_text(12.))
-                .text_color(rgb(warning))
-                .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
-                .into_any_element(),
+            if failure_words_fit(quick_source, &sides, failed, share, short, column, window) {
+                // Two sides on one line: the words say which failed, which
+                // nothing else drawn there tells.
+                let drawn: SharedString = if share && sides.len() > 1 {
+                    format!("{}: {words}", side_name(quick_source, failed)).into()
+                } else {
+                    words
+                };
+                label("lfs-download-failure", drawn)
+                    .debug_selector(|| "lfs-download-failure".into())
+                    .flex_shrink(1.)
+                    .min_w_0()
+                    .truncate()
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(warning))
+                    .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
+                    .into_any_element()
+            } else {
+                failure_icon(whole, warning)
+            },
         )
     } else {
         (!sentence_moves).then(|| {
@@ -835,13 +918,26 @@ pub(crate) fn download_row(
     } else {
         items.map(|item| vec![item]).collect()
     };
-    let at = failure
+    // In a stacked row a failure follows the Download that failed, which
+    // keeps the place where it was pressed, the words filling the rest of
+    // its line; what else stands in the sentence's place leads the first.
+    // Put first, the words moved Download After… right by their width as
+    // it failed, its focus ring with it (decision, 2026-11-10).
+    match failure
         .as_ref()
         .filter(|_| !share)
         .and_then(|(failed, _)| sides.iter().position(|side| side == failed))
-        .unwrap_or(0);
-    if let (Some(said), Some(line)) = (said, lines.get_mut(at)) {
-        line.insert(0, said);
+    {
+        Some(at) => {
+            if let (Some(said), Some(line)) = (said, lines.get_mut(at)) {
+                line.push(said);
+            }
+        }
+        None => {
+            if let (Some(said), Some(line)) = (said, lines.first_mut()) {
+                line.insert(0, said);
+            }
+        }
     }
     noted_short(div(), short)
         .flex_none()
