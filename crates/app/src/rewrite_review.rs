@@ -1921,10 +1921,14 @@ impl SeriesBrowser {
                 Some(ReviewDownload {
                     failure: Some(words),
                     seen,
+                    side,
                     ..
                 }) => {
                     seen.set(true);
-                    AskedState::Failed(words.clone())
+                    AskedState::Failed {
+                        side: *side,
+                        words: words.clone(),
+                    }
                 }
                 Some(asked) if owner.lfs_downloads.running() == Some(me) => AskedState::Running {
                     side: asked.side,
@@ -7016,6 +7020,83 @@ mod tests {
                 );
             }
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A failure's words stand on the line of the side that failed, where
+    /// the person pressed: with both sides' objects missing at 18 pt in a
+    /// 461 × 680 window, where the two Downloads keep their word and stack,
+    /// After…'s failure stands beside Download After…, and while it is
+    /// drawn that Download's accessible description says it ("Failed: …"),
+    /// Before… keeping the row's sentence. The words stood beside the first
+    /// line's Download Before…, which had not failed.
+    #[gpui::test]
+    async fn a_failure_stands_beside_the_download_that_failed(cx: &mut gpui_kit::TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_both();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(461.), px(680.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, _| window.set_scale_factor(2.));
+        let browser = inspecting(&app, cx, &files);
+        let device = cx.update(|window, _| px(1. / window.scale_factor()));
+        choose(&browser, cx, file_index(&files, "both.mmd"));
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.text_mode = 0;
+                    browser.prepare_editor(window, cx);
+                    let body = &browser.body;
+                    body.reveal_next_focus();
+                    body.focus("series-file-preview", cx).focus(window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+        };
+        shown(cx);
+        let downloads = |cx: &mut gpui::VisualTestContext| {
+            ["download-lfs-side-0", "download-lfs-side-1"]
+                .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")))
+        };
+        let [before, after] = downloads(cx);
+        assert!(
+            after.top() >= before.bottom() - device / 2.,
+            "the two stack: {before:?}, {after:?}"
+        );
+        start_download(&app, &browser, cx, after.center());
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        shown(cx);
+        let words = "Git LFS could not reach origin";
+        end_download(&app, &browser, cx, Some(words));
+        shown(cx);
+        let failure = cx
+            .debug_bounds("lfs-download-failure")
+            .expect("the failure is said in the row");
+        let [before, after] = downloads(cx);
+        assert!(
+            (failure.center().y - after.center().y).abs() <= device / 2.
+                && failure.right() <= after.left() + device / 2.,
+            "the words, {failure:?}, stand beside Download After…, {after:?}, not \
+             {before:?}"
+        );
+        let described =
+            |id: &str| written::get(id).and_then(|node| node.node.description().map(str::to_owned));
+        assert_eq!(
+            [
+                described("download-lfs-side-0"),
+                described("download-lfs-side-1")
+            ],
+            [
+                Some(crate::lfs_download::DOWNLOAD_EXPLANATION.to_owned()),
+                Some(format!("Failed: {words}")),
+            ],
+            "the Download that failed says the words it stands beside"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

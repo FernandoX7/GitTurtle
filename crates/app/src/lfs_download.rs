@@ -660,8 +660,10 @@ pub(crate) enum AskedState {
         progress: Option<SharedString>,
         cancel: RunningCancel,
     },
-    /// It failed, saying these words, and its Download is back.
-    Failed(SharedString),
+    /// Side `side`'s download failed, saying `words`, and its Download is
+    /// back: the words stand on that side's line, and while they do its
+    /// Download's accessible description says them.
+    Failed { side: usize, words: SharedString },
 }
 
 /// The row offering a download of each side among `targets`, whose object
@@ -700,7 +702,7 @@ pub(crate) fn download_row(
     #[cfg(test)]
     let fits = SENTENCE_FITS.get().unwrap_or(fits);
     let (failure, running) = match asked.as_ref().map(|asked| &asked.state) {
-        Some(AskedState::Failed(words)) => (Some(words.clone()), None),
+        Some(AskedState::Failed { side, words }) => (Some((*side, words.clone())), None),
         Some(AskedState::Running {
             side,
             progress: Some(progress),
@@ -725,7 +727,7 @@ pub(crate) fn download_row(
     // it ends inside the pane rather than running past it, and a failure
     // landing never grows the row (wrapped, the words took a line of their
     // own, about 25 px at 18 pt, as they landed).
-    let said = if let Some(words) = failure {
+    let said = if let Some((_, words)) = failure.clone() {
         let whole = words.clone();
         Some(
             label("lfs-download-failure", words)
@@ -785,10 +787,20 @@ pub(crate) fn download_row(
                     false,
                 )
                 .when_some(focus, |button, focus| button.track_focus(&focus))
-                .when(sentence_moves, |button| {
-                    crate::branch_actions::Described(button)
-                        .aria_description(DOWNLOAD_EXPLANATION)
-                        .0
+                // The side that failed says the failure's words, drawn
+                // beside it, where the others say the sentence.
+                .map(|button| match &failure {
+                    Some((failed, words)) if *failed == side => {
+                        crate::branch_actions::Described(button)
+                            .aria_description(SharedString::from(format!("Failed: {words}")))
+                            .0
+                    }
+                    _ if sentence_moves => {
+                        crate::branch_actions::Described(button)
+                            .aria_description(DOWNLOAD_EXPLANATION)
+                            .0
+                    }
+                    _ => button,
                 })
                 // Its whole name stays in its accessible name and
                 // tooltip, beside the sentence where that moved here.
@@ -814,15 +826,22 @@ pub(crate) fn download_row(
             .into_any_element()
     });
     // Its lines are its buttons': one where they share it, otherwise one
-    // each, with what stands in the sentence's place beside the first; so
-    // the row keeps its lines whether it rests, runs or failed.
+    // each, with what stands in the sentence's place beside the first, or a
+    // failure's words beside the side that failed; so the row keeps its
+    // lines whether it rests, runs or failed. Beside the first, After…'s
+    // failure in a stacked row stood on Download Before…'s line.
     let mut lines = if share {
         vec![items.collect::<Vec<_>>()]
     } else {
         items.map(|item| vec![item]).collect()
     };
-    if let (Some(said), Some(first)) = (said, lines.first_mut()) {
-        first.insert(0, said);
+    let at = failure
+        .as_ref()
+        .filter(|_| !share)
+        .and_then(|(failed, _)| sides.iter().position(|side| side == failed))
+        .unwrap_or(0);
+    if let (Some(said), Some(line)) = (said, lines.get_mut(at)) {
+        line.insert(0, said);
     }
     noted_short(div(), short)
         .flex_none()
