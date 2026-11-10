@@ -233,9 +233,10 @@ const READING_FILES: &str = "Reading changed files…";
 const READING_PREVIEW: &str = "Reading preview…";
 
 /// The least the download's line on the dialog's footer keeps of its text
-/// before Cancel download's word gives way: its first word and an
-/// ellipsis (`lfs_download::line_cancel_form`).
-const LINE_LEAST: &str = "Download…";
+/// ("Downloading flow.mmd's Before object") before Cancel download's word
+/// gives way: its first word and an ellipsis
+/// (`lfs_download::line_cancel_form`).
+const LINE_LEAST: &str = "Downloading…";
 
 /// What the chosen file's row says at its end while its preview is read
 /// below the body's view ([`SeriesBrowser::preview_read_hidden`]).
@@ -840,15 +841,26 @@ impl SeriesBrowser {
         if owner.lfs_downloads.running() != Some(crate::lfs_download::Asker::Review(me)) {
             return None;
         }
-        let label = owner.operation_shown()?;
-        let progress = owner
-            .operation_progress()
-            .map_or_else(|| label.into(), SharedString::from);
+        owner.operation_shown()?;
+        // It names what downloads, apart from the file shown: the
+        // window's progress said only "Download object". What Git LFS
+        // reports, or that the write is cancelling, follows.
+        let name = format!("Downloading {}", asked.object());
+        let progress = owner.operation_progress().map_or_else(
+            || name.clone().into(),
+            |progress| SharedString::from(format!("{name} · {progress}")),
+        );
         let running = asked.cancel(owner);
         let cancel = self.owner.clone();
+        let line = div()
+            .id("series-download-line")
+            .role(Role::Group)
+            .aria_label(name);
+        // Tests assemble the window's tree from what they record.
+        #[cfg(test)]
+        crate::native_accessibility::written::built(&line);
         Some(
-            div()
-                .debug_selector(|| "series-download-status".into())
+            line.debug_selector(|| "series-download-status".into())
                 .size_full()
                 .min_w_0()
                 .flex()
@@ -7262,7 +7274,9 @@ mod tests {
     /// moves as the line comes with the download's busy look and goes as it
     /// ends. At the top of the body, the line scrolled away with it,
     /// overflowed a body the series list's rows do not count, and moved
-    /// the content by about 50 px as it came and went.
+    /// the content by about 50 px as it came and went. It names what
+    /// downloads, "Downloading flow.mmd's Before object", as its group's
+    /// name too, and its Cancel what it cancels: it said "Download object".
     #[gpui::test]
     async fn the_review_s_download_line_stands_on_its_footer(cx: &mut gpui_kit::TestAppContext) {
         use crate::native_accessibility::written;
@@ -7334,12 +7348,21 @@ mod tests {
             "the line's progress, {progress:?}, and Cancel, {cancel:?}, stand whole on the \
              footer, {status:?}, before {close:?}, inside the dialog, {frame:?}, and the window"
         );
+        let said =
+            |id: &str| written::get(id).and_then(|node| node.node.label().map(str::to_owned));
         assert_eq!(
-            written::get("cancel-lfs-download")
-                .and_then(|node| node.node.label().map(str::to_owned))
-                .as_deref(),
-            Some("Cancel download of flow.mmd's Before object"),
-            "Cancel names what it cancels"
+            [
+                said("series-download-line"),
+                said("lfs-download-progress"),
+                said("cancel-lfs-download"),
+            ],
+            [
+                "Downloading flow.mmd's Before object",
+                "Downloading flow.mmd's Before object",
+                "Cancel download of flow.mmd's Before object",
+            ]
+            .map(|said| Some(said.to_owned())),
+            "the line, its text and its Cancel name what downloads"
         );
         cx.update(|_, cx| {
             browser
