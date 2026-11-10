@@ -25,6 +25,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static CLOSE_LABEL_WIDTH: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
         const { std::cell::RefCell::new(None) };
+    /// The anchor's line, "From ‹hash› · first-parent lineage", as one line.
+    static FROM_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
 /// The least heights of File History's parts, so the content stays whole
@@ -1171,6 +1173,26 @@ impl GitTurtle {
             Pixels::ZERO
         };
         let top_row = self.file_history_top_row(header_gutter, window);
+        // The anchor's line keeps its whole measured line beside its copy
+        // control, or the header's whole row where that is narrower, and
+        // below that the control moves beneath it, on its left edge: at 18 pt
+        // in a 461 px window the line, given no least, was 61 to 80 px wide
+        // beside the control and wrapped to about 135 px.
+        let from = format!("From {} · first-parent lineage", short_oid(&lineage.anchor));
+        let from_least = self
+            .file_history_header_room(header_gutter, window)
+            .map(|room| {
+                let line = crate::views::laid_out_text_width(
+                    crate::views::cached_text_width(&FROM_WIDTH, &from, window, || {
+                        crate::views::line_widths(
+                            &[(&from, crate::appearance::ui_text(10.))],
+                            window,
+                        )
+                    }),
+                    window,
+                );
+                (line <= room).then_some(line)
+            });
         cue.list(div()
             .on_children_prepainted(cue.observe(reveals.panel.observe()))
             // A panel shorter than its parts' least heights scrolls.
@@ -1262,14 +1284,17 @@ impl GitTurtle {
                                 div()
                                     .debug_selector(|| "file-history-from".into())
                                     .flex_1()
-                                    // Wraps inside its room rather than run past the header.
-                                    .min_w_0()
+                                    // Its whole line, else the whole row, in
+                                    // which it wraps rather than run past the
+                                    // header; the control wraps beneath it.
+                                    .map(|line| match from_least {
+                                        Some(Some(least)) => line.min_w(least),
+                                        Some(None) => line.min_w(relative(1.)),
+                                        None => line.min_w_0(),
+                                    })
                                     .text_size(crate::appearance::ui_text(10.))
                                     .text_color(rgb(p.muted))
-                                    .child(format!(
-                                        "From {} · first-parent lineage",
-                                        short_oid(&lineage.anchor)
-                                    )),
+                                    .child(from),
                             )
                             .child({
                                 let copy = copy_feedback::copy_button(
@@ -3056,6 +3081,78 @@ pub(crate) mod tests {
                 (room - drawn).abs() <= px(1.),
                 "{at}: laid out for {room:?}, drawn in {drawn:?}"
             );
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// The anchor's line keeps its whole line beside the anchor path's copy
+    /// control, or the header's whole row where that is narrower, and below
+    /// that the control moves beneath it, on the line's left edge: at 18 pt
+    /// in a 461 × 490 window the line takes the header's row and the control
+    /// stands below it, and at 18 pt in 1,200 × 980 and at 13 pt in
+    /// 1,480 × 980 the line and the control share one row. Given no least,
+    /// the line was 61 to 80 px wide beside the control at 18 pt in a 461 px
+    /// window and wrapped to about 135 px.
+    #[gpui::test]
+    async fn the_anchor_line_keeps_its_least_width_beside_its_copy_control(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let text = app.read_with(cx, |app, _| {
+            let anchor = &app.file_history.lineage.as_ref().unwrap().anchor;
+            format!("From {} · first-parent lineage", short_oid(anchor))
+        });
+        let slack = px(0.5);
+        for (size_pt, width, height, beneath) in [
+            (18, 461., 490., true),
+            (18, 1200., 980., false),
+            (13, 1480., 980., false),
+        ] {
+            let at = format!("{size_pt} pt in {width} × {height}");
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(size_pt, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            draw(cx);
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector}"))
+            };
+            let from = bounds(cx, "file-history-from");
+            let copy = bounds(cx, "copy-history-path");
+            // The top row above takes the header's whole row, as the
+            // anchor's line's own row does.
+            let row = bounds(cx, "file-history-top-row").size.width;
+            let line = cx.update(|window, _| {
+                crate::views::line_widths(&[(&text, crate::appearance::ui_text(10.))], window)
+            });
+            assert!(
+                from.size.width + slack >= line.min(row),
+                "{at}: the line {from:?} keeps {line:?} or the row's {row:?}"
+            );
+            if beneath {
+                assert!(
+                    copy.top() + slack >= from.bottom()
+                        && (copy.left() - from.left()).abs() <= slack,
+                    "{at}: the control {copy:?} beneath the line {from:?}, on its left edge"
+                );
+            } else {
+                assert!(
+                    copy.left() + slack >= from.right() && copy.top() < from.bottom(),
+                    "{at}: the control {copy:?} beside the line {from:?}"
+                );
+            }
         }
         cx.update(|window, cx| {
             cx.set_reduce_motion(false);
