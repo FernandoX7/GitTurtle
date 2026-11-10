@@ -282,7 +282,7 @@ impl Rows {
     /// `lineage`'s rows laid out `room` wide, the footer's status line
     /// wrapped once for both of its forms.
     fn measure(lineage: &Lineage, room: Pixels, window: &Window) -> Self {
-        let status = text_line(10., window) * wrapped(&lineage.status(), 10., room, window);
+        let status = text_line(10., window) * wrapped(lineage.status(), 10., room, window);
         Self {
             header: file_history_header_height(lineage, &lineage.anchor_line(), room, window),
             labelled: page_labels_fit(room, window)
@@ -304,12 +304,13 @@ impl Rows {
         let (shares, footer_scrolls, page_labels) =
             if let Some(shares) = self.labelled.and_then(held) {
                 (shares, false, true)
-            } else if let Some(shares) = held(self.icons) {
-                (shares, false, false)
             } else {
-                // Labelled in the room its gutter left, Older page lay
-                // below the footer's fold at 15 pt in a 424 × 600 window.
-                (least.shares(tall, self.header, self.icons), true, false)
+                // Their icons' shares, worked out once whether the footer
+                // holds them or scrolls them. Labelled in the room its
+                // gutter left, Older page lay below the footer's fold at
+                // 15 pt in a 424 × 600 window.
+                let shares = least.shares(tall, self.header, self.icons);
+                (shares, self.icons > shares[1] + SETTLED, false)
             };
         Regions {
             header: shares[0],
@@ -333,7 +334,7 @@ fn text_line(size: f32, window: &Window) -> Pixels {
 }
 
 /// The lines `text` at `size` pt wraps to in `room`.
-fn wrapped(text: &str, size: f32, room: Pixels, window: &Window) -> f32 {
+fn wrapped(text: impl Into<SharedString>, size: f32, room: Pixels, window: &Window) -> f32 {
     crate::image_compare::wrapped_lines(text, crate::appearance::ui_text(size), room, window)
         .clamp(1, 64) as f32
 }
@@ -444,7 +445,7 @@ fn file_history_header_height(
         + gap
         + from_row
         + gap
-        + line(10.) * wrapped(FOLLOWS, 10., room, window)
+        + line(10.) * wrapped(SharedString::new_static(FOLLOWS), 10., room, window)
         + gap
         + revision_row
         + pad

@@ -1076,7 +1076,7 @@ impl GitTurtle {
                             // give way, the only place this answer is read.
                             None => {
                                 wrapped_lines(
-                                    &one_line(&details[i]),
+                                    one_line(&details[i]),
                                     caption_size,
                                     caption_text,
                                     window,
@@ -3078,20 +3078,22 @@ pub(crate) fn text_line(size: Pixels, window: &Window) -> Pixels {
 }
 
 /// The lines `text` wraps to at `size` in `room`, as its text element lays
-/// it out in the inherited interface font.
-pub(crate) fn wrapped_lines(text: &str, size: Pixels, room: Pixels, window: &Window) -> usize {
+/// it out in the inherited interface font. The text system takes `text` as
+/// it comes: a shared or static text is handed over without a copy.
+pub(crate) fn wrapped_lines(
+    text: impl Into<SharedString>,
+    size: Pixels,
+    room: Pixels,
+    window: &Window,
+) -> usize {
     #[cfg(test)]
     note_tests::WRAPPED.with(|count| count.set(count.get() + 1));
+    let text = text.into();
     let style = window.text_style();
+    let run = style.to_run(text.len());
     window
         .text_system()
-        .shape_text(
-            text.to_owned().into(),
-            size,
-            &[style.to_run(text.len())],
-            Some(room),
-            None,
-        )
+        .shape_text(text, size, &[run], Some(room), None)
         .map_or(usize::MAX, |lines| {
             lines
                 .iter()
