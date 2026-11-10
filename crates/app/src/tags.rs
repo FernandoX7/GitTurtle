@@ -507,14 +507,22 @@ pub(crate) struct ScrollCue {
     /// Whether this frame keeps the gutter, and whether it draws the
     /// scrollbar in it ([`cues`]).
     cued: (bool, bool),
+    /// Whether the list overflows, where its owner decided it before layout
+    /// ([`ScrollCue::decided`]).
+    decided: Option<bool>,
     /// What scrolls the list's focused control into view, whose ring the
     /// fades stop short of.
     reveal: Option<FocusReveal>,
     /// The track takes no fill and no edge ([`ScrollCue::over_rows`]).
     clear_track: bool,
-    /// The fades dissolve into the panel, not the canvas
-    /// ([`ScrollCue::on_panel`]).
-    on_panel: bool,
+    /// The surface the list is drawn on, which its fades dissolve into
+    /// ([`ScrollCue::on`]).
+    surface: Surface,
+    /// The scrollbar's id [`ScrollCue::list`] names the cue by, which the
+    /// test guard counts its frames under ([`settling`]): set as the list is
+    /// built, before the frame prepaints it.
+    #[cfg(test)]
+    key: std::rc::Rc<std::cell::Cell<Option<&'static str>>>,
 }
 
 /// The shortest track a scrollbar's thumb moves along: the kit's shortest
@@ -546,19 +554,23 @@ impl ScrollCue {
         };
         Self {
             cued: cues(&rows),
+            decided: None,
             rows,
             reveal: None,
             clear_track: false,
-            on_panel: false,
+            surface: Surface::Canvas,
+            #[cfg(test)]
+            key: Default::default(),
         }
     }
 
-    /// The cue for a list drawn on the palette's panel rather than its
-    /// canvas, as File History's header and footer are: its fades dissolve
-    /// into that panel, where the canvas's darker or lighter band would lie
-    /// across its rows' edge.
-    pub(crate) fn on_panel(mut self) -> Self {
-        self.on_panel = true;
+    /// The cue for a list drawn on `surface` rather than the palette's
+    /// canvas, as File History's header and footer are on its panel and a
+    /// failed page's notice on the removed background: its fades dissolve
+    /// into that surface, where the canvas's darker or lighter band would
+    /// lie across its rows' edge.
+    pub(crate) fn on(mut self, surface: Surface) -> Self {
+        self.surface = surface;
         self
     }
 
@@ -587,8 +599,26 @@ impl ScrollCue {
         }
     }
 
+    /// The cue for a list whose owner decides before layout whether it
+    /// overflows, from the room its rows have without the gutter, rather
+    /// than from whether it overflowed in its last frame: it keeps the
+    /// gutter where `overflows`, and its scrollbar there along a track a
+    /// thumb moves on. Where rows wrap narrower inside the gutter, a list
+    /// that fitted its rows only without it kept no gutter reached from a
+    /// taller window and kept it reached from a shorter one, and one whose
+    /// controls the gutter turned into icons gave the gutter up and took it
+    /// back in every frame: File History's footer at 13 and 18 pt. It draws
+    /// once more only where its track's length crosses the shortest a thumb
+    /// moves on.
+    pub(crate) fn decided(mut self, overflows: bool) -> Self {
+        self.decided = Some(overflows);
+        self.cued = decided_cues(&self.rows, overflows);
+        self
+    }
+
     /// Whether this frame keeps the gutter: where the list overflowed when
-    /// last laid out ([`cues`]).
+    /// last laid out ([`cues`]), or where its owner decided it overflows
+    /// ([`ScrollCue::decided`]).
     pub(crate) fn kept(&self) -> bool {
         self.cued.0
     }
@@ -608,12 +638,17 @@ impl ScrollCue {
         &self,
         prepainted: impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static,
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
-        let (rows, cued) = (self.rows.clone(), self.cued);
+        let (rows, cued, decided) = (self.rows.clone(), self.cued, self.decided);
+        #[cfg(test)]
+        let key = self.key.clone();
         move |bounds, window, cx| {
             prepainted(bounds, window, cx);
-            let settled = cues(&rows) == cued;
+            let settled = match decided {
+                Some(overflows) => decided_cues(&rows, overflows) == cued,
+                None => cues(&rows) == cued,
+            };
             #[cfg(test)]
-            settling::observed(&rows, settled);
+            settling::observed(key.get(), &rows, settled);
             if !settled {
                 window.defer(cx, |window, _| window.refresh());
             }
@@ -627,22 +662,50 @@ impl ScrollCue {
     /// view is out of reach as well as out of sight. Tests find the
     /// scrollbar, while it is drawn, by `id`.
     pub(crate) fn list(&self, list: Stateful<Div>, id: &'static str) -> Div {
-        let gutter = Self::gutter();
-        let room = self.rows.room;
-        let (kept, scrollbar) = self.cued;
+        let trailing = self.trailing();
+        self.around(
+            crate::native_accessibility::clips_children(
+                list.when(trailing > Pixels::ZERO, |list| list.pr(trailing)),
+            ),
+            id,
+        )
+    }
+
+    /// The inset a list's rows keep at its right in this frame: the gutter
+    /// and the ring's room before it while the list overflows, none where
+    /// its rows fit. [`ScrollCue::list`] pads its list by it; a list that
+    /// pads itself, as a `uniform_list` that tracks its own scroll does,
+    /// takes it with [`ScrollCue::around`].
+    pub(crate) fn trailing(&self) -> Pixels {
+        if self.cued.0 {
+            self.rows.room + Self::gutter()
+        } else {
+            Pixels::ZERO
+        }
+    }
+
+    /// [`ScrollCue::list`] for a list that keeps its own gutter
+    /// ([`ScrollCue::trailing`]) and is the element its scroll handle
+    /// tracks, as File History's revisions are a `uniform_list` padded by it
+    /// inside the list that clips them: the kit lays the track over that
+    /// handle's bounds, so a gutter kept by an element around it would leave
+    /// the track over the rows' ends.
+    pub(crate) fn around(&self, list: impl IntoElement, id: &'static str) -> Div {
+        #[cfg(test)]
+        self.key.set(Some(id));
+        let (_, scrollbar) = self.cued;
         let clear_track = self.clear_track;
+        let surface = self.surface;
         let cue = div()
             .flex()
             .flex_col()
-            .child(crate::native_accessibility::clips_children(
-                list.when(kept, |list| list.pr(room + gutter)),
-            ))
+            .child(list)
             // In every frame, so a list that shrinks below the shortest
             // track fades in the frame that shrinks it.
             .child(edge_fades(
                 self.rows.clone(),
                 self.reveal.clone(),
-                self.on_panel,
+                self.surface,
             ));
         if scrollbar {
             // The scrollbar is built as the frame paints (`in_frame`), after
@@ -689,6 +752,27 @@ impl ScrollCue {
                                             .thumb_hover(|style| style.bg(hovered))
                                             .thumb_active(|style| style.bg(hovered))
                                     })
+                                } else if surface == Surface::Removed {
+                                    // Its track rests on a failed page's
+                                    // notice, as the pickers' tracks rest on
+                                    // their raised surface (`shortcuts.rs`):
+                                    // the kit's track is the canvas, a band
+                                    // across the notice. Its thumb takes the
+                                    // thumb fitted to that surface
+                                    // (`Palette::removed_thumb`), where the
+                                    // palette's stood 1.66:1 in Ember; hovered
+                                    // and dragged, the palette's hovered thumb.
+                                    let palette = appearance::palette(cx);
+                                    let track: Hsla = rgb(surface.color(&palette)).into();
+                                    let thumb = rgb(appearance::labels(cx).removed_thumb);
+                                    let hovered = rgb(palette.muted);
+                                    bar.styles(|styles| {
+                                        styles
+                                            .track(|style| style.bg(track))
+                                            .thumb(|style| style.bg(thumb))
+                                            .thumb_hover(|style| style.bg(hovered))
+                                            .thumb_active(|style| style.bg(hovered))
+                                    })
                                 } else {
                                     bar
                                 }
@@ -721,7 +805,7 @@ fn edge_fade(rows: &RowColumn) -> Pixels {
 /// ([`ScrollCue`]): at each edge its rows continue past, a band as wide as
 /// the list and [`EDGE_FADE`] tall, opaque at the edge in the theme's
 /// background colour (the palette's canvas, which panes and dialogs are
-/// drawn on, or its panel for a list on one, [`ScrollCue::on_panel`]) and
+/// drawn on, or the surface a list on another is drawn on, [`ScrollCue::on`]) and
 /// clear inward, so the rows there dissolve into the surface
 /// rather than end at a cut, as macOS fades content scrolled beneath a
 /// window's edge. It draws none at an end the list is scrolled to, and
@@ -741,7 +825,7 @@ fn edge_fade(rows: &RowColumn) -> Pixels {
 /// the list, and a row under one takes its hover and click. It does not
 /// move: a fade comes and goes with the scroll that reveals an edge, in
 /// that frame.
-fn edge_fades(rows: RowColumn, reveal: Option<FocusReveal>, on_panel: bool) -> impl IntoElement {
+fn edge_fades(rows: RowColumn, reveal: Option<FocusReveal>, surface: Surface) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |_, _, window, cx| {
@@ -761,12 +845,7 @@ fn edge_fades(rows: RowColumn, reveal: Option<FocusReveal>, on_panel: bool) -> i
             let slack = px(0.5);
             let scrolled = -scroll.offset().y;
             let palette = appearance::palette(cx);
-            let surface: Hsla = rgb(if on_panel {
-                palette.panel
-            } else {
-                palette.canvas
-            })
-            .into();
+            let surface: Hsla = rgb(surface.color(&palette)).into();
             let band = |angle: f32| {
                 linear_gradient(
                     angle,
@@ -864,36 +943,42 @@ pub(crate) mod settling {
     const FRAMES: usize = 16;
 
     thread_local! {
-        /// The frames running each list, by where it was laid out, has
-        /// found its layout cued otherwise than the frame assumed.
-        static RUNS: RefCell<HashMap<String, usize>> = RefCell::default();
+        /// The frames running each cue, by the scrollbar id its list names
+        /// it by (`ScrollCue::list`), has found its layout cued otherwise
+        /// than the frame assumed. Counted by where the list was laid out,
+        /// a list that moved between frames started a new count at each
+        /// place, and the counts of places no later frame settled at
+        /// survived on the thread.
+        static RUNS: RefCell<HashMap<&'static str, usize>> = RefCell::default();
     }
 
-    /// Forgets every list's run, as a test's draw begins: a run is the
-    /// frames one draw runs, and a list's count, kept under bounds no later
-    /// frame settled it at, survived on the thread into the next test, so
+    /// Forgets every cue's run, as a test's draw begins: a run is the
+    /// frames one draw runs, and a count kept from an earlier test's last
+    /// frame survived on the thread into the next test, so
     /// `file_history::tests` under `ITERATIONS=20` failed after seeds that
     /// had passed (5 and 15).
     pub(crate) fn reset() {
         RUNS.with(|runs| runs.borrow_mut().clear());
     }
 
-    /// Notes whether the list `rows` reads, as its frame prepainted it, was
-    /// cued as that frame assumed.
-    pub(super) fn observed(rows: &RowColumn, settled: bool) {
-        let at = format!("{:?}", rows.scroll.bounds());
+    /// Notes whether the cue `key` names, whose list `rows` reads as its
+    /// frame prepainted it, was cued as that frame assumed: a frame that
+    /// was ends the cue's run.
+    pub(super) fn observed(key: Option<&'static str>, rows: &RowColumn, settled: bool) {
+        let key = key.unwrap_or("drawn without its list");
         RUNS.with(|runs| {
             let mut runs = runs.borrow_mut();
             if settled {
-                runs.remove(&at);
+                runs.remove(key);
                 return;
             }
-            let run = runs.entry(at.clone()).or_default();
+            let run = runs.entry(key).or_default();
             *run += 1;
             assert!(
                 *run < FRAMES,
-                "the scroll cue of the list at {at} cued otherwise than its frame assumed \
-                 {run} frames running: what overflows follows its gutter"
+                "the scroll cue {key}, its list at {:?}, cued otherwise than its frame \
+                 assumed {run} frames running: what overflows follows its gutter",
+                rows.scroll.bounds()
             );
         });
     }
@@ -913,11 +998,45 @@ fn overflows(scroll: &ScrollHandle) -> bool {
 /// a list keeping room drew a thumb along a track up to twice that room
 /// shorter than the shortest.
 fn cues(rows: &RowColumn) -> (bool, bool) {
-    let overflows = overflows(&rows.scroll);
+    decided_cues(rows, overflows(&rows.scroll))
+}
+
+/// [`cues`] for a list whose owner decided whether it `overflows`
+/// ([`ScrollCue::decided`]): its gutter where decided, and its scrollbar
+/// there only where the list overflowed when last laid out too, along a
+/// track a thumb moves on, so a list with nothing to scroll draws no track
+/// (DESIGN.md's commit inspector: one with nothing to scroll draws no
+/// track). Decided alone, File History's header at 14 pt in a 472 × 1,000
+/// window, measured a line taller than it laid out, drew a scrollbar over
+/// rows that fitted.
+fn decided_cues(rows: &RowColumn, decided: bool) -> (bool, bool) {
     (
-        overflows,
-        overflows && rows.viewport_bounds().size.height >= SHORTEST_SCROLL_TRACK,
+        decided,
+        decided
+            && overflows(&rows.scroll)
+            && rows.viewport_bounds().size.height >= SHORTEST_SCROLL_TRACK,
     )
+}
+
+/// The surface a cued list is drawn on, which its fades dissolve into
+/// ([`ScrollCue::on`]): the palette's canvas, which panes and dialogs are
+/// drawn on, its panel, or the removed background a failure's notice
+/// takes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Surface {
+    Canvas,
+    Panel,
+    Removed,
+}
+
+impl Surface {
+    fn color(self, palette: &appearance::Palette) -> u32 {
+        match self {
+            Self::Canvas => palette.canvas,
+            Self::Panel => palette.panel,
+            Self::Removed => palette.removed_background,
+        }
+    }
 }
 
 use crate::native_accessibility::text as static_text;
@@ -2248,6 +2367,30 @@ pub(crate) mod tests {
         });
         assert!(thumbs.len() <= 1, "one thumb in {track:?}, not {thumbs:?}");
         thumbs.first().copied()
+    }
+
+    /// The fill of the scrollbar track the last frame painted in `track`:
+    /// the one filled quad inside it as tall as the track, which a thumb
+    /// is not.
+    pub(crate) fn painted_track_fill(
+        cx: &mut VisualTestContext,
+        track: Bounds<Pixels>,
+    ) -> Option<gpui_kit::Background> {
+        let fills: Vec<_> = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| !quad.background.is_transparent())
+                .filter(|quad| {
+                    let fill = logical(quad.bounds, scale);
+                    holds(track, fill) && fill.size.height >= track.size.height - px(0.5)
+                })
+                .map(|quad| quad.background)
+                .collect()
+        });
+        assert!(fills.len() <= 1, "one track in {track:?}, not {fills:?}");
+        fills.first().copied()
     }
 
     /// Scrolls the list `scroll` tracks to `fraction` of its reach.
@@ -4134,11 +4277,17 @@ pub(crate) mod tests {
         height: Pixels,
         room: Pixels,
         rows: usize,
+        /// Whether its owner decided it overflows ([`ScrollCue::decided`]).
+        decided: Option<bool>,
     }
 
     impl Render for Cued {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             let cue = ScrollCue::new(&self.scroll, self.room);
+            let cue = match self.decided {
+                Some(overflows) => cue.decided(overflows),
+                None => cue,
+            };
             let observe = cue.observe(|_, _, _| {});
             let list = div()
                 .id("cued-list")
@@ -4175,9 +4324,45 @@ pub(crate) mod tests {
             height: px(height),
             room,
             rows,
+            decided: None,
         });
         draw(cx);
         (list, cx)
+    }
+
+    /// A list its owner decided overflows keeps the gutter, so its rows
+    /// keep their width as decided, but draws its scrollbar only where its
+    /// rows overflow it too: a list of three rows, 60 px, in a 100 px view
+    /// decided to overflow draws no scrollbar, and with 20 rows draws one.
+    /// Decided alone, a list with nothing to scroll laid out a scrollbar's
+    /// track, as File History's header did at 14 pt in a 472 × 1,000
+    /// window.
+    #[gpui::test]
+    fn a_decided_cue_draws_no_scrollbar_over_rows_that_fit(cx: &mut gpui_kit::TestAppContext) {
+        let (list, cx) = cued_window(cx, 100., Pixels::ZERO, 3);
+        list.update(cx, |list, cx| {
+            list.decided = Some(true);
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("cued-list/scrollbar").is_none(),
+            "rows that fit draw no scrollbar"
+        );
+        let row = cx.debug_bounds("cued-row-0").expect("a row");
+        assert!(
+            row.size.width <= px(200.) - ScrollCue::gutter() + px(0.5),
+            "the rows {row:?} keep the gutter decided"
+        );
+        list.update(cx, |list, cx| {
+            list.rows = 20;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("cued-list/scrollbar").is_some(),
+            "rows that overflow draw it"
+        );
     }
 
     /// The fades the first frame drawn after `input` paints over the list

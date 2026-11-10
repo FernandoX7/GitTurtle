@@ -251,6 +251,13 @@ pub(super) struct Form {
     height: Pixels,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Whether each toolbar laid out kept Copy message and Hash to their
+    /// icons (`State::take_laid_out_toolbars`).
+    static LAID_OUT: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+}
+
 thread_local! {
     static COPY_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static HASH_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
@@ -361,6 +368,13 @@ impl Toolbar {
         }
     }
 
+    /// The width inside the inspector's left border and the `px_3` that the
+    /// toolbar and the metadata below it share, which File History's header
+    /// and footer lay their rows out in (`GitTurtle::message_toolbar`).
+    pub(super) fn room(&self) -> Pixels {
+        self.room
+    }
+
     /// The least height File History's message panel keeps with this
     /// toolbar: its rows and the message's first line
     /// (`GitTurtle::render_commit_message`).
@@ -398,7 +412,20 @@ impl State {
     /// the inspector, so a state moved with an inspection carries nothing
     /// stale.
     pub(super) fn lay_out_toolbar(&self, toolbar: Option<Toolbar>) {
+        #[cfg(test)]
+        LAID_OUT.with(|laid| {
+            laid.borrow_mut()
+                .extend(toolbar.map(|toolbar| toolbar.plain.compact))
+        });
         self.1.set(toolbar);
+    }
+
+    /// Whether Copy message and Hash kept only their icons in each toolbar
+    /// the window laid out since the last call, a frame each, oldest first,
+    /// for tests.
+    #[cfg(test)]
+    pub(super) fn take_laid_out_toolbars() -> Vec<bool> {
+        LAID_OUT.with(|laid| std::mem::take(&mut *laid.borrow_mut()))
     }
 
     /// The room a line or a control of the metadata has in the inspector the
@@ -414,6 +441,25 @@ impl State {
     /// the inspector out.
     pub(super) fn revision_message_least(&self) -> Option<Pixels> {
         self.1.get().map(|toolbar| toolbar.revision_message_least())
+    }
+
+    /// The height File History's message panel takes in the inspector the
+    /// window draws next, in a body `body` tall, from this frame's inputs:
+    /// its toolbar's rows and `extent`, the message and the revision's
+    /// details as measured (`GitTurtle::message_extent`), or its whole share
+    /// where they were not, at most its share of the body and at least its
+    /// toolbar and the message's first line, as
+    /// `GitTurtle::render_commit_message` lays it out; `None` where no
+    /// window lays the inspector out.
+    pub(super) fn revision_panel_height(
+        &self,
+        extent: Option<Pixels>,
+        body: Pixels,
+    ) -> Option<Pixels> {
+        let toolbar = self.1.get()?;
+        let share = body * MESSAGE_SHARE;
+        let height = extent.map_or(share, |extent| (toolbar.plain.height + extent).min(share));
+        Some(height.max(toolbar.revision_message_least()))
     }
 
     /// The height the presented message and metadata were last measured at

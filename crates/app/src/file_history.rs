@@ -19,11 +19,19 @@ const CLOSE_LABEL: &str = "Back";
 const CLOSE_NAME: &str = "Close file history and restore previous view";
 /// Close's tooltip where it keeps only its icon: its label, then its name.
 const CLOSE_TOOLTIP: &str = "Back · Close file history and restore previous view";
+/// Newer page's label, and its name and tooltip where it keeps only its
+/// icon.
+const NEWER_PAGE: &str = "Newer page";
+/// Older page's, as Newer page's.
+const OLDER_PAGE: &str = "Older page";
 
 thread_local! {
     static TITLE_WIDTH: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
         const { std::cell::RefCell::new(None) };
     static CLOSE_LABEL_WIDTH: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { std::cell::RefCell::new(None) };
+    /// The wider of Newer page's and Older page's labels.
+    static PAGE_LABEL_WIDTH: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
         const { std::cell::RefCell::new(None) };
     /// The anchor's line, "From ‹hash› · first-parent lineage", as one line.
     static FROM_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
@@ -34,9 +42,9 @@ thread_local! {
 /// scroll their own rows, give way down to their first row, and the body
 /// keeps the message's toolbar and first line and one whole revision row.
 /// A failed page's notice keeps a line of its message and Retry page whole,
-/// its rows scrolling, and the revision row stays whole beside it, the
-/// notice giving way down to that least first. A panel shorter than all
-/// three scrolls. At 18 pt in a 461 × 490 window the header's and footer's
+/// its message scrolling inside it, and the revision row stays whole beside
+/// it, the notice giving way down to that least first. A panel shorter than
+/// all three scrolls. At 18 pt in a 461 × 490 window the header's and footer's
 /// shares left the revisions 55 px, part of one 94 px row, and at 461 × 420
 /// a failed page's notice left them about 31 px.
 struct PanelLeast {
@@ -51,6 +59,9 @@ struct PanelLeast {
     /// A failed page's notice: its padding, a line of its message and Retry
     /// page; none where no page failed.
     failure: Pixels,
+    /// A line of a failed page's message, as its text lays one out on a
+    /// device pixel, which the message keeps as its notice gives way.
+    error_line: Pixels,
     /// One whole revision row, which the revisions keep.
     row: Pixels,
     /// The footer's padding and its status line, with its top border.
@@ -70,9 +81,10 @@ impl PanelLeast {
                 .to_pixels(crate::appearance::ui_text(size).into(), rem)
         };
         let row = crate::appearance::ui_size(68.);
+        let error_line = text_line(11., window);
         // Its `py_2` and `gap_2`, a line of its message and Retry page.
         let failure = if failed {
-            rem * 1.5 + line(11.) + crate::appearance::ui_size(28.)
+            rem * 1.5 + error_line + crate::appearance::ui_size(28.)
         } else {
             px(0.)
         };
@@ -91,6 +103,7 @@ impl PanelLeast {
             header: edge + crate::appearance::ui_size(28.),
             body,
             failure,
+            error_line,
             row,
             footer: edge + line(10.),
         }
@@ -100,6 +113,382 @@ impl PanelLeast {
     fn total(&self) -> Pixels {
         self.header + self.body + self.footer
     }
+
+    /// The heights the header and the footer take in a panel `tall`, where
+    /// their rows are `header` and `footer` tall with their padding and
+    /// border, as a column's flex items take them (CSS Flexbox, resolving
+    /// flexible lengths): each as tall as its rows, at most 30% and 25% of
+    /// the panel and at least its least, and where the three would not fit,
+    /// the body keeping its least, the two shrink in proportion to their
+    /// rows' heights, each down to its least, the panel scrolling past that.
+    fn shares(&self, tall: Pixels, header: Pixels, footer: Pixels) -> [Pixels; 2] {
+        let bases = [header, footer];
+        let least = [self.header, self.footer];
+        let most = [tall * 0.30, tall * 0.25];
+        let clamp = |part: usize, height: Pixels| height.min(most[part]).max(least[part]);
+        let hypothetical = [clamp(0, header), clamp(1, footer)];
+        if hypothetical[0] + hypothetical[1] + self.body <= tall {
+            return hypothetical;
+        }
+        let mut target = hypothetical;
+        // A part whose rows are shorter than its least keeps its least; the
+        // body, whose basis is none, keeps its own.
+        let mut frozen = [header < hypothetical[0], footer < hypothetical[1]];
+        while frozen.contains(&false) {
+            let mut free = tall - self.body;
+            let mut scaled = 0.;
+            for part in 0..2 {
+                if frozen[part] {
+                    free -= target[part];
+                } else {
+                    free -= bases[part];
+                    scaled += f32::from(bases[part]);
+                }
+            }
+            let mut violations = [Pixels::ZERO; 2];
+            for part in (0..2).filter(|part| !frozen[*part]) {
+                let wanted = if scaled > 0. {
+                    bases[part] - free.abs() * (f32::from(bases[part]) / scaled)
+                } else {
+                    bases[part]
+                };
+                target[part] = clamp(part, wanted);
+                violations[part] = target[part] - wanted;
+            }
+            let violation = violations[0] + violations[1];
+            for part in 0..2 {
+                if frozen[part] {
+                    continue;
+                }
+                frozen[part] = if violation > Pixels::ZERO {
+                    violations[part] > Pixels::ZERO
+                } else if violation < Pixels::ZERO {
+                    violations[part] < Pixels::ZERO
+                } else {
+                    true
+                };
+            }
+        }
+        target
+    }
+}
+
+/// The note beneath the anchor's line, which wraps in the header's room.
+const FOLLOWS: &str = "Follows renames and the first parent of each merge.";
+
+/// The heights File History's header and footer take, and whether each
+/// scrolls its own rows, decided from the room their rows have without a
+/// scroll cue's gutter and the height the window lays the panel out in,
+/// never from whether they scrolled in their last frame: each is as tall
+/// as its rows laid out in that room, within its share of the panel
+/// (`PanelLeast::shares`); Newer page and Older page keep their labels
+/// where the footer then holds them, else their icons where it holds
+/// those (DESIGN.md's responsive order), and only otherwise does the footer
+/// scroll, keeping their icons, laid out in the room its gutter leaves.
+/// Each scrolls exactly where its rows overflow it so. Laid out in the
+/// gutter's room once it had scrolled, the footer kept Newer page and Older
+/// page on two rows reached from a shorter window and on one from a taller
+/// one at 13 pt in
+/// 432 × 460, and at 18 pt its labels' two overflowing rows became one row
+/// of icons inside the gutter, which fitted, in every other frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Regions {
+    header: Pixels,
+    footer: Pixels,
+    /// The body's between them, at least its least (`PanelLeast::body`).
+    body: Pixels,
+    header_scrolls: bool,
+    footer_scrolls: bool,
+    page_labels: bool,
+}
+
+impl Regions {
+    /// Whether these regions hold more of the header's or the footer's rows
+    /// than `other` does: taller than `other`'s where its rows scroll.
+    fn hold_more_than(&self, other: &Self) -> bool {
+        (other.header_scrolls && self.header > other.header + SETTLED)
+            || (other.footer_scrolls && self.footer > other.footer + SETTLED)
+    }
+}
+
+/// File History's header's and footer's rows laid out in one room without
+/// their gutters, measured once a frame in the room of the toolbar the
+/// panel weighs its forms in (`GitTurtle::message_toolbar`), so weighing
+/// Copy message's and Hash's labels against their icons shapes nothing
+/// more: the two take the same width, and only the panel's least heights
+/// differ between them (`Rows::regions`).
+struct Rows {
+    /// The header's rows, with its padding and its border.
+    header: Pixels,
+    /// The footer's with Newer page and Older page labelled, where the
+    /// wider label fits the room (`page_labels_fit`).
+    labelled: Option<Pixels>,
+    /// The footer's with their icons.
+    icons: Pixels,
+}
+
+impl Rows {
+    /// `lineage`'s rows laid out `room` wide, the footer's status line
+    /// wrapped once for both of its forms.
+    fn measure(lineage: &Lineage, room: Pixels, window: &Window) -> Self {
+        let status = text_line(10., window) * wrapped(&lineage.status(), 10., room, window);
+        Self {
+            header: file_history_header_height(lineage, &lineage.anchor_line(), room, window),
+            labelled: page_labels_fit(room, window)
+                .then(|| file_history_footer_height(status, true, room, window)),
+            icons: file_history_footer_height(status, false, room, window),
+        }
+    }
+
+    /// The regions these rows take in a panel `tall` whose parts keep
+    /// `least` (`PanelLeast::shares`): Newer page and Older page labelled
+    /// where the footer then holds them, else their icons where it holds
+    /// those, and otherwise the footer scrolls, keeping their icons
+    /// (DESIGN.md's responsive order), its share taken as theirs.
+    fn regions(&self, least: &PanelLeast, tall: Pixels) -> Regions {
+        let held = |footer: Pixels| {
+            let shares = least.shares(tall, self.header, footer);
+            (footer <= shares[1] + SETTLED).then_some(shares)
+        };
+        let (shares, footer_scrolls, page_labels) =
+            if let Some(shares) = self.labelled.and_then(held) {
+                (shares, false, true)
+            } else if let Some(shares) = held(self.icons) {
+                (shares, false, false)
+            } else {
+                // Labelled in the room its gutter left, Older page lay
+                // below the footer's fold at 15 pt in a 424 × 600 window.
+                (least.shares(tall, self.header, self.icons), true, false)
+            };
+        Regions {
+            header: shares[0],
+            footer: shares[1],
+            body: (tall - shares[0] - shares[1]).max(least.body),
+            header_scrolls: self.header > shares[0] + SETTLED,
+            footer_scrolls,
+            page_labels,
+        }
+    }
+}
+
+/// How far rows measured from their parts may run past the height they are
+/// given and still fit it: layout sums the same lengths in another order.
+const SETTLED: Pixels = px(0.01);
+
+/// The interface font's line at `size` pt, as a text element lays one out,
+/// on a device pixel (`image_compare::text_line`).
+fn text_line(size: f32, window: &Window) -> Pixels {
+    crate::image_compare::text_line(crate::appearance::ui_text(size), window)
+}
+
+/// The lines `text` at `size` pt wraps to in `room`.
+fn wrapped(text: &str, size: f32, room: Pixels, window: &Window) -> f32 {
+    crate::image_compare::wrapped_lines(text, crate::appearance::ui_text(size), room, window)
+        .clamp(1, 64) as f32
+}
+
+/// The height of the rows a wrapping flex row lays `items` out in, `room`
+/// wide and `gap` apart both ways: each item `width` wide and `height`
+/// tall, or, as a text that fills the rest of its row, at least `width`,
+/// its whole line, which layout takes as a text's least width, and as tall
+/// as its text wraps to there.
+fn wrapped_rows(
+    items: &[(Pixels, Result<Pixels, &str>)],
+    room: Pixels,
+    gap: Pixels,
+    window: &Window,
+) -> Pixels {
+    let mut rows: Vec<Pixels> = Vec::new();
+    let mut used: Option<Pixels> = None;
+    for &(width, height) in items {
+        let beside = used.filter(|used| {
+            crate::image_compare::on_device_pixel(*used + gap + width, window) <= room + SETTLED
+        });
+        let (start, left) = match beside {
+            Some(used) => (used + gap, room - used - gap),
+            None => (Pixels::ZERO, room),
+        };
+        let height = match height {
+            Ok(height) => height,
+            Err(text) => text_line(10., window) * wrapped(text, 10., left, window),
+        };
+        match (beside, rows.last_mut()) {
+            (Some(_), Some(row)) => *row = (*row).max(height),
+            _ => rows.push(height),
+        }
+        used = Some(start + width);
+    }
+    rows.iter()
+        .copied()
+        .fold(Pixels::ZERO, |sum, row| sum + row)
+        + gap * rows.len().saturating_sub(1) as f32
+}
+
+/// The width the shared `button` helper gives a control labelled `label`
+/// with no icon, as layout places it.
+fn labelled_width(label: &str, window: &Window) -> Pixels {
+    crate::placed_button_width(
+        crate::views::line_widths(&[(label, crate::appearance::ui_text(12.))], window),
+        false,
+        window,
+    )
+}
+
+/// File History's header laid out `room` wide, its `py_3` above and below
+/// its rows and its bottom border included: the top row, a 28 px control
+/// tall; the anchor's path, one line; the anchor's line `from` beside its
+/// copy control where both fit, else on its own line or as it wraps with
+/// the control beneath; the note, as it wraps; and Newer, Older and the
+/// revision's number, as their row wraps.
+fn file_history_header_height(
+    lineage: &Lineage,
+    from: &str,
+    room: Pixels,
+    window: &Window,
+) -> Pixels {
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let rem = window.rem_size();
+    let (pad, gap) = (snap(rem * 0.75), snap(rem * 0.5));
+    let square = snap(crate::appearance::ui_size(28.));
+    let line = |size: f32| text_line(size, window);
+    let from_line = crate::views::laid_out_text_width(
+        crate::views::line_widths(&[(from, crate::appearance::ui_text(10.))], window),
+        window,
+    );
+    let from_row = if from_line > room {
+        line(10.) * wrapped(from, 10., room, window) + gap + square
+    } else {
+        wrapped_rows(
+            &[(from_line, Ok(line(10.))), (square, Ok(square))],
+            room,
+            gap,
+            window,
+        )
+    };
+    let revision = lineage.selected.map_or(String::new(), |index| {
+        format!("Revision {}", lineage.offset + index + 1)
+    });
+    // The number keeps its whole line beside Newer and Older or takes a row
+    // of its own: layout takes a text's least width as its unwrapped line,
+    // never its widest word. Measured by its widest word, the number stayed
+    // beside them at 13 pt in a 424 × 1,000 window, where layout set it on
+    // a row of its own, 18.5 px below what the header was given.
+    let number = crate::views::laid_out_text_width(
+        crate::views::line_widths(&[(&revision, crate::appearance::ui_text(10.))], window),
+        window,
+    );
+    let revision_row = wrapped_rows(
+        &[
+            (labelled_width("Newer", window), Ok(square)),
+            (labelled_width("Older", window), Ok(square)),
+            (number, Err(revision.as_str())),
+        ],
+        room,
+        gap,
+        window,
+    );
+    pad + square.max(line(12.))
+        + gap
+        + line(12.)
+        + gap
+        + from_row
+        + gap
+        + line(10.) * wrapped(FOLLOWS, 10., room, window)
+        + gap
+        + revision_row
+        + pad
+        + snap(px(1.))
+}
+
+/// File History's footer laid out `room` wide, its `p_3` above and below its
+/// rows and its top border included: its status line, `status` tall as it
+/// wraps there, and Newer page and Older page, labelled where `labels`, else
+/// 28 px icons, on one row where they fit side by side.
+fn file_history_footer_height(
+    status: Pixels,
+    labels: bool,
+    room: Pixels,
+    window: &Window,
+) -> Pixels {
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let rem = window.rem_size();
+    let (pad, gap) = (snap(rem * 0.75), snap(rem * 0.5));
+    let square = snap(crate::appearance::ui_size(28.));
+    let width = |label: &str| {
+        if labels {
+            labelled_width(label, window)
+        } else {
+            square
+        }
+    };
+    pad + status
+        + gap
+        + wrapped_rows(
+            &[
+                (width(NEWER_PAGE), Ok(square)),
+                (width(OLDER_PAGE), Ok(square)),
+            ],
+            room,
+            gap,
+            window,
+        )
+        + pad
+        + snap(px(1.))
+}
+
+/// Whether Newer page and Older page keep their labels in a footer whose
+/// rows are laid out `room` wide: each labelled as the shared `button`
+/// helper draws it, 10 px either side of its label on whole device pixels,
+/// measured as `GitTurtle::file_history_top_row` measures Close, fits the
+/// room alone; otherwise both keep only their 28 px icons, the shared
+/// chevron turned up and down (DESIGN.md's responsive order). A label too
+/// long for its room ended in an ellipsis, with no tooltip to finish it:
+/// Older page at 18 pt in a 461 × 490 window.
+fn page_labels_fit(room: Pixels, window: &Window) -> bool {
+    use crate::views::{LineKey, cached_width, line_widths};
+    let key = LineKey::current(window);
+    let scale = window.scale_factor();
+    let label = cached_width(&PAGE_LABEL_WIDTH, &key, || {
+        [NEWER_PAGE, OLDER_PAGE]
+            .map(|label| line_widths(&[(label, crate::appearance::ui_text(12.))], window))
+            .into_iter()
+            .fold(Pixels::ZERO, Pixels::max)
+    });
+    let labelled = crate::appearance::ui_size(20.) + label;
+    px((f32::from(labelled) * scale).ceil() / scale) <= room
+}
+
+/// Whether a failed page's message, `error`, scrolls in its notice in a
+/// body `body` tall whose message panel takes `message` (none where no
+/// revision is shown; `commit_message::State::revision_panel_height`),
+/// decided from this frame's inputs, never from whether it scrolled in its
+/// last: its text wrapped in the notice's `room` without the cue's gutter,
+/// the notice's `py_2` and `gap_2` and Retry page around it, as the
+/// notice's column lays them out (CSS Flexbox): as tall as its rows, at most
+/// 35% of the body, giving way to the message panel and the revisions'
+/// least row down to its own least, the message taking what is left of it,
+/// at most 100 px and at least its line. Decided from its last frame, a
+/// 150-character message at 13 pt in a 540 px window between 554 and
+/// 698 px tall, which wraps to 90 px without the gutter, kept the gutter
+/// and scrolled at 100 px reached from 300 px tall and drew 90 px with no
+/// cue reached from 1,000 px, Retry page 10 px lower in one than the other.
+fn failure_error_scrolls(
+    error: &str,
+    least: &PanelLeast,
+    body: Pixels,
+    message: Pixels,
+    room: Pixels,
+    window: &Window,
+) -> bool {
+    let edges = window.rem_size() * 1.5;
+    let retry = crate::appearance::ui_size(28.);
+    let cap = px(100.);
+    let text = text_line(11., window) * wrapped(error, 11., room, window);
+    let notice = (edges + text.min(cap) + retry)
+        .min(body * 0.35)
+        .min(body - message - least.row)
+        .max(least.failure);
+    text > (notice - edges - retry).min(cap).max(least.error_line) + SETTLED
 }
 
 /// What scrolls each of File History's Tab stops into view, whole, as its
@@ -203,6 +592,9 @@ struct Lineage {
     generation: u64,
     pending: Option<PageRequest>,
     last_request: Option<PageRequest>,
+    /// The scroll of a failed page's message, its own with its cue inside
+    /// the notice's; each failure's message starts at its top.
+    error_scroll: ScrollHandle,
     error: Option<String>,
 }
 
@@ -218,6 +610,7 @@ impl Lineage {
             generation: 0,
             pending: None,
             last_request: None,
+            error_scroll: ScrollHandle::new(),
             error: None,
         }
     }
@@ -254,11 +647,41 @@ impl Lineage {
         if self.pending == Some(request) {
             self.pending = None;
             self.error = Some(message);
+            self.error_scroll = ScrollHandle::new();
         }
     }
 
     fn entry(&self) -> Option<&FileHistoryEntry> {
         self.page.as_ref()?.entries.get(self.selected?)
+    }
+
+    /// The anchor's line in the header, "From ‹hash› · first-parent
+    /// lineage".
+    fn anchor_line(&self) -> String {
+        format!("From {} · first-parent lineage", short_oid(&self.anchor))
+    }
+
+    /// The footer's status line: the page being read, none loaded, or the
+    /// revisions loaded and whether more follow.
+    fn status(&self) -> String {
+        let count = self.page.as_ref().map_or(0, |page| page.entries.len());
+        if self.pending.is_some() {
+            "Reading the requested page…".to_owned()
+        } else if count == 0 {
+            "No revisions loaded".to_owned()
+        } else {
+            let more = self.page.as_ref().and_then(|page| page.next_offset);
+            format!(
+                "Revisions {}–{}{}",
+                self.offset + 1,
+                self.offset + count,
+                if more.is_some() {
+                    " · more available"
+                } else {
+                    " · end of lineage"
+                }
+            )
+        }
     }
 
     fn destination(&self, direction: i32, edge: bool) -> Option<Destination> {
@@ -336,6 +759,11 @@ pub(super) struct State {
     task: Option<Task<()>>,
     scroll: UniformListScrollHandle,
     reveals: Reveals,
+    /// The header's and the footer's regions, decided with the message
+    /// toolbar from the height the window lays the panel out in this frame,
+    /// the inspector's whole height (`GitTurtle::message_toolbar`); `None`
+    /// where no window lays the inspector out.
+    regions: std::cell::Cell<Option<Regions>>,
     previous: Option<Box<State>>,
 }
 
@@ -514,34 +942,31 @@ impl GitTurtle {
         }
     }
 
-    /// The width File History's panel keeps at its right for its overflow
-    /// cue while it scrolls, the scrollbar's gutter (`tags::ScrollCue`),
-    /// which the inspector's toolbar, its message and the header's top row
-    /// are laid out without: none where the panel fits, as it did when last
-    /// laid out, or File History is not shown. Laid out at the inspector's
-    /// whole width, they would have run under the gutter.
-    pub(super) fn file_history_gutter(&self) -> Pixels {
-        let scroll = self.file_history.reveals.panel.scroll();
-        if self.file_history.is_active() && scroll.max_offset().y > Pixels::ZERO {
-            crate::tags::ScrollCue::gutter()
-        } else {
-            Pixels::ZERO
-        }
-    }
-
     /// The inspector's message toolbar for an inspector `width` wide and
     /// `tall` (`commit_message::Toolbar::within`), which the window lays out
-    /// before it draws one. File History's panel lays it out in the room its
-    /// overflow cue's gutter leaves while it scrolls (`file_history_gutter`),
-    /// and where it fits, its Copy message and Hash keep only their icons
-    /// where their labelled rows would leave the panel shorter than its
-    /// parts and their icons would not (DESIGN.md's responsive order:
-    /// actions become icons before the content gives way). Laid out in the
-    /// room the gutter left, the controls kept their icons, and the panel,
-    /// fitting, dropped the gutter; laid out in the room without it, they
-    /// took their labels on two rows, and the panel, too short for that
-    /// second row, kept the gutter again, so at 18 pt in a 511 × 490 window
-    /// the window drew every frame, the controls changing form in each.
+    /// before it draws one, and File History's header's and footer's
+    /// regions with it (`Regions`). File History's panel decides its form
+    /// from the room it has, never from whether it scrolled in its last
+    /// frame (DESIGN.md's responsive order: actions become icons before the
+    /// content gives way): at the inspector's whole width, Copy message and
+    /// Hash keep their labels where the panel holds its parts with them and
+    /// giving them up would not let the header or the footer hold more of
+    /// its rows, else take their icons where the panel holds its parts with
+    /// those; otherwise the toolbar is laid out in the room the panel's
+    /// overflow cue's gutter leaves while it scrolls (`tags::ScrollCue`), so
+    /// it never runs under the gutter, Copy message and Hash keeping their
+    /// icons there where their labels take more rows. The header's and the
+    /// footer's rows are measured once, in the room of the toolbar chosen
+    /// (`Rows`), and both forms are weighed from them. Decided from the
+    /// gutter its last frame kept, the panel considered icons only where it
+    /// had not scrolled: at 18 pt in a 511 × 490 window the window drew
+    /// every frame, the controls changing form in each, and a panel that
+    /// had scrolled, at 420 px tall or with a failed page, kept Copy
+    /// message's and Hash's labels on two rows and its scrollbar at about
+    /// 530 to 560 px wide, where a fresh open drew their icons and none.
+    /// Weighed against the panel alone, their labels' second row left the
+    /// footer only its status line where their icons gave it Newer page and
+    /// Older page.
     pub(super) fn message_toolbar(
         &self,
         width: Pixels,
@@ -549,37 +974,59 @@ impl GitTurtle {
         pinned: bool,
         window: &Window,
     ) -> commit_message::Toolbar {
-        let gutter = self.file_history_gutter();
-        let toolbar = commit_message::Toolbar::within(width - gutter, tall, pinned, window);
-        let lineage = self
+        let whole = commit_message::Toolbar::within(width, tall, pinned, window);
+        self.file_history.regions.set(None);
+        let Some(lineage) = self
             .file_history
             .lineage
             .as_ref()
-            .filter(|lineage| self.file_history.is_active() && lineage.entry().is_some());
-        let (Some(lineage), true) = (lineage, gutter == Pixels::ZERO) else {
-            return toolbar;
+            .filter(|_| self.file_history.is_active())
+        else {
+            return whole;
         };
-        let Some(icons) = toolbar.with_icon_copies() else {
-            return toolbar;
-        };
-        // The panel's height does not follow the toolbar's form.
-        let panel = self
-            .file_history
-            .reveals
-            .panel
-            .scroll()
-            .bounds()
-            .size
-            .height;
+        // The panel takes the inspector's whole height, which the window
+        // lays out in this frame: read from the panel's last frame, a
+        // one-step resize from 511 × 490 to 511 × 520 at 18 pt kept the
+        // icons the shorter window took where the labels fit, and nothing
+        // drew another frame.
         let failed = lineage.error.is_some();
         let least = |toolbar: &commit_message::Toolbar| {
-            PanelLeast::of(Some(toolbar.revision_message_least()), failed, window).total()
+            let message = lineage.entry().map(|_| toolbar.revision_message_least());
+            PanelLeast::of(message, failed, window)
         };
-        if least(&toolbar) > panel && least(&icons) <= panel {
+        let icons = lineage.entry().and_then(|_| whole.with_icon_copies());
+        let labelled_least = least(&whole);
+        let (toolbar, regions) = if labelled_least.total() <= tall {
+            let rows = Rows::measure(lineage, whole.room(), window);
+            let labelled = rows.regions(&labelled_least, tall);
             icons
+                .map(|icons| (icons, rows.regions(&least(&icons), tall)))
+                .filter(|(_, regions)| regions.hold_more_than(&labelled))
+                .unwrap_or((whole, labelled))
+        } else if let Some((icons, icons_least)) = icons
+            .map(|icons| (icons, least(&icons)))
+            .filter(|(_, least)| least.total() <= tall)
+        {
+            let rows = Rows::measure(lineage, icons.room(), window);
+            (icons, rows.regions(&icons_least, tall))
         } else {
-            toolbar
-        }
+            // The scrolling panel holds the more of its parts the shorter
+            // its toolbar.
+            let gutter = commit_message::Toolbar::within(
+                width - crate::tags::ScrollCue::gutter(),
+                tall,
+                pinned,
+                window,
+            );
+            let gutter = lineage
+                .entry()
+                .and_then(|_| gutter.with_icon_copies())
+                .unwrap_or(gutter);
+            let rows = Rows::measure(lineage, gutter.room(), window);
+            (gutter, rows.regions(&least(&gutter), tall))
+        };
+        self.file_history.regions.set(Some(regions));
+        toolbar
     }
 
     /// The width the header's rows are laid out in: the room the message
@@ -637,6 +1084,16 @@ impl GitTurtle {
         } else {
             TopRow::Bare
         }
+    }
+
+    /// Whether Newer page and Older page keep their labels in the footer,
+    /// which lays its rows out in the room the header's are
+    /// (`file_history_header_room`, `gutter` its own cue's;
+    /// `page_labels_fit`), where no regions were decided for the frame
+    /// (`Regions`). Labelled where no window lays the inspector out.
+    fn file_history_page_labels(&self, gutter: Pixels, window: &Window) -> bool {
+        self.file_history_header_room(gutter, window)
+            .is_none_or(|room| page_labels_fit(room, window))
     }
 
     /// The control an inspection opened now gives focus back to as it
@@ -1155,26 +1612,104 @@ impl GitTurtle {
         reveals.panel.reveal(window, cx);
         // While it scrolls, the panel keeps its cue's gutter at its right,
         // which its toolbar and message are laid out without
-        // (`file_history_gutter`).
+        // (`GitTurtle::message_toolbar`).
         let cue = crate::tags::ScrollCue::revealing(&reveals.panel, Pixels::ZERO);
         // The header and the footer cue their own rows' scroll on the
         // panel's surface, a scrollbar along a track a thumb moves on and
         // otherwise a fade at each edge their rows continue past, their rows
         // keeping the ring's room before the gutter, as Blame's footer does.
-        let header_cue = crate::tags::ScrollCue::revealing(&reveals.header, room).on_panel();
-        let footer_cue = crate::tags::ScrollCue::revealing(&reveals.footer, room).on_panel();
+        // Whether each scrolls, and so keeps the gutter, is decided with the
+        // message toolbar from the room their rows have without it and the
+        // panel's height in this frame, never from whether they scrolled in
+        // their last (`Regions`, `GitTurtle::message_toolbar`).
+        let from = lineage.anchor_line();
+        let status = lineage.status();
+        let regions = self.file_history.regions.get();
+        // The message and details as measured, which the message panel's
+        // height in this frame, and so a failed page's notice's, follows.
+        let extent =
+            entry.and_then(|entry| self.message_extent(&entry.commit, Some(entry), window, cx));
+        let error_scrolls = regions
+            .zip(self.file_history_header_room(Pixels::ZERO, window))
+            .zip(lineage.error.as_deref())
+            .and_then(|((regions, room), error)| {
+                let message = match entry {
+                    Some(_) => self
+                        .inspector_message
+                        .revision_panel_height(extent, regions.body)?,
+                    None => Pixels::ZERO,
+                };
+                Some(failure_error_scrolls(
+                    error,
+                    &least,
+                    regions.body,
+                    message,
+                    room,
+                    window,
+                ))
+            });
+        let decide = |cue: crate::tags::ScrollCue, scrolls: Option<bool>| match scrolls {
+            Some(scrolls) => cue.decided(scrolls),
+            None => cue,
+        };
+        let header_cue = decide(
+            crate::tags::ScrollCue::revealing(&reveals.header, room)
+                .on(crate::tags::Surface::Panel),
+            regions.map(|regions| regions.header_scrolls),
+        );
+        let footer_cue = decide(
+            crate::tags::ScrollCue::revealing(&reveals.footer, room)
+                .on(crate::tags::Surface::Panel),
+            regions.map(|regions| regions.footer_scrolls),
+        );
         let header_gutter = if header_cue.kept() {
             crate::tags::ScrollCue::gutter() + room
         } else {
             Pixels::ZERO
         };
+        let footer_gutter = if footer_cue.kept() {
+            crate::tags::ScrollCue::gutter() + room
+        } else {
+            Pixels::ZERO
+        };
+        // The revisions cue their own scroll on the panel too, the track kept
+        // the ring's room inside the list's edge, where its ring lies.
+        let revisions_cue =
+            crate::tags::ScrollCue::new(&self.file_history.scroll.0.borrow().base_handle, room)
+                .on(crate::tags::Surface::Panel);
         let top_row = self.file_history_top_row(header_gutter, window);
+        // Newer page and Older page, labelled where the wider label fits the
+        // footer's room and the footer holds them, else each the shared
+        // chevron turned up or down (`Regions`, `file_history_page_labels`),
+        // named and tooltipped by its label.
+        let page_labels = regions.map_or_else(
+            || self.file_history_page_labels(footer_gutter, window),
+            |regions| regions.page_labels,
+        );
+        let page_button = |id: &'static str, label: &'static str, turn: f32| {
+            if page_labels {
+                button(id, label, "", false).flex_shrink_0()
+            } else {
+                crate::views::compact_control_name(
+                    button(id, "", "chevron", false)
+                        .icon(
+                            gpui_kit::component::Icon::default()
+                                .path("icons/chevron.svg")
+                                .size(crate::appearance::ui_size(16.))
+                                .rotate(gpui_kit::percentage(turn)),
+                        )
+                        .tooltip(label)
+                        .flex_shrink_0(),
+                    id,
+                    label,
+                )
+            }
+        };
         // The anchor's line keeps its whole measured line beside its copy
         // control, or the header's whole row where that is narrower, and
         // below that the control moves beneath it, on its left edge: at 18 pt
         // in a 461 px window the line, given no least, was 61 to 80 px wide
         // beside the control and wrapped to about 135 px.
-        let from = format!("From {} · first-parent lineage", short_oid(&lineage.anchor));
         let from_least = self
             .file_history_header_room(header_gutter, window)
             .map(|room| {
@@ -1263,6 +1798,14 @@ impl GitTurtle {
                     .child(
                         div()
                             .id("file-history-anchor-path")
+                            .debug_selector(|| "file-history-anchor-path".into())
+                            // Its whole line, as `file_history_header_height`
+                            // measures it: it clips its text, which leaves it
+                            // no least height of its own, so a header shorter
+                            // than its rows squeezed it, from 21 to 8 px at
+                            // 14 pt in a 472 × 1,000 window, rather than
+                            // scroll where it was decided to.
+                            .flex_shrink_0()
                             .min_w_0()
                             .truncate()
                             .text_size(crate::appearance::ui_text(12.))
@@ -1315,7 +1858,7 @@ impl GitTurtle {
                         div()
                             .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(p.muted))
-                            .child("Follows renames and the first parent of each merge."),
+                            .child(FOLLOWS),
                     )
                     .child(
                         div()
@@ -1343,6 +1886,7 @@ impl GitTurtle {
                             })
                             .child(
                                 div()
+                                    .debug_selector(|| "file-history-revision-number".into())
                                     .flex_1()
                                     .text_size(crate::appearance::ui_text(10.))
                                     .text_color(rgb(p.muted))
@@ -1354,9 +1898,12 @@ impl GitTurtle {
                     // The cue's own node gives way and carries the divider,
                     // inside which its track lies, so it paints over no line.
                     .debug_selector(|| "file-history-header".into())
-                    .max_h(relative(0.30))
-                    .flex_shrink(1.)
-                    .min_h(least.header)
+                    // As tall as `Regions` decided, or, where no window lays
+                    // the inspector out, its rows within its share.
+                    .map(|header| match regions {
+                        Some(regions) => header.h(regions.header).flex_none(),
+                        None => header.max_h(relative(0.30)).flex_shrink(1.).min_h(least.header),
+                    })
                     .border_b_1()
                     .border_color(rgb(p.border)),
             )
@@ -1366,36 +1913,53 @@ impl GitTurtle {
                 // Its controls keep their own focus handles, so the panel
                 // reveals the message panel whole as one region.
                 .children(entry.map(|entry| {
-                    let extent = self.message_extent(&entry.commit, Some(entry), window, cx);
                     let message = self.render_commit_message(&entry.commit, true, extent, window, cx);
                     reveals.panel.region(MESSAGE_REGION, room, message, cx)
                 }))
             .children(lineage.error.as_ref().map(|error| {
-                crate::native_accessibility::clips_children(div()
-                    .on_children_prepainted(reveals.failure.observe())
+                // The notice and its message each cue their own scroll, as
+                // every scrolling region does, their fades dissolving into
+                // the notice's removed background: both once scrolled with
+                // nothing to say so. The message gives way inside the notice
+                // down to its line, so the notice holds Retry page whole and
+                // only the message scrolls: at 18 pt in a 461 × 420 window
+                // both scrolled, and a wheel over the message moved only it,
+                // leaving Retry page below the notice's fold.
+                let surface = crate::tags::Surface::Removed;
+                let failure_cue = crate::tags::ScrollCue::revealing(&reveals.failure, room).on(surface);
+                let error_cue = decide(
+                    crate::tags::ScrollCue::new(&lineage.error_scroll, Pixels::ZERO).on(surface),
+                    error_scrolls,
+                );
+                failure_cue.list(div()
+                    .on_children_prepainted(failure_cue.observe(reveals.failure.observe()))
                     .id("file-history-failure")
                     .debug_selector(|| "file-history-failure".into())
-                    .max_h(relative(0.35))
                     .overflow_y_scroll()
                     .track_scroll(reveals.failure.scroll())
-                    // Gives way to the revisions' whole row down to its least.
-                    .flex_shrink(1.)
-                    .min_h(least.failure)
+                    .min_h_0()
                     .px_3()
                     .py_2()
-                    .bg(rgb(p.removed_background))
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(
+                    .child(error_cue.list(
                         div()
+                            .on_children_prepainted(error_cue.observe(|_, _, _| {}))
                             .id("file-history-error")
+                            .debug_selector(|| "file-history-error".into())
                             .max_h(px(100.))
+                            .min_h_0()
                             .overflow_y_scroll()
+                            .track_scroll(&lineage.error_scroll)
                             .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.warning))
                             .child(error.clone()),
+                        "file-history-error-scrollbar",
                     )
+                    // The cue's own node gives way, down to a line.
+                    .flex_shrink(1.)
+                    .min_h(least.error_line))
                     .child({
                         let retry = button("retry-file-history", "Retry page", "refresh", false)
                             .disabled(busy || retry.is_none())
@@ -1410,7 +1974,13 @@ impl GitTurtle {
                                 }
                             }));
                         reveals.track(&reveals.failure, "retry-file-history", retry, room, cx)
-                    }))
+                    }), "file-history-failure-scrollbar")
+                    // The cue's own node gives way to the revisions' whole
+                    // row down to its least, and carries the notice's fill.
+                    .max_h(relative(0.35))
+                    .flex_shrink(1.)
+                    .min_h(least.failure)
+                    .bg(rgb(p.removed_background))
             }))
             .child(
                 crate::native_accessibility::clips_children(div()
@@ -1418,7 +1988,9 @@ impl GitTurtle {
                     // reveals it whole in the frame Tab first draws it: the
                     // kit's `on_prepaint` canvas, absolute with no insets,
                     // lay at the list's foot and reported it a list lower.
-                    .on_children_prepainted(reveals.panel.control(self.file_focus.clone(), room))
+                    .on_children_prepainted(revisions_cue.observe(
+                        reveals.panel.control(self.file_focus.clone(), room),
+                    ))
                     .id("file-revision-list").debug_selector(|| "file-revision-list".into())
                     .role(Role::ListBox)
                     .aria_label("File revisions, newest first")
@@ -1444,17 +2016,27 @@ impl GitTurtle {
                             "History starts at the chosen commit and follows its first parents.",
                         )
                     } else {
-                        uniform_list(
-                            "file-revisions",
-                            count,
-                            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                                range
-                                    .map(|index| this.render_revision_row(index, cx))
-                                    .collect::<Vec<_>>()
-                            }),
+                        // Its rows end at the gutter the cue keeps while they
+                        // overflow, and its track lies in that gutter inside
+                        // the ring's room, so the ring on the list's edge
+                        // stays whole: the list once scrolled with nothing
+                        // to say so.
+                        revisions_cue.around(
+                            uniform_list(
+                                "file-revisions",
+                                count,
+                                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                                    range
+                                        .map(|index| this.render_revision_row(index, cx))
+                                        .collect::<Vec<_>>()
+                                }),
+                            )
+                            .size_full()
+                            .track_scroll(&self.file_history.scroll)
+                            .pr(revisions_cue.trailing()),
+                            "file-revisions-scrollbar",
                         )
                         .size_full()
-                        .track_scroll(&self.file_history.scroll)
                         .into_any_element()
                     })
                     // Its keyboard ring on its own edge, over the rows, so
@@ -1477,22 +2059,7 @@ impl GitTurtle {
                         div()
                             .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(p.muted))
-                            .child(if busy {
-                                "Reading the requested page…".into()
-                            } else if count == 0 {
-                                "No revisions loaded".into()
-                            } else {
-                                format!(
-                                    "Revisions {}–{}{}",
-                                    lineage.offset + 1,
-                                    lineage.offset + count,
-                                    if next_page.is_some() {
-                                        " · more available"
-                                    } else {
-                                        " · end of lineage"
-                                    }
-                                )
-                            }),
+                            .child(status),
                     )
                     .child(
                         div()
@@ -1502,14 +2069,10 @@ impl GitTurtle {
                             .gap_2()
                             .child({
                                 // Whole inside the room the footer's gutter
-                                // leaves, a label too long for it ending in
-                                // an ellipsis, as Blame's footer actions do:
-                                // at 18 pt in a 461 × 490 window Older page,
-                                // 128 px, ran 8 px into its 120 px room's
-                                // gutter.
-                                let newer = button("newer-file-page", "Newer page", "", false)
-                                    .max_w_full()
-                                    .flex_shrink(1.)
+                                // leaves, labelled or its icon: at 18 pt in
+                                // a 461 × 490 window Older page, 128 px, ran
+                                // 8 px into its 120 px room's gutter.
+                                let newer = page_button("newer-file-page", NEWER_PAGE, 0.75)
                                     .disabled(busy || previous_page.is_none())
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if let Some(offset) = previous_page {
@@ -1524,9 +2087,7 @@ impl GitTurtle {
                                 reveals.track(&reveals.footer, "newer-file-page", newer, room, cx)
                             })
                             .child({
-                                let older = button("older-file-page", "Older page", "", false)
-                                    .max_w_full()
-                                    .flex_shrink(1.)
+                                let older = page_button("older-file-page", OLDER_PAGE, 0.25)
                                     .disabled(busy || next_page.is_none())
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if let Some(offset) = next_page {
@@ -1542,9 +2103,10 @@ impl GitTurtle {
                             }),
                     ), "file-history-footer-scrollbar")
                     .debug_selector(|| "file-history-footer".into())
-                    .max_h(relative(0.25))
-                    .flex_shrink(1.)
-                    .min_h(least.footer)
+                    .map(|footer| match regions {
+                        Some(regions) => footer.h(regions.footer).flex_none(),
+                        None => footer.max_h(relative(0.25)).flex_shrink(1.).min_h(least.footer),
+                    })
                     .border_t_1()
                     .border_color(rgb(p.border)),
             ), "file-history-panel-scrollbar")
@@ -1649,6 +2211,7 @@ impl GitTurtle {
         let tooltip = format!("{subject}\n{detail}\n{path}");
         div()
             .id(("file-revision", index))
+            .debug_selector(move || format!("file-revision-{index}"))
             .role(Role::ListBoxOption)
             .aria_selected(active)
             .aria_label(format!("{subject} · {detail}"))
@@ -2932,9 +3495,11 @@ pub(crate) mod tests {
     /// a track a thumb moves on, so it draws its scrollbar, and the footer,
     /// shorter than the shortest track, by a fade at the edge its rows
     /// continue past, in the panel they lie on. What each holds ends short
-    /// of the gutter the cue keeps, its ring included. Where they fit, at
-    /// 13 pt in a 1,480 × 980 window, neither draws a cue. Both once
-    /// scrolled hundreds of pixels with nothing to say so.
+    /// of the gutter the cue keeps, its ring included, and the scrolling
+    /// footer keeps Newer page's and Older page's icons, at 1,200 px and at
+    /// 13 pt in 461 × 490 too, where their labels would fit its row. Where
+    /// they fit, at 13 pt in a 1,480 × 980 window, neither draws a cue. Both
+    /// once scrolled hundreds of pixels with nothing to say so.
     #[gpui::test]
     async fn file_history_header_and_footer_cue_their_own_scrolls(cx: &mut TestAppContext) {
         use crate::tags::tests::painted_fades_on;
@@ -2971,15 +3536,76 @@ pub(crate) mod tests {
                 "file-history-footer-scrollbar",
                 "older-file-page",
             ),
+            (
+                &reveals.footer,
+                "file-history-footer-scrollbar",
+                "newer-file-page",
+            ),
         ];
-        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
-        for width in [461., 1200.] {
+        let square =
+            |cx: &mut VisualTestContext| cx.update(|_, _| crate::appearance::ui_size(28.)) + slack;
+        for (text, width, scrolls, labels) in [
+            (18, 461., true, false),
+            (18, 1200., true, false),
+            (13, 461., false, false),
+        ] {
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(490.)));
             draw(cx);
             draw(cx);
+            // Newer page and Older page whole: their labels where the wider
+            // fits the footer's room, else the chevron turned up and down,
+            // each named and tooltipped by its label, never an ellipsis.
+            let room = app
+                .read_with(cx, |app, _| app.inspector_message.details_room())
+                .expect("a laid-out toolbar");
+            for (stop, name) in [
+                ("newer-file-page", NEWER_PAGE),
+                ("older-file-page", OLDER_PAGE),
+            ] {
+                let at = format!("{text} pt in {width} × 490, {stop}");
+                let control = cx.debug_bounds(stop).expect("the page control");
+                assert_eq!(
+                    control.size.width > square(cx),
+                    labels,
+                    "{at}: {control:?} labelled where it fits {room:?}, its icon where not"
+                );
+                if !labels {
+                    assert_eq!(
+                        crate::views::COMPACT_NAMES.with(|names| names.borrow().get(stop).copied()),
+                        Some(name),
+                        "{at}: its icon named by its label"
+                    );
+                }
+                let line = cx.update(|window, _| {
+                    crate::views::line_widths(&[(name, crate::appearance::ui_text(12.))], window)
+                });
+                assert!(
+                    !labels || control.size.width + slack >= line,
+                    "{at}: {control:?} holds its whole label {line:?}"
+                );
+            }
             for (reveal, scrollbar, stop) in regions {
-                let at = format!("18 pt in {width} × 490, {scrollbar}");
+                let at = format!("{text} pt in {width} × 490, {scrollbar}, {stop}");
                 let scroll = reveal.scroll();
+                if !scrolls {
+                    if scroll.max_offset().y > px(0.) {
+                        let list = scroll.bounds();
+                        let control = cx.debug_bounds(stop).expect("drawn");
+                        assert!(
+                            control.right() + ring <= list.right() - ScrollCue::gutter() + slack,
+                            "{at}: {stop} {control:?} clear of the gutter of {list:?}"
+                        );
+                        assert!(
+                            cx.debug_bounds(scrollbar).is_some()
+                                || painted_fades_on(cx, list, surface) != (None, None),
+                            "{at}: cued"
+                        );
+                    } else {
+                        assert!(cx.debug_bounds(scrollbar).is_none(), "{at}: no scrollbar");
+                    }
+                    continue;
+                }
                 assert!(scroll.max_offset().y > px(0.), "{at}: scrolls its rows");
                 let list = scroll.bounds();
                 let drawn = cx.debug_bounds(scrollbar);
@@ -3003,6 +3629,67 @@ pub(crate) mod tests {
                 );
             }
         }
+        // A failed page's message cues its own scroll, fading into the
+        // notice's removed background, and gives way inside the notice down
+        // to its line, so only the message scrolls and the notice holds
+        // Retry page whole: at 18 pt in a 461 × 420 window, with a message
+        // longer than its 100 px. Both once scrolled, and a wheel over the
+        // message moved only it, Retry page below the notice's fold.
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(420.)));
+        app.update(cx, |app, cx| {
+            let lineage = app.file_history.lineage.as_mut().unwrap();
+            lineage.error = Some("The page could not be read. ".repeat(12));
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+        let removed = cx.update(|_, cx| crate::appearance::palette(cx).removed_background);
+        let (failure, error) = app.read_with(cx, |app, _| {
+            let lineage = app.file_history.lineage.as_ref().unwrap();
+            (
+                app.file_history.reveals.failure.scroll().clone(),
+                lineage.error_scroll.clone(),
+            )
+        });
+        let at = "18 pt in 461 × 420, a failed page";
+        assert_eq!(
+            failure.max_offset().y,
+            px(0.),
+            "{at}: the notice holds its rows"
+        );
+        assert!(
+            cx.debug_bounds("file-history-failure-scrollbar").is_none()
+                && painted_fades_on(cx, failure.bounds(), removed) == (None, None),
+            "{at}: the notice draws no cue"
+        );
+        let notice = cx.debug_bounds("file-history-failure").expect("the notice");
+        let retry = cx.debug_bounds("retry-file-history").expect("Retry page");
+        assert!(
+            retry.top() + slack >= notice.top() && retry.bottom() <= notice.bottom() + slack,
+            "{at}: Retry page {retry:?} whole in the notice {notice:?}"
+        );
+        assert!(error.max_offset().y > px(0.), "{at}: the message scrolls");
+        let list = error.bounds();
+        if list.size.height >= SHORTEST_SCROLL_TRACK {
+            assert!(
+                cx.debug_bounds("file-history-error-scrollbar").is_some(),
+                "{at}: the message's scrollbar along {list:?}"
+            );
+        } else {
+            assert!(
+                cx.debug_bounds("file-history-error-scrollbar").is_none(),
+                "{at}: no scrollbar along the message's {list:?}"
+            );
+            assert!(
+                painted_fades_on(cx, list, removed).1.is_some(),
+                "{at}: a fade at the message's foot in the notice's fill"
+            );
+        }
+        app.update(cx, |app, cx| {
+            app.file_history.lineage.as_mut().unwrap().error = None;
+            cx.notify();
+        });
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
         cx.simulate_resize(size(px(1480.), px(980.)));
         draw(cx);
@@ -3018,6 +3705,93 @@ pub(crate) mod tests {
                 "{at}: no fade"
             );
         }
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+    }
+
+    /// File History's revisions cue their scroll as every scrolling list
+    /// does (`tags::ScrollCue`): at 13 pt in a 1,480 × 980 window the
+    /// fixture's revisions fit, draw no scrollbar and keep the list's whole
+    /// width; with 30 revisions loaded they overflow, their scrollbar's
+    /// thumb lies in the track at the list's right inside the ring's room,
+    /// so the keyboard ring on the list's edge stays whole, and the rows end
+    /// at the gutter before it. The list once scrolled with nothing to say
+    /// so.
+    #[gpui::test]
+    async fn file_revisions_cue_their_scroll(cx: &mut TestAppContext) {
+        use crate::tags::ScrollCue;
+        use crate::tags::tests::painted_thumb;
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{point, px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let scroll = app.read_with(cx, |app, _| {
+            app.file_history.scroll.0.borrow().base_handle.clone()
+        });
+        let ring = cx.update(|_, cx| crate::appearance::button_ring_room(cx));
+        let slack = px(0.5);
+        let list = scroll.bounds();
+        assert_eq!(
+            scroll.max_offset().y,
+            px(0.),
+            "the fixture's revisions fit {list:?}"
+        );
+        assert!(
+            cx.debug_bounds("file-revisions-scrollbar").is_none(),
+            "no scrollbar where they fit"
+        );
+        let row = cx
+            .debug_bounds("file-revision-0")
+            .expect("the first revision");
+        assert!(
+            (row.right() - list.right()).abs() < slack,
+            "{row:?} keeps the width of {list:?} where nothing scrolls"
+        );
+        app.update(cx, |app, cx| {
+            let lineage = app.file_history.lineage.as_mut().unwrap();
+            lineage.page = Some(page(lineage, 30, None));
+            lineage.selected = Some(0);
+            cx.notify();
+        });
+        draw(cx);
+        let list = scroll.bounds();
+        assert!(
+            scroll.max_offset().y > px(0.),
+            "30 revisions overflow {list:?}"
+        );
+        assert!(
+            cx.debug_bounds("file-revisions-scrollbar").is_some(),
+            "the revisions draw their scrollbar"
+        );
+        let column = list.dilate(-ring);
+        let track = gpui_kit::Bounds::from_corners(
+            point(
+                column.right() - gpui_kit::base::Scrollbar::width(),
+                column.top(),
+            ),
+            column.bottom_right(),
+        );
+        assert!(
+            painted_thumb(cx, track).is_some(),
+            "a thumb in {track:?}, the ring's {ring:?} kept inside {list:?}"
+        );
+        let row = cx
+            .debug_bounds("file-revision-0")
+            .expect("the first revision");
+        assert!(
+            row.right() <= list.right() - ring - ScrollCue::gutter() + slack,
+            "{row:?} ends at the gutter of {list:?}"
+        );
         cx.update(|_, cx| cx.set_reduce_motion(false));
     }
 
@@ -3076,6 +3850,435 @@ pub(crate) mod tests {
             assert!(
                 (room - drawn).abs() <= px(1.),
                 "{at}: laid out for {room:?}, drawn in {drawn:?}"
+            );
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// File History's message toolbar settles in one form for each size,
+    /// whatever the panel's last frame: at every width from 500 to 600 px at
+    /// 18 pt in a 490 px tall window, and at heights from 420 to 620 px at
+    /// 511 and 540 px wide, Copy message and Hash lie where they do come to
+    /// from the size before, from a 1,000 px tall window, where the panel
+    /// fits, from a 400 px tall one, where it scrolls, and once a failed
+    /// page's notice goes; the panel scrolls alike, and the toolbar is laid
+    /// out for the room it is drawn in. Decided from the gutter the panel
+    /// kept in its last frame, a panel that had scrolled kept their labels
+    /// on two rows and its scrollbar at about 530 to 560 px wide, where one
+    /// that had fitted drew their icons and no scrollbar.
+    #[gpui::test]
+    async fn file_historys_toolbar_settles_in_one_form_whatever_its_last_frame(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let reveals = app.read_with(cx, |app, _| app.file_history.reveals.clone());
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        let fail = |cx: &mut VisualTestContext, failed: bool| {
+            app.update(cx, |app, cx| {
+                let lineage = app.file_history.lineage.as_mut().unwrap();
+                lineage.error = failed.then(|| "The page could not be read.".into());
+                cx.notify();
+            });
+        };
+        let resize = |cx: &mut VisualTestContext, width: f32, height: f32| {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+        };
+        // Where Copy message and Hash lie, whether the panel scrolls, and
+        // whether the toolbar was laid out for the room it is drawn in.
+        let form = |cx: &mut VisualTestContext| {
+            let room = app
+                .read_with(cx, |app, _| app.inspector_message.details_room())
+                .expect("a laid-out toolbar");
+            let toolbar = cx
+                .debug_bounds("commit-message-toolbar")
+                .expect("the toolbar");
+            let drawn = toolbar.size.width - cx.update(|window, _| window.rem_size()) * 1.5;
+            (
+                cx.debug_bounds("copy-message"),
+                cx.debug_bounds("copy-commit"),
+                reveals.panel.scroll().max_offset().y > px(0.),
+                (room - drawn).abs() <= px(1.),
+            )
+        };
+        let sizes =
+            (500..=600)
+                .map(|width| (width as f32, 490.))
+                .chain([511., 540.].into_iter().flat_map(|width| {
+                    (420..=620)
+                        .step_by(20)
+                        .map(move |height| (width, height as f32))
+                }));
+        for (width, height) in sizes {
+            let at = format!("18 pt in {width} × {height}");
+            resize(cx, width, height);
+            let settled = form(cx);
+            assert!(settled.3, "{at}: laid out for the room it is drawn in");
+            for from in [1000., 400.] {
+                resize(cx, width, from);
+                resize(cx, width, height);
+                assert_eq!(form(cx), settled, "{at}, from {from} px tall");
+            }
+            fail(cx, true);
+            draw(cx);
+            fail(cx, false);
+            draw(cx);
+            assert_eq!(form(cx), settled, "{at}, once a failed page's notice goes");
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// Where File History's header and footer lay out each of their parts,
+    /// and whether each scrolls, at `text` pt in each of `sizes`, reached
+    /// from a 300 px tall window, where they scroll, and from a 1,000 px
+    /// tall one, where they scroll less or fit (`header_and_footer_settle_*`):
+    /// every pair is the same, and in those frames and the 1,000 px one each
+    /// scrolls exactly where it keeps its cue's gutter, and one that fits
+    /// ends at its last row.
+    async fn header_and_footer_settle(cx: &mut TestAppContext, text: u8, sizes: &[(f32, f32)]) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        const PARTS: [&str; 13] = [
+            "file-history-header",
+            "file-history-top-row",
+            "file-history-title",
+            "close-file-history",
+            "file-history-from",
+            "copy-history-path",
+            "newer-file-revision",
+            "older-file-revision",
+            "file-history-header-scrollbar",
+            "file-history-footer",
+            "newer-file-page",
+            "older-file-page",
+            "file-history-footer-scrollbar",
+        ];
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let reveals = app.read_with(cx, |app, _| app.file_history.reveals.clone());
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+        let resize = |cx: &mut VisualTestContext, width: f32, height: f32| {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+        };
+        let form = |cx: &mut VisualTestContext| {
+            (
+                PARTS.map(|part| cx.debug_bounds(part)),
+                [&reveals.header, &reveals.footer]
+                    .map(|region| region.scroll().max_offset().y > px(0.)),
+            )
+        };
+        let measured =
+            |cx: &mut VisualTestContext, at: &str| assert_regions_as_decided(&app, cx, at);
+        for &(width, height) in sizes {
+            let at = format!("{text} pt in {width} × {height}");
+            resize(cx, width, 300.);
+            resize(cx, width, height);
+            let shorter = form(cx);
+            resize(cx, width, 1000.);
+            measured(cx, &format!("{text} pt in {width} × 1000"));
+            resize(cx, width, height);
+            let taller = form(cx);
+            for (index, part) in PARTS.iter().enumerate() {
+                assert_eq!(
+                    shorter.0[index], taller.0[index],
+                    "{at}: {part} reached from 300 px tall, then from 1,000 px tall"
+                );
+            }
+            assert_eq!(
+                shorter.1, taller.1,
+                "{at}: whether the header and the footer scroll, from 300 px tall, then from 1,000"
+            );
+            measured(cx, &at);
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// File History's header and footer each scroll exactly where they were
+    /// decided to (`Regions`), so each keeps its cue's gutter, and draws its
+    /// scrollbar, only where its rows overflow it; one decided to fit ends at
+    /// its last row and its padding, its rows as measured as tall as layout
+    /// lays them out; the anchor's path keeps its whole line; a footer that
+    /// scrolls keeps Newer page's and Older page's icons, and a panel that
+    /// scrolls Copy message's and Hash's where their labels take two rows,
+    /// so the shorter rows hold the more of what each shows.
+    fn assert_regions_as_decided(
+        app: &gpui_kit::Entity<GitTurtle>,
+        cx: &mut gpui_kit::VisualTestContext,
+        at: &str,
+    ) {
+        use gpui_kit::px;
+        let pad = cx.update(|window, _| window.pixel_snap(window.rem_size() * 0.75));
+        let (regions, reveals) = app.read_with(cx, |app, _| {
+            (
+                app.file_history.regions.get().expect("decided regions"),
+                app.file_history.reveals.clone(),
+            )
+        });
+        let path = cx
+            .debug_bounds("file-history-anchor-path")
+            .expect("the anchor's path");
+        let line = cx.update(|window, _| text_line(12., window));
+        assert!(
+            path.size.height + px(0.5) >= line,
+            "{at}: the anchor's path {path:?} keeps its whole {line:?} line"
+        );
+        let slack = px(0.5);
+        let square = cx.update(|_, _| crate::appearance::ui_size(28.)) + slack;
+        assert!(
+            !(regions.footer_scrolls && regions.page_labels),
+            "{at}: a footer decided to scroll keeps its page controls' icons, {regions:?}"
+        );
+        let older = cx.debug_bounds("older-file-page").expect("Older page");
+        assert!(
+            !(reveals.footer.scroll().max_offset().y > slack && older.size.width > square),
+            "{at}: a scrolling footer draws Older page {older:?} as its icon"
+        );
+        let copy = cx.debug_bounds("copy-message").expect("Copy message");
+        let hash = cx.debug_bounds("copy-commit").expect("Hash");
+        assert!(
+            !(reveals.panel.scroll().max_offset().y > slack
+                && copy.size.width > square
+                && (copy.top() - hash.top()).abs() > slack),
+            "{at}: a scrolling panel keeps Copy message {copy:?} and Hash {hash:?} on one row"
+        );
+        // Labelled on two rows only where their icons would let neither the
+        // header nor the footer hold more of its rows: one that scrolls
+        // keeps its whole cap, 30% and 25% of the panel, which the icons'
+        // shorter toolbar leaves as it is; below its cap, it gave way to the
+        // body's least, which their icons lower.
+        if copy.size.width > square && (copy.top() - hash.top()).abs() > slack {
+            let tall = cx
+                .debug_bounds("file-history-panel")
+                .expect("the panel")
+                .size
+                .height;
+            for (part, scrolls, height, cap) in [
+                ("header", regions.header_scrolls, regions.header, 0.30),
+                ("footer", regions.footer_scrolls, regions.footer, 0.25),
+            ] {
+                assert!(
+                    !scrolls || height + slack >= tall * cap,
+                    "{at}: Copy message {copy:?} and Hash {hash:?} keep their labels on two \
+                     rows while the {part} scrolls below its cap in a {tall:?} panel, \
+                     {regions:?}"
+                );
+            }
+        }
+        let ends = [
+            ["older-file-revision", "file-history-revision-number"],
+            ["older-file-page", "newer-file-page"],
+        ];
+        for ((region, scrolls), last) in [&reveals.header, &reveals.footer]
+            .into_iter()
+            .zip([regions.header_scrolls, regions.footer_scrolls])
+            .zip(ends)
+        {
+            let scroll = region.scroll();
+            let list = scroll.bounds();
+            assert_eq!(
+                scroll.max_offset().y > px(0.5),
+                scrolls,
+                "{at}: {list:?} scrolls {:?} exactly where it keeps its gutter, {regions:?}",
+                scroll.max_offset().y
+            );
+            if !scrolls {
+                let foot = last
+                    .into_iter()
+                    .filter_map(|part| cx.debug_bounds(part))
+                    .map(|part| part.bottom())
+                    .fold(px(0.), Pixels::max);
+                assert!(
+                    (list.bottom() - pad - foot).abs() < px(0.5),
+                    "{at}: {list:?} ends at its last row, {foot:?}, and its padding"
+                );
+            }
+        }
+    }
+
+    /// File History's header and footer scroll exactly where they were
+    /// decided to (`assert_regions_as_decided`) at each of `texts` pt, from
+    /// 424 to 664 px wide at 600 and 1,000 px tall
+    /// (`file_history_regions_scroll_where_decided_*`).
+    async fn regions_scroll_where_decided(cx: &mut TestAppContext, texts: &[u8]) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        for &text in texts {
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            for width in (424..=664).step_by(8) {
+                for height in [600., 1000.] {
+                    cx.simulate_resize(size(px(width as f32), px(height)));
+                    draw(cx);
+                    assert_regions_as_decided(
+                        &app,
+                        cx,
+                        &format!("{text} pt in {width} × {height}"),
+                    );
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// File History's header and footer scroll exactly where they were
+    /// decided to at 11 to 14 pt (`regions_scroll_where_decided`). The
+    /// anchor's path, which clips its text, gave up its line to a header
+    /// shorter than its rows: at 14 pt from 472 to 484 px wide in a 1,000 px
+    /// tall window the header measured 238 px, was given about 226 and
+    /// decided to scroll, and its path was squeezed from 21 to 8 px, so it
+    /// kept a gutter with nothing to scroll and its rows narrowed for none.
+    #[gpui::test]
+    async fn file_history_regions_scroll_where_decided_at_11_to_14_pt(cx: &mut TestAppContext) {
+        regions_scroll_where_decided(cx, &[11, 12, 13, 14]).await;
+    }
+
+    /// As at 11 to 14 pt
+    /// (`file_history_regions_scroll_where_decided_at_11_to_14_pt`), at 15
+    /// to 18 pt: at 15 pt from 532 to 632 px wide the path was squeezed from
+    /// 22.5 to 9 px.
+    #[gpui::test]
+    async fn file_history_regions_scroll_where_decided_at_15_to_18_pt(cx: &mut TestAppContext) {
+        regions_scroll_where_decided(cx, &[15, 16, 17, 18]).await;
+    }
+
+    /// File History's header and footer take each form and wrap from the
+    /// room their rows have, never from whether they scrolled in their last
+    /// frame (`header_and_footer_settle`): at 13 pt from 424 to 544 px wide
+    /// at 400, 460 and 520 px tall. Decided from the gutter the footer kept,
+    /// Newer page and Older page lay on two rows reached from a shorter
+    /// window and on one from a taller one at 432 × 460 and from 464 to
+    /// 520 × 460.
+    #[gpui::test]
+    async fn header_and_footer_settle_at_13_pt(cx: &mut TestAppContext) {
+        let sizes: Vec<(f32, f32)> = [400., 460., 520.]
+            .into_iter()
+            .flat_map(|height| {
+                (424..=544)
+                    .step_by(8)
+                    .map(move |width| (width as f32, height))
+            })
+            .collect();
+        header_and_footer_settle(cx, 13, &sizes).await;
+    }
+
+    /// As at 13 pt (`header_and_footer_settle_at_13_pt`), at 18 pt from 461
+    /// to 661 px wide at 420, 490 and 520 px tall. Decided from the gutter
+    /// the footer kept, Newer page's and Older page's labels, on two rows
+    /// that overflowed it, became one row of icons inside the gutter, which
+    /// fitted, in every other frame, and the window drew without end.
+    #[gpui::test]
+    async fn header_and_footer_settle_at_18_pt(cx: &mut TestAppContext) {
+        let sizes: Vec<(f32, f32)> = [420., 490., 520.]
+            .into_iter()
+            .flat_map(|height| {
+                (461..=661)
+                    .step_by(8)
+                    .map(move |width| (width as f32, height))
+            })
+            .collect();
+        header_and_footer_settle(cx, 18, &sizes).await;
+    }
+
+    /// File History's message toolbar takes its form from the height the
+    /// window lays it out in, in the first frame a resize draws: at 18 pt, a
+    /// one-step resize from 511 × 490 and from 520 × 490, where Copy message
+    /// and Hash keep only their icons, to the shortest height, in 20 px
+    /// steps from 520 px, where they keep their labels, draws them labelled
+    /// in each frame it draws, the first included, with no frame drawn but
+    /// the resize's own. Taken from the panel's last frame, the resize to
+    /// 520 px, where the labels fitted the panel, kept their icons, and
+    /// nothing drew another frame; there their icons now let the header
+    /// hold more of its rows.
+    #[gpui::test]
+    async fn file_historys_toolbar_takes_its_form_from_the_height_a_resize_draws(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        let square = crate::appearance::ui_size(28.);
+        let slack = px(0.5);
+        let labelled = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("copy-message")
+                .expect("Copy message")
+                .size
+                .width
+                > square + slack
+        };
+        for width in [511., 520.] {
+            let tall = (520..=1000)
+                .step_by(20)
+                .map(|height| height as f32)
+                .find(|&height| {
+                    cx.simulate_resize(size(px(width), px(height)));
+                    draw(cx);
+                    labelled(cx)
+                })
+                .expect("a height where Copy message keeps its label");
+            cx.simulate_resize(size(px(width), px(490.)));
+            draw(cx);
+            assert!(
+                !labelled(cx),
+                "18 pt in {width} × 490: Copy message keeps its icon"
+            );
+            commit_message::State::take_laid_out_toolbars();
+            crate::tags::settling::reset();
+            // Only the frames the resize itself draws.
+            cx.simulate_resize(size(px(width), px(tall)));
+            let at = format!("18 pt from {width} × 490 to {width} × {tall}");
+            let frames = commit_message::State::take_laid_out_toolbars();
+            assert!(!frames.is_empty(), "{at}: the resize draws");
+            assert!(
+                frames.iter().all(|icons| !icons),
+                "{at}: labelled in every frame the resize draws, its first included: {frames:?}"
+            );
+            let copy = cx.debug_bounds("copy-message").expect("Copy message");
+            assert!(
+                copy.size.width > square + slack,
+                "{at}: Copy message {copy:?} labelled"
             );
         }
         cx.update(|window, cx| {
@@ -3363,6 +4566,243 @@ pub(crate) mod tests {
             cx.update(|window, _| root.contains(&now, window)),
             "the window draws the control {now:?}"
         );
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// A failed page's message scrolls along a track that rests on its
+    /// notice's removed background, as the pickers' tracks rest on their
+    /// raised surface, and its thumb takes the thumb fitted to that surface
+    /// (`Palette::removed_thumb`), 2:1 there; hovered, secondary text, as
+    /// every thumb does: at 13 pt in a 1,480 × 980 window in Ember and
+    /// Midnight, with a message taller than its 100 px. The kit's track was
+    /// the canvas, a band across the notice, and the palette's thumb stood
+    /// 1.66:1 on Ember's removed background and 1.74:1 on Midnight's.
+    #[gpui::test]
+    async fn a_failed_pages_message_scrolls_on_its_notices_surface(cx: &mut TestAppContext) {
+        use crate::tags::tests::{painted_thumb, painted_thumb_fill, painted_track_fill};
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{Bounds, Hsla, point, px, rgb, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(true);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        app.update(cx, |app, cx| {
+            let lineage = app.file_history.lineage.as_mut().unwrap();
+            lineage.error = Some("The page could not be read. ".repeat(40));
+            cx.notify();
+        });
+        let error = app.read_with(cx, |app, _| {
+            app.file_history
+                .lineage
+                .as_ref()
+                .unwrap()
+                .error_scroll
+                .clone()
+        });
+        let fill = |color: u32| Some(gpui_kit::Background::from(Hsla::from(rgb(color))));
+        for choice in [
+            crate::appearance::ThemeChoice::Ember,
+            crate::appearance::ThemeChoice::Midnight,
+        ] {
+            cx.update(|_, cx| choice.apply(None, cx));
+            draw(cx);
+            let at = format!("{} at 13 pt in 1,480 × 980", choice.label());
+            assert!(error.max_offset().y > px(0.), "{at}: the message scrolls");
+            assert!(
+                cx.debug_bounds("file-history-error-scrollbar").is_some(),
+                "{at}: along its scrollbar"
+            );
+            let list = error.bounds();
+            let track = Bounds::from_corners(
+                point(
+                    list.right() - gpui_kit::component::scroll::Scrollbar::width(),
+                    list.top(),
+                ),
+                list.bottom_right(),
+            );
+            let (surface, thumb, shared, hovered) = cx.read(|cx| {
+                let palette = crate::appearance::palette(cx);
+                (
+                    palette.removed_background,
+                    crate::appearance::labels(cx).removed_thumb,
+                    palette.scrollbar_thumb(),
+                    palette.muted,
+                )
+            });
+            assert_eq!(
+                painted_track_fill(cx, track),
+                fill(surface),
+                "{at}: its track in the notice's #{surface:06x}"
+            );
+            assert_eq!(
+                painted_thumb_fill(cx, track),
+                fill(thumb),
+                "{at}: its thumb in #{thumb:06x}, not the palette's #{shared:06x}"
+            );
+            assert_ne!(thumb, shared, "{at}: its thumb moves off the palette's");
+            let center = painted_thumb(cx, track).expect("a thumb").center();
+            cx.simulate_mouse_move(center, None, Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                painted_thumb_fill(cx, track),
+                fill(hovered),
+                "{at}: hovered, in secondary text #{hovered:06x}"
+            );
+            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+            draw(cx);
+        }
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+    }
+
+    /// A failed page's message decides whether it scrolls from this frame's
+    /// inputs (`failure_error_scrolls`): at 13 pt in a 540 px window from 480
+    /// to 1,000 px tall, with a message that wraps to a line more inside its
+    /// cue's gutter than without it and fits 100 px without it, the notice,
+    /// its message and Retry page lie where they do reached from a 300 px
+    /// tall window, where the message scrolls, and from a 1,000 px tall
+    /// one, where it fits; the message scrolls exactly where decided; the
+    /// notice holds its rows; and the message panel is as tall as decided
+    /// for the frame (`commit_message::State::revision_panel_height`).
+    /// Decided from its last frame, a 150-character message at 13 pt in
+    /// 540 × 554 to 698 kept its gutter and scrolled at 100 px reached from
+    /// 300 px tall and drew 90 px with no cue reached from 1,000 px, Retry
+    /// page 10 px lower in one than the other.
+    #[gpui::test]
+    async fn a_failed_pages_message_scrolls_where_decided(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        let width = 540.;
+        let resize = |cx: &mut VisualTestContext, height: f32| {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+        };
+        resize(cx, 1000.);
+        // The longest message of whole words that fits 100 px without the
+        // gutter and wraps to a line more inside it, measured from the
+        // interface font, so the gutter alone would make it overflow.
+        let room = app
+            .read_with(cx, |app, _| app.inspector_message.details_room())
+            .expect("a laid-out toolbar");
+        let message = cx
+            .update(|window, _| {
+                let line = text_line(11., window);
+                (1..60)
+                    .map(|words| "unreadable ".repeat(words).trim_end().to_owned())
+                    .rfind(|text| {
+                        let lines = |room| wrapped(text, 11., room, window);
+                        line * lines(room) <= px(100.)
+                            && lines(room - crate::tags::ScrollCue::gutter()) > lines(room)
+                    })
+            })
+            .expect("a message the gutter wraps to another line");
+        app.update(cx, |app, cx| {
+            app.file_history.lineage.as_mut().unwrap().error = Some(message.clone());
+            cx.notify();
+        });
+        let (failure, error) = app.read_with(cx, |app, _| {
+            (
+                app.file_history.reveals.failure.scroll().clone(),
+                app.file_history
+                    .lineage
+                    .as_ref()
+                    .unwrap()
+                    .error_scroll
+                    .clone(),
+            )
+        });
+        let slack = px(0.5);
+        for height in (480..=1000).step_by(10) {
+            let at = format!("13 pt in {width} × {height}");
+            let mut seen = Vec::new();
+            for from in [300., 1000.] {
+                resize(cx, from);
+                resize(cx, height as f32);
+                seen.push((
+                    [
+                        "file-history-failure",
+                        "file-history-error",
+                        "retry-file-history",
+                    ]
+                    .map(|part| cx.debug_bounds(part)),
+                    error.max_offset().y > slack,
+                ));
+                assert_eq!(
+                    failure.max_offset().y,
+                    px(0.),
+                    "{at} from {from} px tall: the notice holds its rows"
+                );
+            }
+            assert_eq!(
+                seen[0], seen[1],
+                "{at}: the notice, its message and Retry page from 300 px tall, then from 1,000"
+            );
+            let (regions, least, extent) = cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    let least = PanelLeast::of(
+                        app.inspector_message.revision_message_least(),
+                        true,
+                        window,
+                    );
+                    let entry = app.file_history_entry().cloned().expect("a revision");
+                    let extent = app.message_extent(&entry.commit, Some(&entry), window, cx);
+                    (
+                        app.file_history.regions.get().expect("decided regions"),
+                        least,
+                        extent,
+                    )
+                })
+            });
+            let panel = app
+                .read_with(cx, |app, _| {
+                    app.inspector_message
+                        .revision_panel_height(extent, regions.body)
+                })
+                .expect("a laid-out toolbar");
+            let drawn = cx
+                .debug_bounds("commit-message-panel")
+                .expect("the message panel")
+                .size
+                .height;
+            // Within a pixel: layout rounds the header's and the footer's
+            // heights, then the panel's edges, to device pixels.
+            assert!(
+                (drawn - panel).abs() <= px(1.),
+                "{at}: the message panel drawn {drawn:?} as decided, {panel:?}"
+            );
+            // The room of this frame's toolbar, which a panel that scrolls
+            // lays out inside its gutter.
+            let room = app
+                .read_with(cx, |app, _| app.inspector_message.details_room())
+                .expect("a laid-out toolbar");
+            let decided = cx.update(|window, _| {
+                failure_error_scrolls(&message, &least, regions.body, panel, room, window)
+            });
+            assert_eq!(
+                seen[1].1, decided,
+                "{at}: the message scrolls exactly where decided, {:?}",
+                seen[1].0
+            );
+        }
         cx.update(|window, cx| {
             cx.set_reduce_motion(false);
             crate::appearance::apply_text_sizes(13, 12, window, cx);

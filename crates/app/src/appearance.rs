@@ -973,11 +973,34 @@ impl Palette {
     /// hue's saturation can meet while the thumb's lightness sits on the
     /// row's.
     pub fn over_rows_thumb(self) -> u32 {
-        let rows = self.thumb_rows();
+        self.thumb_resting_on(&self.thumb_rows().map(|(_, row)| row))
+    }
+
+    /// The thumb of a scrollbar on a failed page's notice, whose track rests
+    /// on the notice's `removed_background` (`tags::Surface::Removed`), as
+    /// the pickers' tracks rest on their raised surface: fitted to that
+    /// surface as [`Self::over_rows_thumb`] is to its rows, the first of 256
+    /// even steps from [`Self::scrollbar_thumb`] toward `text`, that thumb
+    /// included, that holds [`SCROLL_THUMB`] there by WCAG's luminance
+    /// ratio, as fitted and as drawn a channel step nearer
+    /// ([`drawn_nearer`]), else the first toward white in a dark palette or
+    /// black in a light one that does. The palette's thumb, fitted to the
+    /// track's other surfaces, stood 1.66:1 on Ember's removed background
+    /// (#5f4f60 on #472b37) and 1.74:1 on Midnight's.
+    pub fn removed_thumb(self) -> u32 {
+        self.thumb_resting_on(&[self.removed_background])
+    }
+
+    /// The thumb fitted to `surfaces` ([`Self::over_rows_thumb`]): the
+    /// least step from [`Self::scrollbar_thumb`] toward `text`, that thumb
+    /// included, that holds [`SCROLL_THUMB`] on each of them as fitted and
+    /// as drawn a channel step nearer, or, where no step toward the text
+    /// does, the least toward the extreme on the text's side; never the text.
+    fn thumb_resting_on(self, surfaces: &[u32]) -> u32 {
         let clears = |thumb| {
-            rows.iter().all(|&(_, row)| {
-                custom::contrast(thumb, row) >= SCROLL_THUMB
-                    && custom::contrast(drawn_nearer(thumb, row), row) >= SCROLL_THUMB
+            surfaces.iter().all(|&surface| {
+                custom::contrast(thumb, surface) >= SCROLL_THUMB
+                    && custom::contrast(drawn_nearer(thumb, surface), surface) >= SCROLL_THUMB
             })
         };
         let thumb = self.scrollbar_thumb();
@@ -1646,6 +1669,9 @@ pub struct Labels {
     /// The thumb a scrollbar draws over rows ([`Palette::over_rows_thumb`]),
     /// fitted here so the frames that draw it read it.
     pub over_rows_thumb: u32,
+    /// The thumb a scrollbar draws on a failed page's notice
+    /// ([`Palette::removed_thumb`]), fitted here alike.
+    pub removed_thumb: u32,
 }
 
 impl Global for Labels {}
@@ -1677,6 +1703,7 @@ impl Labels {
                 &[palette.canvas, palette.panel, palette.raised()],
             ),
             over_rows_thumb: palette.over_rows_thumb(),
+            removed_thumb: palette.removed_thumb(),
         }
     }
 }
@@ -5412,6 +5439,63 @@ mod tests {
             midnight.scrollbar_thumb(),
             "Midnight's thumb moves off its selected row"
         );
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// The thumb of a scrollbar on a failed page's notice
+    /// (`Palette::removed_thumb`), whose track rests on the removed
+    /// background, holds 2:1 by luminance there, as fitted and as drawn a
+    /// channel step nearer, in every built-in and Omarchy palette, stays
+    /// quieter than secondary text there, which its hovered state takes, and
+    /// is the least step from the palette's thumb toward the text, that thumb
+    /// included; the labels hold it. The palette's thumb stood 1.66:1 on
+    /// Ember's removed background and 1.74:1 on Midnight's.
+    #[test]
+    fn the_removed_thumb_reads_two_to_one_on_the_removed_background() {
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            let thumb = palette.removed_thumb();
+            let surface = palette.removed_background;
+            if Labels::fit(palette).removed_thumb != thumb {
+                failures.push(format!("{name}: the labels keep another thumb"));
+            }
+            // The least of a colour's contrasts, as fitted and as drawn a
+            // channel step nearer the surface.
+            let least = |color: u32| {
+                contrast(color, surface).min(contrast(drawn_nearer(color, surface), surface))
+            };
+            let ratio = contrast(thumb, surface);
+            let text = contrast(palette.muted, surface);
+            if least(thumb) < SCROLL_THUMB || ratio >= text {
+                failures.push(format!(
+                    "{name}: #{thumb:06x} {ratio:.3}:1 ({:.3}:1 drawn) on #{surface:06x}, \
+                     secondary text {text:.3}:1",
+                    contrast(drawn_nearer(thumb, surface), surface)
+                ));
+            }
+            let base = palette.scrollbar_thumb();
+            let nth = |n: u32| {
+                [16, 8, 0].into_iter().fold(0, |color, shift| {
+                    let from = (base >> shift) & 0xff;
+                    let to = (palette.text >> shift) & 0xff;
+                    color | (((from * (256 - n) + to * n) / 256) << shift)
+                })
+            };
+            match (0..=256).find(|&n| nth(n) == thumb) {
+                Some(0) => {}
+                Some(n) if least(nth(n - 1)) < SCROLL_THUMB => {}
+                _ => failures.push(format!("{name}: #{thumb:06x} is not the least step")),
+            }
+        }
+        for choice in [ThemeChoice::Ember, ThemeChoice::Midnight] {
+            let palette = choice.palette();
+            assert_ne!(
+                palette.removed_thumb(),
+                palette.scrollbar_thumb(),
+                "{}: the thumb moves off the removed background",
+                choice.label()
+            );
+        }
         assert!(failures.is_empty(), "{failures:#?}");
     }
 

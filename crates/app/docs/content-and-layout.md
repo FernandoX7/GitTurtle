@@ -102,21 +102,52 @@ remaining height, and the extent measures the revision's details
 own metadata, which History measures for the same commit. A File History panel
 shorter than its parts' least heights (`file_history::PanelLeast`, which counts
 a failed page's notice and the message panel's whole share, so the revisions
-keep one whole row) scrolls as a whole, cued by `tags::ScrollCue`, and while it scrolls the toolbar, the message
-and the top row are laid out in the width its gutter leaves
-(`GitTurtle::file_history_gutter`); where it fits, Copy message and Hash keep
-only their icons where their labelled rows alone would make it scroll
-(`GitTurtle::message_toolbar`), so the gutter and the toolbar's form never
-decide each other, and a test's cue that keeps contradicting its frame fails
+keep one whole row) scrolls as a whole, cued by `tags::ScrollCue`. Its
+toolbar's form is decided from the room the panel has, never from whether its
+last frame scrolled (`GitTurtle::message_toolbar`): labelled where the panel
+holds its parts with it at the inspector's whole width and Copy message's and
+Hash's icons would let neither the header nor the footer hold more of its
+rows, else with only their icons where it holds them with those, and
+otherwise laid
+out, as the message and the top row then are, in the width the scrolling
+panel's gutter leaves, Copy message and Hash keeping their icons there where
+their labels take more rows, so the gutter and the toolbar's form never decide each
+other, and a test's cue that keeps contradicting its frame fails
 rather than draws without end (`tags::settling`). Its `file_history::Reveals` reveal every
 Tab stop whole: a control in the header's, the failure's or the footer's own
 scroll there first and then in the panel (`FocusReveal::control_within`), and
 the message panel, whose controls keep their own focus handles, as one region
 (`FocusReveal::region`). The header and the footer cue their own scrolls with
-the same `tags::ScrollCue`, drawn on the panel (`ScrollCue::on_panel`), their
-rows keeping the ring's room before its gutter, as Blame's footer does, and the
-header's top row is chosen for the room that cue leaves
-(`GitTurtle::file_history_header_room`).
+the same `tags::ScrollCue`, drawn on the panel
+(`ScrollCue::on(Surface::Panel)`), their rows keeping the ring's room before
+its gutter, as Blame's footer does, and the header's top row and the footer's
+page controls are chosen for the room that cue leaves
+(`GitTurtle::file_history_header_room`): Newer page and Older page keep only
+the shared chevron turned up and down, named and tooltipped by their labels,
+where the wider label does not fit (`GitTurtle::file_history_page_labels`).
+Whether each scrolls is decided before layout, never from its last frame
+(`ScrollCue::decided`): their rows' heights are measured once a frame, with
+the toolbar, in the room its form leaves without the gutter
+(`file_history::Rows`), and given their shares of the panel's height in this
+frame, as a column's flex items take them (`file_history::Regions`,
+`PanelLeast::shares`), for each toolbar form the panel weighs, and the footer takes Newer page's and Older page's
+labels, else their icons, where it then holds them, and only otherwise
+scrolls, keeping their icons, laid out in the room its gutter leaves. A
+failed page's notice and its message cue their own scrolls on the notice's
+removed background (`Surface::Removed`), their tracks resting on it and their
+thumbs fitted to it (`Palette::removed_thumb`); the message gives way inside the
+notice down to its line (`PanelLeast::error_line`), so the notice holds Retry
+page whole and only the message scrolls. Whether the message scrolls is
+decided before layout too (`failure_error_scrolls`): its text wrapped in the
+notice's room without the gutter, in the notice's height for this frame,
+which follows the body's (`Regions::body`) and the message panel's, worked out
+from this frame's toolbar and measured extent
+(`commit_message::State::revision_panel_height`), never from the last frame's
+layout. The revisions cue theirs on the panel
+too: their `uniform_list` keeps the gutter itself (`ScrollCue::trailing`), since
+the kit lays the track over the bounds the list's own scroll handle reports,
+and the cue lies around it (`ScrollCue::around`), its track inside the ring's
+room so the keyboard ring on the list's edge stays whole.
 Reading order is title, available body, then author/date/parent/path metadata.
 Empty bodies add neither filler nor a blank clipboard suffix.
 
