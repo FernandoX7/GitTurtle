@@ -18,6 +18,8 @@ use gpui_kit::{
 use std::time::Duration;
 mod conversations;
 #[cfg(test)]
+mod phrase_bench;
+#[cfg(test)]
 mod rest_bench;
 mod review;
 use crate::github::review::UiTransport;
