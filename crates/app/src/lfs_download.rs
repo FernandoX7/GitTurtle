@@ -1,5 +1,5 @@
 //! Explicit LFS preview downloads with captured pointer/source review.
-use crate::native_accessibility::DrawnButton;
+use crate::native_accessibility::{DrawnButton, LiveRegion as _};
 use crate::*;
 use gitturtle_core::{LfsDownloadPlan, LfsDownloadTarget, WriteCommand};
 use gpui_kit::{component::WindowExt, prelude::FluentBuilder};
@@ -307,6 +307,13 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many download forms have opened, for a test of the presses that
+    /// open one.
+    pub(crate) static FORMS_OPENED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 thread_local! {
     static DOWNLOAD_BEFORE_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static DOWNLOAD_AFTER_WIDTH: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
@@ -361,6 +368,84 @@ fn sentence_fits_beside(
     crate::views::laid_out_text_width(sentence, window) + buttons <= room
 }
 
+/// Who asked for an LFS download: Compare, whose header shows the write's
+/// progress and Cancel, or the rewritten-series review the id names, which
+/// covers that header and shows them in its own Download row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Asker {
+    Compare,
+    Review(EntityId),
+}
+
+impl Asker {
+    /// Where the confirmation says Cancel stands while the download runs.
+    fn cancel_place(self) -> &'static str {
+        match self {
+            Asker::Compare => "The download can be cancelled from the operation bar.",
+            Asker::Review(_) => {
+                "While it runs, Cancel download stands in the review's Download row."
+            }
+        }
+    }
+}
+
+/// A window's LFS downloads: the form open, the caller whose form last
+/// opened its confirmation, the caller whose download runs, and how the last
+/// one ended.
+#[derive(Default)]
+pub(crate) struct Downloads {
+    form: Option<WeakEntity<LfsDownloadForm>>,
+    confirming: Option<Asker>,
+    running: Option<Asker>,
+    ended: Option<(Asker, Option<SharedString>)>,
+}
+
+impl Downloads {
+    /// Who asked for the download that runs.
+    pub(crate) fn running(&self) -> Option<Asker> {
+        self.running
+    }
+
+    /// How the download `asker` asked for last ended: `Some(None)` where it
+    /// succeeded, `Some(Some(words))` with the failure's words.
+    pub(crate) fn ended(&self, asker: Asker) -> Option<Option<SharedString>> {
+        self.ended
+            .as_ref()
+            .filter(|(by, _)| *by == asker)
+            .map(|(_, failure)| failure.clone())
+    }
+}
+
+/// What a caller that covers the operation bar, the rewritten-series review,
+/// says in its Download row of the download it asked for: Compare's header
+/// says it for Compare, which passes none.
+pub(crate) struct Asked {
+    /// The focus each side's Download tracks.
+    pub(crate) focus: [FocusHandle; 2],
+    /// Cancel download's focus.
+    pub(crate) cancel: FocusHandle,
+    pub(crate) state: AskedState,
+    /// Cancels the running write: the window's `cancel_operation`.
+    pub(crate) on_cancel: OnCancel,
+}
+
+/// What Cancel download calls.
+pub(crate) type OnCancel = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
+
+pub(crate) enum AskedState {
+    /// Nothing it asked for runs or failed: the row as Compare draws it.
+    Resting,
+    /// Side `side`'s download runs; once the write looks busy
+    /// (`workspace::BusyLook`), `progress`, the window's progress text,
+    /// stands where its Download stood, beside Cancel download.
+    Running {
+        side: usize,
+        progress: Option<SharedString>,
+    },
+    /// It failed, saying these words, and its Download is back.
+    Failed(SharedString),
+}
+
 /// The row offering a download of each side among `targets`, whose object
 /// is missing, where `quick_source` calls the one side Source, beneath a
 /// failing side's line if `line_above`, in a column `column` wide. It looks
@@ -368,15 +453,22 @@ fn sentence_fits_beside(
 /// busy, `workspace::BusyLook`), and a press asks `download` for the side's
 /// target. Its frames stand on the pane's text edge, the line's above it: a
 /// 0.75 rem bar holds neither a ghost Button's pull nor its ring (DESIGN.md,
-/// "One left edge"). Compare and the rewritten-series review draw it alike.
+/// "One left edge"). Compare and the rewritten-series review draw it alike;
+/// the review, which covers the operation bar, also says there what it
+/// `asked` for: while its download runs, where the pressed Download stood,
+/// the progress and Cancel download, the row keeping its height and place,
+/// and once it fails, the failure's words in the sentence's place.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn download_row(
     targets: Vec<(usize, LfsDownloadTarget)>,
     quick_source: bool,
     line_above: bool,
     column: Pixels,
     (refused, dimmed): (bool, bool),
-    download: impl Fn(LfsDownloadTarget, &mut Window, &mut App) + 'static,
+    asked: Option<Asked>,
+    download: impl Fn(usize, LfsDownloadTarget, &mut Window, &mut App) + 'static,
     window: &Window,
+    cx: &App,
 ) -> AnyElement {
     if targets.is_empty() {
         return div().into_any_element();
@@ -389,8 +481,21 @@ pub(crate) fn download_row(
     );
     #[cfg(test)]
     let fits = SENTENCE_FITS.get().unwrap_or(fits);
-    let sentence_moves = line_above || !fits;
+    let (failure, running) = match asked.as_ref().map(|asked| &asked.state) {
+        Some(AskedState::Failed(words)) => (Some(words.clone()), None),
+        Some(AskedState::Running {
+            side,
+            progress: Some(progress),
+        }) => (None, Some((*side, progress.clone()))),
+        _ => (None, None),
+    };
+    // The line the sentence is drawn on, where it is, or its failure's.
+    let one_line = !line_above && fits;
+    let sentence_moves = !one_line || failure.is_some();
+    let warning = appearance::labels(cx).warning;
+    let accent = palette(cx).accent;
     let download = std::rc::Rc::new(download);
+    let asked = asked.map(std::rc::Rc::new);
     div()
         .flex_none()
         .px_3()
@@ -398,7 +503,17 @@ pub(crate) fn download_row(
         .when(!line_above, |row| row.pt_2())
         .pb_2()
         .flex()
-        .flex_wrap()
+        // Beside its sentence the buttons keep their line, the sentence
+        // giving way with an ellipsis: wrapped, where measurement and
+        // layout disagreed, they wrapped beneath it and took the
+        // comparison's room.
+        .map(|row| {
+            if one_line {
+                row.flex_nowrap()
+            } else {
+                row.flex_wrap()
+            }
+        })
         .items_center()
         .gap_2()
         // Beside a line, or where it would not fit on one line beside the
@@ -408,21 +523,79 @@ pub(crate) fn download_row(
             row.child(
                 label("lfs-preview-download-explanation", DOWNLOAD_EXPLANATION)
                     .debug_selector(|| "lfs-preview-download-explanation".into())
-                    .whitespace_nowrap()
-                    // No wider than the row, and cut there with an ellipsis:
-                    // should the measurement that stood it here disagree
-                    // with layout, it ends inside the pane rather than
-                    // running past it.
-                    .max_w_full()
-                    .overflow_hidden()
-                    .text_ellipsis()
+                    // The room the buttons leave it, and cut there with an
+                    // ellipsis, whole in its tooltip: should the measurement
+                    // that stood it here disagree with layout, it ends
+                    // inside the pane beside them rather than running past
+                    // it or pushing them onto a line of their own.
+                    .flex_shrink(1.)
+                    .min_w_0()
+                    .truncate()
+                    .tooltip(|window, cx| Tooltip::new(DOWNLOAD_EXPLANATION).build(window, cx))
                     .text_size(appearance::ui_text(12.)),
             )
         })
+        // In the sentence's place, whole where it fits, otherwise cut with
+        // an ellipsis and whole in its tooltip.
+        .when_some(failure, |row, words| {
+            let whole = words.clone();
+            row.child(
+                label("lfs-download-failure", words)
+                    .debug_selector(|| "lfs-download-failure".into())
+                    .flex_shrink(1.)
+                    .min_w_0()
+                    .truncate()
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(warning))
+                    .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx)),
+            )
+        })
         .children(targets.into_iter().map(|(side, target)| {
+            if let (Some((_, progress)), Some(asked)) = (
+                running.as_ref().filter(|(running, _)| *running == side),
+                asked.as_ref(),
+            ) {
+                // Where the pressed Download stood: the window's progress
+                // text, giving way first, and Cancel download.
+                let (whole, on_cancel) = (progress.clone(), asked.on_cancel.clone());
+                let text = div()
+                    .id("lfs-download-progress")
+                    .debug_selector(|| "lfs-download-progress".into())
+                    .role(Role::Status)
+                    .aria_label(progress.clone())
+                    .live_region(gpui::accesskit::Live::Off, false)
+                    .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
+                    .min_w_0()
+                    .truncate()
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(accent))
+                    .child(progress.clone());
+                // Tests assemble the window's tree from what they record.
+                #[cfg(test)]
+                crate::native_accessibility::written::built(&text);
+                return div()
+                    .flex_shrink(1.)
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(text)
+                    .child(
+                        div().flex_none().child(
+                            button("cancel-lfs-download", "Cancel download", "close", false)
+                                .debug_selector(|| "cancel-lfs-download".into())
+                                .track_focus(&asked.cancel)
+                                .on_click(move |_, window, cx| on_cancel(window, cx))
+                                .node_recorded(),
+                        ),
+                    )
+                    .into_any_element();
+            }
             let download = download.clone();
+            let focus = asked.as_ref().map(|asked| asked.focus[side].clone());
             div()
                 .debug_selector(move || format!("download-lfs-side-{side}"))
+                .when(one_line, |button| button.flex_none())
                 .child(
                     button(
                         ("download-lfs-side", side),
@@ -430,6 +603,7 @@ pub(crate) fn download_row(
                         "pull",
                         false,
                     )
+                    .when_some(focus, |button, focus| button.track_focus(&focus))
                     .when(sentence_moves, |button| {
                         crate::branch_actions::Described(button)
                             .aria_description(DOWNLOAD_EXPLANATION)
@@ -445,9 +619,10 @@ pub(crate) fn download_row(
                             dimmed,
                         )
                     })
-                    .on_click(move |_, window, cx| download(target.clone(), window, cx))
+                    .on_click(move |_, window, cx| download(side, target.clone(), window, cx))
                     .node_recorded(),
                 )
+                .into_any_element()
         }))
         .into_any_element()
 }
@@ -524,25 +699,119 @@ impl GitTurtle {
             self.is_quick_source(),
             self.lfs_failure_sentence().is_some(),
             column,
-            (self.operation_busy.is_some(), self.operation_shown().is_some()),
-            move |target, window, cx| {
-                let _ = owner.update(cx, |this, cx| this.open_lfs_download(target, window, cx));
+            (
+                self.operation_busy.is_some(),
+                self.operation_shown().is_some(),
+            ),
+            // Its header shows the download's progress and Cancel.
+            None,
+            move |_, target, window, cx| {
+                Self::open_lfs_download_from(&owner, target, Asker::Compare, window, cx);
             },
             window,
+            cx,
         )
+    }
+
+    /// A download's write begins: it runs for the caller whose form opened
+    /// its confirmation, and where Compare asked, the preview it was asked
+    /// from, which its end reads again if still shown, is captured. Only
+    /// the caller that asked reads again: a download the review asked for
+    /// once read Compare's unchanged file again too.
+    pub(super) fn lfs_download_begins(&mut self) -> Option<crate::workspace::LfsView> {
+        let asker = self
+            .lfs_downloads
+            .confirming
+            .take()
+            .unwrap_or(Asker::Compare);
+        self.lfs_downloads.running = Some(asker);
+        self.lfs_downloads.ended = None;
+        if asker != Asker::Compare {
+            return None;
+        }
+        self.selected_file
+            .and_then(|index| self.files.get(index))
+            .cloned()
+            .map(|file| (file, self.mode, self.generation))
+    }
+
+    /// The running download's write ends, having failed with `failure`'s
+    /// words or succeeded: the caller that asked reads how.
+    pub(super) fn lfs_download_ends(&mut self, failure: Option<SharedString>) {
+        if let Some(asker) = self.lfs_downloads.running.take() {
+            self.lfs_downloads.ended = Some((asker, failure));
+        }
+    }
+
+    /// Whether a press asks the window for a download that it accepts,
+    /// opening a form: a press it refuses records nothing
+    /// ([`Self::open_lfs_download`]).
+    pub(super) fn open_lfs_download_from(
+        owner: &WeakEntity<Self>,
+        target: LfsDownloadTarget,
+        asker: Asker,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        owner
+            .update(cx, |owner, cx| {
+                owner.open_lfs_download(target, asker, window, cx)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Starts a download's write as `write_from` does once `asker`'s
+    /// confirmation is accepted, for a test, which cannot run Git LFS: the
+    /// window busy with its label and its Cancel, the write held.
+    #[cfg(test)]
+    pub(crate) fn simulate_lfs_download(
+        &mut self,
+        asker: Asker,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::workspace::LfsView> {
+        self.lfs_downloads.confirming = Some(asker);
+        let selection = self.lfs_download_begins();
+        self.operation_busy = Some("Download object");
+        let _ = self.begin_operation_control(window, cx);
+        cx.notify();
+        selection
+    }
+
+    /// Ends the write [`Self::simulate_lfs_download`] started, failing
+    /// with `failure` or succeeding, as `write_from`'s end does.
+    #[cfg(test)]
+    pub(crate) fn simulate_lfs_download_end(
+        &mut self,
+        failure: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.operation_busy = None;
+        self.finish_operation_control(window, cx);
+        self.lfs_download_ends(failure.map(SharedString::from));
+        cx.notify();
     }
 
     pub(super) fn open_lfs_download(
         &mut self,
         target: LfsDownloadTarget,
+        asker: Asker,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        if self.operation_busy.is_some() {
-            return;
+    ) -> bool {
+        // A second press finds the form open and does nothing: two clicks
+        // delivered before any frame opened two identical forms.
+        let open = self
+            .lfs_downloads
+            .form
+            .as_ref()
+            .is_some_and(|form| form.upgrade().is_some());
+        if self.operation_busy.is_some() || open {
+            return false;
         }
         let Some(repo) = self.repository.clone() else {
-            return;
+            return false;
         };
         let owner = cx.entity().downgrade();
         let remote = self.remote_name.read(cx).value().trim().to_owned();
@@ -551,9 +820,13 @@ impl GitTurtle {
             .iter()
             .map(|remote| remote.name.clone())
             .collect();
-        let form =
-            cx.new(|cx| LfsDownloadForm::new(owner, repo, target, remote, remotes, window, cx));
+        let form = cx.new(|cx| {
+            LfsDownloadForm::new(owner, repo, (target, asker), remote, remotes, window, cx)
+        });
         form.update(cx, |this, cx| this.prepare(window, cx));
+        self.lfs_downloads.form = Some(form.downgrade());
+        #[cfg(test)]
+        FORMS_OPENED.set(FORMS_OPENED.get() + 1);
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let submit = form.clone();
             let cancel = form.clone();
@@ -587,6 +860,7 @@ impl GitTurtle {
                     true
                 })
         });
+        true
     }
 }
 
@@ -594,6 +868,8 @@ struct LfsDownloadForm {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     target: LfsDownloadTarget,
+    /// Who asked: the confirmation says where its Cancel stands.
+    asker: Asker,
     remote: Entity<InputState>,
     remotes: Vec<String>,
     reader: operations::SerialExecutor,
@@ -615,7 +891,8 @@ impl LfsDownloadForm {
     fn new(
         owner: WeakEntity<GitTurtle>,
         repo: GitRepository,
-        target: LfsDownloadTarget,
+        // The object to download, and who asked for it.
+        (target, asker): (LfsDownloadTarget, Asker),
         remote: String,
         remotes: Vec<String>,
         window: &mut Window,
@@ -644,6 +921,7 @@ impl LfsDownloadForm {
             owner,
             repo,
             target,
+            asker,
             remote,
             remotes,
             reader: operations::SerialExecutor::new("lfs-preview-source"),
@@ -716,10 +994,13 @@ impl LfsDownloadForm {
             self.prepare(window, cx);
             return;
         };
+        let asker = self.asker;
         let _ = self.owner.update(cx, |owner, cx| {
             if owner.path.as_deref() != Some(this_path(&self.repo)) || owner.operation_busy.is_some() { crate::tags::set_error_line(&mut self.error, "The repository changed or another operation started. Reopen this download after it finishes.", window, cx); cx.notify(); return; }
             window.close_dialog(cx);
-            owner.confirm_git_write("Download selected LFS object".into(), format!("File: {}\nObject: sha256:{}\nSize: {}\nRemote: {}\n{}\n\nThis explicit transfer fetches only this object's pointer. Git LFS uses your configured credentials and SSH host verification. The download can be cancelled from the operation bar.\n\nGitTurtle verifies the object's SHA-256 and size before previewing it. Working files and the index remain unchanged; no checkout, smudge, prune, or push is performed.", plan.target.path.display(), plan.oid, crate::counted(plan.size, "byte", "bytes"), plan.remote, plan.source), "Download object", WriteCommand::DownloadLfs(Arc::new(plan)), window, cx);
+            // The write this confirmation starts runs for who asked.
+            owner.lfs_downloads.confirming = Some(asker);
+            owner.confirm_git_write("Download selected LFS object".into(), format!("File: {}\nObject: sha256:{}\nSize: {}\nRemote: {}\n{}\n\nThis explicit transfer fetches only this object's pointer. Git LFS uses your configured credentials and SSH host verification. {}\n\nGitTurtle verifies the object's SHA-256 and size before previewing it. Working files and the index remain unchanged; no checkout, smudge, prune, or push is performed.", plan.target.path.display(), plan.oid, crate::counted(plan.size, "byte", "bytes"), plan.remote, plan.source, asker.cancel_place()), "Download object", WriteCommand::DownloadLfs(Arc::new(plan)), window, cx);
         });
     }
 }

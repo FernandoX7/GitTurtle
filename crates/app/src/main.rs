@@ -678,6 +678,9 @@ struct GitTurtle {
     focus_ring: focus_ring::FocusRing,
     /// The line Compare's failing Git LFS sides say above the comparison.
     lfs_failure_line: lfs_download::FailureLine,
+    /// Who asked for the LFS download whose confirmation is open or whose
+    /// write runs, and how the last ended (`lfs_download::Downloads`).
+    lfs_downloads: lfs_download::Downloads,
     /// The dialog controls whose keys the status bar names.
     dialog_hints: shortcuts::DialogHints,
     /// A press of Pull requests that could not open the panel, which the
@@ -1057,6 +1060,7 @@ impl GitTurtle {
             pull_requests_focus: cx.focus_handle(),
             focus_ring: focus_ring::FocusRing::default(),
             lfs_failure_line: lfs_download::FailureLine::new("lfs-preview-failure", cx),
+            lfs_downloads: Default::default(),
             dialog_hints: shortcuts::DialogHints::default(),
             github_refusal: github_view::OpenRefusal::default(),
             pane: Pane::History,

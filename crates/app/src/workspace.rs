@@ -3978,10 +3978,7 @@ impl GitTurtle {
         }
         let downloading_lfs = matches!(&command, WriteCommand::DownloadLfs(_));
         let lfs_selection = if downloading_lfs {
-            self.selected_file
-                .and_then(|index| self.files.get(index))
-                .cloned()
-                .map(|file| (file, self.mode, self.generation))
+            self.lfs_download_begins()
         } else {
             None
         };
@@ -4189,6 +4186,7 @@ impl GitTurtle {
                 this.operation_repository=None;
                 this.finish_operation_control(window, cx);
                 let succeeded=result.is_ok();
+                let lfs_failure = result.as_ref().err().filter(|_| downloading_lfs).map(|error| views::OperationFailure::of(error).banner());
                 match result {
                     Ok(outcome) => {
                         if let Some(oid) = &outcome.commit_oid { this.tab_commit_receipt(&path, oid.clone()); }
@@ -4228,6 +4226,7 @@ impl GitTurtle {
                 if this.path.as_ref()==Some(&path) && succeeded && submitted_branch.as_deref().is_some_and(|branch| this.branch_name.read(cx).value().trim() == branch) {
                     this.branch_name.update(cx,|input,cx|input.set_value("",window,cx));
                 }
+                if downloading_lfs { this.lfs_download_ends(lfs_failure); }
                 let download = downloading_lfs.then_some((succeeded, lfs_selection));
                 this.read_after_write(&path, refresh_history, download, window, cx);
                 cx.notify();

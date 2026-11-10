@@ -388,7 +388,7 @@ impl Site {
                         )
                         .into_bytes(),
                     };
-                    app.open_lfs_download(target, window, cx)
+                    app.open_lfs_download(target, crate::lfs_download::Asker::Compare, window, cx);
                 })
                 .await
             }
