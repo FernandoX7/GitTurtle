@@ -553,6 +553,49 @@ async fn every_item_the_profile_menu_refuses_says_why(cx: &mut TestAppContext) {
     draw(cx);
 }
 
+/// A marked tab's saved profiles say the mark beside them, the open menu
+/// built again as the mark lands, and Apply prepares no review: the
+/// repository the tab shows is the one read before the mark, whose
+/// configuration Apply's review named and whose write Git core then
+/// refused (security probe Q3, FU39-A). New profile… and Manage profiles…,
+/// which write no repository, stay offered.
+#[gpui::test]
+async fn a_marked_tab_s_saved_profiles_say_the_mark(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window(cx).await;
+    use_store(&app, cx, two_profiles()).await;
+    open_menu(&app, cx).await;
+    assert_eq!(refused(cx), Vec::<String>::new(), "offered before the mark");
+    set(&app, cx, |app| {
+        let index = app.repository_tabs.active.expect("a tab");
+        app.repository_tabs.tabs[index].error = Some("Repository unavailable".into());
+    });
+    assert_eq!(
+        refused(cx),
+        [
+            "Work · qa@work.example, repository unavailable",
+            "Personal · qa@home.example, repository unavailable",
+        ],
+        "built again as the mark lands, each says it beside it"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            crate::profiles::apply_profile(app, window, cx)
+        })
+    });
+    settle(&app, cx).await;
+    assert_eq!(
+        app.read_with(cx, |app, _| app.operation_busy),
+        None,
+        "no review is prepared"
+    );
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "no review opens"
+    );
+}
+
 /// Two saved profiles, Work and Personal.
 fn two_profiles() -> Store {
     let mut store = Store::default();

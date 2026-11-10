@@ -420,6 +420,25 @@ impl CommandId {
         if self.workspace() && !context.workspace {
             return Some("Return to the repository workspace first");
         }
+        // Said as Branch says it below: a marked tab's repository is the one
+        // read before the mark, which the tab can no longer open, so what
+        // these open reads it or writes to it. They opened dialogs whose
+        // reads named the replaced repository and whose every write Git core
+        // then refused (security re-check of FU39-A, probe Q3).
+        if context.unavailable
+            && matches!(
+                self,
+                Self::Tags
+                    | Self::Stashes
+                    | Self::Worktrees
+                    | Self::Reflog
+                    | Self::RewriteReview
+                    | Self::Profiles
+                    | Self::RecoveryDrafts
+            )
+        {
+            return Some(crate::branch_actions::UNAVAILABLE_REASON);
+        }
         // Browse stashes… waits where the Actions menu's item does, through
         // the reload after a write as well, and says so as the menu's
         // "Refreshing…" does.
@@ -1876,6 +1895,66 @@ mod render_tests {
             Some(crate::workspace::BUSY_REASON),
             "a write does, and it says why"
         );
+    }
+
+    /// A marked tab's palette refuses what reads or writes its repository
+    /// in the mark's words, as Branch does: Tags, Stashes, Worktrees,
+    /// Reflog, Rewrite review, Profiles and Recovery drafts opened dialogs
+    /// that read the repository from before the mark and whose every write
+    /// Git core refused (security probe Q3, FU39-A). The Linux Main Menu,
+    /// which shares the palette's reasons, opens none of them; History,
+    /// Changes and Refresh stay offered.
+    #[gpui::test]
+    async fn a_marked_tab_s_palette_refuses_what_it_cannot_act_on(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let third = crate::views::tests::fixture_repository(fixture.path().join("third"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", third.git_dir().display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&crate::Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        let reason = |cx: &mut VisualTestContext, id: CommandId| {
+            cx.update(|window, cx| app.read(cx).menu_command_reason(id, window, cx))
+        };
+        let refused = [
+            CommandId::Tags,
+            CommandId::Stashes,
+            CommandId::Worktrees,
+            CommandId::Reflog,
+            CommandId::RewriteReview,
+            CommandId::Profiles,
+            CommandId::RecoveryDrafts,
+        ];
+        for id in refused {
+            assert_eq!(
+                reason(cx, id),
+                Some(crate::branch_actions::UNAVAILABLE_REASON),
+                "{id:?}"
+            );
+        }
+        for id in [CommandId::History, CommandId::Changes, CommandId::Refresh] {
+            assert_eq!(reason(cx, id), None, "{id:?} stays offered");
+        }
+        let path = app.read_with(cx, |app, _| app.path.clone());
+        for id in refused {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.run_menu_command(id, &path, window, cx))
+            });
+            crate::views::tests::settle(&app, cx).await;
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{id:?} opens nothing"
+            );
+        }
     }
 
     /// Where the tab is marked, Changes shows "Changes unavailable", as

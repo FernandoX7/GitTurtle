@@ -68,7 +68,8 @@ const LOADING_PROFILES: &str = "Loading profiles…";
 /// Retry profile storage, below it, reads them again.
 const STORAGE_UNAVAILABLE: &str = "Storage unavailable";
 /// Why a saved profile cannot be applied where the repository could not be
-/// read: applying one writes that repository's configuration.
+/// read, or on a marked tab: applying one writes that repository's
+/// configuration.
 const REPOSITORY_UNAVAILABLE: &str = "Repository unavailable";
 
 /// The profile menu's groups of items, each refused for a reason of its
@@ -282,7 +283,13 @@ impl GitTurtle {
             (None, Some(_)) => Some(Refusal::Own(STORAGE_UNAVAILABLE)),
         };
         match group {
+            // A marked tab's repository is the one read before the mark:
+            // Apply's review named its configuration, and Git core refused
+            // the write it then confirmed (probe Q3).
             MenuGroup::Saved => store.or(match (self.repository.is_none(), self.loading) {
+                (false, _) if self.shown_tab_unavailable() => {
+                    Some(Refusal::Own(REPOSITORY_UNAVAILABLE))
+                }
                 (false, _) => saving,
                 (true, Some(read)) => saving.or(Some(Refusal::Waits(read))),
                 (true, None) => Some(Refusal::Own(REPOSITORY_UNAVAILABLE)),
@@ -711,7 +718,13 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.operation_busy.is_some() || self.profiles.saving || self.page == AppPage::Projects {
+        // Refused on a marked tab, as its menu item is
+        // (`profile_menu_reason`).
+        if self.operation_busy.is_some()
+            || self.profiles.saving
+            || self.page == AppPage::Projects
+            || self.shown_tab_unavailable()
+        {
             return;
         }
         let Some(repo) = self.repository.clone() else {
