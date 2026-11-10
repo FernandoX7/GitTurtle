@@ -509,8 +509,9 @@ impl ReflogBrowser {
         let query = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Filter log by message, object ID, or selector")
         });
-        // Return in either field acts through the dialog's default action,
-        // routed by focus ([`Self::confirm_in_field`]).
+        // Return in either field, and in the recovery branch's name, acts
+        // through the dialog's default action, routed by focus
+        // ([`Self::confirm_in_field`]).
         let scope_subscription = cx.subscribe(&scope, |_: &mut Self, _, _: &InputEvent, cx| {
             cx.notify();
         });
@@ -840,19 +841,22 @@ impl ReflogBrowser {
     }
     /// Return, delivered as the dialog's Confirm action and routed by focus:
     /// in the scope field it reads that log, in the filter it selects the
-    /// first entry the filter matches, and in either it does nothing more,
-    /// so the Reflog stays open; anywhere else it is the dialog's own, Done.
-    /// The dialog confirms once per press, as the key goes down, never on a
-    /// held key's repeats, under X11 too, and never for a modified Enter;
-    /// a press that began elsewhere does nothing here. Each field acted on
-    /// its own `PressEnter`, which it sends for every Enter key-down, so a
-    /// held Return read the log or the entry's commit again on each repeat,
-    /// while the dialog's Done took the first press too and closed the
-    /// Reflog.
+    /// first entry the filter matches, in the recovery branch's name it
+    /// reviews that branch, as Review recovery branch… does, and in each it
+    /// does nothing more, so the Reflog stays open until a review lands;
+    /// anywhere else it is the dialog's own, Done. The dialog confirms once
+    /// per press, as the key goes down, never on a held key's repeats, under
+    /// X11 too, and never for a modified Enter; a press that began elsewhere
+    /// does nothing here. The scope and the filter acted on their own
+    /// `PressEnter`, which a field sends for every Enter key-down, so a held
+    /// Return read the log or the entry's commit again on each repeat, while
+    /// the dialog's Done took the first press too and closed the Reflog, as
+    /// it did, the name typed, from the name.
     fn confirm_in_field(&mut self, confirm: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         let scope = self.scope.read(cx).focus_handle(cx);
         let filter = self.query.read(cx).focus_handle(cx);
-        let Some(field) = [scope, filter]
+        let name = self.name.read(cx).focus_handle(cx);
+        let Some(field) = [&scope, &filter, &name]
             .into_iter()
             .find(|field| !confirm.secondary && field.is_focused(window))
         else {
@@ -860,12 +864,14 @@ impl ReflogBrowser {
             return;
         };
         if gpui_kit::base::enter_press_is_repeat(window, cx)
-            || !gpui_kit::base::enter_press_began_on(&field, window, cx)
+            || !gpui_kit::base::enter_press_began_on(field, window, cx)
         {
             return;
         }
-        if field == self.scope.read(cx).focus_handle(cx) {
+        if *field == scope {
             self.refresh(window, cx);
+        } else if *field == name {
+            self.recover(window, cx);
         } else if let Some(entry) = self.matches(cx).first() {
             self.select(entry.clone(), window, cx);
         }
@@ -2091,6 +2097,105 @@ mod tests {
         }
         let selected = browser.read_with(cx, |this, _| this.selected.is_some());
         assert!(selected, "the filter's press selects its first match");
+    }
+
+    /// Return in the recovery branch's name reviews that branch, as Review
+    /// recovery branch… does, once per press, under X11 too, and leaves the
+    /// Reflog open until a review lands: a name already taken fails the
+    /// review, the key's repeats (`REPEATS`), each waited out until any
+    /// review has answered, review nothing more, and after the key-up a new
+    /// press reviews again, with focus in the name throughout. A name free
+    /// to take opens the review's confirmation in the Reflog's place, which
+    /// the held key's repeats leave unconfirmed, the branch unwritten. The
+    /// name had no Return of its own, so the dialog's default action, Done,
+    /// took the press and closed the Reflog, the name typed in it lost.
+    #[gpui::test]
+    async fn return_in_the_recovery_name_reviews_once_per_press(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        git(repo.path(), &["branch", "recovery/taken"]);
+        let (app, browser, cx) = opened_browser(cx, &repo).await;
+        ReflogBrowser::select_newest(&browser, cx);
+        let name = browser.read_with(cx, |this, _| this.name.clone());
+        cx.update(|window, cx| {
+            name.update(cx, |input, cx| {
+                input.set_value("recovery/taken", window, cx)
+            });
+            name.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        draw(cx);
+        let submitted =
+            |cx: &mut VisualTestContext| browser.read_with(cx, |this, _| this.submitted);
+        let held = |cx: &mut VisualTestContext, at: &str| {
+            assert!(
+                cx.debug_bounds("reflog-title").is_some(),
+                "{at}: the Reflog stays open"
+            );
+            assert!(
+                cx.update(|window, cx| name.read(cx).focus_handle(cx).is_focused(window)),
+                "{at}: focus stays in the name"
+            );
+            let error = browser.read_with(cx, |this, _| this.error.clone());
+            assert!(
+                error.is_some_and(|error| error.contains("already exists")),
+                "{at}: the review fails"
+            );
+        };
+        for press in ["the first press", "a new press after the key-up"] {
+            let after = submitted(cx) + 1;
+            enter(cx, Some(false));
+            settle_reads(cx, &browser);
+            assert_eq!(submitted(cx), after, "{press}: one review");
+            held(cx, press);
+            for (repeat, events) in REPEATS {
+                for down in events {
+                    enter(cx, *down);
+                }
+                settle_reads(cx, &browser);
+                let at = format!("{press}, {repeat}");
+                assert_eq!(submitted(cx), after, "{at}: no other review");
+                held(cx, &at);
+            }
+            enter(cx, None);
+            draw(cx);
+        }
+
+        cx.update(|window, cx| {
+            name.update(cx, |input, cx| input.set_value("recovery/free", window, cx));
+        });
+        draw(cx);
+        let after = submitted(cx) + 1;
+        enter(cx, Some(false));
+        settle_reads(cx, &browser);
+        assert_eq!(submitted(cx), after, "a free name: one review");
+        let confirming = |cx: &mut VisualTestContext, at: &str| {
+            assert!(
+                cx.debug_bounds("reflog-title").is_none()
+                    && cx.debug_bounds("operation-consequences").is_some(),
+                "{at}: the review's confirmation stands in the Reflog's place"
+            );
+            assert!(
+                app.read_with(cx, |app, _| app.operation_busy.is_none()),
+                "{at}: no write runs"
+            );
+        };
+        confirming(cx, "the review lands");
+        for (repeat, events) in REPEATS {
+            for down in events {
+                enter(cx, *down);
+            }
+            draw(cx);
+            confirming(cx, repeat);
+        }
+        enter(cx, None);
+        draw(cx);
+        cx.executor().run_until_parked();
+        assert_eq!(
+            git(repo.path(), &["branch", "--list", "recovery/free"]),
+            "",
+            "the held key writes no branch"
+        );
     }
 
     /// Down held past the last entry while a commit's read is slow selects
