@@ -753,7 +753,6 @@ cover current upstream x86-64 Omarchy.
        - (S, QA-107) "LFS preview objects require an explicit download." is cut at the pane's edge at 18 pt 461 × 490 with no failure line; Split's footer loses its bottom padding there; an empty `SSH_ASKPASS` or `GIT_ASKPASS` disables the app's prompts where Git treats it as unset. Briefed `FU39-B`.
        - (S, nit, QA-107) A removed LFS object is not noticed while the file stays shown (Ctrl+R and the same row kept Rendered; a cold launch is right), under the rule that a quiet read keeps an unchanged immutable preview: reconsider if the store changing under a shown pointer proves common.
        - (S, verify natively) A reopen may nudge the GitHub body a second time after the frame-0 reveal, since the landing reads the last frame while the dialog slides; and two ungated resets in the confirmation's `measure` (the top line changing height, the body's `short` measure) can still bring a wheeled-away region back on a resize that rewraps them (`crates/app/src/github_view/conversations.rs:1154`, `:1160`; found by FU36-B's reviews).
-       - (S, nit) The commit metadata's top fade can cover a parent's ring in a viewport under about 56 px, and Tab cannot reach the parents under a long message until it is scrolled (`crates/app/src/commit_message.rs:713`, `:998`; found by FU36-C's review).
        - (S, verify natively) A change of the height of the GitHub panel's pinned top line asks for the confirmation's reveal with no check that the person wheeled away, so with a conversation open a wheeled-away body is pulled back (`crates/app/src/github_view/conversations.rs:1152`; QA-next part 5 check 12). The line among the content no longer does (FU30-D8e). If QA confirms it, gate the pinned branch the same way.
        - (S) A restored tab on a filesystem without stable inode numbers (FAT, exFAT, some FUSE mounts) is marked unavailable at each launch, and an Open adopts it only until the next one (`crates/app/src/worker.rs:1225`, FU34-C): skip saving the inodes on those filesystems if it proves common.
        - (S) A missing side beside a binary blob's notice is still cached, against `docs/lfs-previews.md`'s line (`crates/app/src/worker.rs:2799`; found by FU36-A2).
@@ -763,7 +762,7 @@ cover current upstream x86-64 Omarchy.
        - (S, nit) `stash_page` re-reads the whole reflog per page, where one core call could return a stash's position (`crates/app/src/recovery.rs:1836`).
        - (S) "`.mmd` changed from a link" reads "no Mermaid diagrams" over real Mermaid text, the pointer case included (`crates/app/src/rich_preview.rs:245`, in flight `FU31-B8`).
        - (M) "Rings covered by a fill" and its every-stop check (`crates/app/src/tab_order_tests.rs:183`).
-       - (S) "Exact source / Rendered toggles", "remote manager's search": cut stops pinned as known (`crates/app/src/tab_order_tests.rs:714`, `:1279`).
+       - (S, verify) "remote manager's search": its field's and Add remote…'s rings were cut; no pin for them is left in `crates/app/src/tab_order_tests.rs`, so reproduce first.
        - (S) "no RemoveAccessible at close" (`vendor/accesskit_atspi_common/src/adapter.rs:706`). Orca keeps a closed window's nodes.
        - (S) "Working Changes filter shares" one executor with its reads (`crates/app/src/working_selection.rs:773`).
        - (L, verify) "Screen reader (Orca) and input-method coverage": no full record yet, `README.md:128` says not checked. The public claim names it, so the QA parts cover what they can.
@@ -771,7 +770,7 @@ cover current upstream x86-64 Omarchy.
      - **Layout consistency.** Visible and frequent, but no control is lost.
        - (S, nit) The local document's title at 18 pt in a half tile: "Captured local document · " keeps about 270 of 378 px and the path keeps 108 px, so `location_tail` elides even a short file name; where the last path component would be cut, drop the words and show the path alone (`crates/app/src/markdown_view.rs:1393`; found by FU37-D's re-check).
        - (S) Rendered Markdown's two headers wrap on their own, so near a wrap point the sides' first blocks start at different heights, and the header inset is 8 px against the blocks' 12 px (`crates/app/src/markdown_view.rs:1575`, `:1580`, `:1145`; found by FU36-A's design review).
-       - (M) "Markdown's side headings overrun" (`crates/app/src/markdown_view.rs:1569`) and "local document 65 %" (`:1405`).
+       - (M) "Markdown's side headings overrun" (`crates/app/src/markdown_view.rs:1569`).
        - (S) "`ScrollCue` late thumb" and "Lists whose bar" have no fade (one fix, `crates/app/src/tags.rs:762`, `:456`).
        - (S) "header's and footer's" cue, "From …" width, "`PanelLeast` reserves" in File history (`crates/app/src/file_history.rs:1095`, `:1170`, `:90`).
        - (S) "Refresh series" shrinks the list; "130 px file box" (`crates/app/src/rewrite_review.rs:614`, `:1666`).
