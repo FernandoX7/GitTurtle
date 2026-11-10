@@ -1780,3 +1780,125 @@ async fn a_pane_row_captures_a_marked_tab_afresh(cx: &mut TestAppContext) {
         );
     });
 }
+
+/// One Enter key event as the platform delivers it, with no idle pass after
+/// it: a key-down, marked held or not, or with `None` its key-up.
+fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+    let keystroke = Keystroke::parse("enter").expect("a keystroke");
+    let input = match down {
+        Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
+            keystroke,
+            is_held,
+            prefer_character_input: false,
+        }),
+        None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
+    };
+    cx.update(|window, cx| window.dispatch_event(input, cx));
+}
+
+/// A held Return in the group name field begins one save, under X11 too,
+/// and an empty name's refusal is given once per press: with the store
+/// refusing writes, Enter goes down and the save fails, then the key's
+/// repeats arrive as X11 sends them, fresh presses with no key-up between
+/// them and a release and its press together, and as GPUI marks them held
+/// on macOS and Wayland, each waited out until the writer has answered. The
+/// form saves once and says why once, on one node announced once; after the
+/// key-up a new press saves again and is heard again. Emptied, the name is
+/// refused once per press the same way. The field's own `PressEnter`
+/// submitted the form as well as the dialog's default action, so each
+/// repeat began another write after the last failed, and every press gave
+/// an empty name's refusal twice.
+#[gpui::test]
+async fn a_held_return_in_a_group_name_submits_once_per_press(cx: &mut TestAppContext) {
+    use crate::native_accessibility::written;
+    let (app, cx) = test_app(cx, enabled(), ProjectLibrary::default());
+    // A directory where the store should be refuses the save, as in
+    // `a_group_dialog_shows_its_own_failed_save_beside_a_newer_one`.
+    let store = crate::preferences::settings_path().unwrap();
+    fs::create_dir_all(&store).unwrap();
+    let form = cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_group_form(GroupIntent::Create(None), window, cx);
+            app.project_pane.group_form.clone().unwrap()
+        })
+    });
+    settle(cx);
+    cx.simulate_input("Clients");
+    // Saves begun, counted as the form changes, and refusals given.
+    let saves = Rc::new(std::cell::Cell::new(0_usize));
+    let _counting = cx.update(|_, cx| {
+        let saves = saves.clone();
+        let mut was = false;
+        cx.observe(&form, move |form, cx| {
+            let now = form.read(cx).pending;
+            saves.set(saves.get() + usize::from(now && !was));
+            was = now;
+        })
+    });
+    let seen =
+        |cx: &mut VisualTestContext| (saves.get(), form.read_with(cx, |form, _| form.errors_shown));
+    let heard = || written::announced_from("project-group-error").len();
+    for (case, step) in [("a refused save", (1, 1)), ("an empty name", (0, 1))] {
+        if case == "an empty name" {
+            cx.update(|window, cx| {
+                let input = form.read(cx).input.clone();
+                input.update(cx, |input, cx| input.set_value("", window, cx));
+            });
+            settle(cx);
+        }
+        let before = seen(cx);
+        let after = (before.0 + step.0, before.1 + step.1);
+        written::forget();
+        enter(cx, Some(false));
+        settle_save(&app, cx).await;
+        assert_eq!(seen(cx), after, "{case}: the press is answered once");
+        assert_eq!(heard(), 1, "{case}: the refusal is heard once");
+        let repeats: [(&str, &[Option<bool>]); 4] = [
+            ("an X11 repeat", &[Some(false)]),
+            ("another X11 repeat", &[Some(false)]),
+            // A release and its press together, with no idle pass between.
+            ("a release and its press", &[None, Some(false)]),
+            ("a held repeat", &[Some(true)]),
+        ];
+        for (repeat, events) in repeats {
+            for down in events {
+                enter(cx, *down);
+            }
+            settle_save(&app, cx).await;
+            cx.update(|window, cx| {
+                assert!(
+                    window.has_active_dialog(cx),
+                    "{case}, {repeat}: the dialog stays"
+                );
+                let form = form.read(cx);
+                assert!(
+                    form.visible && !form.pending,
+                    "{case}, {repeat}: the form waits"
+                );
+                assert!(
+                    form.input.read(cx).focus_handle(cx).is_focused(window),
+                    "{case}, {repeat}: focus stays in the field"
+                );
+            });
+            assert_eq!(
+                seen(cx),
+                after,
+                "{case}, {repeat}: nothing more is begun or said"
+            );
+            assert_eq!(heard(), 1, "{case}, {repeat}: no other refusal is heard");
+        }
+        enter(cx, None);
+        settle(cx);
+        written::forget();
+        enter(cx, Some(false));
+        settle_save(&app, cx).await;
+        assert_eq!(
+            seen(cx),
+            (after.0 + step.0, after.1 + step.1),
+            "{case}: a new press after the key-up is answered again"
+        );
+        assert_eq!(heard(), 1, "{case}: and heard again");
+        enter(cx, None);
+        settle(cx);
+    }
+}

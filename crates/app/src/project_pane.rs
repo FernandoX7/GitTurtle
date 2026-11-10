@@ -1164,7 +1164,7 @@ impl GitTurtle {
         if let Err(message) = outcome {
             let _ = form.update(cx, |form, cx| {
                 form.pending = false;
-                form.error = Some(message);
+                form.refuse(message);
                 cx.notify();
             });
             return;
@@ -1219,7 +1219,9 @@ impl GitTurtle {
             // may have succeeded or still be pending.
             let _ = form.update(cx, |form, cx| {
                 form.pending = false;
-                form.error = failure;
+                if let Some(failure) = failure {
+                    form.refuse(failure);
+                }
                 cx.notify();
             });
         }
@@ -1805,6 +1807,10 @@ pub struct GroupForm {
     parent: Option<String>,
     pub input: Entity<InputState>,
     error: Option<String>,
+    /// How many refusals the form has given, each on a fresh error node that
+    /// assistive technology announces, as Rename project's are: the line
+    /// kept one node, so a name refused again was heard as nothing.
+    errors_shown: usize,
     pub pending: bool,
     pub visible: bool,
     _subscription: Subscription,
@@ -1826,25 +1832,37 @@ impl GroupForm {
                 None => state,
             }
         });
-        let subscription =
-            cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
-                InputEvent::Change => {
-                    this.error = None;
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => this.submit(window, cx),
-                _ => {}
-            });
+        // Return submits through the dialog's default action alone, which
+        // runs once per press, as the key goes down, never on a held key's
+        // repeats, under X11 too, and never for a modified Enter. The field's
+        // own `PressEnter`, which the field sends for every Enter key-down,
+        // submitted the form as well, so after a refused save each repeat
+        // began another write, and an empty name's refusal was given twice
+        // per press, as Rename project's was.
+        let subscription = cx.subscribe_in(&input, window, |this, _, event, _, cx| {
+            if let InputEvent::Change = event {
+                this.error = None;
+                cx.notify();
+            }
+        });
         Self {
             owner,
             intent,
             parent,
             input,
             error: None,
+            errors_shown: 0,
             pending: false,
             visible: true,
             _subscription: subscription,
         }
+    }
+
+    /// Shows `error` on a fresh node, announced at once, however often the
+    /// same reason is given.
+    fn refuse(&mut self, error: String) {
+        self.errors_shown = self.errors_shown.wrapping_add(1);
+        self.error = Some(error);
     }
 
     /// Keep the reviewed target and text until persistence reports success.
@@ -1854,7 +1872,7 @@ impl GroupForm {
         }
         let name = self.input.read(cx).value().trim().to_owned();
         if name.is_empty() {
-            self.error = Some("Enter a name for this group.".into());
+            self.refuse("Enter a name for this group.".into());
             cx.notify();
             return;
         }
@@ -1870,7 +1888,7 @@ impl GroupForm {
             .is_err()
         {
             self.pending = false;
-            self.error = Some("The project window is no longer available.".into());
+            self.refuse("The project window is no longer available.".into());
         }
         cx.notify();
     }
@@ -1919,7 +1937,9 @@ impl Render for GroupForm {
             )
             .children(self.error.as_ref().map(|error| {
                 div()
-                    .id("project-group-error")
+                    // A fresh node for each refusal, heard again however
+                    // often the same one is given.
+                    .id(("project-group-error", self.errors_shown))
                     .alert(error.clone())
                     .rounded(px(8.))
                     .border_1()
