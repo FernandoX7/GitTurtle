@@ -627,6 +627,13 @@ impl SeriesBrowser {
                 owner.lfs_downloads.ended(me),
             )
         };
+        // Every file's row tracks the same handles, so another file's
+        // Download may hold focus while this download runs: focus moved
+        // onto a Cancel no row drew.
+        let drawn = self
+            .lfs_download
+            .as_ref()
+            .is_some_and(|asked| self.shows(asked).is_some());
         let Some(asked) = self
             .lfs_download
             .as_mut()
@@ -636,7 +643,7 @@ impl SeriesBrowser {
         };
         if running {
             asked.started = true;
-            if shown && self.download_focus[asked.side].is_focused(window) {
+            if shown && drawn && self.download_focus[asked.side].is_focused(window) {
                 self.download_cancel.focus(window, cx);
             }
             return;
@@ -662,11 +669,27 @@ impl SeriesBrowser {
                 let Some(asked) = self.lfs_download.take() else {
                     return;
                 };
+                // The side's Download or Cancel, which the read again takes
+                // away: its Download too where the write ended inside the
+                // busy delay, which left focus on a vanished button.
+                let held = cancel_focused || self.download_focus[asked.side].is_focused(window);
                 let shown = self.shows(&asked);
                 if let Some(index) = shown.filter(|_| self.current(cx)) {
-                    if cancel_focused {
+                    if held {
                         self.body.focus("series-file-preview", cx).focus(window, cx);
                     }
+                    // Said once, politely, here: the window's notice says
+                    // it beneath the review, hidden from assistive
+                    // technology while the review is open.
+                    crate::copy_feedback::announce(
+                        window,
+                        cx,
+                        format!(
+                            "Downloaded {}'s {} object",
+                            asked.file.path().display(),
+                            ["Before", "After"][asked.side]
+                        ),
+                    );
                     self.file(index, window, cx);
                 }
             }
@@ -6588,6 +6611,106 @@ mod tests {
             cx.update(|window, cx| window.focused(cx)),
             focused,
             "and focus stays"
+        );
+    }
+
+    /// Whether the review's preview holds focus.
+    fn preview_focused(browser: &Entity<SeriesBrowser>, cx: &mut gpui::VisualTestContext) -> bool {
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser
+                    .body
+                    .focus("series-file-preview", cx)
+                    .is_focused(window)
+            })
+        })
+    }
+
+    /// Focus moves onto Cancel download only where the review draws it:
+    /// every file's row tracks the same handles, so after Back and another
+    /// commit, whose file's Download held focus as the download asked from
+    /// the first looked busy, focus moved onto a Cancel no row drew. Its
+    /// success there reads nothing, moves no focus and says nothing.
+    #[gpui::test]
+    async fn focus_moves_only_onto_a_cancel_the_review_draws(cx: &mut gpui_kit::TestAppContext) {
+        let (_fixture, repo, files) = missing_before();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        browser.update(cx, |browser, _| browser.inspected = Some("asked".into()));
+        crate::tags::tests::draw(cx);
+        let at = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Download Before… is offered")
+            .center();
+        start_download(&app, &browser, cx, at);
+        cx.update(|window, cx| browser.update(cx, |browser, cx| browser.back(window, cx)));
+        crate::tags::tests::draw(cx);
+        browser.update(cx, |browser, cx| {
+            browser.inspecting = true;
+            browser.inspected = Some("another".into());
+            browser.files = files.clone();
+            cx.notify();
+        });
+        choose(&browser, cx, file_index(&files, "flow.mmd"));
+        cx.update(|window, cx| browser.read(cx).download_focus[0].clone().focus(window, cx));
+        crate::tags::tests::draw(cx);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        crate::tags::tests::draw(cx);
+        app.update(cx, |_, cx| cx.notify());
+        crate::tags::tests::draw(cx);
+        assert!(
+            cx.debug_bounds("download-lfs-side-0").is_some()
+                && holds_focus(&browser, cx, |browser| &browser.download_focus[0])
+                && !holds_focus(&browser, cx, |browser| &browser.download_cancel),
+            "focus stays on the other commit's Download, which is drawn"
+        );
+        end_download(&app, &browser, cx, None);
+        assert!(
+            holds_focus(&browser, cx, |browser| &browser.download_focus[0]),
+            "the success elsewhere moves no focus"
+        );
+        assert!(
+            crate::copy_feedback::tests::announced(cx)
+                .is_none_or(|(_, said)| !said.starts_with("Downloaded")),
+            "and says nothing of a file the review does not show"
+        );
+    }
+
+    /// A success moves focus from the side's Download or Cancel, which the
+    /// read again takes away, to the preview, also where the write ends
+    /// inside the busy delay with the Download still drawn and focused, and
+    /// says once, politely, what it downloaded: the window's notice says
+    /// it under the review, hidden from assistive technology while the
+    /// review is open. A quick success left focus on the vanished Download.
+    #[gpui::test]
+    async fn a_quick_success_moves_focus_to_the_preview_and_says_so(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_fixture, repo, files) = missing_before();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        let at = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Download Before… is offered")
+            .center();
+        start_download(&app, &browser, cx, at);
+        cx.update(|window, cx| browser.read(cx).download_focus[0].clone().focus(window, cx));
+        crate::tags::tests::draw(cx);
+        assert!(
+            cx.debug_bounds("lfs-download-progress").is_none(),
+            "inside the busy delay the Download still stands"
+        );
+        end_download(&app, &browser, cx, None);
+        assert!(
+            preview_focused(&browser, cx),
+            "focus moves from the Download the read again takes away to the preview"
+        );
+        let (_, announced) =
+            crate::copy_feedback::tests::announced(cx).expect("the success is announced");
+        assert_eq!(
+            announced, "Downloaded flow.mmd's Before object",
+            "once, politely"
         );
     }
 
