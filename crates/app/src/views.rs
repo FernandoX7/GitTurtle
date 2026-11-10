@@ -3953,27 +3953,37 @@ impl GitTurtle {
                 window,
             )
         });
-        // Split's room also holds its sides' headings, for which a Download
-        // row beside the line leaves too little room: Split then takes no
-        // floor and draws what the room still holds. It asks for Compare's
-        // footer above that floor, and gives the footer's height back only
-        // after the line has given way to its one line (`split_room`).
-        let split_floor = lfs_floor.filter(|_| !download_offered).map(|floor| {
-            let heading = appearance::ui_size(crate::split_diff::SIDE_HEADING_HEIGHT);
-            let floor = floor + window.pixel_snap(heading);
+        // Split's room also holds its sides' headings. It asks for them and
+        // its rows with Compare's footer above, and gives way in one order,
+        // with or without a Download row: the line first, to its one line;
+        // then the footer (`split_room`); the headings and the rows stay.
+        // Beside a Download row, which keeps its height, the room keeps
+        // only its headings where the column cannot hold them and a row, and
+        // its text takes what remains: at 18 pt in a 461 × 490 window, with
+        // no floor there, the line kept all its lines and left Split a strip
+        // 9 device pixels tall with no heading's words.
+        let split_floor = lfs_floor.map(|floor| {
+            let heading = window.pixel_snap(appearance::ui_size(
+                crate::split_diff::SIDE_HEADING_HEIGHT,
+            ));
+            let floor = floor + heading;
             let footer_room = footer.as_ref().map_or(px(0.), |_| {
                 window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT))
             });
-            (floor, floor + footer_room)
+            let least = if download_offered { heading } else { floor };
+            (least, floor + footer_room)
         });
         // The whole rows Split's room keeps beneath its headings before the
-        // footer gives way: three beneath the line, and one beside a Download
-        // row alone, whose sentence gives way first (`split_room`).
-        let split_rows = if split_floor.is_some() {
-            Some(SPLIT_FIND_ROWS)
-        } else {
-            (download_offered && lfs_floor.is_none()).then_some(1.)
-        };
+        // footer gives way: three beneath the line alone, and one beside a
+        // Download row, whose sentence or the line gives way first
+        // (`split_room`).
+        let split_rows = (download_offered || lfs_floor.is_some()).then_some(
+            if download_offered {
+                1.
+            } else {
+                SPLIT_FIND_ROWS
+            },
+        );
         div()
             .size_full()
             .min_w_0()
@@ -4020,12 +4030,12 @@ impl GitTurtle {
                         })
                         .named("compare-split-room");
                         match split_floor {
-                            Some((floor, with_footer)) => column.child(
+                            Some((least, with_footer)) => column.child(
                                 div()
                                     .flex_grow(1.)
                                     .flex_basis(with_footer)
-                                    .flex_shrink(GIVES_LAST)
-                                    .min_h(floor)
+                                    .flex_shrink(1.)
+                                    .min_h(least)
                                     .flex()
                                     .flex_col()
                                     .child(room),
@@ -4082,11 +4092,16 @@ const CODE_PADDING: Pixels = px(8.);
 /// beneath an open Find bar before it gives way.
 const SPLIT_FIND_ROWS: f32 = 3.;
 
-/// The shrink factor of a box that gives up its height only once the line
-/// above it can give up no more: small enough that the line's own factor of
-/// 1 takes all of a shortage until the line stands at its minimum, while a
-/// factor of 0 would never give it up and run past its column.
-const GIVES_LAST: f32 = 1e-6;
+/// The shrink factor of a failing Git LFS side's line, which gives up its
+/// height before Split's room beside it, whose factor is 1: large enough
+/// that the line takes all of a shortage until it stands at its minimum,
+/// and the room, its factor a whole 1, then takes the rest. With the room's
+/// factor a millionth instead, layout gave the room only that share of what
+/// remained once the line stood at its minimum (a flex container hands out
+/// only the sum of its unfrozen factors' share of the free space where that
+/// sum is below one), so at 18 pt in a 461 × 490 window beside a Download
+/// row the room ran 21 px under the status bar with its footer.
+pub(crate) const GIVES_FIRST: f32 = 1e6;
 
 /// The height of [`SPLIT_FIND_ROWS`] whole rows of the comparison's text and
 /// its padding: what a comparison keeps beneath a line above it that gives
@@ -4122,12 +4137,13 @@ thread_local! {
 /// it comes back as Find closes or the room grows. `rows`, where it is
 /// given, is how many whole rows the room keeps beneath its headings before
 /// the footer gives way by the same reckoning, the headings in the bar's
-/// place: three where a failing Git LFS side's line stands above the room,
-/// which holds them first, once the line has given way to its one line, and
-/// one beside a Download row alone, once its sentence has given way. Kept,
-/// the footer ran past the column, 9 px under the status bar, beneath the
-/// line, and beside two stacked Download buttons it left the text no whole
-/// row, both at 18 pt in a 461 × 490 window.
+/// place: three where a failing Git LFS side's line stands above the room
+/// alone, which holds them first, once the line has given way to its one
+/// line, and one beside a Download row, once its sentence, or the line
+/// beside it, has given way. Kept, the footer ran past the column, 9 px
+/// under the status bar, beneath the line, and beside two stacked Download
+/// buttons it left the text no whole row, both at 18 pt in a 461 × 490
+/// window.
 #[allow(clippy::too_many_arguments)]
 fn split_room(
     view: Entity<crate::split_diff::SplitView>,
@@ -11597,6 +11613,130 @@ pub(crate) mod tests {
                 }
             }
         }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// Beside a failing Git LFS side's line and a Download row, Split gives
+    /// way in the order it follows beside the line alone: the line first, to
+    /// its one line, then Compare's footer, its words kept in the
+    /// comparison's description, while its headings and a whole row stay;
+    /// only where the column cannot hold them does its text take what
+    /// remains beneath its whole headings. With no floor there, at 18 pt in
+    /// a 461 × 490 window, the line kept its three lines and left Split a
+    /// strip 9 device pixels tall, no heading's words drawn.
+    #[gpui::test]
+    async fn split_gives_way_in_one_order_beside_a_line_and_a_download_row(
+        cx: &mut TestAppContext,
+    ) {
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let missing = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let input = file_commits(&[
+            ("before", &[("notes.txt", oversize.as_bytes())]),
+            ("after", &[("notes.txt", missing.as_bytes())]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let mut held = 0;
+        for text in [18, 13] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for (width, height) in [(461., 490.), (461., 440.), (1000., 680.)] {
+                for scale in [2.0f32, 1.2] {
+                    let at = format!("{text} pt, {width} × {height}, scale {scale}");
+                    let device = px(1. / scale);
+                    COMPACT_LABELS.with(|labels| labels.borrow_mut().remove("split-comparison"));
+                    cx.simulate_resize(size(px(width), px(height)));
+                    cx.update(|window, cx| {
+                        window.set_scale_factor(scale);
+                        app.update(cx, |app, cx| {
+                            app.text_mode = TextMode::Split;
+                            app.ensure_editor(window, cx);
+                            cx.notify();
+                        })
+                    });
+                    settle(&app, cx).await;
+                    draw(cx);
+                    draw(cx);
+                    let (row, heading, least) = cx.update(|window, _| {
+                        (
+                            comparison_floor(1., window),
+                            window.pixel_snap(appearance::ui_size(
+                                crate::split_diff::SIDE_HEADING_HEIGHT,
+                            )),
+                            crate::empty_state::block_height(1, false, window)
+                                + appearance::ui_size(16.)
+                                - window.rem_size() * 0.5,
+                        )
+                    });
+                    let button = cx
+                        .debug_bounds("download-lfs-side-1")
+                        .expect("After offers its download");
+                    let line = cx
+                        .debug_bounds("lfs-preview-failure-region")
+                        .expect("the line is drawn");
+                    let room = cx
+                        .debug_bounds("preview-content")
+                        .expect("Split's room is drawn");
+                    let text = cx
+                        .debug_bounds("split-text-0")
+                        .expect("Split's Before text");
+                    let status = cx.debug_bounds("status-bar").expect("the status bar");
+                    let footer = cx.debug_bounds("compare-footer");
+                    assert!(
+                        line.bottom() <= button.top() + device / 2.
+                            && button.bottom() <= room.top() + device / 2.,
+                        "{at}: the line, {line:?}, and the row, {button:?}, end above {room:?}"
+                    );
+                    let at_least = (line.size.height - least).abs() <= device;
+                    assert!(
+                        footer.is_some() || at_least,
+                        "{at}: the line, {line:?}, gives way to its one line, {least:?}, \
+                         before the footer"
+                    );
+                    if footer.is_none() {
+                        let words = COMPACT_LABELS
+                            .with(|labels| labels.borrow().get("split-comparison").cloned());
+                        assert!(
+                            words.is_some_and(|words| words.contains("Modified")),
+                            "{at}: the description keeps the footer's words"
+                        );
+                    }
+                    assert!(
+                        room.size.height >= heading - device / 2.
+                            && text.top() >= room.top() + heading - device / 2.,
+                        "{at}: Split's headings, {heading:?}, stand whole above {text:?} \
+                         in {room:?}"
+                    );
+                    let below = footer.map_or(room.bottom(), |footer| footer.bottom());
+                    if at_least && room.size.height < heading + row - device / 2. {
+                        // Nothing else to give way: the room holds what the
+                        // column leaves it, down to its foot.
+                        assert!(
+                            footer.is_none() && below >= status.top() - device,
+                            "{at}: {room:?} takes the room that remains above {status:?}"
+                        );
+                    } else {
+                        held += 1;
+                        assert!(
+                            text.size.height >= row - device / 2.
+                                && below <= status.top() + device / 2.,
+                            "{at}: {text:?} keeps a whole row, {row:?}, above {status:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(held > 0, "some window holds the headings and a row");
         cx.update(|window, cx| {
             window.set_scale_factor(2.);
             appearance::apply_text_sizes(13, 12, window, cx);

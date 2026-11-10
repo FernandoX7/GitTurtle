@@ -231,6 +231,8 @@ impl FailureLine {
             "lfs-failure-line-scrollbar",
         )
         .relative()
+        // Gives up its height before anything beside it does.
+        .flex_shrink(crate::views::GIVES_FIRST)
         // Outside the scrolled text, so a line that overflows keeps its
         // distance from a Download row beneath it.
         .pb_2()
