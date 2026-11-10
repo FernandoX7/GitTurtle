@@ -667,7 +667,8 @@ impl ProjectHub {
 
     /// Return in a Clone or Create field submits the form once per press, on
     /// the conditions a dialog's default action keeps (the toolkit's
-    /// `dialog.rs`): a plain Enter (Shift-Enter too) going down, not marked
+    /// `dialog.rs`) for a plain Enter, plus Shift-Enter, which the dialog
+    /// refuses: going down, not marked
     /// held, not repeating the press the toolkit recorded
     /// (`enter_press_is_repeat`), in the field focused as that press began
     /// (`enter_press_began_on`). The form's key-down listener asks, after
