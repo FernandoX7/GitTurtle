@@ -4111,7 +4111,7 @@ pub(crate) fn comparison_rows_floor(window: &Window) -> Pixels {
 }
 
 /// The height of `rows` whole rows of the comparison's text and its padding.
-fn comparison_floor(rows: f32, window: &Window) -> Pixels {
+pub(crate) fn comparison_floor(rows: f32, window: &Window) -> Pixels {
     let line = (appearance::code_text() * CODE_LINE_HEIGHT).round();
     line * rows + window.pixel_snap(CODE_PADDING) * 2.
 }

@@ -253,20 +253,39 @@ pub(super) fn above_comparison<V: 'static>(
     window: &Window,
     cx: &mut Context<V>,
 ) -> AnyElement {
-    let Some(sentence) = sentence else {
+    above_comparison_with_row(line, key, sentence, None, body, ring, window, cx)
+}
+
+/// [`above_comparison`] with a Download row, `row` ([`download_row`]),
+/// between the line and `body`, or above `body` where no side failed: as in
+/// Compare, the row keeps its height, the line gives way first and the body
+/// keeps one whole row beside it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn above_comparison_with_row<V: 'static>(
+    line: &FailureLine,
+    key: usize,
+    sentence: Option<String>,
+    row: Option<AnyElement>,
+    body: AnyElement,
+    ring: Option<&crate::focus_ring::FocusRing>,
+    window: &Window,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    if sentence.is_none() && row.is_none() {
         return body;
+    }
+    let floor = if row.is_some() {
+        crate::views::comparison_floor(1., window)
+    } else {
+        crate::views::comparison_rows_floor(window)
     };
     div()
         .size_full()
         .flex()
         .flex_col()
-        .child(line.render(key, sentence, ring, window, cx))
-        .child(
-            div()
-                .flex_1()
-                .min_h(crate::views::comparison_rows_floor(window))
-                .child(body),
-        )
+        .children(sentence.map(|sentence| line.render(key, sentence, ring, window, cx)))
+        .children(row)
+        .child(div().flex_1().min_h(floor).child(body))
         .into_any_element()
 }
 
@@ -331,6 +350,88 @@ fn sentence_fits_beside(
         })
         .sum::<Pixels>();
     crate::views::laid_out_text_width(sentence, window) + buttons <= room
+}
+
+/// The row offering a download of each side among `targets`, whose object
+/// is missing, where `quick_source` calls the one side Source, beneath a
+/// failing side's line if `line_above`, in a column `column` wide. It looks
+/// refused while a write runs (`refused`, and `dimmed` once the write looks
+/// busy, `workspace::BusyLook`), and a press asks `download` for the side's
+/// target. Its frames stand on the pane's text edge, the line's above it: a
+/// 0.75 rem bar holds neither a ghost Button's pull nor its ring (DESIGN.md,
+/// "One left edge"). Compare and the rewritten-series review draw it alike.
+pub(crate) fn download_row(
+    targets: Vec<(usize, LfsDownloadTarget)>,
+    quick_source: bool,
+    line_above: bool,
+    column: Pixels,
+    (refused, dimmed): (bool, bool),
+    download: impl Fn(LfsDownloadTarget, &mut Window, &mut App) + 'static,
+    window: &Window,
+) -> AnyElement {
+    if targets.is_empty() {
+        return div().into_any_element();
+    }
+    let fits = sentence_fits_beside(
+        quick_source,
+        targets.iter().map(|(side, _)| *side),
+        column,
+        window,
+    );
+    let sentence_moves = line_above || !fits;
+    let download = std::rc::Rc::new(download);
+    div()
+        .flex_none()
+        .px_3()
+        // The line above already keeps this row's distance.
+        .when(!line_above, |row| row.pt_2())
+        .pb_2()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        // Beside a line, or where it would not fit on one line beside the
+        // buttons, the row gives the comparison its height: what this says
+        // moves to each button's tooltip and description.
+        .when(!sentence_moves, |row| {
+            row.child(
+                label("lfs-preview-download-explanation", DOWNLOAD_EXPLANATION)
+                    .debug_selector(|| "lfs-preview-download-explanation".into())
+                    .whitespace_nowrap()
+                    .text_size(appearance::ui_text(12.)),
+            )
+        })
+        .children(targets.into_iter().map(|(side, target)| {
+            let download = download.clone();
+            div()
+                .debug_selector(move || format!("download-lfs-side-{side}"))
+                .child(
+                    button(
+                        ("download-lfs-side", side),
+                        download_label(quick_source, side).0,
+                        "pull",
+                        false,
+                    )
+                    .when(sentence_moves, |button| {
+                        crate::branch_actions::Described(button)
+                            .aria_description(DOWNLOAD_EXPLANATION)
+                            .0
+                            .tooltip(DOWNLOAD_EXPLANATION)
+                    })
+                    // `open_lfs_download` refuses while a write runs.
+                    .map(|button| {
+                        crate::workspace::refusing(
+                            button,
+                            || format!("download-lfs-side-{side}"),
+                            refused,
+                            dimmed,
+                        )
+                    })
+                    .on_click(move |_, window, cx| download(target.clone(), window, cx))
+                    .node_recorded(),
+                )
+        }))
+        .into_any_element()
 }
 
 impl GitTurtle {
@@ -399,73 +500,18 @@ impl GitTurtle {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let targets = self.lfs_download_targets();
-        if targets.is_empty() {
-            return div().into_any_element();
-        }
-        let line_above = self.lfs_failure_sentence().is_some();
-        let quick_source = self.is_quick_source();
-        let sentence_moves = line_above
-            || !sentence_fits_beside(
-                quick_source,
-                targets.iter().map(|(side, _)| *side),
-                column,
-                window,
-            );
-        div()
-            .flex_none()
-            .px_3()
-            // The line above already keeps this row's distance.
-            .when(!line_above, |row| row.pt_2())
-            .pb_2()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            // Beside a line, or where it would not fit on one line beside
-            // the buttons, the row gives the comparison its height: what
-            // this says moves to each button's tooltip and description.
-            .when(!sentence_moves, |row| {
-                row.child(
-                    label("lfs-preview-download-explanation", DOWNLOAD_EXPLANATION)
-                        .debug_selector(|| "lfs-preview-download-explanation".into())
-                        .whitespace_nowrap()
-                        .text_size(appearance::ui_text(12.)),
-                )
-            })
-            .children(targets.into_iter().map(|(side, target)| {
-                div()
-                    .debug_selector(move || format!("download-lfs-side-{side}"))
-                    .child(
-                        button(
-                            ("download-lfs-side", side),
-                            download_label(quick_source, side).0,
-                            "pull",
-                            false,
-                        )
-                        .when(sentence_moves, |download| {
-                            crate::branch_actions::Described(download)
-                                .aria_description(DOWNLOAD_EXPLANATION)
-                                .0
-                                .tooltip(DOWNLOAD_EXPLANATION)
-                        })
-                        // `open_lfs_download` refuses while a write runs; it looks
-                        // so once the write looks busy (`workspace::BusyLook`).
-                        .map(|download| {
-                            crate::workspace::refusing(
-                                download,
-                                || format!("download-lfs-side-{side}"),
-                                self.operation_busy.is_some(),
-                                self.operation_shown().is_some(),
-                            )
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_lfs_download(target.clone(), window, cx)
-                        }))
-                        .node_recorded(),
-                    )
-            }))
-            .into_any_element()
+        let owner = cx.entity().downgrade();
+        download_row(
+            self.lfs_download_targets(),
+            self.is_quick_source(),
+            self.lfs_failure_sentence().is_some(),
+            column,
+            (self.operation_busy.is_some(), self.operation_shown().is_some()),
+            move |target, window, cx| {
+                let _ = owner.update(cx, |this, cx| this.open_lfs_download(target, window, cx));
+            },
+            window,
+        )
     }
 
     pub(super) fn open_lfs_download(

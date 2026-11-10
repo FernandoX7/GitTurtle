@@ -459,6 +459,11 @@ pub(crate) struct SeriesBrowser {
     failure_focus: FocusHandle,
     /// The line a failing Git LFS side says above the file's preview.
     lfs_failure_line: crate::lfs_download::FailureLine,
+    /// The chosen file whose missing Git LFS object a Download in the
+    /// preview asked for, and whether a write has started since: as that
+    /// write ends, the file's preview is read again, so a downloaded side
+    /// shows here as it does in Compare ([`Self::follow_download`]).
+    lfs_download: Option<(usize, bool)>,
     /// Why the inspected commit's changed files could not be read, which
     /// their box says and the text modes give as their reason.
     files_error: Option<String>,
@@ -538,6 +543,7 @@ impl SeriesBrowser {
             failure_scroll: ScrollHandle::new(),
             failure_focus: cx.focus_handle(),
             lfs_failure_line: crate::lfs_download::FailureLine::new("series-lfs-failure", cx),
+            lfs_download: None,
             files_error: None,
             files_failure_scroll: ScrollHandle::new(),
             files_failure_focus: cx.focus_handle(),
@@ -567,8 +573,38 @@ impl SeriesBrowser {
                 }
             }));
         }
+        if let Some(owner) = this.owner.upgrade() {
+            this._subscriptions
+                .push(cx.observe_in(&owner, window, Self::follow_download));
+        }
         this.load(window, cx);
         this
+    }
+    /// Follows the write a Download in the preview asked for: once one has
+    /// started and ended, the chosen file's preview is read again, if it is
+    /// still the file asked from. A form cancelled before its write leaves
+    /// nothing to follow until a write runs; reading the file again then is
+    /// a passive read.
+    fn follow_download(
+        &mut self,
+        owner: Entity<GitTurtle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((index, started)) = self.lfs_download else {
+            return;
+        };
+        if owner.read(cx).operation_busy.is_some() {
+            self.lfs_download = Some((index, true));
+            return;
+        }
+        if !started {
+            return;
+        }
+        self.lfs_download = None;
+        if self.inspecting && self.selected_file == Some(index) && self.current(cx) {
+            self.file(index, window, cx);
+        }
     }
     fn current(&self, cx: &App) -> bool {
         !self.closed
@@ -1434,16 +1470,50 @@ impl SeriesBrowser {
             }
             _ => self.preview_prompt(height, window, cx),
         };
-        let ring = self
-            .owner
-            .upgrade()
+        let owner = self.owner.upgrade();
+        let ring = owner
+            .as_ref()
             .map(|owner| owner.read(cx).focus_ring.clone());
-        crate::lfs_download::above_comparison(
+        // A side whose object is missing offers the download it can make,
+        // into the reviewed repository, as Compare does: the review said
+        // the object was missing and offered nothing.
+        let targets = match (
+            self.content.as_deref(),
+            self.selected_file.and_then(|index| self.files.get(index)),
+        ) {
+            (Some(content), Some(file)) => crate::lfs_download::preview_targets(content, file),
+            _ => Vec::new(),
+        };
+        let row = owner.filter(|_| !targets.is_empty()).map(|owner| {
+            let owner = owner.read(cx);
+            let busy = (owner.operation_busy.is_some(), owner.operation_shown().is_some());
+            let (view, owner, chosen) = (
+                cx.entity().downgrade(),
+                self.owner.clone(),
+                self.selected_file,
+            );
+            crate::lfs_download::download_row(
+                targets,
+                false,
+                failure.is_some(),
+                width,
+                busy,
+                move |target, window, cx| {
+                    let _ = view.update(cx, |this, _| {
+                        this.lfs_download = chosen.map(|index| (index, false));
+                    });
+                    let _ = owner.update(cx, |owner, cx| owner.open_lfs_download(target, window, cx));
+                },
+                window,
+            )
+        });
+        crate::lfs_download::above_comparison_with_row(
             &self.lfs_failure_line,
             self.content
                 .as_ref()
                 .map_or(0, crate::lfs_download::comparison_key),
             failure,
+            row,
             body,
             ring.as_ref(),
             window,
@@ -5569,6 +5639,155 @@ mod tests {
             cx.debug_bounds("series-lfs-failure")
                 .is_some_and(|line| line.size.height > px(0.)),
             "the line is drawn"
+        );
+    }
+
+    /// A side whose Git LFS object is missing offers its download in the
+    /// review as in Compare, Download Before… alone where only the old
+    /// object is missing, in Diagrams and beneath a failing After's line in
+    /// Patch, its frame on the line's text edge at 13 and 18 pt; a press
+    /// opens the download's form over the review, and as the write it asks
+    /// for ends the file's preview is read again. The review said the object
+    /// was missing and offered nothing.
+    #[gpui::test]
+    async fn the_review_offers_a_missing_side_s_download(cx: &mut gpui_kit::TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::{git, tagged_repository, window};
+        use sha2::{Digest, Sha256};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let store = |text: &str, bytes: &str| {
+            let oid = format!("{:x}", Sha256::digest(text));
+            let directory = repo
+                .path()
+                .join(".git/lfs/objects")
+                .join(&oid[..2])
+                .join(&oid[2..4]);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(&oid), bytes).unwrap();
+        };
+        let pointer = |text: &str| {
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{:x}\nsize {}\n",
+                Sha256::digest(text),
+                text.len()
+            )
+        };
+        let (diagram, damaged) = ("flowchart LR\n  A --> B\n", "flowchart LR\n  C --> D\n");
+        store(diagram, diagram);
+        store(damaged, &"x".repeat(damaged.len()));
+        let gone = |name: &str| pointer(&format!("flowchart LR\n  {name} --> Gone\n"));
+        let sides = [
+            ("flow.mmd", gone("One"), pointer(diagram)),
+            ("damaged.mmd", gone("Two"), pointer(damaged)),
+        ];
+        for (path, before, _) in &sides {
+            std::fs::write(repo.path().join(path), before).unwrap();
+        }
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Before"]);
+        for (path, _, after) in &sides {
+            std::fs::write(repo.path().join(path), after).unwrap();
+        }
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "--quiet", "-m", "After"]);
+        let files = last_commit_files(&repo);
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        let browser = inspecting(&app, cx, &files);
+        let mode = |mode: usize, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.text_mode = mode;
+                    browser.prepare_editor(window, cx);
+                    cx.notify();
+                })
+            });
+            crate::tags::tests::draw(cx);
+        };
+        // Diagrams, only the old object missing: Download Before… alone.
+        choose(&browser, cx, file_index(&files, "flow.mmd"));
+        mode(3, cx);
+        let button = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Before offers its download");
+        assert!(
+            cx.debug_bounds("download-lfs-side-1").is_none(),
+            "After, whose object is local, offers none"
+        );
+        assert_eq!(
+            written::get("download-lfs-side-0").and_then(|node| node.node.label().map(str::to_owned)),
+            Some("Download Before…".to_owned()),
+            "the review names the download as Compare does"
+        );
+        // Patch, beneath After's failure line: the frame on its text edge.
+        choose(&browser, cx, file_index(&files, "damaged.mmd"));
+        mode(0, cx);
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            crate::tags::tests::draw(cx);
+            let line = cx
+                .debug_bounds("series-lfs-failure-region")
+                .expect("After's failure line");
+            let button = cx
+                .debug_bounds("download-lfs-side-0")
+                .expect("Before offers its download beneath the line");
+            let edge = cx.update(|window, _| window.rem_size() * 0.75);
+            assert!(
+                (button.left() - (line.left() + edge)).abs() <= px(0.25)
+                    && button.top() >= line.bottom() - px(0.25),
+                "{text} pt: {button:?} stands its frame on the line's text edge, {edge:?} \
+                 into {line:?}, beneath it"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        // Back to Diagrams' file: a press opens the form over the review.
+        choose(&browser, cx, file_index(&files, "flow.mmd"));
+        mode(3, cx);
+        let _ = button;
+        let button = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Before offers its download");
+        written::forget();
+        cx.simulate_click(button.center(), Modifiers::none());
+        crate::tags::tests::draw(cx);
+        assert!(
+            written::get("lfs-download-file")
+                .and_then(|node| node.node.value().map(str::to_owned))
+                .is_some_and(|file| file.contains("flow.mmd")),
+            "the download's form opens for the file's object"
+        );
+        assert!(
+            browser.read_with(cx, |browser, _| browser.lfs_download.is_some()),
+            "the review follows the download it asked for"
+        );
+        // The write runs and ends: the file's preview is read again.
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            browser.read_with(cx, |browser, _| {
+                browser.content.as_ref().map(crate::lfs_download::comparison_key)
+            })
+        };
+        let before = shown(cx);
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Downloading selected LFS object…");
+            cx.notify();
+        });
+        crate::tags::tests::draw(cx);
+        assert_eq!(shown(cx), before, "nothing is read while the write runs");
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        browser.read_with(cx, |browser, _| browser.worker.wait_idle());
+        crate::tags::tests::draw(cx);
+        assert!(
+            shown(cx).is_some() && shown(cx) != before,
+            "the file's preview is read again as the write ends"
+        );
+        assert!(
+            browser.read_with(cx, |browser, _| browser.lfs_download.is_none()),
+            "and the review follows it no further"
         );
     }
 
