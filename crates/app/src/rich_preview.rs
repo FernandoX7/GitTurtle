@@ -98,13 +98,21 @@ impl Side {
         }
     }
     /// Retains the captured bytes and decides, here on the worker, whether
-    /// they offer the open action, so a render only reads the answer.
+    /// they offer the open action, so a render only reads the answer. A Git
+    /// LFS pointer offers none, whatever lies beside it: its text stands in
+    /// for a file the side does not hold, as an image's or a model's pointer
+    /// side offers none. Its bytes stay captured, where a download reads them.
     pub fn capture(
         &mut self,
         bytes: Arc<[u8]>,
         check: &impl Fn() -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        self.system_preview = crate::system_preview::offer(&bytes, check)?;
+        self.system_preview = if gitturtle_preview::detect_lfs_pointer(&bytes).is_some() {
+            check()?;
+            None
+        } else {
+            crate::system_preview::offer(&bytes, check)?
+        };
         self.captured = Some(bytes);
         Ok(())
     }
@@ -1668,5 +1676,100 @@ mod tests {
         let bytes = vec![0; 1024];
         let side = Side::prepare(bytes, Path::new("file.bin"), || Ok(())).unwrap();
         assert!(side.retained_bytes() >= 1024);
+    }
+
+    /// Beside a blob over the 32 MiB captured preview limit, Compare falls
+    /// back to the captured comparison, where a readable side offers the
+    /// open action and the oversize side, which captures nothing, does not.
+    /// A side that is a Git LFS pointer offers none: its text stands in for
+    /// a file the side does not hold, as an image's or a model's pointer
+    /// side offers none. Its pointer text stays shown and copyable.
+    #[gpui::test]
+    async fn a_pointer_beside_an_oversize_blob_offers_no_open(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, history_window_from, settle};
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let oversize = MAX_INPUT_BYTES + 1;
+        let mut input = format!("blob\nmark :1\ndata {oversize}\n").into_bytes();
+        input.resize(input.len() + oversize, b'\n');
+        input.push(b'\n');
+        for (index, files) in [
+            [
+                ("notes.txt", Some(pointer.as_str())),
+                ("plain.txt", Some("small text\n")),
+            ],
+            [("notes.txt", None), ("plain.txt", None)],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            input.extend_from_slice(
+                format!(
+                    "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata 7\nchange\n",
+                    1_700_000_000 + index
+                )
+                .as_bytes(),
+            );
+            for (path, text) in files {
+                input.extend_from_slice(
+                    &match text {
+                        Some(text) => {
+                            format!("M 100644 inline {path}\ndata {}\n{text}\n", text.len())
+                        }
+                        None => format!("M 100644 :1 {path}\n"),
+                    }
+                    .into_bytes(),
+                );
+            }
+        }
+        input.extend_from_slice(b"done\n");
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        for (path, before_offers) in [("plain.txt", true), ("notes.txt", false)] {
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == Path::new(path))
+                    .expect("the commit changes it")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            settle(&app, cx).await;
+            draw(cx);
+            let (before_text, before_offer) =
+                app.read_with(cx, |app, _| match app.content.as_deref() {
+                    Some(Content::Rich(preview)) => {
+                        assert!(
+                            preview.new.captured.is_none() && preview.new.error.is_some(),
+                            "{path}: After is over the limit and captures nothing"
+                        );
+                        (
+                            preview.old.metadata.source.clone(),
+                            preview.old.system_preview.is_some(),
+                        )
+                    }
+                    _ => panic!("{path}: the captured comparison"),
+                });
+            assert!(
+                before_text.is_some(),
+                "{path}: Before's text stays copyable"
+            );
+            assert_eq!(before_offer, before_offers, "{path}: Before's offer");
+            assert!(
+                cx.debug_bounds("rich-side-header-0").is_some(),
+                "{path}: Before is drawn"
+            );
+            assert_eq!(
+                cx.debug_bounds("system-preview-0").is_some(),
+                before_offers,
+                "{path}: Before draws the open action only where it offers it"
+            );
+            assert!(
+                cx.debug_bounds("system-preview-1").is_none(),
+                "{path}: the oversize side offers nothing"
+            );
+        }
     }
 }
