@@ -7250,11 +7250,14 @@ pub(crate) mod tests {
     /// Until an Open's status read lands, the branch picker names the branch
     /// the accepted snapshot found checked out, or claims none where it
     /// found none, and Fetch, Pull and Push refuse saying the read, as
-    /// Changes says it, as do Targets' destination line and the palette's
-    /// Branch. With no status they read a detached HEAD and no remote:
-    /// "Detached HEAD", "Switch to a local branch before pulling or
-    /// pushing", "No configured remote selected · Check Targets", "No
-    /// remote configured" and "Check out a named local branch first".
+    /// Changes says it, as does Targets' destination line. The palette's
+    /// Branch opens the snapshot's branch, as the picker's "Current branch
+    /// settings…" does, and says the read where the snapshot found none.
+    /// With no status they read a detached HEAD and no remote: "Detached
+    /// HEAD", "Switch to a local branch before pulling or pushing", "No
+    /// configured remote selected · Check Targets", "No remote configured"
+    /// and "Check out a named local branch first"; then Branch refused the
+    /// branch the picker named, saying the read.
     #[gpui::test]
     async fn an_open_says_its_status_is_being_read_until_it_lands(cx: &mut TestAppContext) {
         use crate::views::tests::{fixture_git, fixture_repository};
@@ -7290,11 +7293,12 @@ pub(crate) mod tests {
                 )
             })
         };
-        for (repository, while_read, read, branch_once_read) in [
-            (&topic, "topic", "topic", None),
+        for (repository, while_read, branch_while_read, read, branch_once_read) in [
+            (&topic, "topic", None, "topic", None),
             (
                 &detached,
                 crate::branch_actions::READING,
+                Some(reading),
                 "Detached HEAD",
                 Some("Check out a named local branch first"),
             ),
@@ -7347,9 +7351,30 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 branch_reason(cx),
-                Some(reading),
+                branch_while_read,
                 "{while_read}: the palette's Branch"
             );
+            if branch_while_read.is_none() {
+                // It opens the snapshot's branch, its settings read as the
+                // picker's "Current branch settings…" reads them.
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        let path = app.path.clone();
+                        app.run_menu_command(
+                            crate::command_palette::CommandId::Branch,
+                            &path,
+                            window,
+                            cx,
+                        )
+                    })
+                });
+                assert_eq!(
+                    app.read_with(cx, |app, _| app.operation_busy),
+                    Some(crate::branch_actions::PREPARING),
+                    "{while_read}: Branch reads its settings"
+                );
+                app.update(cx, |app, _| app.cancel_branch_action());
+            }
             drop(held);
             settle_tab_test(&app, cx).await;
             assert_eq!(picker().as_deref(), Some(read), "the picker once read");

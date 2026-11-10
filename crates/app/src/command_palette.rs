@@ -430,10 +430,13 @@ impl CommandId {
         if self == Self::Branch && context.unavailable {
             return Some(crate::branch_actions::UNAVAILABLE_REASON);
         }
-        // Said as Fetch, Pull and Push say it: with no status read yet it
-        // said "Check out a named local branch first" while the picker named
-        // the branch.
-        if self == Self::Branch && context.reading {
+        // With no status read yet, Branch opens the branch the accepted
+        // snapshot found checked out, as the picker's "Current branch
+        // settings…" does, and where it found none says the read as Fetch,
+        // Pull and Push do: it said "Check out a named local branch first"
+        // while the picker named the branch, and then refused the branch it
+        // named.
+        if self == Self::Branch && context.reading && !context.branch {
             return Some(crate::workspace::READING_WORKING_TREE);
         }
         if self == Self::Branch && !context.branch {
@@ -634,6 +637,16 @@ impl GitTurtle {
                 .unwrap_or_else(|| "Application · no repository open".into()),
         }
     }
+    /// The branch Branch opens: the one the status read found checked
+    /// out, none on a marked tab, whose branch is the one from before,
+    /// and until the status is read, the one the accepted snapshot found
+    /// (`unread_branch`), as the picker names it and its "Current branch
+    /// settings…" opens it.
+    fn palette_branch(&self) -> Option<&str> {
+        (self.header_status())
+            .and_then(|status| status.branch.as_deref())
+            .or_else(|| self.unread_branch())
+    }
     fn palette_file_scope(&self) -> FileScope {
         if self.mode == WorkspaceMode::Working {
             // A marked tab's selection indexes the status from before, which
@@ -671,9 +684,7 @@ impl GitTurtle {
             unsettled: self.write_unsettled(),
             unavailable: self.shown_tab_unavailable(),
             reading: self.working_status_unread(),
-            branch: self
-                .header_status()
-                .is_some_and(|status| status.branch.is_some()),
+            branch: self.palette_branch().is_some(),
             file: file_scope.file.is_some(),
             working_file: file_scope.working.is_some(),
             working: self.mode == WorkspaceMode::Working,
@@ -786,11 +797,7 @@ impl GitTurtle {
             CommandId::QuickOpen => self.open_quick_file(window, cx),
             CommandId::Compare => self.open_revision_comparison(window, cx),
             CommandId::Branch => {
-                // A marked tab's branch is the one from before.
-                if let Some(branch) = self
-                    .header_status()
-                    .and_then(|status| status.branch.clone())
-                {
+                if let Some(branch) = self.palette_branch().map(str::to_owned) {
                     self.open_contextual_branch(branch, false, window, cx);
                 }
             }
