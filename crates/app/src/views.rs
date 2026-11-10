@@ -993,6 +993,13 @@ impl GitTurtle {
     pub(super) fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let form = self.sidebar_form(window, cx);
+        // A marked tab's branches, worktrees and counts are those read
+        // before the mark, of a repository the tab can no longer open: the
+        // tree lists none and says what the mark says, as the header does
+        // (`header_status`), read each frame, as a mark goes on and off
+        // without a read. It listed them, "LOCAL BRANCHES 1" over "main",
+        // and its keys browsed and acted on them.
+        let marked = self.shown_tab_unavailable();
         div()
             .debug_selector(|| "history-sidebar".into())
             .size_full()
@@ -1068,26 +1075,40 @@ impl GitTurtle {
                 crate::native_accessibility::clips_children(div()
                     .id("repository-navigation")
                     .role(Role::Tree)
-                    .aria_label("Branches and worktrees. Arrow keys browse; Left and Right collapse or expand; Enter activates; Shift F10 opens branch or worktree actions")
+                    .aria_label(if marked {
+                        NAV_UNAVAILABLE_NAME
+                    } else {
+                        "Branches and worktrees. Arrow keys browse; Left and Right collapse or expand; Enter activates; Shift F10 opens branch or worktree actions"
+                    })
                     .key_context("GitTurtleNavigation")
                     .tab_stop(true)
                     .track_focus(&self.nav_focus)
                     .flex_1().min_h_0().relative()
-                    .on_action(cx.listener(|this, _: &native_accessibility::NextNavigation, window, cx| this.move_navigation(true, false, window, cx)))
+                    // Its keys browse and act on the rows it lists, none on a
+                    // marked tab.
+                    .when(!marked, |tree| tree.on_action(cx.listener(|this, _: &native_accessibility::NextNavigation, window, cx| this.move_navigation(true, false, window, cx)))
                     .on_action(cx.listener(|this, _: &native_accessibility::PreviousNavigation, window, cx| this.move_navigation(false, false, window, cx)))
                     .on_action(cx.listener(|this, _: &native_accessibility::FirstNavigation, window, cx| this.move_navigation(false, true, window, cx)))
                     .on_action(cx.listener(|this, _: &native_accessibility::LastNavigation, window, cx| this.move_navigation(true, true, window, cx)))
                     .on_action(cx.listener(|this, _: &native_accessibility::ExpandNavigation, window, cx| this.expand_navigation(true, window, cx)))
                     .on_action(cx.listener(|this, _: &native_accessibility::CollapseNavigation, window, cx| this.expand_navigation(false, window, cx)))
                     .on_action(cx.listener(|this, _: &native_accessibility::ActivateNavigation, window, cx| { if let Some(index)=this.nav_cursor {this.activate_navigation(index, window, cx);} }))
-                    .on_action(cx.listener(|this, _: &native_accessibility::ManageNavigation, window, cx| this.manage_navigation(window, cx)))
-                    .child(uniform_list("navigation", self.nav_rows.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                        range.map(|i| this.render_nav_row(i, cx)).collect::<Vec<_>>()
-                    })).size_full().track_scroll(&self.nav_scroll))
+                    .on_action(cx.listener(|this, _: &native_accessibility::ManageNavigation, window, cx| this.manage_navigation(window, cx))))
+                    .map(|tree| if marked {
+                        tree.child(
+                            EmptyState::new("navigation-unavailable", nav_unavailable_line(self.nav_mode))
+                                .tooltip(crate::branch_actions::UNAVAILABLE_WAY_BACK)
+                                .pane(cx),
+                        )
+                    } else {
+                        tree.child(uniform_list("navigation", self.nav_rows.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                            range.map(|i| this.render_nav_row(i, cx)).collect::<Vec<_>>()
+                        })).size_full().track_scroll(&self.nav_scroll))
+                    })
                     // Its keyboard ring on its own edge, over the rows, so
                     // none of them moves.
                     .children(self.focus_ring.edge(&self.nav_focus, rgb(colors.accent)))
-                    .children(self.nav_menu.as_ref().map(|menu| {
+                    .children(self.nav_menu.as_ref().filter(|_| !marked).map(|menu| {
                         menu.render("navigation-menu-overlay", Self::dismiss_nav_menu, cx)
                     }))),
             )
@@ -1206,8 +1227,9 @@ impl GitTurtle {
     pub(super) fn render_nav_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let row = self.nav_rows[index].clone();
-        if let NavRow::Section(label, count) = &row {
+        if let NavRow::Section(label, count) = row {
             return div()
+                .debug_selector(move || format!("nav-section/{label}/{count}"))
                 .w_full()
                 .h(crate::appearance::ui_size(30.))
                 .px(crate::appearance::ui_size(crate::appearance::PANE_INSET))
@@ -1220,7 +1242,7 @@ impl GitTurtle {
                 ))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(rgb(colors.muted))
-                .child(*label)
+                .child(label)
                 .child(count.to_string())
                 .into_any_element();
         }
@@ -8360,6 +8382,19 @@ pub(crate) const NAV_FILTER_PLACEHOLDERS: &[&str] =
 /// The navigation filter's accessible name, whole whatever form its
 /// placeholder takes.
 pub(crate) const NAV_FILTER_NAME: &str = "Filter branches and worktrees";
+/// The navigation tree's accessible name on a marked tab, which lists
+/// nothing read before the mark (`GitTurtle::render_sidebar`).
+const NAV_UNAVAILABLE_NAME: &str = "Branches and worktrees unavailable";
+
+/// What the navigation says on a marked tab in `mode`, as Changes says
+/// "Changes unavailable" there, the mark's way back in its tooltip.
+fn nav_unavailable_line(mode: NavMode) -> &'static str {
+    match mode {
+        NavMode::Local => "Branches unavailable",
+        NavMode::Remote => "Remote branches unavailable",
+        NavMode::Worktrees => "Worktrees unavailable",
+    }
+}
 
 /// History's search field's placeholders, each a shorter wording of the one
 /// before it in whole phrases: the first that fits the field shows, so a

@@ -5309,6 +5309,171 @@ pub(crate) mod tests {
         assert_eq!(picker().as_deref(), Some("main"), "read again");
     }
 
+    /// A marked tab's navigation lists no branch, worktree or count read
+    /// before the mark: in each mode it says what the mark says, as the
+    /// header does, with the mark's way back in its tooltip, and its keys
+    /// open nothing on what it no longer lists. It listed "LOCAL BRANCHES 1"
+    /// over "main", of a repository the tab can no longer open, and Shift
+    /// F10 opened that branch's actions. A Refresh that finds the
+    /// repository again lists them again.
+    #[gpui::test]
+    async fn a_marked_tab_s_navigation_lists_nothing_from_before(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let local = "nav-section/LOCAL BRANCHES/1";
+        // Shift F10 on the branch row, which opens its actions where it is
+        // listed; the menu, if any, is put away again.
+        let manage = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.nav_cursor =
+                        (app.nav_rows.iter()).position(|row| matches!(row, NavRow::Branch(..)));
+                    window.focus(&app.nav_focus, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            cx.simulate_keystrokes("shift-f10");
+            draw(cx);
+            app.update(cx, |app, _| app.nav_menu.take().is_some())
+        };
+        draw(cx);
+        assert!(
+            cx.debug_bounds(local).is_some(),
+            "the count before the mark"
+        );
+        assert!(
+            cx.debug_bounds("navigation-unavailable").is_none(),
+            "nothing to say before the mark"
+        );
+        assert!(manage(cx), "Shift F10 opens the branch's actions");
+
+        let away = fixture.path().join("git-away");
+        std::fs::rename(root.join(".git"), &away).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        assert!(
+            app.read_with(cx, |app, _| !app.branches.is_empty()),
+            "the branches read before the mark are kept"
+        );
+        assert!(!manage(cx), "Shift F10 opens nothing from before");
+        for (mode, line) in [
+            (NavMode::Local, "Branches unavailable"),
+            (NavMode::Remote, "Remote branches unavailable"),
+            (NavMode::Worktrees, "Worktrees unavailable"),
+        ] {
+            app.update(cx, |app, cx| {
+                app.nav_mode = mode;
+                app.rebuild_navigation(cx);
+                cx.notify();
+            });
+            draw(cx);
+            assert!(
+                cx.debug_bounds("navigation-unavailable").is_some(),
+                "{line}: said"
+            );
+            assert_eq!(
+                crate::empty_state::shown("navigation-unavailable").as_deref(),
+                Some(line),
+                "{line}: its words"
+            );
+            let way_back = crate::native_accessibility::written::get("navigation-unavailable-line")
+                .and_then(|line| line.node.description().map(str::to_owned));
+            assert_eq!(
+                way_back.as_deref(),
+                Some(crate::branch_actions::UNAVAILABLE_WAY_BACK),
+                "{line}: the mark's way back"
+            );
+            for row in ["nav-row-0", "nav-row-1", "nav-row-2"] {
+                assert!(cx.debug_bounds(row).is_none(), "{line}: {row} not listed");
+            }
+            for section in [
+                local,
+                "nav-section/REMOTE BRANCHES/0",
+                "nav-section/WORKTREES/1",
+            ] {
+                assert!(cx.debug_bounds(section).is_none(), "{line}: {section}");
+            }
+        }
+        app.update(cx, |app, cx| {
+            app.nav_mode = NavMode::Local;
+            app.rebuild_navigation(cx);
+            cx.notify();
+        });
+
+        std::fs::rename(&away, root.join(".git")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "unmarked"
+        );
+        assert!(cx.debug_bounds(local).is_some(), "listed again");
+        assert!(cx.debug_bounds("navigation-unavailable").is_none());
+    }
+
+    /// An explicit Open of a marked tab's folder whose snapshot names a
+    /// repository another tab already shows, as the work tree enclosing the
+    /// folder can be once the folder's own `.git` has gone, merges into that
+    /// tab as a new tab's Open does (`tab_snapshot_accepted`): the marked tab
+    /// goes, and the other is shown, read once and unmarked, so no two tabs
+    /// hold one repository.
+    #[gpui::test]
+    async fn a_recapture_onto_a_repository_another_tab_shows_merges_into_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let enclosing = enclosing_work_tree(fixture.path());
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(enclosing.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        std::fs::rename(root.join(".git"), fixture.path().join("root-git-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.tabs.len(), 2);
+            assert_eq!(app.repository_tabs.active, Some(0));
+            assert!(
+                app.repository_tabs.tabs[0].error.is_some(),
+                "Refresh marks it"
+            );
+        });
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let paths: Vec<_> = (app.repository_tabs.tabs.iter())
+                .map(|tab| tab.path.clone())
+                .collect();
+            assert_eq!(paths, vec![enclosing.clone()], "the marked tab goes");
+            assert_eq!(app.repository_tabs.active, Some(0), "the other shown");
+            assert_eq!(app.path.as_ref(), Some(&enclosing));
+            assert!(!app.shown_tab_unavailable(), "unmarked");
+            assert_eq!(app.error, None);
+        });
+    }
+
     /// A cold tab shown again is opened by its captured root: with its
     /// `.git` away inside another work tree, the switch once opened the
     /// enclosing repository in it. It now shows the tab marked, on its own
