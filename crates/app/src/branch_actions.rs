@@ -1746,6 +1746,10 @@ struct BranchForm {
     /// its review failed a fresh node each time it opens again
     /// (`native_accessibility::refusal_line`).
     opened: usize,
+    /// How often the open form has refused its review in place, which gives
+    /// the line a fresh node, announced again, for each refusal: one node
+    /// per opening let a name refused again be heard as nothing.
+    refusals: usize,
     _subscription: Subscription,
 }
 
@@ -1763,17 +1767,19 @@ impl BranchForm {
                 .default_value(initial)
                 .placeholder("feature/my-change")
         });
-        let subscription =
-            cx.subscribe_in(&name, window, |this, _, event, window, cx| match event {
-                InputEvent::Change => {
-                    this.error = None;
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } if this.submit(window, cx) => {
-                    window.close_dialog(cx);
-                }
-                _ => {}
-            });
+        // Return submits through the dialog's default action alone, which
+        // runs once per press, as the key goes down, never on a held key's
+        // repeats, under X11 too, and never for a modified Enter. The field's
+        // own `PressEnter`, which it sends for every Enter key-down, submitted
+        // the form again after the default action had begun its review,
+        // leaving the form saying another operation was running, and refused
+        // an empty name again on each repeat.
+        let subscription = cx.subscribe_in(&name, window, |this, _, event, _, cx| {
+            if let InputEvent::Change = event {
+                this.error = None;
+                cx.notify();
+            }
+        });
         Self {
             owner,
             path,
@@ -1782,15 +1788,23 @@ impl BranchForm {
             checkout: true,
             error: None,
             opened: 0,
+            refusals: 0,
             _subscription: subscription,
         }
+    }
+
+    /// Shows `error` in the open form on a fresh node, announced at once,
+    /// however often the same reason is given.
+    fn refuse(&mut self, error: &str, cx: &mut Context<Self>) {
+        self.refusals = self.refusals.wrapping_add(1);
+        self.error = Some(error.into());
+        cx.notify();
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let name = self.name.read(cx).value().trim().to_owned();
         if name.is_empty() {
-            self.error = Some("Enter a branch name.".into());
-            cx.notify();
+            self.refuse("Enter a branch name.", cx);
             return false;
         }
         let mode = self.mode.clone();
@@ -1819,8 +1833,7 @@ impl BranchForm {
             }, Some(recover), window, cx)
         }).unwrap_or(false);
         if !accepted {
-            self.error = Some("The repository changed or another operation is running. Close this dialog and open the action again.".into());
-            cx.notify();
+            self.refuse("The repository changed or another operation is running. Close this dialog and open the action again.", cx);
         }
         accepted
     }
@@ -1863,11 +1876,12 @@ impl Render for BranchForm {
                         })),
                 )
             })
-            // Announced at once, again each time the form opens with it.
+            // Announced at once, again each time the form opens with it or
+            // refuses its review in place.
             .children(self.error.as_ref().map(|error| {
                 native_accessibility::refusal_line(
                     "branch-form-error",
-                    self.opened,
+                    self.opened.wrapping_add(self.refusals),
                     error.clone(),
                     |line| {
                         line.text_size(crate::appearance::ui_text(12.))

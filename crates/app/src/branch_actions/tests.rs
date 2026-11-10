@@ -486,6 +486,148 @@ async fn a_reopened_branch_or_remote_form_announces_why_afresh(cx: &mut TestAppC
     );
 }
 
+/// One Enter key event as the platform delivers it, with no idle pass after
+/// it: a key-down, marked held or not, or with `None` its key-up.
+fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+    let keystroke = gpui::Keystroke::parse("enter").expect("a keystroke");
+    let input = match down {
+        Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+            keystroke,
+            is_held,
+            prefer_character_input: false,
+        }),
+        None => gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+    };
+    cx.update(|window, cx| window.dispatch_event(input, cx));
+}
+
+/// A held Return's repeats after its first key-down: as X11 sends them,
+/// fresh presses with no key-up between them, a release and its press
+/// together, as an input method such as fcitx5 sends them on Wayland and as
+/// X11 can, and as GPUI marks them held on macOS and Wayland.
+const REPEATS: [(&str, &[Option<bool>]); 4] = [
+    ("an X11 repeat", &[Some(false)]),
+    ("another X11 repeat", &[Some(false)]),
+    ("a release and its press", &[None, Some(false)]),
+    ("a held repeat", &[Some(true)]),
+];
+
+/// A held Return in Rename branch…'s name asks for one review, or gives one
+/// refusal, per press, under X11 too, through the dialog's default action
+/// alone: refused in place, for a repository that changed under the form,
+/// the form says why once, on one node announced once, and an empty name is
+/// refused once the same way; a review begun closes the form, and its
+/// failure opens it again with why, the hold asking for nothing more. After
+/// the key-up a new press is answered again, and heard again. The field's
+/// own `PressEnter` submitted the form as well: after the default action
+/// began a review it was refused as another operation running, and after a
+/// refusal each repeat refused again.
+#[gpui::test]
+async fn a_held_return_in_a_branch_form_reviews_once_per_press(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (repo, app, cx) = small_window_with_branches(cx, fixture.path(), 1);
+    let plan = Arc::new(repo.branch_plan("feature-00").unwrap());
+    let here = Some(repo.path().to_owned());
+    let line = || {
+        let mut lines = native_accessibility::written::announced_from("branch-form-error-");
+        assert!(lines.len() <= 1, "one line at most: {lines:?}");
+        lines.pop().map(|(node, _)| node)
+    };
+    // Each case: the form's repository and name, whether the form stays
+    // open as it is answered, and the reviews it begins and the refusals it
+    // gives per press.
+    let moved = Some(fixture.path().join("moved"));
+    let cases = [
+        ("a refused review", moved, "renamed", (true, 0, 1)),
+        ("an empty name", here.clone(), "", (true, 0, 1)),
+        // The core refuses the branch's own name as it prepares the review.
+        ("a review that fails", here, "feature-00", (false, 1, 0)),
+    ];
+    for (case, path, name, (stays, begun, refused)) in cases {
+        let form = cx.update(|window, cx| {
+            app.update(cx, |_, cx| {
+                let owner = cx.entity().downgrade();
+                let mode = BranchFormMode::Rename(plan.clone());
+                let form = cx.new(|cx| BranchForm::new(owner, path, mode, name.into(), window, cx));
+                show_branch_form(form.clone(), window, cx);
+                form
+            })
+        });
+        let focus_field = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| form.read(cx).name.focus_handle(cx).focus(window, cx));
+            draw(cx);
+        };
+        focus_field(cx);
+        let seen = |cx: &mut VisualTestContext| {
+            let begun = app.read_with(cx, |app, _| app.branch_actions.generation);
+            (begun, form.read_with(cx, |form, _| form.refusals))
+        };
+        for press in ["the first press", "a new press after the key-up"] {
+            let before = seen(cx);
+            let after = (before.0 + begun, before.1 + refused);
+            let why = |cx: &mut VisualTestContext| form.read_with(cx, |form, _| form.error.clone());
+            let said_before = why(cx);
+            native_accessibility::written::forget();
+            enter(cx, Some(false));
+            assert_eq!(
+                seen(cx),
+                after,
+                "{case}, {press}: one review or refusal is asked for"
+            );
+            if stays {
+                draw(cx);
+            } else {
+                assert_eq!(
+                    why(cx),
+                    said_before,
+                    "{case}, {press}: nothing refuses the review begun"
+                );
+                let read = app.update(cx, |app, _| app.branch_actions.task.take());
+                read.expect("the review is prepared").await;
+                draw(cx);
+                let reason = why(cx).unwrap_or_default();
+                assert!(
+                    reason.contains("is already named 'feature-00'"),
+                    "{case}, {press}: the form opens again with why: {reason:?}"
+                );
+                focus_field(cx);
+            }
+            let said = line();
+            assert!(said.is_some(), "{case}, {press}: the form says why");
+            for (repeat, events) in REPEATS {
+                for down in events {
+                    enter(cx, *down);
+                }
+                draw(cx);
+                cx.update(|window, cx| {
+                    assert!(
+                        window.has_active_dialog(cx),
+                        "{case}, {repeat}: the dialog stays"
+                    );
+                    assert!(
+                        form.read(cx).name.focus_handle(cx).is_focused(window),
+                        "{case}, {repeat}: focus stays in the field"
+                    );
+                });
+                assert!(
+                    app.read_with(cx, |app, _| app.branch_actions.task.is_none()),
+                    "{case}, {repeat}: no review is prepared"
+                );
+                assert_eq!(
+                    seen(cx),
+                    after,
+                    "{case}, {repeat}: nothing more is asked for or refused"
+                );
+                assert_eq!(line(), said, "{case}, {repeat}: nothing more is said");
+            }
+            enter(cx, None);
+            draw(cx);
+        }
+        cx.update(|window, cx| window.close_dialog(cx));
+        draw(cx);
+    }
+}
+
 /// A branch preparation that has ended no longer runs, so Changes opened
 /// after it drops no plan: a plan is dropped only while its preparation runs
 /// (`dismiss_branch_action`), as a recovery's is. The ended task stayed, and
