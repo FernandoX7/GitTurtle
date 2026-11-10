@@ -887,6 +887,7 @@ impl RenderOnce for Dialog {
                             })
                             // GitTurtle patch: Enter confirms the dialog as
                             // it goes down, never on a held key's repeats,
+                            // under X11 too ([`enter_press_is_repeat`]),
                             // and not at all until an Enter that opened the
                             // dialog comes up. Taken in the capture phase,
                             // ahead of anything inside the dialog, as the
@@ -907,7 +908,10 @@ impl RenderOnce for Dialog {
                                 if !marked {
                                     return;
                                 }
+                                // Not marked held, nor repeating the recorded
+                                // press, as X11 sends a held key's repeats.
                                 if !event.is_held
+                                    && !enter_press_is_repeat(window, cx)
                                     && let Some(focused) = window.focused(cx)
                                 {
                                     focused.dispatch_action(
@@ -1173,18 +1177,25 @@ mod tests {
         assert_eq!((presses.get(), confirms.get()), (1, 0), "Enter presses the Button");
         down(cx, true);
         down(cx, true);
+        // Under X11 a held key's repeats arrive as fresh presses, unmarked;
+        // each began on the Button, where focus stays.
+        down(cx, false);
+        down(cx, false);
         cx.simulate_event(KeyUpEvent {
             keystroke: enter.clone(),
         });
         assert_eq!(
             (presses.get(), confirms.get()),
             (1, 0),
-            "a held Enter and its release press nothing more"
+            "a held Enter, under X11 too, and its release press nothing more"
         );
 
         focus(cx, |harness| harness.dialog.clone());
         down(cx, false);
         assert_eq!((presses.get(), confirms.get()), (1, 1), "on the dialog, Confirm");
+        cx.simulate_event(KeyUpEvent {
+            keystroke: enter.clone(),
+        });
 
         focus(cx, |harness| harness.field.clone());
         down(cx, false);
@@ -1323,8 +1334,10 @@ mod tests {
     }
 
     /// GitTurtle patch: Enter on a dialog confirms it once, as the key goes
-    /// down; a held key's repeats confirm nothing more. Bound to
-    /// [`Confirm`], every repeat confirmed again.
+    /// down; a held key's repeats confirm nothing more, also under X11,
+    /// where they arrive as fresh presses. Bound to [`Confirm`], every
+    /// repeat confirmed again; filtered by the held mark alone, each X11
+    /// repeat did, so a form a refused write left open submitted again.
     #[gpui::test]
     fn a_held_enter_confirms_a_dialog_once(cx: &mut gpui::TestAppContext) {
         let (view, cx) = pair(cx);
@@ -1340,6 +1353,8 @@ mod tests {
         assert_eq!(confirms.get(), 1, "a fresh Enter confirms");
         enter(cx, Some(true));
         enter(cx, Some(true));
+        enter(cx, Some(false));
+        enter(cx, Some(false));
         enter(cx, None);
         assert_eq!(confirms.get(), 1, "its repeats and release confirm nothing");
         enter(cx, Some(false));

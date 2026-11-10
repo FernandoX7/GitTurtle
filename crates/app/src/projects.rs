@@ -2159,15 +2159,17 @@ impl RenameProjectForm {
                 .placeholder(folder.clone())
                 .default_value(current.unwrap_or_else(|| folder.clone()))
         });
-        let subscription =
-            cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
-                InputEvent::Change => {
-                    this.error = None;
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => this.submit(window, cx),
-                _ => {}
-            });
+        // Return in the field submits through the dialog's default action
+        // (`on_ok`), which the field passes the key on to and which acts
+        // once for a held Enter, under X11 too. The field's own `PressEnter`
+        // submitted as well, on every repeat, held or not, so a hold after
+        // a refused save began another save on each.
+        let subscription = cx.subscribe(&input, |this, _, event, cx| {
+            if let InputEvent::Change = event {
+                this.error = None;
+                cx.notify();
+            }
+        });
         Self {
             owner,
             path,

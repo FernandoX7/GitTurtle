@@ -4863,7 +4863,16 @@ mod tests {
                 prefer_character_input: false,
             });
         }
+        // Its release; a key-down before it is one more repeat, which
+        // presses nothing under X11 too.
+        let enter_up = |cx: &mut gpui::VisualTestContext| {
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: Keystroke::parse("enter").unwrap(),
+            })
+        };
+        enter_up(cx);
         cx.simulate_keystrokes("enter");
+        enter_up(cx);
         assert_eq!(
             (presses.get(), confirms.get()),
             (2, 0),
@@ -4874,6 +4883,7 @@ mod tests {
         cx.update(|window, cx| window.focus(&field_focus, cx));
         crate::tags::tests::draw(cx);
         cx.simulate_keystrokes("enter");
+        enter_up(cx);
         assert_eq!(
             (presses.get(), confirms.get()),
             (2, 1),

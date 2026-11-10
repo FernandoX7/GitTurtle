@@ -308,8 +308,13 @@ impl RenderOnce for Button {
                     // Never on a held key's repeats, nor on an Enter whose
                     // press began on another control, as a press that moved
                     // focus here does under X11, where repeats are not
-                    // marked held.
-                    if !event.is_held && crate::dialog::enter_press_began_on(&focus, window, cx) {
+                    // marked held: a repeat there is a key-down that repeats
+                    // the recorded press, which a held Enter on a Button
+                    // that keeps focus sends on every repeat.
+                    if !event.is_held
+                        && !crate::dialog::enter_press_is_repeat(window, cx)
+                        && crate::dialog::enter_press_began_on(&focus, window, cx)
+                    {
                         let click = ClickEvent::Keyboard(KeyboardClickEvent {
                             button: KeyboardButton::Enter,
                             bounds: bounds.get(),

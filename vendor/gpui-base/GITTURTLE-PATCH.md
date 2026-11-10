@@ -1106,8 +1106,8 @@ around the Button, so outside a dialog nothing changes): a fresh press calls
 the click handler with a keyboard click on the Button's laid-out bounds, a
 repeat (`is_held`) calls nothing, and either way the key goes no further, so
 GPUI's key-up activation does not press it again. Under X11 a held key
-arrives as fresh presses, which this cannot tell apart, as the
-popover-trigger patch notes. A listener an ancestor captures the key with
+arrives as fresh presses, unmarked, which the Enter press record below
+tells apart (`enter_press_is_repeat`, 2026-11-10). A listener an ancestor captures the key with
 still runs first, as the popover trigger's and the app's About's do. Enter
 in a single-line field, on the dialog itself and on anything but a Button
 is the dialog's `Confirm` as before, the default Button's click is that
@@ -1151,7 +1151,9 @@ no binding outside the dialog, and to a hidden `EnterKey` after that at the
 same depth, which outranks it there and marks the press as the dialog's;
 the dialog host's capture-phase key-down listener then dispatches the
 `Confirm` the binding did, on the focused element, only for a fresh press
-(`is_held` unset), and takes the key either way, as the binding did. A
+(`is_held` unset, and, since 2026-11-10, repeating no recorded press:
+`enter_press_is_repeat`, below), and takes the key either way, as the
+binding did. A
 press something inside the dialog binds (a single-line field, whose
 binding hands it on, a multi-line field, which keeps it as a new line, a
 Button, a popover's trigger) reaches it as before. Under X11 a held key's
@@ -1236,8 +1238,8 @@ The same patch keeps a held Enter on the control its press began on
 (decided by the coordinator, owner-delegated, 2026-11-05: a held Enter that
 moves focus acts once, and a Button never acts on an Enter whose press
 began while another control had focus). A held Enter on a Button that keeps
-focus still presses it on every repeat under X11, as the dialog-button part
-above says, since nothing tells those repeats from fresh presses. Under X11
+focus pressed it on every repeat under X11 until the Button also asked
+whether a key-down repeats the press (below, 2026-11-10). Under X11
 a held key's repeats arrive as fresh presses,
 so a press that moved focus to a Button, as Return on the application's
 rewritten-series list moves it to Back to series, had the next repeat press
@@ -1313,6 +1315,34 @@ input-method repeats, then the first key-down after a key-up or another
 key); the application's is
 `theme_editor::tests::a_held_return_in_name_begins_one_save`. Remove it with
 the rest of this part.
+
+The kit's own Enter handlers ask it too (decided by the coordinator,
+owner-delegated, 2026-11-10, after FU41-B3's security re-check: every kit
+control that acts on Enter as the key goes down also requires a key-down
+that repeats no recorded press). The Button's capture-phase listener
+(`src/button.rs`) presses only for an Enter neither marked held nor
+repeating the press, whose press began on it, and the dialog host
+(`src/dialog.rs`) dispatches its `Confirm` likewise. Under X11 a held
+Return on a Button that keeps focus, as Tab leaves it on the application's
+theme editor's Save, pressed it on every repeat: with the store refusing
+writes, one hold began eight saves, each announcing its error. A dialog's
+default action did the same for a form a refused write leaves open, from
+its fields: Rename project and the Git profile form submitted again on each
+repeat (the reviewed Git writes' forms hand off to a confirmation that
+waits for the key-up). Rename project also submitted from its field's own
+`PressEnter`, which no dialog filter reaches and which a held repeat sends
+too; the application leaves Enter there to the default action alone, as
+the profile form does. A fresh press after the key-up, or after another
+key, acts as before; a press begun elsewhere acts on nothing, a dialog
+opened or closed during a press waits for its key-up (`blocked`), and Space
+is unchanged. The residual is the X11 one above. The kit tests are
+`dialog::tests::enter_on_a_focused_button_presses_it_once` and
+`dialog::tests::a_held_enter_confirms_a_dialog_once`, with X11 repeats;
+the application's are
+`theme_editor::tests::a_held_return_on_a_tabbed_to_save_begins_one_save`,
+`projects::rename_tests::a_held_return_begins_one_save` and
+`profiles::manager_tests::a_held_return_in_the_profile_form_begins_one_save`.
+Remove it with the rest of this part.
 
 Remove this part with the rest of the patch when upstream leaves Enter on a
 focused Button to the Button.

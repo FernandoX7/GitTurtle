@@ -3903,46 +3903,41 @@ pub(crate) mod tests {
         }
     }
 
-    /// A held Return in Name begins one save, under X11 too: with the store
-    /// refusing writes, Enter goes down in Name and its save fails, then the
-    /// key's repeats arrive as X11 sends them, fresh presses with no key-up
-    /// between them and a release and its press together, each one waited
-    /// out until the writer has answered. The form submits once and shows
-    /// its error once; after the key-up a new press begins a second save.
-    /// Every X11 repeat began on Name, where focus stays, so each began
-    /// another write after the last one failed and announced its error
-    /// again.
+    /// Holds Return where focus is, with the store refusing writes: Enter
+    /// goes down and its save fails, then the key's repeats arrive as X11
+    /// sends them, fresh presses with no key-up between them and a release
+    /// and its press together, as GPUI marks them held on macOS and Wayland,
+    /// and after the window's focus bounces, as another client's keyboard
+    /// grab bounces it under X11, each one waited out until the writer has
+    /// answered. The form submits once and shows its error once, and focus
+    /// stays where the press began; after the key-up a new press begins a
+    /// second save.
     #[cfg(unix)]
-    #[gpui::test]
-    fn a_held_return_in_name_begins_one_save(cx: &mut TestAppContext) {
-        fn enter(cx: &mut VisualTestContext, down: bool) {
+    fn hold_return_with_saves_refused(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        form: &Entity<ThemeForm>,
+        at: &str,
+    ) {
+        fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
             let keystroke = Keystroke::parse("enter").expect("a keystroke");
-            let input = if down {
-                PlatformInput::KeyDown(KeyDownEvent {
+            let input = match down {
+                Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
                     keystroke,
-                    is_held: false,
+                    is_held,
                     prefer_character_input: false,
-                })
-            } else {
-                PlatformInput::KeyUp(KeyUpEvent { keystroke })
+                }),
+                None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
             };
             cx.update(|window, cx| window.dispatch_event(input, cx));
         }
-        let (app, cx) = open_at_rest(cx);
-        click(cx, "custom-themes-new");
-        let form = form(cx, &app);
-        next_frame(cx);
-        let name = cx.read(|cx| form.read(cx).name.read(cx).focus_handle(cx));
-        assert!(
-            cx.update(|window, _| name.is_focused(window)),
-            "the editor opens in Name"
-        );
+        let stop = focused_stop(cx);
         // Saves begun and errors shown, counted as the form changes.
         let counts = Rc::new(std::cell::Cell::new((0_usize, 0_usize)));
         let _counting = cx.update(|_, cx| {
             let counts = counts.clone();
             let mut was = (false, false);
-            cx.observe(&form, move |form, cx| {
+            cx.observe(form, move |form, cx| {
                 let form = form.read(cx);
                 let now = (form.pending, form.error.is_some());
                 let (saves, errors) = counts.get();
@@ -3960,32 +3955,109 @@ pub(crate) mod tests {
             })
         };
         let refused = ReadOnlyPreferences::new();
-        enter(cx, true);
-        wait_for(cx, &app, failed);
-        assert_eq!(counts.get(), (1, 1), "the press began a save, which failed");
-        for repeat in 0..6 {
-            if repeat % 2 == 1 {
-                // A release and its press together, with no idle pass between.
-                enter(cx, false);
+        enter(cx, Some(false));
+        wait_for(cx, app, failed);
+        assert_eq!(
+            counts.get(),
+            (1, 1),
+            "{at}: the press began a save, which failed"
+        );
+        let repeats: [(&str, &[Option<bool>]); 5] = [
+            ("an X11 repeat", &[Some(false)]),
+            ("another X11 repeat", &[Some(false)]),
+            // A release and its press together, with no idle pass between.
+            ("a release and its press", &[None, Some(false)]),
+            ("a held repeat", &[Some(true)]),
+            ("an X11 repeat after a focus bounce", &[Some(false)]),
+        ];
+        for (repeat, events) in repeats {
+            if repeat.ends_with("bounce") {
+                cx.deactivate_window();
+                cx.update(|window, _| window.activate_window());
+                settle(cx);
             }
-            enter(cx, true);
+            for down in events {
+                enter(cx, *down);
+            }
             settle(cx);
-            drain_preference_writer(cx, &app);
-            assert!(failed(cx), "repeat {repeat}: the error stays");
-            assert_eq!(counts.get(), (1, 1), "repeat {repeat}: no other save began");
+            drain_preference_writer(cx, app);
+            assert!(
+                cx.update(|window, _| stop.is_focused(window)),
+                "{at}, {repeat}: focus stays"
+            );
+            assert!(failed(cx), "{at}, {repeat}: the error stays");
+            assert_eq!(counts.get(), (1, 1), "{at}, {repeat}: no other save began");
         }
-        enter(cx, false);
+        enter(cx, None);
         settle(cx);
         assert!(
             cx.update(|window, cx| window.has_active_dialog(cx)),
-            "the editor stays open"
+            "{at}: the editor stays open"
         );
-        enter(cx, true);
-        wait_for(cx, &app, failed);
-        assert_eq!(counts.get(), (2, 2), "a new press begins another save");
+        enter(cx, Some(false));
+        wait_for(cx, app, failed);
+        assert_eq!(
+            counts.get(),
+            (2, 2),
+            "{at}: a new press begins another save"
+        );
         drop(refused);
-        enter(cx, false);
+        enter(cx, None);
         settle(cx);
+    }
+
+    /// A held Return in Name begins one save, under X11 too
+    /// ([`hold_return_with_saves_refused`]). Every X11 repeat began on Name,
+    /// where focus stays, so each began another write after the last one
+    /// failed and announced its error again.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_held_return_in_name_begins_one_save(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        let name = cx.read(|cx| form.read(cx).name.read(cx).focus_handle(cx));
+        assert!(
+            cx.update(|window, _| name.is_focused(window)),
+            "the editor opens in Name"
+        );
+        hold_return_with_saves_refused(cx, &app, &form, "Name");
+    }
+
+    /// A held Return on Save, which Tab reached, begins one save, under X11
+    /// too ([`hold_return_with_saves_refused`]). Tab focuses the kit Button
+    /// inside Save's wrapper, which takes Enter as the key goes down, ahead
+    /// of the dialog's Confirm; it passed over GPUI's held repeats and a
+    /// press begun elsewhere only, so each X11 repeat, which began on Save,
+    /// began another write after the last one failed: eight for one hold
+    /// (FU41-B3's security re-check).
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_held_return_on_a_tabbed_to_save_begins_one_save(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (form, ..) = first_picker(cx, &app);
+        let (cancel, save) = cx.read(|cx| {
+            let form = form.read(cx);
+            (form.cancel_focus.clone(), form.save_focus.clone())
+        });
+        cx.update(|window, cx| cancel.focus(window, cx));
+        settle(cx);
+        for _ in 0..4 {
+            if cx.update(|window, cx| save.contains_focused(window, cx)) {
+                break;
+            }
+            press(cx, "tab");
+        }
+        assert!(
+            cx.update(|window, cx| save.contains_focused(window, cx)),
+            "Tab from Cancel reaches Save"
+        );
+        assert!(
+            focused_stop(cx) != save,
+            "focus is on the kit Button inside Save's wrapper"
+        );
+        hold_return_with_saves_refused(cx, &app, &form, "Save");
     }
 
     /// Keep colors and Replace colors leave the tree when answered; focus

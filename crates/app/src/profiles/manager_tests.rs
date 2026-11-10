@@ -184,3 +184,110 @@ async fn the_profile_form_cues_and_reveals_what_lies_past_its_fold(cx: &mut Test
     }
     set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
 }
+
+/// A held Return in the profile form begins one save, under X11 too: with
+/// the store refusing writes, Enter goes down in Profile name and its save
+/// fails, then the key's repeats arrive as X11 sends them, fresh presses
+/// with no key-up between them and a release and its press together, and as
+/// GPUI marks them held on macOS and Wayland, each one waited out until the
+/// writer has answered. The form submits once and says why once; after the
+/// key-up a new press begins a second save. The dialog's default action
+/// passed over GPUI's held repeats only, so each X11 repeat, which began in
+/// the field where focus stays, began another write after the last one
+/// failed and said its refusal again.
+#[gpui::test]
+async fn a_held_return_in_the_profile_form_begins_one_save(cx: &mut TestAppContext) {
+    fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+        let keystroke = gpui::Keystroke::parse("enter").expect("a keystroke");
+        let input = match down {
+            Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke,
+                is_held,
+                prefer_character_input: false,
+            }),
+            None => gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+        };
+        cx.update(|window, cx| window.dispatch_event(input, cx));
+    }
+    /// Lets the writer answer the saves queued so far, then the form.
+    async fn answered(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        let barrier = app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())));
+        barrier.await.unwrap().unwrap();
+        settle(app, cx).await;
+        draw(cx);
+    }
+    let (_fixture, app, cx) = history_window(cx).await;
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    use_store(&app, cx, Store::default()).await;
+    // A folder where the store's file goes: the save cannot write it.
+    std::fs::create_dir_all(Store::path().unwrap()).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.edit_profile(None, window, cx)));
+    settle(&app, cx).await;
+    draw(cx);
+    let form = app
+        .read_with(cx, |app, _| app.profiles.draft.clone())
+        .expect("the form opens");
+    cx.update(|window, cx| {
+        form.update(cx, |form, cx| {
+            for (field, value) in [
+                (&form.label, "Work"),
+                (&form.name, "Profile Author"),
+                (&form.email, "work@example.invalid"),
+            ] {
+                field.update(cx, |field, cx| field.set_value(value, window, cx));
+            }
+        })
+    });
+    draw(cx);
+    let label = form.read_with(cx, |form, cx| form.label.read(cx).focus_handle(cx));
+    assert!(
+        cx.update(|window, _| label.is_focused(window)),
+        "the form opens in Profile name"
+    );
+    // Saves begun, counted as the form changes.
+    let saves = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let _counting = cx.update(|_, cx| {
+        let saves = saves.clone();
+        let mut was = false;
+        cx.observe(&form, move |form, cx| {
+            let now = form.read(cx).pending;
+            saves.set(saves.get() + usize::from(now && !was));
+            was = now;
+        })
+    });
+    enter(cx, Some(false));
+    answered(&app, cx).await;
+    let said = crate::copy_feedback::tests::alerted(cx).expect("the refusal is said");
+    assert_eq!(saves.get(), 1, "the press began a save, which failed");
+    assert!(form.read_with(cx, |form, _| !form.pending && form.error.is_some()));
+    let repeats: [(&str, &[Option<bool>]); 4] = [
+        ("an X11 repeat", &[Some(false)]),
+        ("another X11 repeat", &[Some(false)]),
+        // A release and its press together, with no idle pass between.
+        ("a release and its press", &[None, Some(false)]),
+        ("a held repeat", &[Some(true)]),
+    ];
+    for (repeat, events) in repeats {
+        for down in events {
+            enter(cx, *down);
+        }
+        answered(&app, cx).await;
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx) && label.is_focused(window)),
+            "{repeat}: the form stays, focus in Profile name"
+        );
+        assert_eq!(saves.get(), 1, "{repeat}: no other save began");
+        assert_eq!(
+            crate::copy_feedback::tests::alerted(cx).map(|(id, _)| id),
+            Some(said.0.clone()),
+            "{repeat}: the refusal is said once"
+        );
+    }
+    enter(cx, None);
+    draw(cx);
+    enter(cx, Some(false));
+    answered(&app, cx).await;
+    assert_eq!(saves.get(), 2, "a new press begins another save");
+    enter(cx, None);
+    draw(cx);
+}

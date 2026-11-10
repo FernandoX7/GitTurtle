@@ -3303,7 +3303,16 @@ pub(crate) mod tests {
         cx.simulate_click(review.center(), Modifiers::default());
         frame(cx);
         untouched(cx, "pressed as the write starts");
+        // Each Enter a press of its own, released before the next: one
+        // that never comes up holds the key down, and its next key-down
+        // is a repeat, which presses nothing.
+        let enter_up = |cx: &mut VisualTestContext| {
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+            })
+        };
         cx.simulate_keystrokes("enter");
+        enter_up(cx);
         frame(cx);
         untouched(cx, "Enter as the write starts");
         cx.executor()
@@ -3318,6 +3327,7 @@ pub(crate) mod tests {
         frame(cx);
         untouched(cx, "pressed once the write looks busy");
         cx.simulate_keystrokes("enter");
+        enter_up(cx);
         frame(cx);
         untouched(cx, "Enter once the write looks busy");
         release(&app, held, cx).await;
