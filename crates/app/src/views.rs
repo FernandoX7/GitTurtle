@@ -3483,7 +3483,15 @@ impl GitTurtle {
     ) -> AnyElement {
         let colors = palette(cx);
         let quick_source = self.is_quick_source();
-        let file = self.selected_file.and_then(|index| self.files.get(index));
+        // A marked tab's Changes shows nothing from before: a working file
+        // previewed before the mark is the last status's, so the column
+        // draws no path, actions, modes or footer for it and says the mark
+        // (below). It kept that file's preview and toolbar beside the
+        // list's "Changes unavailable".
+        let marked_working = self.mode == WorkspaceMode::Working && self.shown_tab_unavailable();
+        let file = (self.selected_file)
+            .and_then(|index| self.files.get(index))
+            .filter(|_| !marked_working);
         let path = file
             .map(|file| file.path().to_string_lossy().into_owned())
             .unwrap_or("File comparison".into());
@@ -3491,7 +3499,7 @@ impl GitTurtle {
         let history_index = self
             .selected_file
             .filter(|_| self.mode != WorkspaceMode::Working && !self.file_history.is_active());
-        let text = matches!(self.content.as_deref(), Some(Content::Text { .. }));
+        let text = !marked_working && matches!(self.content.as_deref(), Some(Content::Text { .. }));
         let blame_index = if self.mode == WorkspaceMode::Working {
             self.working_selected.map(|(index, _)| index)
         } else {
@@ -3522,11 +3530,12 @@ impl GitTurtle {
             .gap_1()
             .children(
                 self.working_selected
-                    .filter(|_| self.mode == WorkspaceMode::Working)
+                    .filter(|_| self.mode == WorkspaceMode::Working && !marked_working)
                     .map(|(_, area)| {
                         let staged = area == gitturtle_core::ChangeArea::Staged;
                         let labels = crate::appearance::labels(cx);
                         div()
+                            .debug_selector(|| "preview-change-area".into())
                             .flex_shrink_0()
                             .px_2()
                             .py_1()
@@ -3733,13 +3742,11 @@ impl GitTurtle {
         let mut split = None;
         let content = if let Some(error) = &self.error {
             empty("Preview unavailable", error)
-        } else if file.is_none()
-            && self.mode == WorkspaceMode::Working
-            && self.shown_tab_unavailable()
-        {
+        } else if marked_working {
             // A marked tab's status is the last one read, beside the list's
             // "Changes unavailable": the preview says the mark and its way
-            // back rather than "Working tree clean" or "Choose a file".
+            // back rather than "Working tree clean", "Choose a file" or the
+            // file chosen before the mark.
             empty(
                 crate::branch_actions::UNAVAILABLE_REASON,
                 crate::branch_actions::UNAVAILABLE_WAY_BACK,
@@ -35680,6 +35687,50 @@ pub(crate) mod tests {
                     .unwrap_or_else(|| "something else".into())
             }
         })
+    }
+
+    /// A working file previewed before its tab is marked leaves the
+    /// preview column with the mark: no path, actions or footer from
+    /// before, and the mark's "Repository unavailable" with its way back,
+    /// as where nothing was selected. It kept the file's preview and its
+    /// toolbar beside the list's "Changes unavailable".
+    #[gpui::test]
+    async fn a_marked_tab_s_changes_preview_shows_nothing_from_before(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        select_working_notes(&app, cx).await;
+        let from_before = [
+            "copy-path",
+            "open-blame",
+            "compare-footer",
+            "preview-change-area",
+        ];
+        for id in from_before {
+            assert!(cx.debug_bounds(id).is_some(), "the file's {id}");
+        }
+        app.update(cx, |app, cx| {
+            let index = app.repository_tabs.active.expect("a tab");
+            app.repository_tabs.tabs[index].error = Some("Repository unavailable".into());
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("working-unavailable").is_some(),
+            "the list says the mark"
+        );
+        for id in from_before {
+            assert!(cx.debug_bounds(id).is_none(), "no {id} from before");
+        }
+        let said = crate::native_accessibility::written::get(&format!(
+            "empty-state:{}",
+            crate::branch_actions::UNAVAILABLE_REASON
+        ))
+        .and_then(|written| written.node.value().map(str::to_owned));
+        assert!(
+            said.as_deref()
+                .is_some_and(|said| said.contains(crate::branch_actions::UNAVAILABLE_WAY_BACK)),
+            "the mark and its way back: {said:?}"
+        );
     }
 
     /// Chooses notes.txt's Unstaged row in [`working_window`]'s rows and puts

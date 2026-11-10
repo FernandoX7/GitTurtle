@@ -8358,7 +8358,9 @@ mod tests {
     /// branches the status from before found diverged draw no Merge… and
     /// Rebase…. The banner read the operation and the status kept beside
     /// the mark, so a marked tab offered to continue, abort or integrate
-    /// what it could no longer read.
+    /// what it could no longer read. The palette's Review an interactive
+    /// rebase… says the mark too, as its Branch does, where it said to
+    /// finish or abort the merge from before.
     #[gpui::test]
     async fn a_marked_tab_s_banner_offers_nothing_from_before(cx: &mut gpui::TestAppContext) {
         use crate::views::tests::{draw, fixture_git, fixture_git_output, settle};
@@ -8400,6 +8402,20 @@ mod tests {
         draw(cx);
         assert!(app.read_with(cx, |app, _| app.integration_state.is_some()));
         assert!(cx.debug_bounds("operation-banner").is_some(), "the merge");
+        let rebase_reason = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                (app.read(cx)).menu_command_reason(
+                    crate::command_palette::CommandId::Rebase,
+                    window,
+                    cx,
+                )
+            })
+        };
+        assert_eq!(
+            rebase_reason(cx),
+            Some("Finish or abort the current Git operation first"),
+            "the merge refuses it"
+        );
 
         std::fs::rename(root.join(".git"), fixture.path().join("git-away")).unwrap();
         std::fs::write(
@@ -8418,6 +8434,11 @@ mod tests {
         for id in ["operation-banner", "merge-upstream", "rebase-upstream"] {
             assert!(cx.debug_bounds(id).is_none(), "the merge kept: {id}");
         }
+        assert_eq!(
+            rebase_reason(cx),
+            Some(crate::branch_actions::UNAVAILABLE_REASON),
+            "the palette says the mark, not the merge from before"
+        );
         app.update(cx, |app, cx| {
             app.integration_state = None;
             if app.work_status.is_none() {

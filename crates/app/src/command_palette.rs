@@ -442,6 +442,12 @@ impl CommandId {
         if self == Self::Rebase && context.integration {
             return Some("Finish or abort the current Git operation first");
         }
+        // Said as Branch says it, the picker's menu that offers it opening
+        // none there: a marked tab's history is the last one read, of a
+        // repository the tab can no longer open.
+        if self == Self::Rebase && context.unavailable {
+            return Some(crate::branch_actions::UNAVAILABLE_REASON);
+        }
         if self == Self::FileHistory && (context.working || context.file_history || !context.file) {
             return Some("Select a history file or open a tracked file first");
         }
@@ -673,7 +679,9 @@ impl GitTurtle {
             working: self.mode == WorkspaceMode::Working,
             file_history: self.file_history.is_active(),
             blame: self.blame.is_visible(),
-            integration: self.integration_state.is_some(),
+            // A marked tab's operation is the one read before the mark, as
+            // the banner hides it (`integration`).
+            integration: self.integration_state.is_some() && !self.shown_tab_unavailable(),
             profile_saving: self.profile_save_pending(),
             narrow_history: self.mode == WorkspaceMode::History
                 && !self.navigation_fits(window, cx),
