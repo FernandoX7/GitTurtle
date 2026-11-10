@@ -3772,6 +3772,14 @@ mod tests {
         app.read_with(cx, |app, _| app.operations.drain());
         cx.executor().run_until_parked();
         app.update(cx, |app, _| app.automatic.report_local_change(change));
+        quiet_reads_landed(app, cx);
+    }
+
+    /// Waits for the quiet reads the window has asked for to land, the one
+    /// running and any waiting behind it, on the reader's thread they read
+    /// on, which neither `run_until_parked` nor a drain of the operation
+    /// thread waits for.
+    fn quiet_reads_landed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         for _ in 0..16 {
             cx.executor().run_until_parked();
             if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
@@ -4883,21 +4891,29 @@ mod tests {
     }
 
     /// A banner left behind by a tab switch comes back with its tab and
-    /// still goes with that tab's next good read.
+    /// still goes with that tab's next good read, whenever it lands.
     #[gpui::test]
     async fn a_local_refresh_banner_goes_with_its_tab(cx: &mut TestAppContext) {
         let (fixture, app, cx, _root) = settled_history_window(cx).await;
         let banner = "Local refresh: the read stopped".to_owned();
         quiet_read_fails(&app, cx, anyhow::anyhow!("the read stopped"));
-        assert_eq!(operation_error(&app, cx), Some(banner), "the banner");
+        assert_eq!(
+            operation_error(&app, cx),
+            Some(banner.clone()),
+            "the banner"
+        );
         open_another_tab(&app, cx, &fixture.path().join("other")).await;
         assert_eq!(operation_error(&app, cx), None, "another tab's slot");
         cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
-        settle_tab_test(&app, cx).await;
-        for _ in 0..4 {
-            app.read_with(cx, |app, _| app.operations.drain());
-            crate::views::tests::settle(&app, cx).await;
-        }
+        assert_eq!(operation_error(&app, cx), Some(banner), "back with its tab");
+        // The switch starts the tab's rescan on the reader's thread, and the
+        // watch it sets up on the operation thread asks for another as it
+        // lands: both are waited for. `settle_tab_test` forgets a tab's quiet
+        // reads as it ends, the banner they wrote among them: on a slow host
+        // the rescan still read then, and was dropped with the banner it
+        // would have taken.
+        app.read_with(cx, |app, _| app.operations.drain());
+        quiet_reads_landed(&app, cx);
         assert_eq!(
             operation_error(&app, cx),
             None,
