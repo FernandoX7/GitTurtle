@@ -6878,7 +6878,8 @@ mod tests {
     /// side's download runs and as it fails, Cancel and the other Download
     /// apart, and the comparison keeps a whole row inside the preview's box
     /// throughout. Pressed, Cancel reads "Cancelling…", as wide as before,
-    /// and no longer cancels. In a 600 × 490 window the progress stays whole.
+    /// and no longer cancels. In a 600 × 490 window the progress stays whole
+    /// and the two share a line in every state.
     /// Kept "Cancel download", whose running form left the two no shared
     /// line, the two stacked in every state and the comparison's row ended
     /// 1.5 px past the box's foot; before that, decided from the Downloads
@@ -6962,10 +6963,7 @@ mod tests {
             let rest = downloads(cx).map(|side| side.expect("both sides offer a download"));
             let body = comparison(&format!("{width} px wide, at rest"), cx);
             let shares = one_line(&rest);
-            assert!(
-                width > 461. || shares,
-                "at 461 px the two share a line: {rest:?}"
-            );
+            assert!(shares, "at {width} px the two share a line: {rest:?}");
             for side in [0, 1] {
                 let at = format!("{width} px wide, side {side}");
                 // Where it stands now: a failure's words before the two on

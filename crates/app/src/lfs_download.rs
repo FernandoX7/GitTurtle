@@ -421,8 +421,11 @@ fn download_label(
 /// Whether a Download row `column` wide draws its sentence, which it draws
 /// only on one line beside the buttons of all its `sides`, measured from
 /// the interface font in the frame the row is drawn, each side in its
-/// widest state where the row says what it `asks` for ([`side_widths`]).
-/// Wrapped inside the pane, at 18 pt in a 461 × 490 window, it took three
+/// widest state where the row says what it `asks` for ([`side_widths`]),
+/// one side running at a time, as [`buttons_share_line`] measures them
+/// ([`widest_line`]): summed over every side's running form at once, a
+/// state the row never takes, the sentence moved to the buttons where it
+/// fit beside them in every state it takes. Wrapped inside the pane, at 18 pt in a 461 × 490 window, it took three
 /// lines above one button and left the comparison 4.5 px, and above two
 /// stacked buttons it pushed Compare's footer under the status bar;
 /// wherever it would not fit beside them, what it says moves to the
@@ -436,8 +439,23 @@ fn sentence_fits_beside(
 ) -> bool {
     let (gap, room) = row_room(column, window);
     let sentence = row_text_width(DOWNLOAD_EXPLANATION, &EXPLANATION_WIDTH, window);
-    let [_, widest] = side_widths(quick_source, sides, false, asks, window);
-    sentence + widest.iter().map(|&width| gap + width).sum::<Pixels>() <= room
+    let widths = side_widths(quick_source, sides, false, asks, window);
+    sentence + gap + widest_line(&widths, gap) <= room
+}
+
+/// The widest a line of a row's sides gets, measured from their widths
+/// (`[buttons, widest]`, [`side_widths`]) with `gap` between them: their
+/// Downloads, and the most one side's running form adds, since one
+/// download runs at a time.
+fn widest_line([buttons, widest]: &[Vec<Pixels>; 2], gap: Pixels) -> Pixels {
+    let line = buttons.iter().fold(-gap, |line, &width| line + gap + width);
+    let running = widest
+        .iter()
+        .zip(buttons)
+        .fold(Pixels::ZERO, |most, (&widest, &button)| {
+            most.max(widest - button)
+        });
+    line + running
 }
 
 /// A Download row's gap between its items and the room its line has
@@ -600,16 +618,12 @@ fn buttons_share_line(
     window: &Window,
 ) -> bool {
     let (gap, room) = row_room(column, window);
-    let [buttons, widest] = side_widths(quick_source, sides, short, asks, window);
-    let line = buttons.iter().fold(-gap, |line, &width| line + gap + width);
-    // The most one side's running form adds to the line.
-    let running = widest
+    let widths = side_widths(quick_source, sides, short, asks, window);
+    let line = widths[0]
         .iter()
-        .zip(&buttons)
-        .fold(Pixels::ZERO, |most, (&widest, &button)| {
-            most.max(widest - button)
-        });
-    line + running <= room && (!asks || said_least(true, short, window) + gap + line <= room)
+        .fold(-gap, |line, &width| line + gap + width);
+    widest_line(&widths, gap) <= room
+        && (!asks || said_least(true, short, window) + gap + line <= room)
 }
 
 /// `row`, which notes, where it is drawn with its buttons' word given way,
@@ -1695,6 +1709,355 @@ mod held_return_tests {
             }
             cx.update(|window, cx| window.close_dialog(cx));
             draw(cx);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tags::tests::draw;
+    use core::prelude::v1::test;
+    use gpui::{TestAppContext, VisualTestContext};
+
+    /// What the drawn row says of the download it asked for.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Shown {
+        Resting,
+        Running { side: usize, cancelling: bool },
+        Failed { side: usize },
+    }
+
+    /// A long failure's words.
+    const WORDS: &str = "Git LFS could not reach origin: the remote refused the batch request";
+
+    /// A window drawing one Download row offering both sides' objects,
+    /// `column` wide at its left, saying what it asked for as the review's
+    /// row does, in the state `shown`, its buttons' word given way where
+    /// `short`.
+    struct Row {
+        column: Pixels,
+        short: bool,
+        shown: Shown,
+        focus: [FocusHandle; 2],
+        cancel: FocusHandle,
+    }
+
+    impl Render for Row {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let target = |side| {
+                (
+                    side,
+                    LfsDownloadTarget {
+                        path: "both.mmd".into(),
+                        blob_oid: None,
+                        pointer: Vec::new(),
+                    },
+                )
+            };
+            let state = match self.shown {
+                Shown::Resting => AskedState::Resting,
+                Shown::Running { side, cancelling } => AskedState::Running {
+                    side,
+                    progress: Some(DOWNLOAD_OBJECT.into()),
+                    cancel: RunningCancel {
+                        name: "Cancel download of both.mmd's Before object".into(),
+                        cancelling,
+                    },
+                },
+                Shown::Failed { side } => AskedState::Failed {
+                    side,
+                    words: WORDS.into(),
+                },
+            };
+            div().size_full().child(
+                div()
+                    .debug_selector(|| "lfs-download-row".into())
+                    .w(self.column)
+                    .child(download_row(
+                        vec![target(0), target(1)],
+                        false,
+                        false,
+                        self.short,
+                        self.column,
+                        (false, false),
+                        Some(Asked {
+                            focus: self.focus.clone(),
+                            cancel: self.cancel.clone(),
+                            state,
+                            on_cancel: std::rc::Rc::new(|_, _| {}),
+                        }),
+                        |_, _, _, _| {},
+                        window,
+                        cx,
+                    )),
+            )
+        }
+    }
+
+    /// A window drawing the row at 18 pt and scale 2, as QA's 461 × 490
+    /// window draws the review's.
+    fn row_window(cx: &mut TestAppContext) -> (Entity<Row>, &mut VisualTestContext) {
+        crate::views::tests::init_app(cx);
+        let (row, cx) = cx.add_window_view(|_, cx| Row {
+            column: px(600.),
+            short: false,
+            shown: Shown::Resting,
+            focus: [cx.focus_handle(), cx.focus_handle()],
+            cancel: cx.focus_handle(),
+        });
+        cx.simulate_resize(size(px(1200.), px(400.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, _| window.set_scale_factor(2.));
+        (row, cx)
+    }
+
+    /// The row drawn `column` wide in the state `shown`, its buttons' word
+    /// given way where `short`.
+    fn show(
+        row: &Entity<Row>,
+        cx: &mut VisualTestContext,
+        column: Pixels,
+        short: bool,
+        shown: Shown,
+    ) {
+        row.update(cx, |row, cx| {
+            row.column = column;
+            row.short = short;
+            row.shown = shown;
+            cx.notify();
+        });
+        draw(cx);
+    }
+
+    /// The column whose line holds `needed` between the row's insets.
+    fn column_for(needed: Pixels, window: &Window) -> Pixels {
+        needed - row_room(Pixels::ZERO, window).1
+    }
+
+    /// The ids of what may stand on the row's lines.
+    const PARTS: [&str; 7] = [
+        "lfs-preview-download-explanation",
+        "lfs-download-progress",
+        "cancel-lfs-download",
+        "download-lfs-side-0",
+        "download-lfs-side-1",
+        "lfs-download-failure",
+        "lfs-download-failure-icon",
+    ];
+
+    /// Whether the drawn parts stand on one line, apart, inside the row.
+    fn one_line_inside(cx: &mut VisualTestContext, device: Pixels) -> Result<(), String> {
+        let row = cx.debug_bounds("lfs-download-row").expect("the row");
+        let drawn: Vec<_> = PARTS
+            .iter()
+            .filter_map(|id| cx.debug_bounds(id).map(|bounds| (*id, bounds)))
+            .collect();
+        let first = drawn[0].1;
+        for (index, (id, part)) in drawn.iter().enumerate() {
+            if (part.center().y - first.center().y).abs() > device / 2. {
+                return Err(format!("{id}, {part:?}, is not on {first:?}'s line"));
+            }
+            if part.left() < row.left() - device / 2. || part.right() > row.right() + device / 2. {
+                return Err(format!("{id}, {part:?}, runs outside {row:?}"));
+            }
+            for (other, bounds) in &drawn[index + 1..] {
+                if part.right() > bounds.left() + device / 2.
+                    && bounds.right() > part.left() + device / 2.
+                {
+                    return Err(format!("{id}, {part:?}, overlaps {other}, {bounds:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The sentence stands beside the Downloads wherever its line holds them
+    /// in each state the row takes, one side running at a time, as the
+    /// share-or-stack choice measures them: at 18 pt and scale 2, in a row
+    /// whose room holds the sentence beside both Downloads with either
+    /// side's running form, though not with both sides' at once, a state it
+    /// never takes, the sentence stands whole at rest and while either side
+    /// runs, on one line with both sides. Summed over both sides' running
+    /// forms, the measure moved it to the buttons' tooltips there.
+    #[gpui::test]
+    async fn the_sentence_measures_one_side_running_at_a_time(cx: &mut TestAppContext) {
+        let (row, cx) = row_window(cx);
+        cx.simulate_resize(size(px(1600.), px(400.)));
+        let (column, sentence, device) = cx.update(|window, _| {
+            let (gap, _) = row_room(Pixels::ZERO, window);
+            let widths = side_widths(false, &[0, 1], false, true, window);
+            let sentence = row_text_width(DOWNLOAD_EXPLANATION, &EXPLANATION_WIDTH, window);
+            let one = sentence + gap + widest_line(&widths, gap);
+            let both = sentence + widths[1].iter().map(|&width| gap + width).sum::<Pixels>();
+            assert!(
+                one < both,
+                "one side running, {one:?}, takes less than both, {both:?}"
+            );
+            (
+                column_for((one + both) / 2., window),
+                sentence,
+                px(1. / window.scale_factor()),
+            )
+        });
+        for shown in [
+            Shown::Resting,
+            Shown::Running {
+                side: 0,
+                cancelling: false,
+            },
+            Shown::Running {
+                side: 1,
+                cancelling: false,
+            },
+        ] {
+            show(&row, cx, column, false, shown);
+            let said = cx
+                .debug_bounds("lfs-preview-download-explanation")
+                .unwrap_or_else(|| panic!("{shown:?}: the sentence stands in a {column:?} row"));
+            assert!(
+                said.size.width >= sentence - device / 2.,
+                "{shown:?}: the sentence, {said:?}, is whole, {sentence:?}"
+            );
+            if let Err(why) = one_line_inside(cx, device) {
+                panic!("{shown:?}: {why}");
+            }
+        }
+    }
+
+    /// A failure keeps at least "Failed…" beside its Download on the line of
+    /// the side that failed, measured for that line where the sides stack,
+    /// and otherwise the warning icon stands there, whole: at 18 pt and
+    /// scale 2, with the two Downloads stacked, a row a device pixel short of
+    /// "Failed…" beside Download After… draws the icon after it, and at
+    /// that room the words, "Failed…" wide at least; Download After… keeps
+    /// its place either way. Measured as though After… shared its line with
+    /// Before…, the row drew the icon where the words fit.
+    #[gpui::test]
+    async fn a_stacked_failure_keeps_failed_or_its_icon(cx: &mut TestAppContext) {
+        let (row, cx) = row_window(cx);
+        let (fits, failed, icon, device) = cx.update(|window, _| {
+            let (gap, _) = row_room(Pixels::ZERO, window);
+            let [buttons, _] = side_widths(false, &[0, 1], false, true, window);
+            let failed = row_text_width(FAILED, &FAILED_WIDTH, window);
+            (
+                column_for(buttons[1] + gap + failed, window),
+                failed,
+                failure_icon_width(window),
+                px(1. / window.scale_factor()),
+            )
+        });
+        for (column, words) in [(fits - device, false), (fits, true)] {
+            show(&row, cx, column, false, Shown::Resting);
+            let [before, pressed] = ["download-lfs-side-0", "download-lfs-side-1"]
+                .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
+            assert!(
+                pressed.top() >= before.bottom() - device / 2.,
+                "{column:?}: the two stack: {before:?}, {pressed:?}"
+            );
+            show(&row, cx, column, false, Shown::Failed { side: 1 });
+            let after = cx
+                .debug_bounds("download-lfs-side-1")
+                .expect("After… is back");
+            let edge = cx
+                .debug_bounds("lfs-download-row")
+                .expect("the row")
+                .right();
+            let (said, least, gone) = if words {
+                (
+                    cx.debug_bounds("lfs-download-failure"),
+                    failed,
+                    "lfs-download-failure-icon",
+                )
+            } else {
+                (
+                    cx.debug_bounds("lfs-download-failure-icon"),
+                    icon,
+                    "lfs-download-failure",
+                )
+            };
+            let said = said.unwrap_or_else(|| {
+                panic!("{column:?}: the {}", if words { "words" } else { "icon" })
+            });
+            assert!(
+                cx.debug_bounds(gone).is_none()
+                    && said.size.width >= least - device / 2.
+                    && said.left() >= after.right() - device / 2.
+                    && said.right() <= edge + device / 2.
+                    && (said.center().y - after.center().y).abs() <= device / 2.
+                    && (after.left() - pressed.left()).abs() <= device / 2.,
+                "{column:?}: {said:?} stands whole, {least:?}, after Download After…, \
+                 {after:?}, which keeps its place, {pressed:?}, with no {gone}"
+            );
+        }
+    }
+
+    /// Cancel download is measured at the wider of its labels, so
+    /// "Cancelling…" fits wherever "Cancel" did: at 18 pt and scale 2, the
+    /// buttons' word given way, in a row whose room holds either side's
+    /// running form with Cancel as wide as "Cancelling…", a press moves
+    /// nothing and the line stays whole; and in a row that would hold it
+    /// with Cancel only as wide as "Cancel", and the failure's icon, the two
+    /// sides stack rather than share a line a press would overrun.
+    #[gpui::test]
+    async fn the_pressed_label_alone_decides_the_shared_line(cx: &mut TestAppContext) {
+        let (row, cx) = row_window(cx);
+        let (shared, tight, device) = cx.update(|window, _| {
+            let (gap, _) = row_room(Pixels::ZERO, window);
+            let widths = side_widths(false, &[0, 1], true, true, window);
+            let line = widths[0]
+                .iter()
+                .fold(-gap, |line, &width| line + gap + width);
+            let cancel = crate::labelled_button_width(CANCEL, &SHORT_CANCEL_WIDTH, window);
+            assert!(
+                cancel < cancel_width(true, window),
+                "\"Cancel\" is narrower than \"Cancelling…\""
+            );
+            let running = said_least(false, true, window) + gap + cancel;
+            let unpressed = widths[0]
+                .iter()
+                .fold(Pixels::ZERO, |most, &button| most.max(running - button))
+                .max(gap + said_least(true, true, window));
+            (
+                column_for(widest_line(&widths, gap), window),
+                column_for(line + unpressed, window),
+                px(1. / window.scale_factor()),
+            )
+        });
+        assert!(tight < shared, "{tight:?} lies short of {shared:?}");
+        show(&row, cx, tight, true, Shown::Resting);
+        let [before, after] = ["download-lfs-side-0", "download-lfs-side-1"]
+            .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
+        assert!(
+            after.top() >= before.bottom() - device / 2.,
+            "in a {tight:?} row the two stack: {before:?}, {after:?}"
+        );
+        for side in [0, 1] {
+            let running = Shown::Running {
+                side,
+                cancelling: false,
+            };
+            show(&row, cx, shared, true, running);
+            let cancel = cx.debug_bounds("cancel-lfs-download").expect("Cancel");
+            if let Err(why) = one_line_inside(cx, device) {
+                panic!("side {side}: {why}");
+            }
+            let pressed = Shown::Running {
+                side,
+                cancelling: true,
+            };
+            show(&row, cx, shared, true, pressed);
+            let label = crate::views::COMPACT_LABELS
+                .with(|labels| labels.borrow().get("cancel-lfs-download").cloned());
+            assert_eq!(label.as_deref(), Some(CANCELLING), "side {side}: pressed");
+            assert_eq!(
+                cx.debug_bounds("cancel-lfs-download"),
+                Some(cancel),
+                "side {side}: pressed, Cancel keeps its bounds"
+            );
+            if let Err(why) = one_line_inside(cx, device) {
+                panic!("side {side}, pressed: {why}");
+            }
         }
     }
 }
