@@ -6625,7 +6625,9 @@ pub(crate) mod tests {
     /// came from the last status read, kept beside the mark; with no status
     /// read the picker read "Detached HEAD", of a repository that cannot be
     /// opened. The picker refuses its menu, which listed the branches from
-    /// before, and the edge's "No remote" goes with its action.
+    /// before, and the edge's "No remote" goes with its action. The profile
+    /// picker names no author and its tooltip no address from before, read
+    /// from the configuration of the repository the tab cannot open.
     #[gpui::test]
     async fn a_marked_tab_s_header_shows_nothing_from_before(cx: &mut TestAppContext) {
         use crate::branch_actions::PICKER_LABEL;
@@ -6646,6 +6648,30 @@ pub(crate) mod tests {
             app.read_with(cx, |app, _| app.repository_edge().is_some()),
             "the edge before the mark: no remote"
         );
+        let read_identity = |cx: &mut VisualTestContext| {
+            app.update(cx, |app, cx| {
+                app.profile = Some(gitturtle_core::GitProfile {
+                    name: "Ada Lovelace".into(),
+                    email: "ada@example.invalid".into(),
+                    private_worktree: false,
+                    ..app.profile.clone().unwrap_or_default()
+                });
+                cx.notify();
+            });
+            crate::views::tests::draw(cx);
+        };
+        let picker_drawn =
+            || crate::profiles::PROFILE_PICKER_DRAWN.with(|drawn| drawn.borrow().clone());
+        read_identity(cx);
+        assert_eq!(
+            picker_drawn(),
+            Some((
+                "Git profile: Ada Lovelace. Choose or manage profiles".into(),
+                "Ada Lovelace <ada@example.invalid> · Repository configuration shared by linked worktrees"
+                    .into()
+            )),
+            "the identity before the mark"
+        );
 
         std::fs::rename(root.join(".git"), fixture.path().join("git-away")).unwrap();
         std::fs::write(
@@ -6657,11 +6683,21 @@ pub(crate) mod tests {
         crate::views::tests::settle(&app, cx).await;
         crate::views::tests::draw(cx);
         assert!(app.read_with(cx, |app, _| app.shown_tab_unavailable()));
+        // The identity read before, kept beside the mark.
+        read_identity(cx);
         let says_the_mark = |cx: &mut VisualTestContext, at: &str| {
             assert_eq!(
                 app.read_with(cx, |app, _| app.changes_label()),
                 "Changes",
                 "{at}: no count from before"
+            );
+            assert_eq!(
+                picker_drawn(),
+                Some((
+                    "Git profile: Profiles. Choose or manage profiles".into(),
+                    "Choose or manage named Git author profiles".into()
+                )),
+                "{at}: no identity from before"
             );
             assert_eq!(
                 PICKER_LABEL.with(|label| label.borrow().clone()).as_deref(),
@@ -6718,6 +6754,9 @@ pub(crate) mod tests {
     /// With the status absent they read it as a detached HEAD, Pull and Push
     /// saying "Switch to a local branch before pulling or pushing", and
     /// Fetch stayed "Fetch from origin", a remote from before, and pressed.
+    /// Targets' Switch and Create refuse there too, with a branch named,
+    /// their tooltips saying the mark after what they do: they stayed
+    /// available toward the repository the tab can no longer open.
     #[gpui::test]
     async fn a_marked_tab_s_git_actions_refuse_and_say_the_mark(cx: &mut TestAppContext) {
         let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
@@ -6745,6 +6784,10 @@ pub(crate) mod tests {
         };
         let destination =
             || crate::workspace::TARGETS_DESTINATION.with(|line| line.borrow().clone());
+        let branch_forms = [
+            ("checkout-branch", "Switch to the named local branch"),
+            ("create-branch", "Create and switch to a branch from HEAD"),
+        ];
         let says_the_mark = |at: &str, compact: bool| {
             for (id, label) in [("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")] {
                 let refusal = crate::workspace::refusals::get(id).expect("drawn");
@@ -6772,10 +6815,28 @@ pub(crate) mod tests {
                 Some(crate::branch_actions::UNAVAILABLE_REASON),
                 "{at}: where Push goes"
             );
+            if !compact {
+                for (id, purpose) in branch_forms {
+                    let refusal = crate::workspace::refusals::get(id).expect("drawn");
+                    assert!(refusal.announced && refusal.dimmed, "{at}: {id} refuses");
+                    assert_eq!(
+                        tooltip(id),
+                        Some(format!(
+                            "{purpose} · {}",
+                            crate::branch_actions::UNAVAILABLE_REASON
+                        )),
+                        "{at}: {id}'s tooltip"
+                    );
+                }
+            }
         };
-        app.update(cx, |app, cx| {
-            app.git_actions_open = true;
-            cx.notify();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.git_actions_open = true;
+                app.branch_name
+                    .update(cx, |input, cx| input.set_value("topic", window, cx));
+                cx.notify();
+            })
         });
         with_a_remote(cx);
         let before = destination().expect("Targets' line");
@@ -6783,6 +6844,14 @@ pub(crate) mod tests {
             before.starts_with("Push to origin/main · "),
             "before the mark: {before}"
         );
+        for (id, purpose) in branch_forms {
+            let refusal = crate::workspace::refusals::get(id).expect("drawn");
+            assert!(
+                !refusal.announced && !refusal.dimmed,
+                "before the mark: {id} with a branch named"
+            );
+            assert_eq!(tooltip(id).as_deref(), Some(purpose), "before the mark");
+        }
         app.update(cx, |app, cx| {
             app.remotes.clear();
             cx.notify();

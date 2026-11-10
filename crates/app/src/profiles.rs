@@ -361,7 +361,7 @@ impl GitTurtle {
             .path
             .as_ref()
             .and_then(|path| self.profiles.store.as_ref()?.assigned(path));
-        match (assignment, self.profile.as_ref()) {
+        match (assignment, self.shown_profile()) {
             (Some(saved), effective) => ProfileLabel::Assigned {
                 label: Cow::Borrowed(&saved.label),
                 differs: effective.is_some_and(|effective| {
@@ -379,6 +379,17 @@ impl GitTurtle {
             }
             (None, _) => ProfileLabel::None,
         }
+    }
+
+    /// The effective identity the header speaks from: none on a marked
+    /// tab, whose identity is the last one read, from the configuration of
+    /// a repository the tab can no longer open, so the picker names no
+    /// author and its tooltip no address from before, and an assigned
+    /// profile no difference from it.
+    fn shown_profile(&self) -> Option<&gitturtle_core::GitProfile> {
+        self.profile
+            .as_ref()
+            .filter(|_| !self.shown_tab_unavailable())
     }
 
     /// [`Self::profile_title`] as the picker draws it, and the picker's
@@ -411,8 +422,7 @@ impl GitTurtle {
     /// picker formatted it on every frame.
     fn shown_profile_tooltip(&self) -> SharedString {
         let identity = self
-            .profile
-            .as_ref()
+            .shown_profile()
             .map(|p| (p.name.as_str(), p.email.as_str(), p.private_worktree));
         PROFILE_TOOLTIPS.with_borrow_mut(|tooltips| {
             tooltips

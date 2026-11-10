@@ -630,10 +630,11 @@ impl GitTurtle {
     }
     fn palette_file_scope(&self) -> FileScope {
         if self.mode == WorkspaceMode::Working {
+            // A marked tab's selection indexes the status from before, which
+            // Changes lists none of (`header_status`).
             return FileScope {
                 working: self.working_selected.and_then(|(index, area)| {
-                    self.work_status
-                        .as_ref()?
+                    self.header_status()?
                         .entries
                         .get(index)
                         .cloned()
@@ -1865,9 +1866,13 @@ mod render_tests {
     /// composer's badge while the header said "Changes", and the composer
     /// said "Commit to main", or "detached HEAD" where no status had been
     /// read. The palette's Branch command opens nothing from before and
-    /// says why, as the picker does. Changes is shown on the tab once it is
-    /// marked, with nothing read and with a status read landing behind the
-    /// mark: a failed Refresh in Changes goes back to History.
+    /// says why, as the picker does, and its file commands take no working
+    /// file from before: Blame was offered for the row selected before the
+    /// mark. "Changes unavailable" names the mark's way back, Open
+    /// Repository among it, where it said Refresh alone. Changes is shown
+    /// on the tab once it is marked, with nothing read and with a status
+    /// read landing behind the mark: a failed Refresh in Changes goes back
+    /// to History.
     #[gpui::test]
     async fn a_marked_tab_s_changes_show_nothing_from_before(cx: &mut TestAppContext) {
         let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
@@ -1899,6 +1904,19 @@ mod render_tests {
             })
         };
         assert_eq!(branch_reason(cx), None, "Branch opens the one checked out");
+        let blame_reason = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let availability = app.read(cx).palette_availability(window, cx);
+                CommandId::Blame.reason(&availability)
+            })
+        };
+        let select_a_row = |cx: &mut VisualTestContext| {
+            app.update(cx, |app, _| {
+                app.working_selected = Some((0, gitturtle_core::ChangeArea::Unstaged))
+            })
+        };
+        select_a_row(cx);
+        assert_eq!(blame_reason(cx), None, "Blame for the row selected");
         let kept = app.read_with(cx, |app, _| {
             (
                 app.work_status.clone(),
@@ -1960,6 +1978,13 @@ mod render_tests {
                 Some(crate::branch_actions::UNAVAILABLE_REASON),
                 "{at}: the palette's Branch says why"
             );
+            let explanation = crate::native_accessibility::written::get("working-unavailable-line")
+                .and_then(|line| line.node.description().map(str::to_owned));
+            assert_eq!(
+                explanation.as_deref(),
+                Some(crate::branch_actions::UNAVAILABLE_WAY_BACK),
+                "{at}: the mark's way back"
+            );
         };
         says_the_mark(cx, "no status read");
         // A status read landing behind the mark, its rows and staged count
@@ -1978,6 +2003,11 @@ mod render_tests {
             "rows kept"
         );
         says_the_mark(cx, "a status kept beside the mark");
+        select_a_row(cx);
+        assert!(
+            blame_reason(cx).is_some(),
+            "no Blame for a row selected before the mark"
+        );
         // With no error in the window, the preview beside the list says the
         // mark and its way back, whatever the status from before listed: it
         // said "Choose a file", or "Working tree clean" for a clean one.

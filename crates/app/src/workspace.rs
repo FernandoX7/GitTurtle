@@ -1219,6 +1219,20 @@ pub(crate) fn refusing(
         .accessibility_disabled(refused || dimmed)
 }
 
+/// Targets' Switch's or Create's tooltip, noted under `id` for a test:
+/// what it does, and on a marked tab the mark's reason after it, as a
+/// refused control says why ([`WaitingTooltip`]). Both stayed available
+/// there, toward a repository the tab can no longer open.
+fn branch_form_tooltip(id: &'static str, purpose: &'static str, marked: bool) -> SharedString {
+    let tooltip = if marked {
+        format!("{purpose} · {}", crate::branch_actions::UNAVAILABLE_REASON).into()
+    } else {
+        SharedString::new_static(purpose)
+    };
+    crate::views::note_control_tooltip(&id.into(), &tooltip);
+    tooltip
+}
+
 /// `control` with `tooltip` as its text, drawn as the kit draws a text
 /// tooltip, for a control the rows being prepared refuse
 /// ([`GitTurtle::rows_wait`]): its text is drawn as `‹key›/tooltip/‹text›`,
@@ -1653,15 +1667,19 @@ impl GitTurtle {
         let toolbar_refresh = room - (control + tight) * 2. >= ui_size(80.);
 
         // The Changes header: its icon, label and count, then Actions and
-        // Refresh at the trailing edge.
-        let total = self
-            .work_status
-            .as_ref()
-            .map_or(0, |status| status.entries.len());
-        let count = total.to_string();
-        let chip = rem * 0.5 * 2.
-            + cached_text_width(&CHANGES_COUNT, &count, window, || {
-                measure(&count, ui_text(11.), FontWeight::MEDIUM)
+        // Refresh at the trailing edge. The count is the one drawn, of the
+        // status the shown rows index, and none on a marked tab or before a
+        // status is read, where it takes no room and no gap: measured from
+        // the status from before, or as "0", it gave Actions' label up
+        // before the header was full.
+        let chip = (self.shown_working_status())
+            .filter(|_| !self.shown_tab_unavailable())
+            .map_or(px(0.), |status| {
+                let count = status.entries.len().to_string();
+                gap + rem * 0.5 * 2.
+                    + cached_text_width(&CHANGES_COUNT, &count, window, || {
+                        measure(&count, ui_text(11.), FontWeight::MEDIUM)
+                    })
             });
         let label = cached_width(&CHANGES_LABEL, &key, || {
             measure("Changes", ui_text(13.), FontWeight::SEMIBOLD)
@@ -1682,15 +1700,16 @@ impl GitTurtle {
         } else {
             px(0.)
         };
-        let full = sum(&[icon, label, chip], gap) + gap + refreshing + actions + gap + control;
+        // `chip` carries the gap before it.
+        let full = sum(&[icon, label], gap) + chip + gap + refreshing + actions + gap + control;
         let compact_actions = full > room;
         let (mut header_icon, mut header_label) = (true, true);
         if compact_actions {
             let trailing = control * 2. + tight;
-            let fits = |items: &[Pixels]| sum(items, gap) + gap + trailing <= room;
-            if !fits(&[icon, label, chip]) {
+            let fits = |leading: Pixels| leading + gap + trailing <= room;
+            if !fits(sum(&[icon, label], gap) + chip) {
                 header_icon = false;
-                header_label = fits(&[label, chip]);
+                header_label = fits(label + chip);
             }
         }
 
@@ -4578,9 +4597,15 @@ impl GitTurtle {
                 // (`Self::refresh_worktree`).
                 EmptyState::new("working-reading", READING_WORKING_TREE).pane(cx)
             } else {
-                // Refresh, in the header just above, reads it again.
+                // Refresh, in the header just above, reads it again; on a
+                // marked tab the way back is the mark's, as the branch
+                // picker names it, Open Repository among it.
                 EmptyState::new("working-unavailable", "Changes unavailable")
-                    .tooltip("Refresh to read the working tree again.")
+                    .tooltip(if marked {
+                        crate::branch_actions::UNAVAILABLE_WAY_BACK
+                    } else {
+                        "Refresh to read the working tree again."
+                    })
                     .pane(cx)
             }
         });
@@ -7198,15 +7223,19 @@ impl GitTurtle {
                                                         ),
                                                         confirmations::SWITCH,
                                                         "Switch",
-                                                        "Switch to the named local branch",
+                                                        branch_form_tooltip(
+                                                            "checkout-branch",
+                                                            "Switch to the named local branch",
+                                                            marked,
+                                                        ),
                                                         cx,
                                                     )
                                                     .map(|switch| {
                                                         refusing(
                                                             switch,
                                                             || "checkout-branch".into(),
-                                                            busy || branch_empty,
-                                                            looks_busy || branch_empty,
+                                                            busy || branch_empty || marked,
+                                                            looks_busy || branch_empty || marked,
                                                         )
                                                     })
                                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -7237,15 +7266,19 @@ impl GitTurtle {
                                                         ),
                                                         confirmations::CREATE,
                                                         "Create",
-                                                        "Create and switch to a branch from HEAD",
+                                                        branch_form_tooltip(
+                                                            "create-branch",
+                                                            "Create and switch to a branch from HEAD",
+                                                            marked,
+                                                        ),
                                                         cx,
                                                     )
                                                     .map(|create| {
                                                         refusing(
                                                             create,
                                                             || "create-branch".into(),
-                                                            busy || branch_empty,
-                                                            looks_busy || branch_empty,
+                                                            busy || branch_empty || marked,
+                                                            looks_busy || branch_empty || marked,
                                                         )
                                                     })
                                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -8260,6 +8293,63 @@ mod tests {
                 "{line_read}: the staged count once read"
             );
         }
+    }
+
+    /// The Changes header measures the count it draws: none on a marked
+    /// tab, so its Actions keep their label in an inspector narrower, by
+    /// the count's chip and its gap, than where the status is counted.
+    /// Measured from the status kept beside the mark, or as "0" with none,
+    /// a chip that is not drawn took its room, and Actions gave their label
+    /// up while the header had room for it.
+    #[gpui::test]
+    async fn a_marked_tab_s_changes_header_measures_no_count(cx: &mut gpui::TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.refresh(&crate::Refresh, window, cx);
+                app.show_working(window, cx);
+            })
+        });
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(cx.debug_bounds("working-header-count").is_some(), "counted");
+        // The narrowest inspector whose header keeps Actions' label.
+        let labelled_from = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                let this = app.read(cx);
+                (100..1600)
+                    .map(|width| gpui::px(width as f32))
+                    .find(|&width| {
+                        !(this.working_forms(width, width, false, 0, window, cx)).compact_actions
+                    })
+                    .expect("a width that keeps the label")
+            })
+        };
+        let counted = labelled_from(cx);
+        app.update(cx, |app, cx| {
+            let index = app.repository_tabs.active.expect("a tab");
+            app.repository_tabs.tabs[index].error = Some("Repository unavailable".into());
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.work_status.is_some()),
+            "the status kept beside the mark"
+        );
+        assert!(
+            cx.debug_bounds("working-header-count").is_none(),
+            "no count drawn"
+        );
+        let marked = labelled_from(cx);
+        let rem = cx.update(|window, _| window.rem_size());
+        assert!(
+            marked + rem <= counted,
+            "the label kept from {marked:?} on the marked tab, from {counted:?} counted"
+        );
     }
 
     /// Where the tab is marked, the banner beneath the Git action bar offers
