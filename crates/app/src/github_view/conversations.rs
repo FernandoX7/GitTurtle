@@ -65,14 +65,10 @@ pub(super) struct ConfirmFit {
     /// How far apart its 12 pt lines are drawn ([`confirm_line`]), which the frame that drew
     /// it read from the text style, for the keys that scroll the region a line.
     pub line: Pixels,
-    /// How much shorter than the room the dialog left it the body's view was, where the last
-    /// frame drew the body overflowing; none where it fit. The room comes from each frame's
-    /// window, so a resize changes it in the frame that draws the new size, and this keeps
-    /// only what the body gives up beyond it.
-    pub short: Pixels,
     /// How tall the top line stood above the body in the last frame, none while it stood among
     /// the content: a frame that changes it moves the region, which the top line's own shift
-    /// of the body's scroll reveals nothing for, so the frame reveals a focused region again.
+    /// of the body's scroll reveals nothing for, so the frame reveals a focused region again,
+    /// where the last frame showed any of it ([`Self::in_view`]).
     pub top_line: Pixels,
     /// How tall the top line stood among the content in the last frame, none while it stood
     /// above the body: it lies above the confirmation there, so a frame that changes it moves
@@ -81,7 +77,8 @@ pub(super) struct ConfirmFit {
     pub line_among: Pixels,
     /// Whether the last frame drew the region or Send and Keep editing at least partly inside
     /// the body's view. Where it drew neither, the person has scrolled the body away from them,
-    /// and a change of the line among the content leaves the body where it is.
+    /// and a change of the top line's height, above the body or among the content, leaves the
+    /// body where it is.
     pub in_view: bool,
 }
 
@@ -867,16 +864,10 @@ impl Panel {
     }
     pub(super) fn focus_confirmation(&self, window: &mut Window, cx: &mut Context<Self>) {
         *self.review.revealed_focus.borrow_mut() = Default::default();
-        // A new confirmation shows its destination first, and is sized for the body it opens
-        // in, never for what the last one found of its own.
+        // A new confirmation shows its destination first.
         self.conversations
             .confirm_scroll
             .set_offset(point(px(0.), px(0.)));
-        let fit = &self.conversations.confirm_fit;
-        fit.set(ConfirmFit {
-            short: Pixels::ZERO,
-            ..fit.get()
-        });
         self.conversations.confirm_focus.focus(window, cx);
         cx.notify();
     }
@@ -953,9 +944,9 @@ impl Panel {
         );
         // The body's view in this frame, less the room the confirmation's reveal keeps at either
         // edge: the room the dialog leaves the body in this window, less the top line standing
-        // above the body while a conversation is open, as tall as what it says in this frame,
-        // and less what the last frame found the body's view short of that room where it
-        // overflowed, as the dialog can hold it ([`ConfirmFit::short`]). Read from the view the
+        // above the body while a conversation is open, as tall as what it says in this frame.
+        // The dialog sets no height of its own and the line and the body share a wrapper capped
+        // at the room, so an overflowing body's view is exactly that. Read from the view the
         // last frame drew, a window made only shorter, 1,480 × 973 to 1,480 × 486 at 13 pt,
         // which rewraps nothing and so measures nothing new, kept a long reply's region 612 px
         // tall in a 290 px body, Send below its foot, until some other frame drew. And read from
@@ -966,7 +957,7 @@ impl Panel {
         let top_line = pinned_line_height(top_text, busy_text, window);
         let body_room = super::body_max_height(window);
         let room = window.pixel_snap(body_room - top_line);
-        let left = room - drawn.short - super::review::reveal_room(window, cx) * 2.;
+        let left = room - super::review::reveal_room(window, cx) * 2.;
         let floor = line * 2.;
         let inside = chrome + guidance + gap + floor > left;
         // The tallest the region is: what it holds is laid out up to this in the same frame.
@@ -1113,11 +1104,9 @@ impl Panel {
             }
         };
         let stood = self.review.top_line.clone();
-        let measure = move |children: &[Bounds<Pixels>], window: &mut Window, cx: &mut App| {
-            // The body has laid out and prepainted its own bounds in this frame before what it
-            // holds prepaints, and the top line above it its height before that, so what the
-            // body's view gave up beyond the room is measured against the line this frame drew:
-            // a change of the line's height is the line's, never counted as the body's as well.
+        let measure = move |children: &[Bounds<Pixels>], window: &Window| {
+            // The top line above the body prepainted its height before the body, which laid out
+            // and prepainted its own bounds before what it holds prepaints.
             let line_left = if pinned { stood.get() } else { Pixels::ZERO };
             let line_among = flowing
                 .get()
@@ -1128,15 +1117,8 @@ impl Panel {
                 .into_iter()
                 .flatten()
                 .any(|part| part.top() < view.bottom() && part.bottom() > view.top());
-            let short = if body_scroll.max_offset().y > Pixels::ZERO {
-                (window.pixel_snap(body_room - line_left) - body_scroll.bounds().size.height)
-                    .max(Pixels::ZERO)
-            } else {
-                Pixels::ZERO
-            };
             fit.set(ConfirmFit {
                 line,
-                short,
                 top_line: line_left,
                 line_among,
                 in_view,
@@ -1144,29 +1126,21 @@ impl Panel {
             // The line changed height: this frame has sized the region for it, and the line's
             // shift of the body's scroll left Send and Keep editing where the change put them,
             // so where the region holds focus the reveal just below shows it as it lies now.
-            // Revealed only by the double count of the line's change, it took the frame after.
+            // Without it, a line growing by more than the room above the region's ring left the
+            // ring's top under the body's new top, 18 px at 13 pt in a 1,480 × 973 window.
             // The line among the content moves the region as well, with no such shift: Refresh
             // PRs pressed with the pointer, focus staying on the region, drew its busy row above
             // the confirmation, 63 px with the row wrapped, and Send stayed below the body's foot.
-            // A body wheeled away from the confirmation to reach Refresh PRs stays where it is:
-            // revealed, it left the row and the Cancel that press asked for.
+            // A body wheeled away from the confirmation stays where it is, whichever line moved:
+            // revealed, it left the row and the Cancel a press of Refresh PRs asked for, and,
+            // with a conversation open, a notice growing above the body or wrapping as the
+            // window narrowed pulled the body back from what the wheel had shown.
             let changed = |now: Pixels, then: Pixels| (now - then).abs() > px(0.5);
-            if (changed(line_left, drawn.top_line)
-                || (changed(line_among, drawn.line_among) && drawn.in_view))
+            if (changed(line_left, drawn.top_line) || changed(line_among, drawn.line_among))
+                && drawn.in_view
                 && held.is_focused(window)
             {
                 *revealed.borrow_mut() = Default::default();
-            }
-            if (short - drawn.short).abs() > px(0.5) {
-                // The region was sized for another view of the body: the next frame sizes it for
-                // this one and, where the region holds focus, reveals it again as it lies then.
-                let (revealed, held) = (revealed.clone(), held.clone());
-                window.defer(cx, move |window, _| {
-                    if held.is_focused(window) {
-                        *revealed.borrow_mut() = Default::default();
-                    }
-                    window.refresh();
-                });
             }
         };
         let reveal = self.reveal_ringed_on_focus(focus.clone());
@@ -1181,7 +1155,7 @@ impl Panel {
                 children.remove(0);
                 #[cfg(test)]
                 record(&children);
-                measure(&children, window, cx);
+                measure(&children, window);
                 reveal(children, window, cx);
             })
             .map(super::bordered_pane)

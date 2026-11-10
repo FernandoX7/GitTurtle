@@ -14154,7 +14154,22 @@ mod tests {
     /// reply as Review reply… does, its region focused, at `interface` pt in a `width` × `height`
     /// window: unlike [`open_confirmation`], with `conversations.active` set, as a real reply's.
     fn open_reply_confirmation(
+        panel: (&Entity<Panel>, &PullRequest),
+        notice: Option<&str>,
+        window: (u8, f32, f32),
+        cx: &mut VisualTestContext,
+    ) {
+        let body = (1..80)
+            .map(|line| format!("Line {line} of a reply long enough to run past the region."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        open_reply_confirmation_saying(panel, body, notice, window, cx);
+    }
+
+    /// [`open_reply_confirmation`] for a reply that says `body`.
+    fn open_reply_confirmation_saying(
         (panel, pull): (&Entity<Panel>, &PullRequest),
+        body: String,
         notice: Option<&str>,
         (interface, width, height): (u8, f32, f32),
         cx: &mut VisualTestContext,
@@ -14162,10 +14177,6 @@ mod tests {
         crate::focus_ring::sweep::interface_size(cx, interface);
         cx.simulate_resize(size(px(width), px(height)));
         cx.executor().run_until_parked();
-        let body = (1..80)
-            .map(|line| format!("Line {line} of a reply long enough to run past the region."))
-            .collect::<Vec<_>>()
-            .join("\n");
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.pull = Some(pull.clone());
@@ -14329,46 +14340,6 @@ mod tests {
         }
         cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
-    }
-
-    /// A new confirmation is sized for the body it opens in, never for what the last one found
-    /// of its own: with a confirmation having left the body's view measured 60 px short of its
-    /// room, a long reply opened at 13 pt in a 1,480 × 973 window, whose body is its whole room,
-    /// lays its region out at the height it settles at from its first frame. Kept from the last
-    /// confirmation, the first frame's region was 60 px too short.
-    #[gpui::test]
-    async fn a_new_confirmation_takes_no_short_body_from_the_last_one(cx: &mut TestAppContext) {
-        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
-        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
-        cx.update(|_, cx| {
-            panel.update(cx, |panel, _| {
-                let fit = &panel.conversations.confirm_fit;
-                fit.set(conversations::ConfirmFit {
-                    short: px(60.),
-                    ..fit.get()
-                });
-            })
-        });
-        open_confirmation(
-            (&panel, &pull),
-            confirmed_long_reply(60),
-            (13, 1480., 973.),
-            cx,
-        );
-        for _ in 0..4 {
-            crate::width_walk::frame(cx);
-        }
-        let frames = confirm_frames();
-        let settled = frames.last().expect("the confirmation draws").ring;
-        for (index, frame) in frames.iter().enumerate() {
-            assert!(
-                (frame.ring.size.height - settled.size.height).abs() <= px(0.5),
-                "frame {index} lays the region's ring out {:?} tall, not the {:?} it settles at",
-                frame.ring.size.height,
-                settled.size.height
-            );
-        }
-        cx.update(|_, cx| panel.update(cx, |panel, _| panel.confirm = None));
     }
 
     /// The busy row keeps Cancel whole inside it, its label wrapping beside the Button: at 18 pt
@@ -14924,6 +14895,244 @@ mod tests {
         app.read_with(cx, |app, _| app.operations.drain());
         settle_panel(&app, cx).await;
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A change of the top line's height above the body does not pull back a body the person
+    /// wheeled away from the confirmation: with a real reply's region focused and its
+    /// conversation open, the body wheeled to its top so the confirmation lies below its foot,
+    /// a notice on the top line that grows onto more lines leaves the content where it was
+    /// drawn, the confirmation still below the body, and resizes that wrap the notice again
+    /// leave the confirmation out of view too: at 13 pt in a 1,480 × 490 window narrowed to
+    /// 900, and at 18 pt in a 461 × 490 window widened to 700 and narrowed back. Asked for with no look at where the body had been wheeled, the focused region's reveal
+    /// brought it back, as the line among the content once did.
+    #[gpui::test]
+    async fn a_pinned_top_line_keeps_a_body_wheeled_from_the_confirmation(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let (region, scroll) = panel.read_with(cx, |panel, _| {
+            (
+                panel.conversations.confirm_focus.clone(),
+                panel.review.body_scroll.clone(),
+            )
+        });
+        let settle = |cx: &mut VisualTestContext| {
+            cx.executor().run_until_parked();
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            confirm_frames()
+                .last()
+                .expect("the confirmation draws")
+                .ring
+        };
+        let line = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("github-top-line")
+                .expect("the top line stands above the body")
+                .size
+                .height
+        };
+        // The notice grows to two lines at 13 pt in 1,480 px and to four at 18 pt in 461 px,
+        // under the line's cap of half the body, so each resize wraps it onto other lines.
+        let doubled = format!("{TOP_LINE_NOTICE} {TOP_LINE_NOTICE}");
+        let cases: [(u8, f32, &[f32], &str); 2] = [
+            (13, 1480., &[900.], &doubled),
+            (18, 461., &[700., 461.], TOP_LINE_NOTICE),
+        ];
+        for (interface, width, resizes, grown) in cases {
+            let at = format!("{interface} pt, {width} × 490");
+            open_reply_confirmation(
+                (&panel, &pull),
+                Some("Check the reply."),
+                (interface, width, 490.),
+                cx,
+            );
+            settle(cx);
+            assert!(
+                cx.update(|window, _| region.is_focused(window)),
+                "{at}: the region holds focus"
+            );
+            // The wheel, over the body's top corner, clear of the conversation list, takes the
+            // body to its top.
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            cx.simulate_event(ScrollWheelEvent {
+                position: body.origin + point(px(2.), px(2.)),
+                delta: ScrollDelta::Pixels(point(px(0.), -scroll.offset().y + px(100.))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            let wheeled = settle(cx);
+            assert_eq!(
+                scroll.offset().y,
+                px(0.),
+                "{at}: the wheel takes the body to its top"
+            );
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            assert!(
+                wheeled.top() >= body.bottom(),
+                "{at}: the confirmation {wheeled:?} lies below the body {body:?}"
+            );
+
+            // A notice that grows onto more lines.
+            let before = line(cx);
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.notice = Some(grown.into());
+                    cx.notify();
+                })
+            });
+            let grown = settle(cx);
+            let after = line(cx);
+            assert!(
+                after > before + px(10.),
+                "{at}: the notice grows onto more lines: {before:?}, then {after:?}"
+            );
+            assert!(
+                cx.update(|window, _| region.is_focused(window)),
+                "{at}: the region keeps focus"
+            );
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            assert!(
+                grown.top() >= body.bottom(),
+                "{at}: a growing notice leaves the confirmation {grown:?} below the body {body:?}"
+            );
+            assert!(
+                (grown.top() - wheeled.top()).abs() <= px(0.5),
+                "{at}: the content stays where it was drawn: the confirmation at {:?}, then {:?}",
+                wheeled.top(),
+                grown.top()
+            );
+
+            // Resizes that wrap it onto other lines again.
+            let mut heights = vec![after];
+            for &to in resizes {
+                cx.simulate_resize(size(px(to), px(490.)));
+                let resized = settle(cx);
+                heights.push(line(cx));
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                assert!(
+                    resized.top() >= body.bottom(),
+                    "{at}: a resize to {to} px that wraps the line leaves the confirmation \
+                     {resized:?} below the body {body:?}"
+                );
+            }
+            assert!(
+                heights
+                    .windows(2)
+                    .all(|pair| (pair[1] - pair[0]).abs() > px(10.)),
+                "{at}: each resize wraps the notice onto other lines: {heights:?}"
+            );
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, _| {
+                    panel.confirm = None;
+                    panel.notice = None;
+                })
+            });
+            settle_frames(cx);
+        }
+    }
+
+    /// A change of the top line's height above a body nobody wheeled shows the focused region
+    /// whole again: with a 20-line reply's region focused, holding all of its text, and its
+    /// conversation open, at 13 pt in a 1,480 × 973 window, where the body's reveal leaves the
+    /// confirmation at its foot and room above the region's ring, a notice on the top line that
+    /// grows by more than that room ends, once the frames settle, with the ring whole in the
+    /// body's view, and Send and Keep editing with it. The line's shift of the body's scroll
+    /// keeps the content where it was drawn as the body's top moves down past the ring, and the
+    /// reveal the changed line asks for shows the region again; without it the ring's top stayed
+    /// under the body's new top.
+    #[gpui::test]
+    async fn a_growing_top_line_shows_the_focused_region_whole_again(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let (region, held) = panel.read_with(cx, |panel, _| {
+            (
+                panel.conversations.confirm_focus.clone(),
+                panel.conversations.confirm_scroll.clone(),
+            )
+        });
+        let line = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("github-top-line")
+                .expect("the top line stands above the body")
+                .size
+                .height
+        };
+        let reply = (1..=20)
+            .map(|line| format!("Line {line} of a reply."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        open_reply_confirmation_saying(
+            (&panel, &pull),
+            reply,
+            Some("Check the reply."),
+            (13, 1480., 973.),
+            cx,
+        );
+        settle_frames(cx);
+        assert!(
+            cx.update(|window, _| region.is_focused(window)),
+            "the region holds focus"
+        );
+        assert_eq!(
+            held.max_offset().y,
+            px(0.),
+            "the region holds all of the reply"
+        );
+        let opened = *confirm_frames().last().expect("the confirmation draws");
+        let room = opened.ring.top() - opened.body.top();
+        assert!(
+            opened.actions.bottom() <= opened.body.bottom() && room > px(0.),
+            "the confirmation {:?} stands whole in the body {:?}",
+            opened.ring,
+            opened.body
+        );
+        let before = line(cx);
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.notice = Some([TOP_LINE_NOTICE; 10].join(" "));
+                cx.notify();
+            })
+        });
+        settle_frames(cx);
+        let after = line(cx);
+        assert!(
+            after - before > room + px(10.),
+            "the notice grows by more than the {room:?} above the ring: {before:?}, then {after:?}"
+        );
+        assert!(
+            cx.update(|window, _| region.is_focused(window)),
+            "the region keeps focus"
+        );
+        let settled = *confirm_frames().last().expect("the confirmation draws");
+        assert!(
+            settled.ring.top() >= settled.body.top() - px(0.5),
+            "the region's ring {:?} stands whole below the body's top {:?}",
+            settled.ring,
+            settled.body
+        );
+        assert!(
+            settled.actions.bottom() <= settled.body.bottom() + px(0.5),
+            "Send and Keep editing {:?} stand whole in the body {:?}",
+            settled.actions,
+            settled.body
+        );
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.confirm = None;
+                panel.notice = None;
+            })
+        });
+        settle_frames(cx);
+    }
+
+    /// Runs what is waiting and draws four frames, as a reveal asked for in one frame moves the
+    /// body in the next.
+    fn settle_frames(cx: &mut VisualTestContext) {
+        cx.executor().run_until_parked();
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
     }
 
     /// The confirmation lays out the form it decides before layout
