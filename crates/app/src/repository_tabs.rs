@@ -1618,6 +1618,19 @@ impl GitTurtle {
     }
 }
 
+/// Whether two opens found the same Git and common directories: the same
+/// paths and, where both captured one, the same inodes. A directory
+/// replaced at the same path, as a re-clone there leaves, is another
+/// repository. Reads what the opens captured, so it touches no filesystem.
+fn same_git_directories(shown: &worker::GitDirectories, found: &worker::GitDirectories) -> bool {
+    let same =
+        |shown: Option<u64>, found: Option<u64>| shown.zip(found).is_none_or(|(a, b)| a == b);
+    shown.git_dir == found.git_dir
+        && shown.common == found.common
+        && same(shown.inodes.git_dir, found.inodes.git_dir)
+        && same(shown.inodes.common, found.inodes.common)
+}
+
 impl GitTurtle {
     fn tab_inputs(&self) -> [&Entity<InputState>; 6] {
         [
@@ -1755,6 +1768,19 @@ impl GitTurtle {
             self.repository_tabs.recapture,
             Some(Recapture::Reading(generation)) if generation == self.generation
         );
+        // So is one that finds another Git directory where the shown one
+        // was, by path or by inode, as a re-clone at the tab's path leaves:
+        // an Open or Refresh in place kept what was read of the replaced
+        // one, so until the status read landed Push pushed the found
+        // repository's branch to its own remote while Targets named the
+        // other's (security probe N1, FU39-A5).
+        let replaced = self.repository.as_ref().is_some_and(|shown| {
+            shown.path() == repo.path()
+                && !same_git_directories(
+                    &worker::GitDirectories::of(shown),
+                    &worker::GitDirectories::of(repo),
+                )
+        });
         self.repository_tabs.recapture = None;
         if let Some(existing) = self.repository_tabs.find(repo.path())
             && self.repository_tabs.active != Some(existing)
@@ -1793,7 +1819,7 @@ impl GitTurtle {
         // until that read landed the header named the other branch, Push
         // and Fetch went to its remote's name, and Commit committed an
         // index no read had shown under the title typed for the other one.
-        if afresh {
+        if afresh || replaced {
             self.forget_repository_state(window, cx);
         }
         false
@@ -7029,6 +7055,18 @@ pub(crate) mod tests {
         cx: &mut TestAppContext,
         route: impl FnOnce(&Entity<GitTurtle>, &mut VisualTestContext, &Path),
     ) {
+        assert_a_capture_shows_nothing_from_before(cx, false, route).await;
+    }
+
+    /// [`assert_a_fresh_capture_shows_nothing_from_before`], where `in_place`
+    /// moves the third repository's Git directory to the tab's `.git`, as a
+    /// re-clone at the path leaves it, which marks nothing: `route` then
+    /// reads the folder again unmarked.
+    async fn assert_a_capture_shows_nothing_from_before(
+        cx: &mut TestAppContext,
+        in_place: bool,
+        route: impl FnOnce(&Entity<GitTurtle>, &mut VisualTestContext, &Path),
+    ) {
         use crate::views::tests::{fixture_git, fixture_git_output, fixture_repository};
         let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
         let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
@@ -7098,23 +7136,33 @@ pub(crate) mod tests {
         );
 
         std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
-        std::fs::write(
-            root.join(".git"),
-            format!("gitdir: {}\n", third_git.display()),
-        )
-        .unwrap();
-        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
-        crate::views::tests::settle(&app, cx).await;
-        assert!(
-            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
-            "Refresh marks the tab"
-        );
+        let found_git = if in_place {
+            std::fs::rename(&third_git, root.join(".git")).unwrap();
+            root.join(".git")
+        } else {
+            std::fs::write(
+                root.join(".git"),
+                format!("gitdir: {}\n", third_git.display()),
+            )
+            .unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+            crate::views::tests::settle(&app, cx).await;
+            assert!(
+                app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+                "Refresh marks the tab"
+            );
+            third_git.clone()
+        };
+        let identity = |app: &GitTurtle| {
+            (app.repository.as_ref()).map(|repo| (repo.git_dir().to_owned(), repo.git_dir_inode()))
+        };
+        let shown = app.read_with(cx, |app, _| identity(app));
 
         let held = app.read_with(cx, |app, _| app.operations.hold());
         route(&app, cx, &root);
         for _ in 0..16 {
             let installed = app.read_with(cx, |app, _| {
-                app.repository.as_ref().map(|repo| repo.git_dir()) == Some(third_git.as_path())
+                identity(app).is_some_and(|found| Some(found) != shown)
             });
             if installed {
                 break;
@@ -7222,10 +7270,26 @@ pub(crate) mod tests {
             assert_eq!(app.remote_branch.read(cx).value().as_ref(), "main");
             assert_eq!(app.operation_notice, None, "nothing ran");
         });
+        frame(cx);
+        assert_eq!(
+            destination().as_deref(),
+            Some(format!("Push to origin/main · {}", bare_b.display()).as_str()),
+            "Targets name its own remote"
+        );
         assert_eq!(tip(&bare_b, "refs/heads/main"), None, "Push pushed nothing");
         assert_eq!(tip(&bare_a, "refs/heads/before"), pushed);
         assert_eq!(
-            read(third.path(), &["log", "-1", "--format=%s"]).as_deref(),
+            read(
+                &base,
+                &[
+                    "--git-dir",
+                    found_git.to_str().unwrap(),
+                    "log",
+                    "-1",
+                    "--format=%s"
+                ]
+            )
+            .as_deref(),
             Some("Third"),
             "Commit committed nothing"
         );
@@ -7234,6 +7298,24 @@ pub(crate) mod tests {
     #[gpui::test]
     async fn a_projects_row_s_fresh_capture_shows_nothing_from_before(cx: &mut TestAppContext) {
         assert_a_fresh_capture_shows_nothing_from_before(cx, press_projects_row).await;
+    }
+
+    /// History's Refresh that finds another repository's Git directory at
+    /// the tab's own `.git`, as a re-clone at the path leaves it, captures
+    /// it afresh, unmarked as it is: until its status read lands, Push and
+    /// Commit refuse and nothing read of the replaced one is shown, and then
+    /// Targets name its own remote. Opened again in place, the tab kept the
+    /// status read before, so Push pushed the found repository's branch to
+    /// its own remote while Targets named the other's (security probe N1,
+    /// FU39-A5).
+    #[gpui::test]
+    async fn a_refresh_that_finds_another_git_directory_in_place_captures_it_afresh(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_capture_shows_nothing_from_before(cx, true, |app, cx, _| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        })
+        .await;
     }
 
     #[gpui::test]
