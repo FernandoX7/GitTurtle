@@ -162,7 +162,7 @@ pub use scrollbar::{
 pub use select::Select;
 pub use selectable_text::SelectableText;
 pub use sheet::Sheet;
-pub use slider::{Slider, SliderIndicator, SliderThumb, SliderTrack};
+pub use slider::{Slider, SliderAccessibleValue, SliderIndicator, SliderThumb, SliderTrack};
 pub use state_style::StateStyle;
 #[cfg(any(feature = "inspector", debug_assertions))]
 pub use styled::styled_ext_reflection_methods;

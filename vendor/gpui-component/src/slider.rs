@@ -3,11 +3,12 @@ use std::sync::Arc;
 use crate::{ActiveTheme, AxisExt, StyledExt, ThemeStyled as _};
 pub use gpui_base::slider::{SliderEvent, SliderScale, SliderState, SliderValue};
 use gpui_base::{Slider as BaseSlider, SliderIndicator, SliderThumb, SliderTrack, spring};
+pub use gpui_base::SliderAccessibleValue;
 
 use gpui::{
     App, Axis, Background, Corners, DefiniteLength, ElementId, Entity, EntityId, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, RenderOnce,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
     prelude::FluentBuilder as _, px, relative,
 };
 
@@ -89,6 +90,11 @@ pub struct Slider {
     style: StyleRefinement,
     disabled: bool,
     reverse: bool,
+    /// GitTurtle patch: the accessible name and the value in shown units the
+    /// base slider writes ([`Slider::aria_label`],
+    /// [`Slider::accessible_value`]).
+    aria_label: Option<SharedString>,
+    accessible_value: Option<SliderAccessibleValue>,
 }
 
 impl Slider {
@@ -100,7 +106,24 @@ impl Slider {
             style: StyleRefinement::default(),
             disabled: false,
             reverse: false,
+            aria_label: None,
+            accessible_value: None,
         }
+    }
+
+    /// GitTurtle patch: the name assistive technology reads for the slider
+    /// (gpui-base's `Slider::aria_label`).
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
+    /// GitTurtle patch: the value, range and step assistive technology reads,
+    /// in the units shown beside the slider (gpui-base's
+    /// `Slider::accessible_value`).
+    pub fn accessible_value(mut self, value: SliderAccessibleValue) -> Self {
+        self.accessible_value = Some(value);
+        self
     }
 
     /// As a horizontal slider.
@@ -261,6 +284,10 @@ impl RenderOnce for Slider {
         BaseSlider::new(&self.state)
             .axis(axis)
             .disabled(self.disabled)
+            .when_some(self.aria_label.clone(), |this, label| this.aria_label(label))
+            .when_some(self.accessible_value, |this, value| {
+                this.accessible_value(value)
+            })
             .flex()
             .flex_1()
             .items_center()

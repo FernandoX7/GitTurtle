@@ -4,7 +4,7 @@ use gpui::{
     Anchor, AnyElement, App, Context, DismissEvent, ElementId, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyBinding, KeyContext, KeyDownEvent,
     KeybindingKeystroke, Keystroke, MouseButton, NoAction, ParentElement as _, Pixels, Render,
-    RenderOnce, Role, StatefulInteractiveElement as _, Subscription, Window, div,
+    RenderOnce, Role, SharedString, StatefulInteractiveElement as _, Subscription, Window, div,
     prelude::FluentBuilder as _,
 };
 
@@ -256,6 +256,9 @@ pub struct Popover {
     /// GitTurtle patch: the popup host's window margin, where the caller
     /// sets one ([`Popover::margin`]).
     margin: Option<Pixels>,
+    /// GitTurtle patch: the surface's accessible name
+    /// ([`Popover::aria_label`]).
+    aria_label: Option<SharedString>,
 }
 
 impl Popover {
@@ -272,7 +275,16 @@ impl Popover {
             overlay_closable: true,
             on_open_change: None,
             margin: None,
+            aria_label: None,
         }
+    }
+
+    /// GitTurtle patch: the name assistive technology reads for the open
+    /// surface, a dialog, which upstream left unnamed: Orca read a colour
+    /// picker's popover as "dialog" and nothing more.
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
     }
 
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
@@ -408,6 +420,8 @@ impl RenderOnce for Popover {
             // dismissed with Escape, which is what this role tells assistive
             // technology to expect.
             .role(Role::Dialog)
+            .when_some(self.aria_label, |this, label| this.aria_label(label));
+        let content = described_surface(content)
             .occlude()
             .tab_group()
             .track_focus(&focus_handle)
@@ -427,6 +441,25 @@ impl RenderOnce for Popover {
             });
         popup.content(content).into_any_element()
     }
+}
+
+/// GitTurtle patch: GPUI's test platform never activates accessibility, so a
+/// test cannot read a popover's AccessKit node. A debug build names the node
+/// a named surface writes in a debug selector, `popover: <name> · <role>`,
+/// which a test build registers with its bounds, as the component kit's menu
+/// items do.
+fn described_surface(content: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
+    #[cfg(debug_assertions)]
+    {
+        use gpui::Element as _;
+        let mut node = gpui::accesskit::Node::new(Role::Dialog);
+        content.write_a11y_info(&mut node);
+        if let Some(label) = node.label() {
+            let selector = format!("popover: {label} · {:?}", node.role());
+            return content.debug_selector(move || selector);
+        }
+    }
+    content
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use gpui::{
     AccessibleAction, Along, AnyElement, App, AppContext as _, Axis, Bounds, Context, Div,
     DragMoveEvent, Empty, Entity, EntityId, EventEmitter, InteractiveElement, IntoElement,
     MouseButton, MouseDownEvent, Orientation, ParentElement, Pixels, Point, Render, RenderOnce,
-    Role, StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
+    Role, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
     prelude::FluentBuilder as _, px,
 };
 
@@ -409,6 +409,18 @@ impl Render for DragSlider {
     }
 }
 
+/// GitTurtle patch: the value a slider reports to assistive technology, with
+/// its range and step, in the units an application shows beside it, where
+/// those are not the state's own: a colour picker's hue slider holds `0..=1`
+/// and shows degrees.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SliderAccessibleValue {
+    pub value: f64,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+}
+
 /// An unstyled slider behavior root.
 ///
 /// Applications provide the track, range, and thumb presentation as children.
@@ -419,6 +431,11 @@ pub struct Slider {
     disabled: bool,
     base: Div,
     children: Vec<AnyElement>,
+    /// GitTurtle patch: the slider's accessible name ([`Slider::aria_label`]).
+    aria_label: Option<SharedString>,
+    /// GitTurtle patch: the value it reports in shown units
+    /// ([`Slider::accessible_value`]).
+    accessible_value: Option<SliderAccessibleValue>,
 }
 
 impl Slider {
@@ -429,7 +446,26 @@ impl Slider {
             disabled: false,
             base: div(),
             children: Vec::new(),
+            aria_label: None,
+            accessible_value: None,
         }
+    }
+
+    /// GitTurtle patch: the name assistive technology reads for the slider,
+    /// which upstream's slider never had: a screen reader read an unnamed
+    /// slider and its bare value.
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
+    /// GitTurtle patch: reports `value` to assistive technology in place of
+    /// the state's own value, range and step, so a screen reader reads the
+    /// digits the application draws beside the slider. Its increment and
+    /// decrement actions still step the state by its own step.
+    pub fn accessible_value(mut self, value: SliderAccessibleValue) -> Self {
+        self.accessible_value = Some(value);
+        self
     }
 
     pub fn horizontal(mut self) -> Self {
@@ -472,18 +508,28 @@ impl RenderOnce for Slider {
         let state = self.state.read(cx);
         let slider_state = self.state.clone();
 
-        self.base
+        let reported = self.accessible_value.unwrap_or(SliderAccessibleValue {
+            value: state.value().end() as f64,
+            min: state.min_value() as f64,
+            max: state.max_value() as f64,
+            step: state.step_value() as f64,
+        });
+
+        let slider = self
+            .base
             .id(("slider", entity_id))
             .role(Role::Slider)
-            .aria_numeric_value(state.value().end() as f64)
-            .aria_min_numeric_value(state.min_value() as f64)
-            .aria_max_numeric_value(state.max_value() as f64)
-            .aria_numeric_value_step(state.step_value() as f64)
+            .when_some(self.aria_label, |this, label| this.aria_label(label))
+            .aria_numeric_value(reported.value)
+            .aria_min_numeric_value(reported.min)
+            .aria_max_numeric_value(reported.max)
+            .aria_numeric_value_step(reported.step)
             .aria_orientation(if axis.is_vertical() {
                 Orientation::Vertical
             } else {
                 Orientation::Horizontal
-            })
+            });
+        described_slider(slider)
             .on_a11y_action(AccessibleAction::Increment, {
                 let state = slider_state.clone();
                 move |_, window, cx| {
@@ -516,6 +562,30 @@ impl RenderOnce for Slider {
             })
             .children(self.children)
     }
+}
+
+/// GitTurtle patch: GPUI's test platform never activates accessibility, so a
+/// test cannot read a slider's AccessKit node. A debug build names the node
+/// a named slider writes in a debug selector, `slider: <name> · <value> of
+/// <min> to <max>`, which a test build registers with its bounds, as the
+/// component kit's menu items do.
+fn described_slider(slider: gpui::Stateful<Div>) -> gpui::Stateful<Div> {
+    #[cfg(debug_assertions)]
+    {
+        use gpui::Element as _;
+        let mut node = gpui::accesskit::Node::new(Role::Slider);
+        slider.write_a11y_info(&mut node);
+        if let Some(label) = node.label() {
+            let selector = format!(
+                "slider: {label} · {} of {} to {}",
+                node.numeric_value().unwrap_or_default(),
+                node.min_numeric_value().unwrap_or_default(),
+                node.max_numeric_value().unwrap_or_default(),
+            );
+            return slider.debug_selector(move || selector);
+        }
+    }
+    slider
 }
 
 /// An unstyled track that records the geometry used to map pointer positions.

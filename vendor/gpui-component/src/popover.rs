@@ -1,7 +1,8 @@
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, App, Bounds, Context, Div, ElementId,
     FocusHandle, InteractiveElement as _, IntoElement, MouseButton, ParentElement, Pixels,
-    RenderOnce, Stateful, StyleRefinement, Styled, Window, prelude::FluentBuilder as _, px,
+    RenderOnce, SharedString, Stateful, StyleRefinement, Styled, Window,
+    prelude::FluentBuilder as _, px,
 };
 use std::{rc::Rc, time::Duration};
 
@@ -130,6 +131,9 @@ pub struct Popover {
     appearance: bool,
     overlay_closable: bool,
     on_open_change: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
+    /// GitTurtle patch: the open surface's accessible name
+    /// ([`Popover::aria_label`]).
+    aria_label: Option<SharedString>,
 }
 
 impl Popover {
@@ -150,6 +154,7 @@ impl Popover {
             default_open: false,
             open: None,
             on_open_change: None,
+            aria_label: None,
         }
     }
 
@@ -159,6 +164,13 @@ impl Popover {
     /// anchor is where that tip sits relative to the trigger: `Anchor::TopLeft`
     /// places it at the trigger's top-left corner, `Anchor::BottomRight` at the
     /// bottom-right, and so on. The popover then hangs off that point.
+    /// GitTurtle patch: the name assistive technology reads for the open
+    /// surface (gpui-base's `Popover::aria_label`).
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
         self.anchor = anchor.into();
         self
@@ -352,6 +364,7 @@ impl RenderOnce for Popover {
                 }
             })
             .when_some(self.trigger, |this, trigger| this.trigger_with(trigger))
+            .when_some(self.aria_label, |this, label| this.aria_label(label))
             .when_some(self.open, |this, open| this.open(open))
             .when_some(self.tracked_focus_handle, |this, handle| {
                 this.track_focus(&handle)

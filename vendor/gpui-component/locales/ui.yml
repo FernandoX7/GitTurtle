@@ -221,6 +221,12 @@ ColorPicker:
     zh-HK: 透明度
     zh-TW: 透明度
     it: Alfa
+  HexValue:
+    en: Hex value
+    zh-CN: 十六进制值
+    zh-HK: 十六進制值
+    zh-TW: 十六進位值
+    it: Valore esadecimale
   Stone:
     en: Stone
     zh-CN: 石色

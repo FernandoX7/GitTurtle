@@ -2634,7 +2634,10 @@ impl ThemeForm {
                         ColorPicker::new(&row.picker)
                             .small()
                             .anchor(Anchor::TopRight)
-                            .accessibility_label(format!("Choose the {label} color")),
+                            .accessibility_label(format!("Choose the {label} color"))
+                            // The open popover is named by the color it
+                            // sets, as the row's hex field is.
+                            .popover_label(format!("{label} color")),
                     ),
             )
             .into_any_element()
@@ -4811,6 +4814,56 @@ pub(crate) mod tests {
             } else {
                 assert_eq!(ring, None, "{close}: a pointer close draws no ring");
             }
+        }
+    }
+
+    /// The open picker's controls are named by what they set (QA-110, found
+    /// outside the checks, 2): the popover, opened by Enter, by the colour
+    /// its trigger chooses, as the row's hex field is; its hex field "Hex
+    /// value", reading the digits it shows; and the HSLA tab's sliders by
+    /// the channel drawn before each, reading the digits drawn after it, in
+    /// degrees or percent. They were an unnamed dialog, an unnamed entry and
+    /// four unnamed sliders reading the picker's 0 to 1.
+    #[gpui::test]
+    fn the_open_pickers_controls_are_named_by_what_they_set(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (_, picker, _, hex) = first_picker(cx, &app);
+        let label = TokenKind::ALL[0].label();
+        press(cx, "enter");
+        assert!(cx.read(|cx| picker.read(cx).is_open()), "Enter opens it");
+        let popover: &'static str = format!("popover: {label} color · Dialog").leak();
+        assert!(
+            settings::shown(cx, popover).is_some(),
+            "the popover is named {label} color"
+        );
+
+        press(cx, "tab");
+        press(cx, "tab");
+        assert_eq!(focused_stop(cx), hex, "the hex field holds focus");
+        // Its text reaches assistive technology as text runs, which the
+        // gpui-base input patch writes and tests.
+        let input = cx.read(|cx| picker.read(cx).hex_input().clone());
+        let node = crate::views::tests::input_node(cx, &input);
+        assert_eq!(node.role(), Role::TextInput);
+        assert_eq!(node.label(), Some("Hex value"));
+
+        cx.update(|_, cx| picker.update(cx, |state, cx| state.set_active_tab(1, cx)));
+        settle(cx);
+        let color = cx
+            .read(|cx| picker.read(cx).displayed_color())
+            .expect("the picker has a color");
+        for (name, share, most) in [
+            ("Hue", color.h, 360.),
+            ("Saturation", color.s, 100.),
+            ("Lightness", color.l, 100.),
+            ("Alpha", color.a, 100.),
+        ] {
+            let drawn = format!("{:.0}", share * most);
+            let slider: &'static str = format!("slider: {name} · {drawn} of 0 to {most}").leak();
+            assert!(
+                settings::shown(cx, slider).is_some(),
+                "the {name} slider reads {drawn}, the digits drawn after it"
+            );
         }
     }
 

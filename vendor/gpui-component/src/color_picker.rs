@@ -17,7 +17,7 @@ use crate::{
     input::Input,
     popover::Popover,
     separator::Separator,
-    slider::Slider,
+    slider::{Slider, SliderAccessibleValue},
     styled::apply_focus_ring,
     tab::{Tab, TabBar},
     tooltip::{ManagedTooltipExt as _, Tooltip},
@@ -255,6 +255,63 @@ fn value_title(value: Option<Hsla>) -> SharedString {
     value.map(color_hex).unwrap_or_default().into()
 }
 
+/// GitTurtle patch: one of the sliders on the HSLA tab, by the channel it
+/// sets. Upstream's sliders were unnamed: a screen reader read "slider" and
+/// the state's value from 0 to 1, while the picker draws the channel's name
+/// before it and its value in degrees or percent after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Channel {
+    Hue,
+    Saturation,
+    Lightness,
+    Alpha,
+}
+
+impl Channel {
+    /// The name drawn before the slider, which also names it.
+    fn name(self) -> SharedString {
+        match self {
+            Self::Hue => t!("ColorPicker.Hue"),
+            Self::Saturation => t!("ColorPicker.Saturation"),
+            Self::Lightness => t!("ColorPicker.Lightness"),
+            Self::Alpha => t!("ColorPicker.Alpha"),
+        }
+        .to_string()
+        .into()
+    }
+
+    /// The most the shown value reaches: hue in degrees, the rest in
+    /// percent.
+    fn most(self) -> f32 {
+        match self {
+            Self::Hue => 360.,
+            Self::Saturation | Self::Lightness | Self::Alpha => 100.,
+        }
+    }
+
+    /// The channel's value in `color` in the digits drawn after the slider.
+    fn digits(self, color: Hsla) -> SharedString {
+        let share = match self {
+            Self::Hue => color.h,
+            Self::Saturation => color.s,
+            Self::Lightness => color.l,
+            Self::Alpha => color.a,
+        };
+        format!("{:.0}", share * self.most()).into()
+    }
+
+    /// What the slider reports to assistive technology: the drawn digits,
+    /// on a range and step in the same units.
+    fn accessible_value(self, color: Hsla) -> SliderAccessibleValue {
+        SliderAccessibleValue {
+            value: self.digits(color).parse().unwrap_or_default(),
+            min: 0.,
+            max: f64::from(self.most()),
+            step: 1.,
+        }
+    }
+}
+
 /// An arrow key's direction in the palette.
 #[derive(Clone, Copy, Debug)]
 enum Step {
@@ -406,6 +463,9 @@ pub struct ColorPicker {
     label: Option<SharedString>,
     /// The announced name, when the visible label is not it.
     accessibility_label: Option<SharedString>,
+    /// GitTurtle patch: the open popover's announced name
+    /// ([`ColorPicker::popover_label`]).
+    popover_label: Option<SharedString>,
     icon: Option<Icon>,
     size: Size,
     anchor: Anchor,
@@ -422,6 +482,7 @@ impl ColorPicker {
             size: Size::Medium,
             label: None,
             accessibility_label: None,
+            popover_label: None,
             icon: None,
             anchor: Anchor::TopLeft,
         }
@@ -461,6 +522,15 @@ impl ColorPicker {
     /// label.
     pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
         self.accessibility_label = Some(label.into());
+        self
+    }
+
+    /// GitTurtle patch: the name a screen reader announces for the open
+    /// popover, a dialog, such as the color the trigger chooses ("Removed
+    /// color" for "Choose the Removed color"). Upstream left it unnamed, and
+    /// Orca read it as "dialog".
+    pub fn popover_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.popover_label = Some(label.into());
         self
     }
 
@@ -561,7 +631,13 @@ impl ColorPicker {
                                 .size_5()
                                 .rounded(cx.theme().radius),
                         )
-                        .child(Input::new(self.state.read(cx).hex_input()).small().px_2p5()),
+                        .child(
+                            Input::new(self.state.read(cx).hex_input())
+                                .small()
+                                .px_2p5()
+                                // GitTurtle patch: named by what it sets.
+                                .aria_label(t!("ColorPicker.HexValue").to_string()),
+                        ),
                 )
             })
     }
@@ -675,7 +751,7 @@ impl ColorPicker {
                             .min_w_16()
                             .text_xs()
                             .text_color(label_color)
-                            .child(t!("ColorPicker.Hue")),
+                            .child(Channel::Hue.name()),
                     )
                     .child(
                         div()
@@ -685,11 +761,12 @@ impl ColorPicker {
                             .flex_1()
                             .h_8()
                             .child(self.render_slider_track(hue_colors, cx))
-                            .child(
-                                Slider::new(sliders.hue())
-                                    .flex_1()
-                                    .bg(cx.theme().transparent),
-                            ),
+                            .child(channel_slider(
+                                sliders.hue(),
+                                Channel::Hue,
+                                slider_color,
+                                cx,
+                            )),
                     )
                     .child(
                         div()
@@ -697,7 +774,7 @@ impl ColorPicker {
                             .text_xs()
                             .text_color(label_color)
                             .text_align(TextAlign::Right)
-                            .child(format!("{:.0}", slider_color.h * 360.)),
+                            .child(Channel::Hue.digits(slider_color)),
                     ),
             )
             .child(
@@ -709,7 +786,7 @@ impl ColorPicker {
                             .min_w_16()
                             .text_xs()
                             .text_color(label_color)
-                            .child(t!("ColorPicker.Saturation")),
+                            .child(Channel::Saturation.name()),
                     )
                     .child(
                         div()
@@ -723,11 +800,12 @@ impl ColorPicker {
                                 saturation_end,
                                 cx,
                             ))
-                            .child(
-                                Slider::new(sliders.saturation())
-                                    .flex_1()
-                                    .bg(cx.theme().transparent),
-                            ),
+                            .child(channel_slider(
+                                sliders.saturation(),
+                                Channel::Saturation,
+                                slider_color,
+                                cx,
+                            )),
                     )
                     .child(
                         div()
@@ -735,7 +813,7 @@ impl ColorPicker {
                             .text_xs()
                             .text_color(label_color)
                             .text_align(TextAlign::Right)
-                            .child(format!("{:.0}", slider_color.s * 100.)),
+                            .child(Channel::Saturation.digits(slider_color)),
                     ),
             )
             .child(
@@ -747,7 +825,7 @@ impl ColorPicker {
                             .min_w_16()
                             .text_xs()
                             .text_color(label_color)
-                            .child(t!("ColorPicker.Lightness")),
+                            .child(Channel::Lightness.name()),
                     )
                     .child(
                         div()
@@ -757,11 +835,12 @@ impl ColorPicker {
                             .flex_1()
                             .h_8()
                             .child(self.render_slider_track(lightness_colors, cx))
-                            .child(
-                                Slider::new(sliders.lightness())
-                                    .flex_1()
-                                    .bg(cx.theme().transparent),
-                            ),
+                            .child(channel_slider(
+                                sliders.lightness(),
+                                Channel::Lightness,
+                                slider_color,
+                                cx,
+                            )),
                     )
                     .child(
                         div()
@@ -769,7 +848,7 @@ impl ColorPicker {
                             .text_xs()
                             .text_color(label_color)
                             .text_align(TextAlign::Right)
-                            .child(format!("{:.0}", slider_color.l * 100.)),
+                            .child(Channel::Lightness.digits(slider_color)),
                     ),
             )
             .child(
@@ -781,7 +860,7 @@ impl ColorPicker {
                             .min_w_16()
                             .text_xs()
                             .text_color(label_color)
-                            .child(t!("ColorPicker.Alpha")),
+                            .child(Channel::Alpha.name()),
                     )
                     .child(
                         div()
@@ -791,11 +870,12 @@ impl ColorPicker {
                             .flex_1()
                             .h_8()
                             .child(self.render_slider_track_gradient(alpha_start, alpha_end, cx))
-                            .child(
-                                Slider::new(sliders.alpha())
-                                    .flex_1()
-                                    .bg(cx.theme().transparent),
-                            ),
+                            .child(channel_slider(
+                                sliders.alpha(),
+                                Channel::Alpha,
+                                slider_color,
+                                cx,
+                            )),
                     )
                     .child(
                         div()
@@ -803,7 +883,7 @@ impl ColorPicker {
                             .text_xs()
                             .text_color(label_color)
                             .text_align(TextAlign::Right)
-                            .child(format!("{:.0}", slider_color.a * 100.)),
+                            .child(Channel::Alpha.digits(slider_color)),
                     ),
             )
     }
@@ -835,6 +915,21 @@ impl ColorPicker {
                 linear_color_stop(end, 1.),
             ))
     }
+}
+
+/// GitTurtle patch: the slider for `channel` of `color`, named by it and
+/// reporting the digits drawn after it ([`Channel`]).
+fn channel_slider(
+    state: &Entity<gpui_base::slider::SliderState>,
+    channel: Channel,
+    color: Hsla,
+    cx: &App,
+) -> Slider {
+    Slider::new(state)
+        .flex_1()
+        .bg(cx.theme().transparent)
+        .aria_label(channel.name())
+        .accessible_value(channel.accessible_value(color))
 }
 
 impl Sizable for ColorPicker {
@@ -905,6 +1000,9 @@ impl RenderOnce for ColorPicker {
             })
             .child(
                 Popover::new("popover")
+                    .when_some(self.popover_label.clone(), |this, label| {
+                        this.aria_label(label)
+                    })
                     .open(open)
                     .w_72()
                     .on_open_change(move |open: &bool, _, cx| {

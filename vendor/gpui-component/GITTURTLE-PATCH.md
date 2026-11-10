@@ -2762,3 +2762,21 @@ key-up, and a fresh press after it opens the picker as before
 (`an_x11_enter_held_reopens_no_picker_a_pointer_closed`, which fails with
 that check removed). Remove it when upstream's picker opens
 only on a fresh press and its popover acts only on one.
+
+The colour-picker names patch also modifies `src/color_picker.rs`
+(`Channel`, `channel_slider`, `ColorPicker::popover_label`), `src/slider.rs`
+and `src/popover.rs` (each forwarding gpui-base's `aria_label`, and the
+slider its `accessible_value`) and `locales/ui.yml` (`ColorPicker.HexValue`).
+Upstream the open picker's hex field, its four HSLA sliders and the popover
+had no accessible names: Orca read "entry #3B82F6", four unnamed sliders
+reading the picker's 0 to 1, and "dialog" (QA-110, found outside the checks,
+2). Patched, the hex field is "Hex value", each slider is named by the
+channel drawn before it and reports the digits drawn after it, degrees for
+hue and percent otherwise, on a 0 to 360 or 0 to 100 range in steps of one
+(`Channel::digits` draws them and `Channel::accessible_value` reports the
+same digits), and a caller names the popover with `popover_label`, as the
+theme editor names a row's popover by the colour it sets ("Removed color").
+`cargo test --locked -p gitturtle
+theme_editor::tests::the_open_pickers_controls_are_named_by_what_they_set`
+opens the theme editor's picker with Enter and reads the popover's, the hex
+field's and the sliders' nodes. Remove it when upstream names them.
