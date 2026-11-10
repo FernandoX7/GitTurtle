@@ -1734,6 +1734,10 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> bool {
         // A fresh capture's snapshot replaces what the tab had captured.
+        let afresh = matches!(
+            self.repository_tabs.recapture,
+            Some(Recapture::Reading(generation)) if generation == self.generation
+        );
         self.repository_tabs.recapture = None;
         if let Some(existing) = self.repository_tabs.find(repo.path())
             && self.repository_tabs.active != Some(existing)
@@ -1765,6 +1769,15 @@ impl GitTurtle {
         // Cold bookmarks finish restoration before taking their replacement.
         if self.repository_tabs.restoring.is_none() {
             self.save_repository_session(window, cx);
+        }
+        // What the window read of the Git directory the tab had goes before
+        // the status read of the one found starts, as an Open of another
+        // path forgets it: the same path opened again in place kept it, so
+        // until that read landed the header named the other branch, Push
+        // and Fetch went to its remote's name, and Commit committed an
+        // index no read had shown under the title typed for the other one.
+        if afresh {
+            self.forget_repository_state(window, cx);
         }
         false
     }
@@ -3756,14 +3769,14 @@ impl Render for LibraryView {
                     let label=format!("{}{}{}",if entry.pinned{"★ "}else{""},identity,entry.group.as_ref().map_or(String::new(),|group|format!(" · {group}")));
                     let accessible=format!("{}repository {}{}",if entry.pinned{"Pinned "}else{""},identity,entry.group.as_ref().map_or(String::new(),|group|format!(", workspace {group}")));
                     div().flex().items_center().gap_2().child(workspace_text(("local-workspace-repository", index),label).aria_label(accessible.clone()).flex_1().min_w_0().truncate().tooltip(move|window,cx|Tooltip::new(accessible.clone()).build(window,cx)))
-                        .child(button(("open-library-repo",index),"Open","",false).accessibility_label(format!("Open repository {identity}")).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_tab(path.clone(),window,cx));})))
+                        .child(button(("open-library-repo",index),"Open","",false).debug_selector(move||format!("open-library-repo-{index}")).accessibility_label(format!("Open repository {identity}")).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_tab(path.clone(),window,cx));})))
                         .child(button(("remove-library-repo",index),"Remove","",false).accessibility_label(format!("Remove repository {identity} from local library; keep its folder and drafts")).tooltip("Remove from the local library; keep its folder and drafts").on_click(cx.listener(move|this,_,window,cx|{this.session.library.retain(|entry|entry.path.path()!=remove);let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.library.retain(|entry|entry.path.path()!=remove);owner.save_repository_session(window,cx);});cx.notify();})))
                 }))))
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
@@ -6825,11 +6838,12 @@ mod tests {
 
     /// The tab at `index` took the repository found at its folder from a
     /// Projects row: the same tab, shown on the repository page, its mark
-    /// gone and that repository's Git directory captured. In the first frame
-    /// drawn since, the one the mark clears in, the header says that
-    /// repository's working state again, as the mark had hidden it: the
-    /// count of the one file added while the tab was marked, which only a
-    /// status read since then finds, the branch and the edge.
+    /// gone and that repository's Git directory captured. Once its status
+    /// read has landed, the header says that repository's working state, as
+    /// the mark had hidden it: the count of the one file added while the
+    /// tab was marked, which only a status read since then finds, the branch
+    /// and the edge. Until it lands the header shows none
+    /// ([`assert_a_fresh_capture_shows_nothing_from_before`]).
     fn assert_recaptured(
         app: &Entity<GitTurtle>,
         cx: &mut VisualTestContext,
@@ -6907,6 +6921,261 @@ mod tests {
         press_projects_row(&app, cx, &root);
         settle_tab_test(&app, cx).await;
         assert_recaptured(&app, cx, 0, &root, &third_git);
+    }
+
+    /// A fresh capture of the shown marked tab through `route`, which asks
+    /// for it as a person would, shows and acts on nothing from the Git
+    /// directory the tab had until the status read of the one found lands.
+    /// The tab read on branch `before`, its upstream on `origin` (bare
+    /// `a.git`), a file staged and a title typed; then its `.git` became a
+    /// third repository's gitfile, with `origin` at bare `b.git`, a commit on
+    /// `main` and a file of its own staged that no read has shown, and
+    /// History's Refresh marked it, keeping the status read before. With the
+    /// operation executor held, the accepted snapshot's status read waits:
+    /// in the frame the mark clears in, and in Changes opened after it,
+    /// there is no count, branch, remote, Targets value or row from before,
+    /// and Fetch, Pull, Push and Commit refuse. Opened again in place, the
+    /// tab kept the status read before, so until the read landed Push
+    /// pushed the third repository's `main` to its own `origin`, and Commit
+    /// committed its staged file, never shown, under the title typed for
+    /// the other (security probes W1 and W3, FU39-A4).
+    pub(crate) async fn assert_a_fresh_capture_shows_nothing_from_before(
+        cx: &mut TestAppContext,
+        route: impl FnOnce(&Entity<GitTurtle>, &mut VisualTestContext, &Path),
+    ) {
+        use crate::views::tests::{fixture_git, fixture_git_output, fixture_repository};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let base = fixture.path().to_owned();
+        let read = |dir: &Path, args: &[&str]| {
+            let output = fixture_git_output(dir, args);
+            (output.status.success())
+                .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        };
+        let tip = |bare: &Path, branch: &str| read(bare, &["rev-parse", "--verify", "-q", branch]);
+        let (bare_a, bare_b) = (base.join("a.git"), base.join("b.git"));
+        for bare in [&bare_a, &bare_b] {
+            fixture_git(
+                &base,
+                &["init", "--bare", "-b", "main", bare.to_str().unwrap()],
+            );
+        }
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        fixture_git(&root, &["switch", "-c", "before"]);
+        fixture_git(
+            &root,
+            &["remote", "add", "origin", bare_a.to_str().unwrap()],
+        );
+        fixture_git(&root, &["push", "-q", "-u", "origin", "before"]);
+        std::fs::write(root.join("staged.txt"), "the person's\n").unwrap();
+        fixture_git(&root, &["add", "staged.txt"]);
+        let third = fixture_repository(base.join("third"));
+        fixture_git(
+            third.path(),
+            &["commit", "-q", "--allow-empty", "-m", "Third"],
+        );
+        fixture_git(
+            third.path(),
+            &["remote", "add", "origin", bare_b.to_str().unwrap()],
+        );
+        std::fs::write(third.path().join("planted.txt"), "not the person's\n").unwrap();
+        fixture_git(third.path(), &["add", "planted.txt"]);
+        let third_git = third.git_dir().to_owned();
+        let pushed = tip(&bare_a, "refs/heads/before");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.refresh(&Refresh, window, cx);
+                app.show_working(window, cx);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.commit_title.update(cx, |title, cx| {
+                    title.set_value("The person's title", window, cx)
+                });
+                app.show_history(window, cx);
+                app.git_actions_open = true;
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        let picker = || crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
+        assert_eq!(picker().as_deref(), Some("before"), "read before the mark");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.changes_label()),
+            "Changes · 2"
+        );
+        assert!(
+            !crate::workspace::refusals::get("push")
+                .expect("drawn")
+                .announced
+        );
+
+        std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", third_git.display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "Refresh marks the tab"
+        );
+
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        route(&app, cx, &root);
+        for _ in 0..16 {
+            let installed = app.read_with(cx, |app, _| {
+                app.repository.as_ref().map(|repo| repo.git_dir()) == Some(third_git.as_path())
+            });
+            if installed {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        app.update(cx, |app, cx| {
+            assert_eq!(app.page, AppPage::Repository, "the snapshot installed");
+            assert!(!app.shown_tab_unavailable(), "its mark cleared");
+            assert!(app.status_task.is_some(), "its status read waits");
+            app.git_actions_open = true;
+            cx.notify();
+        });
+        let frame = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            })
+        };
+        let refuses = |cx: &mut VisualTestContext, id: &'static str, at: &str| {
+            let bounds = crate::tags::tests::rendered(cx, id);
+            let refusal = crate::workspace::refusals::get(id).expect("drawn");
+            assert!(refusal.announced && refusal.dimmed, "{at}: {id} refuses");
+            bounds
+        };
+        let nothing_runs = |cx: &mut VisualTestContext, bounds: Bounds<Pixels>, at: &str| {
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            assert_eq!(app.read_with(cx, |app, _| app.operation_busy), None, "{at}");
+        };
+        let destination =
+            || crate::workspace::TARGETS_DESTINATION.with(|line| line.borrow().clone());
+        let a = bare_a.display().to_string();
+        frame(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.changes_label()),
+            "Changes",
+            "no count from before"
+        );
+        assert_ne!(picker().as_deref(), Some("before"), "no branch from before");
+        assert!(
+            destination().is_none_or(|line| !line.contains("before") && !line.contains(&a)),
+            "Targets names no remote from before: {:?}",
+            destination()
+        );
+        app.read_with(cx, |app, cx| {
+            assert!(app.header_status().is_none(), "no status from before");
+            assert!(app.remotes.is_empty(), "no remote from before");
+            assert_eq!(
+                app.remote_name.read(cx).value().as_ref(),
+                "",
+                "Targets' remote"
+            );
+            assert_eq!(
+                app.remote_branch.read(cx).value().as_ref(),
+                "",
+                "Targets' branch"
+            );
+        });
+        let actions = ["fetch", "pull", "push"].map(|id| (id, refuses(cx, id, "History")));
+        for (id, bounds) in actions {
+            nothing_runs(cx, bounds, id);
+        }
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        frame(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.working_rows.is_empty(), "no Changes row from before");
+            assert!(app.actionable_working_rows().is_empty(), "nothing to stage");
+        });
+        assert!(
+            cx.debug_bounds("working-header-count").is_none(),
+            "Changes: no count"
+        );
+        if cx.debug_bounds("commit-staged").is_some() {
+            let commit = refuses(cx, "commit-staged", "Changes");
+            nothing_runs(cx, commit, "Commit");
+        }
+        let push = refuses(cx, "push", "Changes");
+        nothing_runs(cx, push, "Push in Changes");
+
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        assert_eq!(picker().as_deref(), Some("main"), "the branch read since");
+        app.read_with(cx, |app, cx| {
+            let staged = app.header_status().map(|status| {
+                (status.entries.iter())
+                    .filter(|entry| entry.staged.is_some())
+                    .map(|entry| entry.path.clone())
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(
+                staged,
+                Some(vec![PathBuf::from("planted.txt")]),
+                "its own index"
+            );
+            assert_eq!(
+                (app.remotes.iter())
+                    .map(|remote| remote.url.as_str())
+                    .collect::<Vec<_>>(),
+                [bare_b.to_str().unwrap()],
+                "its own remote"
+            );
+            assert_eq!(app.remote_name.read(cx).value().as_ref(), "origin");
+            assert_eq!(app.remote_branch.read(cx).value().as_ref(), "main");
+            assert_eq!(app.operation_notice, None, "nothing ran");
+        });
+        assert_eq!(tip(&bare_b, "refs/heads/main"), None, "Push pushed nothing");
+        assert_eq!(tip(&bare_a, "refs/heads/before"), pushed);
+        assert_eq!(
+            read(third.path(), &["log", "-1", "--format=%s"]).as_deref(),
+            Some("Third"),
+            "Commit committed nothing"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_projects_row_s_fresh_capture_shows_nothing_from_before(cx: &mut TestAppContext) {
+        assert_a_fresh_capture_shows_nothing_from_before(cx, press_projects_row).await;
+    }
+
+    #[gpui::test]
+    async fn open_s_fresh_capture_shows_nothing_from_before(cx: &mut TestAppContext) {
+        assert_a_fresh_capture_shows_nothing_from_before(cx, |_, cx, root| {
+            cx.update(|window, cx| window.dispatch_action(Box::new(crate::OpenRepository), cx));
+            assert!(cx.did_prompt_for_paths(), "Open… asks for a folder");
+            cx.simulate_path_prompt_response(|_| Some(vec![root.to_owned()]));
+        })
+        .await;
+    }
+
+    #[gpui::test]
+    async fn a_local_workspaces_row_s_fresh_capture_shows_nothing_from_before(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_fresh_capture_shows_nothing_from_before(cx, |app, cx, _| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.toggle_repository_pin(window, cx);
+                    app.open_repository_library(window, cx);
+                })
+            });
+            crate::views::tests::draw(cx);
+            let open = crate::tags::tests::rendered(cx, "open-library-repo-0");
+            cx.simulate_click(open.center(), gpui::Modifiers::default());
+        })
+        .await;
     }
 
     /// A row whose fresh capture fails keeps the tab's root, Git directories

@@ -4488,9 +4488,9 @@ impl GitTurtle {
         // "Changes unavailable", as before any status is read.
         let marked = self.shown_tab_unavailable();
         // Of the status the shown rows index, as their counts are.
-        let total = (self.shown_working_status())
-            .filter(|_| !marked)
-            .map_or(0, |status| status.entries.len());
+        let shown_status = (self.shown_working_status()).filter(|_| !marked);
+        let counted = shown_status.is_some();
+        let total = shown_status.map_or(0, |status| status.entries.len());
         let conflicted = self.working_paths.conflicted;
         let identity_ready = self
             .profile
@@ -4796,8 +4796,10 @@ impl GitTurtle {
                     })
                     // The count leaves with its label: alone it would repeat
                     // the Changes tab or toggle's count above it. A marked
-                    // tab has none, as the Changes tab has none.
-                    .when(forms.header_label && !marked, |el| {
+                    // tab has none, as the Changes tab has none, and neither
+                    // has a tab whose status no read has given yet, where a
+                    // count said 0 changes while the read ran.
+                    .when(forms.header_label && counted, |el| {
                         el.child(
                             div()
                                 .debug_selector(|| "working-header-count".into())

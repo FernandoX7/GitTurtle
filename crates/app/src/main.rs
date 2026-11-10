@@ -1423,36 +1423,7 @@ impl GitTurtle {
             None
         };
         if self.path.as_ref() != Some(&path) {
-            self.inspector_message
-                .replace(commit_message::State::default(), cx);
-            self.file_filter
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            self.automatic.reset();
-            self.retained_history_files = None;
-            self.repository = None;
-            self.work_generation += 1;
-            self.work_status = None;
-            self.working_paths.reset();
-            self.integration_state = None;
-            self.profile = None;
-            self.remotes.clear();
-            self.working_rows.clear();
-            self.working_selected = None;
-            self.working_selection.clear();
-            self.working_filter
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            self.remote_name
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            self.remote_branch
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            self.branches.clear();
-            self.worktrees.clear();
-            self.nav_rows.clear();
-            self.nav_ids.clear();
-            self.expanded_folders.clear();
-            self.seed_folders = true;
-            self.preferred_file = None;
-            self.nav_scroll.scroll_to_item(0, ScrollStrategy::Top);
+            self.forget_repository_state(window, cx);
         }
         self.back_to_history(window, cx);
         self.history_updates.reset_history();
@@ -1500,6 +1471,48 @@ impl GitTurtle {
         if afresh {
             self.repository_tabs.recapture_reading(self.generation);
         }
+    }
+
+    /// Forgets what the window read of its repository, as an Open of another
+    /// path does before its read, and as a fresh capture's accepted snapshot
+    /// does before its status read starts (`tab_snapshot_accepted`): the
+    /// working status with its rows, selection and staged counts, the
+    /// remotes, the integration state, the Git identity and Targets' remote
+    /// fields, the navigation's branches and worktrees. So nothing from
+    /// another Git directory is shown or acted on until that repository's
+    /// own read lands, and Fetch, Pull, Push, Commit and Stage refuse as
+    /// they do with nothing read yet.
+    fn forget_repository_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.inspector_message
+            .replace(commit_message::State::default(), cx);
+        self.file_filter
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.automatic.reset();
+        self.retained_history_files = None;
+        self.repository = None;
+        self.work_generation += 1;
+        self.work_status = None;
+        self.working_paths.reset();
+        self.integration_state = None;
+        self.profile = None;
+        self.remotes.clear();
+        self.working_rows.clear();
+        self.working_selected = None;
+        self.working_selection.clear();
+        self.working_filter
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.remote_name
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.remote_branch
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.branches.clear();
+        self.worktrees.clear();
+        self.nav_rows.clear();
+        self.nav_ids.clear();
+        self.expanded_folders.clear();
+        self.seed_folders = true;
+        self.preferred_file = None;
+        self.nav_scroll.scroll_to_item(0, ScrollStrategy::Top);
     }
 
     fn clear_preview(&mut self) {

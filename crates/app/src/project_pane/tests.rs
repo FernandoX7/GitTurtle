@@ -1709,6 +1709,25 @@ fn a_rows_menu_closes_as_the_window_holds_the_pane_back(cx: &mut TestAppContext)
     }
 }
 
+/// The pane's row's fresh capture shows and acts on nothing from the Git
+/// directory the tab had until its own status read lands, as the Projects
+/// page's row's does
+/// (`repository_tabs::tests::assert_a_fresh_capture_shows_nothing_from_before`).
+#[gpui::test]
+async fn a_pane_row_s_fresh_capture_shows_nothing_from_before(cx: &mut TestAppContext) {
+    crate::repository_tabs::tests::assert_a_fresh_capture_shows_nothing_from_before(
+        cx,
+        |app, cx, root| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.open_project_from_pane(root.to_owned(), window, cx)
+                })
+            })
+        },
+    )
+    .await;
+}
+
 /// The pane's row for a marked tab is an explicit Open of its folder too: the
 /// tab takes the repository found there, its mark gone. Selecting the shown
 /// project returned early, as it should for a tab that is whole, so the tab
