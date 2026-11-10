@@ -911,16 +911,20 @@ impl LfsDownloadForm {
                 .default_value(remote)
                 .placeholder("Configured remote name")
         });
+        // Return in the field goes to the dialog's default action alone,
+        // which runs once per press, as the key goes down, never on a held
+        // key's repeats, under X11 too: its review reads the source when
+        // there is no plan. The field's own `PressEnter`, which it sends for
+        // every Enter key-down, read the source as well, so every press read
+        // it twice and each repeat cancelled and began the read again, or
+        // said again to choose a remote.
         let subscription = cx.subscribe_in(
             &remote,
             window,
-            |this: &mut Self, _, event: &InputEvent, window, cx| {
+            |this: &mut Self, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.cancel();
                     this.plan = None;
-                }
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.prepare(window, cx);
                 }
                 cx.notify();
             },
@@ -1012,6 +1016,7 @@ impl LfsDownloadForm {
         });
     }
 }
+
 fn this_path(repo: &GitRepository) -> &std::path::Path {
     repo.path()
 }
@@ -1060,5 +1065,117 @@ impl Render for LfsDownloadForm {
             .when_some(self.plan.as_ref(), |element, plan| element.child(label("lfs-source-resolved", plan.source.clone()).text_size(appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| crate::tags::error_line("lfs-download-error", error, Some(appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning))))
             .child(label("lfs-download-limit", "Normal browsing stays passive. This action is limited to one object up to 32 MiB; decoder and memory limits still apply. No credentials are stored in this form.").text_size(appearance::ui_text(12.)).text_color(rgb(p.muted))), "lfs-download-scrollbar").min_h_0())
+    }
+}
+
+#[cfg(test)]
+mod held_return_tests {
+    use super::*;
+    use crate::branch_actions::tests::{REPEATS, enter};
+    use crate::tags::tests::{draw, tagged_repository, window};
+    use ::core::prelude::v1::test;
+    use std::{cell::RefCell, rc::Rc};
+
+    /// A held Return in the LFS download's source field reads the source,
+    /// or asks for a remote, once per press, under X11 too: with no remote
+    /// named the form says to choose one once per press, and with a remote
+    /// the repository does not configure it reads the source once and says
+    /// why it failed, the key's repeats (`REPEATS`) reading nothing more,
+    /// each waited out until the form's reader has answered; after the
+    /// key-up a new press is answered again. Each answer is an alert, by
+    /// its generation. The field's own `PressEnter` read the source as well
+    /// as the dialog's default action, whose review reads it when there is
+    /// no plan: every press read it twice, or asked twice, and each repeat
+    /// cancelled the read and began it again, or asked again.
+    #[gpui::test]
+    async fn a_held_return_in_the_lfs_source_field_reads_once_per_press(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        // The form each opening builds.
+        let opened: Rc<RefCell<Option<WeakEntity<LfsDownloadForm>>>> = Rc::default();
+        let _opened = cx.update(|_, cx| {
+            let opened = opened.clone();
+            cx.observe_new(move |_: &mut LfsDownloadForm, _, cx| {
+                *opened.borrow_mut() = Some(cx.entity().downgrade());
+            })
+        });
+        let target = LfsDownloadTarget {
+            path: "assets/large.bin".into(),
+            blob_oid: None,
+            pointer: format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 12\n",
+                "a".repeat(64)
+            )
+            .into_bytes(),
+        };
+        // The generation of the latest alert the window draws.
+        let alerts = |cx: &mut VisualTestContext| match crate::copy_feedback::tests::alerted(cx) {
+            Some((ElementId::NamedInteger(_, generation), _)) => generation,
+            other => panic!("an alert is drawn: {other:?}"),
+        };
+        for (case, remote) in [("no remote", ""), ("a remote not configured", "nowhere")] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.remote_name
+                        .update(cx, |input, cx| input.set_value(remote, window, cx));
+                    app.open_lfs_download(
+                        target.clone(),
+                        crate::lfs_download::Asker::Compare,
+                        window,
+                        cx,
+                    )
+                })
+            });
+            let form = opened
+                .borrow_mut()
+                .take()
+                .and_then(|form| form.upgrade())
+                .expect("the form opens");
+            // The form's reader answers, and its answer lands.
+            let lands = |cx: &mut VisualTestContext| {
+                form.read_with(cx, |form, _| form.reader.drain());
+                cx.run_until_parked();
+                draw(cx);
+            };
+            lands(cx);
+            cx.update(|window, cx| {
+                let field = form.read(cx).remote.read(cx).focus_handle(cx);
+                field.focus(window, cx);
+            });
+            draw(cx);
+            for press in ["the first press", "a new press after the key-up"] {
+                let after = alerts(cx) + 1;
+                enter(cx, Some(false));
+                lands(cx);
+                assert_eq!(alerts(cx), after, "{case}, {press}: answered once");
+                for (repeat, events) in REPEATS {
+                    for down in events {
+                        enter(cx, *down);
+                    }
+                    lands(cx);
+                    cx.update(|window, cx| {
+                        assert!(window.has_active_dialog(cx), "{case}, {repeat}");
+                        let form = form.read(cx);
+                        assert!(!form.pending, "{case}, {repeat}: nothing is read");
+                        assert!(
+                            form.remote.read(cx).focus_handle(cx).is_focused(window),
+                            "{case}, {repeat}: focus stays in the field"
+                        );
+                    });
+                    assert_eq!(
+                        alerts(cx),
+                        after,
+                        "{case}, {repeat}: nothing more is read or said"
+                    );
+                }
+                enter(cx, None);
+                draw(cx);
+            }
+            cx.update(|window, cx| window.close_dialog(cx));
+            draw(cx);
+        }
     }
 }
