@@ -265,26 +265,62 @@ impl GitTurtle {
             }));
         // A change in one of the page's inputs reaches the page through its
         // own observation of the input (`SettingsPage::new`); the app has
-        // nothing outside the page that shows an unsaved value.
-        self.subscriptions.push(cx.subscribe_in(
+        // nothing outside the page that shows an unsaved value. Return in a
+        // field saves from the page's key-down listener
+        // (`Self::settings_field_enter`).
+    }
+
+    /// Return in the Default branch field saves it, and in Name or Email the
+    /// repository's Git identity, once per press: a plain Enter (Shift-Enter
+    /// too) going down, not marked held, not repeating the press the toolkit
+    /// recorded (`enter_press_is_repeat`), in the field focused as that press
+    /// began (`enter_press_began_on`), the conditions a dialog's default
+    /// action keeps and the project hub's fields keep. The page's key-down
+    /// listener asks, after the field's own Enter has let the key go on. The
+    /// fields saved on their own `PressEnter`, which the field sends for
+    /// every Enter key-down, a held key's repeats included on every platform,
+    /// so a held Return after an identity write that failed at once began
+    /// another Git configuration write on each repeat. The secondary Enter
+    /// (Command-Enter on macOS, Control-Enter elsewhere) saves nothing: on
+    /// macOS it records no press, since Cocoa sends no key-up for a key
+    /// pressed with Command held, so its repeats could not be told from
+    /// presses. Neither does an Alt- or Fn-Enter.
+    fn settings_field_enter(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let modifiers = &event.keystroke.modifiers;
+        if event.keystroke.key != "enter"
+            || event.is_held
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.platform
+            || modifiers.function
+        {
+            return;
+        }
+        let Some((index, field)) = [
             &self.settings_branch,
-            window,
-            |this, _, event, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.save_default_branch(window, cx)
-                }
-            },
-        ));
-        for input in [&self.identity_name, &self.identity_email] {
-            self.subscriptions.push(cx.subscribe_in(
-                input,
-                window,
-                |this, _, event, window, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
-                        this.save_identity(window, cx)
-                    }
-                },
-            ));
+            &self.identity_name,
+            &self.identity_email,
+        ]
+        .into_iter()
+        .map(|field| field.read(cx).focus_handle(cx))
+        .enumerate()
+        .find(|(_, field)| field.is_focused(window)) else {
+            return;
+        };
+        if gpui_kit::base::enter_press_is_repeat(window, cx)
+            || !gpui_kit::base::enter_press_began_on(&field, window, cx)
+        {
+            return;
+        }
+        if index == 0 {
+            self.save_default_branch(window, cx);
+        } else {
+            self.save_identity(window, cx);
         }
     }
 
@@ -1224,13 +1260,24 @@ impl GitTurtle {
             self.operation_error = None;
             cx.notify();
         }
-        if edited == self.settings {
+        // A save that failed leaves the value it carried in use and on screen,
+        // with the failure and Retry save beside it, as every setting's does:
+        // a press then saves it again, as Retry save would. A press found
+        // nothing new and did nothing, so Return in the field, which still
+        // shows the value, was a dead key until another setting changed.
+        let save_failed = self
+            .operation_error
+            .as_ref()
+            .is_some_and(|error| error.starts_with("Could not save settings:"));
+        if edited == self.settings && !save_failed {
             return;
         }
-        self.settings = edited;
-        self.hub.update(cx, |hub, cx| {
-            hub.set_default_branch(self.settings.default_branch.clone(), cx)
-        });
+        if edited != self.settings {
+            self.settings = edited;
+            self.hub.update(cx, |hub, cx| {
+                hub.set_default_branch(self.settings.default_branch.clone(), cx)
+            });
+        }
         self.save_preferences(window, cx);
     }
 
@@ -2860,6 +2907,9 @@ impl GitTurtle {
             // Tab and Shift-Tab walk the Your themes rows before the toolkit's
             // frame-bound tab order (`theme_editor::init`).
             .key_context(theme_editor::SETTINGS_CONTEXT)
+            // Return in a field saves it from here, once per press
+            // ([`Self::settings_field_enter`]).
+            .on_key_down(cx.listener(Self::settings_field_enter))
             .on_action(cx.listener(|this, _: &theme_editor::NextThemeAction, window, cx| {
                 this.tab_theme_rows(true, window, cx)
             }))
@@ -8158,6 +8208,208 @@ mod picker_tests {
             .label()
             .map(str::to_owned);
         assert_eq!(label.as_deref(), Some("Default branch"));
+    }
+
+    /// A held Return in the repository identity's Name or Email asks for one
+    /// Git configuration write per press, under X11 too: with the
+    /// repository's configuration locked, the write fails at once and the
+    /// field keeps focus, then the key's repeats arrive (`REPEATS`), each
+    /// waited out until the write has answered. The form writes once and
+    /// says why; after the key-up a new press writes again. Once the lock
+    /// goes during a hold, its repeats still write nothing, and the next
+    /// press saves the identity. The fields saved on their own `PressEnter`,
+    /// which the field sends for every Enter key-down, so each repeat after
+    /// the quick failure began another write.
+    #[gpui::test]
+    async fn a_held_return_in_the_identity_form_writes_once_per_press(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        use crate::tags::tests::draw;
+        use std::cell::Cell;
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = crate::tags::tests::tagged_repository(fixture.path());
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| theme_editor::init(cx));
+        // Git's identity is read before the form is edited, as the page
+        // shows it, so the edits are kept as edits when it is read again.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.profile.is_some()),
+            "Git's identity is read"
+        );
+        // Git refuses to write a configuration another process has locked.
+        let lock = repo.path().join(".git").join("config.lock");
+        std::fs::write(&lock, "").unwrap();
+        let (name, email) = cx.read(|cx| {
+            let app = app.read(cx);
+            (app.identity_name.clone(), app.identity_email.clone())
+        });
+        cx.update(|window, cx| {
+            name.update(cx, |input, cx| {
+                input.set_value("Another Person", window, cx)
+            });
+            email.update(cx, |input, cx| {
+                input.set_value("another@example.com", window, cx)
+            });
+        });
+        settle(cx);
+        // Identity writes, counted as each begins.
+        let writes = Rc::new(Cell::new(0_usize));
+        let _counting = cx.update(|_, cx| {
+            let writes = writes.clone();
+            let mut was = false;
+            cx.observe(&app, move |app, cx| {
+                let now = app.read(cx).operation_busy == Some("Saving repository identity…");
+                writes.set(writes.get() + usize::from(now && !was));
+                was = now;
+            })
+        });
+        // The write's answer lands, and the frames after it.
+        let lands = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.run_until_parked();
+            draw(cx);
+        };
+        let focused = |field: &Entity<InputState>, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window))
+        };
+        for (field, which) in [(&name, "Name"), (&email, "Email")] {
+            cx.update(|window, cx| field.read(cx).focus_handle(cx).focus(window, cx));
+            draw(cx);
+            for press in ["the first press", "a new press after the key-up"] {
+                let at = format!("{which}, {press}");
+                let after = writes.get() + 1;
+                enter(cx, Some(false));
+                lands(cx);
+                assert_eq!(writes.get(), after, "{at}: one write");
+                assert!(
+                    app.read_with(cx, |app, _| app.operation_busy.is_none()
+                        && app.operation_error.is_some()),
+                    "{at}: it fails and says why"
+                );
+                assert!(focused(field, cx), "{at}: the field keeps focus");
+                for (repeat, events) in REPEATS {
+                    for down in events {
+                        enter(cx, *down);
+                    }
+                    lands(cx);
+                    assert_eq!(writes.get(), after, "{at}, {repeat}: no other write");
+                }
+                enter(cx, None);
+                draw(cx);
+            }
+        }
+        // The lock goes while the key is held: its repeats still write
+        // nothing, and the next press saves the identity.
+        let after = writes.get() + 1;
+        enter(cx, Some(false));
+        lands(cx);
+        assert_eq!(writes.get(), after, "the press with the lock held writes");
+        std::fs::remove_file(&lock).unwrap();
+        for (repeat, events) in REPEATS {
+            for down in events {
+                enter(cx, *down);
+            }
+            lands(cx);
+            assert_eq!(
+                writes.get(),
+                after,
+                "unlocked, {repeat}: the held key writes nothing"
+            );
+        }
+        enter(cx, None);
+        draw(cx);
+        enter(cx, Some(false));
+        lands(cx);
+        enter(cx, None);
+        draw(cx);
+        assert_eq!(writes.get(), after + 1, "a new press writes again");
+        let saved = fixture_config(repo.path(), "user.email");
+        assert_eq!(saved, "another@example.com", "and saves the identity");
+    }
+
+    /// The repository's own value of `key`, read with Git.
+    fn fixture_config(repository: &Path, key: &str) -> String {
+        let output = std::process::Command::new("git")
+            .args(["config", "--local", "--get", key])
+            .current_dir(repository)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("git runs");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// Return in the Default branch field saves it once per press, and saves
+    /// it again after a save that failed. With a directory where the
+    /// preference store's file goes, a press saves and fails, and the value
+    /// stays in use and in the field beside the failure and Retry save; the
+    /// store is mended while the key is still held, and its repeats
+    /// (`REPEATS`) save nothing; after the key-up a new press saves it. A
+    /// press after a failed save found nothing new in the settings and saved
+    /// nothing, so Return in the field was a dead key, and the field saved
+    /// on its own `PressEnter`, which it sends for every Enter key-down.
+    #[gpui::test]
+    fn return_in_the_default_branch_saves_once_per_press_and_after_a_failure(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        use crate::theme_editor::tests::drain_preference_writer;
+        let (app, cx) = open_app(cx);
+        drain_preference_writer(cx, &app);
+        let store = crate::preferences::settings_path().expect("the store's path");
+        if store.exists() {
+            std::fs::remove_file(&store).unwrap();
+        }
+        std::fs::create_dir(&store).unwrap();
+        let field = cx.read(|cx| app.read(cx).settings_branch.clone());
+        cx.update(|window, cx| {
+            field.update(cx, |input, cx| input.set_value("trunk", window, cx));
+            field.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        settle(cx);
+        let failed = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.operation_error
+                    .as_deref()
+                    .is_some_and(|error| error.starts_with("Could not save settings:"))
+            })
+        };
+        enter(cx, Some(false));
+        drain_preference_writer(cx, &app);
+        settle(cx);
+        assert!(failed(cx), "the save fails and says so, beside Retry save");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.settings.default_branch.clone()),
+            "trunk",
+            "the value stays in use"
+        );
+        // Mended while the key is held: its repeats save nothing.
+        std::fs::remove_dir(&store).unwrap();
+        for (repeat, events) in REPEATS {
+            for down in events {
+                enter(cx, *down);
+            }
+            drain_preference_writer(cx, &app);
+            settle(cx);
+            assert!(!store.exists(), "{repeat}: the held key saves nothing");
+        }
+        enter(cx, None);
+        settle(cx);
+        enter(cx, Some(false));
+        drain_preference_writer(cx, &app);
+        enter(cx, None);
+        settle(cx);
+        assert_eq!(
+            crate::preferences::Preferences::load()
+                .settings
+                .default_branch,
+            "trunk",
+            "a new press saves it"
+        );
+        assert!(!failed(cx), "and the failure goes");
     }
 
     /// Linux: while the Omarchy theme locks Follow system, the row's title,
