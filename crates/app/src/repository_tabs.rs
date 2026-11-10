@@ -7261,6 +7261,87 @@ pub(crate) mod tests {
         }
     }
 
+    /// Before an Open's snapshot lands, with no repository installed and no
+    /// status read started, the status is not read yet either: the branch
+    /// picker reads "Reading…" and Fetch, Pull and Push refuse saying the
+    /// read, for an Open of a new path from History and for a cold switch
+    /// to a tab that is not marked. Until the snapshot landed they said
+    /// "Detached HEAD" and "No configured remote selected · Check Targets"
+    /// (FU39-A5 review probe).
+    #[gpui::test]
+    async fn an_open_says_its_status_is_being_read_before_its_snapshot_lands(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let topic = fixture_repository(fixture.path().join("topic"));
+        fixture_git(
+            topic.path(),
+            &["commit", "-q", "--allow-empty", "-m", "Topic"],
+        );
+        fixture_git(topic.path(), &["switch", "-q", "-c", "topic"]);
+        let picker = || crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
+        let tooltip = |id: &str| {
+            crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(id).cloned())
+        };
+        let reading = crate::workspace::READING_WORKING_TREE;
+        let assert_reading = |cx: &mut VisualTestContext, route: &str| {
+            assert!(
+                app.read_with(cx, |app, _| app.page == AppPage::Repository
+                    && app.repository.is_none()
+                    && app.loading.is_some()
+                    && app.status_task.is_none()),
+                "{route}: its snapshot read waits"
+            );
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            assert_eq!(
+                picker().as_deref(),
+                Some(crate::branch_actions::READING),
+                "{route}: the picker"
+            );
+            for id in ["fetch", "pull", "push"] {
+                assert!(cx.debug_bounds(id).is_some(), "{route}: {id} drawn");
+                let refusal = crate::workspace::refusals::get(id).expect("drawn");
+                assert!(refusal.announced && refusal.dimmed, "{route}: {id} refuses");
+                let said = tooltip(id).unwrap_or_default();
+                assert!(said.ends_with(reading), "{route}: {id} says {said}");
+            }
+        };
+
+        let held = app.read_with(cx, |app, _| app.worker.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(topic.path().to_owned(), window, cx);
+                app.git_actions_open = true;
+            })
+        });
+        assert_reading(cx, "an Open from History");
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        assert_eq!(picker().as_deref(), Some("topic"), "the Open's branch");
+
+        app.update(cx, |app, _| app.repository_tabs.tabs[0].warm = None);
+        let held = app.read_with(cx, |app, _| app.worker.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.switch_repository_tab(0, window, cx);
+                app.git_actions_open = true;
+            })
+        });
+        assert_reading(cx, "a cold switch");
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        assert_eq!(picker().as_deref(), Some("main"), "the switch's branch");
+        for id in ["fetch", "pull", "push"] {
+            let said = tooltip(id).unwrap_or_default();
+            assert!(!said.ends_with(reading), "read: {id} says {said}");
+        }
+    }
+
     /// A row whose fresh capture fails keeps the tab's root, Git directories
     /// and mark, and says what the Open found, as Open and the Local
     /// workspaces row do: the tab shown with that failure, which the Projects

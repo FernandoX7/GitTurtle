@@ -1718,11 +1718,23 @@ async fn a_pane_row_s_fresh_capture_shows_nothing_from_before(cx: &mut TestAppCo
     crate::repository_tabs::tests::assert_a_fresh_capture_shows_nothing_from_before(
         cx,
         |app, cx, root| {
-            cx.update(|window, cx| {
-                app.update(cx, |app, cx| {
-                    app.open_project_from_pane(root.to_owned(), window, cx)
-                })
-            })
+            app.update(cx, |app, cx| {
+                let mut library = app.project_library.clone();
+                library.remember(root);
+                app.set_project_library(library);
+                app.settings.project_pane = true;
+                cx.notify();
+            });
+            crate::views::tests::draw(cx);
+            let index = app.read_with(cx, |app, _| {
+                (app.project_pane.rows.iter())
+                    .position(|row| matches!(row, PaneRow::Project { path, .. } if **path == *root))
+                    .expect("the project's row")
+            });
+            let row = cx
+                .debug_bounds(format!("project-pane-row-{index}").leak())
+                .expect("the pane's row drawn");
+            cx.simulate_click(row.center(), Modifiers::default());
         },
     )
     .await;

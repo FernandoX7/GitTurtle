@@ -3200,16 +3200,22 @@ impl GitTurtle {
     }
 
     /// Whether the shown tab's working status is not read yet: none read,
-    /// its read running, the tab not marked, as on every Open until the
-    /// read lands. The branch picker then names the branch the accepted
-    /// snapshot found checked out ([`Self::unread_branch`]), and Fetch,
-    /// Pull and Push wait for the read, saying it as Changes does
+    /// the tab not marked, and its read running, or the Open's snapshot
+    /// read before it, with no repository installed yet, as on every Open
+    /// until the status read lands. The branch picker then names the branch
+    /// the accepted snapshot found checked out ([`Self::unread_branch`]),
+    /// or reads "Reading…" before there is one, and Fetch, Pull and Push
+    /// wait for the read, saying it as Changes does
     /// ([`READING_WORKING_TREE`]). With no status they once read a
     /// detached HEAD and no remote: "Detached HEAD", "Switch to a local
     /// branch before pulling or pushing" and "No configured remote
-    /// selected · Check Targets".
+    /// selected · Check Targets", and until the snapshot landed they still
+    /// did, its status read not yet started.
     pub(crate) fn working_status_unread(&self) -> bool {
-        self.work_status.is_none() && !self.shown_tab_unavailable() && self.working_read_pending()
+        self.work_status.is_none()
+            && !self.shown_tab_unavailable()
+            && (self.working_read_pending()
+                || (self.loading.is_some() && self.repository.is_none()))
     }
 
     /// The local branch the accepted snapshot found checked out, while the
