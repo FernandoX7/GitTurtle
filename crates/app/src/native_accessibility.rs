@@ -1814,14 +1814,17 @@ impl RenderOnce for AppDropdown {
     }
 }
 
-/// Closes the button's menu `cx` builds as its window changes beneath it.
+/// Closes the menu `cx` builds as its window changes beneath it, a
+/// button's ([`AppDropdown`]) or a row's right-click menu ([`PointerMenu`]).
 /// A resized window, as a tiling compositor re-tiles it, closes it: its rows
 /// were capped for the side the size it opened in gave it, and a larger or
-/// smaller window could turn it to the other side, over its Button. Another
-/// repository tab shown, by a switch, a close or a move
-/// ([`close_button_menus`]), closes it too: the menu was built from the tab
-/// that drew it, so a choice made in it once acted on the tab shown after,
-/// a mode menu's changing that tab's mode to one it did not offer.
+/// smaller window could turn it to the other side, over what it opened
+/// from. A change in the repository tab shown closes it too
+/// ([`close_button_menus`]): another tab shown, by a switch, a close or a
+/// move, or the shown tab's mark landing. A menu belongs to the state that
+/// drew it (decided 2026-11-11): a choice made in one left open once acted
+/// on the tab shown after, a mode menu's changing that tab's mode to one it
+/// did not offer.
 fn closes_as_its_window_changes(window: &mut Window, cx: &mut Context<PopupMenu>) {
     let viewport = window.viewport_size();
     cx.observe_window_bounds(window, move |_, window, cx| {
@@ -1839,8 +1842,9 @@ fn closes_as_its_window_changes(window: &mut Window, cx: &mut Context<PopupMenu>
     .detach();
 }
 
-/// How many times each window has changed the repository tab it shows
-/// beneath its open button menus ([`close_button_menus`]).
+/// How many times each window has changed the repository tab it shows, or
+/// what that tab shows as its mark landed, beneath its open menus
+/// ([`close_button_menus`]).
 #[derive(Default)]
 struct ShownTabs(std::collections::HashMap<gpui::WindowId, u64>);
 
@@ -1855,15 +1859,27 @@ impl ShownTabs {
     }
 }
 
-/// Closes every button's menu open in `window`, as the repository tab it
-/// shows changes beneath them ([`closes_as_its_window_changes`]). The menus
-/// close as the change's effects are flushed, after the change has put
-/// focus where it goes: a switch or a close gives it to the tab shown, so a
-/// closing menu gives none back, and a move, which leaves it in the menu,
-/// has the menu give it back where it was as the menu opened.
+/// Closes every button's and right-click menu open in `window`, as the
+/// repository tab it shows, or what that tab shows as its mark lands,
+/// changes beneath them ([`closes_as_its_window_changes`]): one window-wide
+/// close whatever the cause. The menus close as the change's effects are
+/// flushed, after the change has put focus where it goes: a switch or a
+/// close gives it to the tab shown, and a mark to its way back
+/// (`GitTurtle::close_menus_for_the_mark`), so a closing menu gives none
+/// back; a move, which leaves it in the menu, has the menu give it back
+/// where it was as the menu opened.
 pub(crate) fn close_button_menus(window: &Window, cx: &mut App) {
     let id = window.window_handle().window_id();
     *cx.default_global::<ShownTabs>().0.entry(id).or_default() += 1;
+}
+
+/// Whether keyboard focus is in an open menu, as the last frame drew it
+/// ([`MENU_CONTEXT`]): a button's, a row's or a text field's.
+pub(crate) fn focus_in_menu(window: &Window) -> bool {
+    window
+        .context_stack()
+        .iter()
+        .any(|context| context.contains(MENU_CONTEXT))
 }
 
 /// An element's right-click menu as the app's menus open ([`open_menu`]),
@@ -2413,13 +2429,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                 let waiting = std::rc::Rc::downgrade(&shared);
                 let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
                     announces_resting(&cx.entity(), window, cx);
-                    let viewport = window.viewport_size();
-                    cx.observe_window_bounds(window, move |_, window, cx| {
-                        if window.viewport_size() != viewport {
-                            cx.emit(gpui::DismissEvent);
-                        }
-                    })
-                    .detach();
+                    closes_as_its_window_changes(window, cx);
                     if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
                         let mut inputs = MenuInputs::of(app.read(cx), commit.as_ref());
                         let open = open.clone();

@@ -501,6 +501,12 @@ pub struct State {
     /// The explicit Open of a marked tab's folder under way, which reads it
     /// afresh ([`GitTurtle::open_repository_tab`]).
     recapture: Option<Recapture>,
+    /// Whether keyboard focus was in a menu as the shown tab's latest Open
+    /// began, before its return to History took focus to the list
+    /// ([`GitTurtle::note_menu_focus`]): where that read marks the tab, the
+    /// focus goes to the mark's way back
+    /// ([`GitTurtle::close_menus_for_the_mark`]).
+    menu_held: bool,
     #[cfg(test)]
     save_path: Option<PathBuf>,
 }
@@ -1913,7 +1919,9 @@ impl GitTurtle {
     /// volume that stopped answering says nothing of the repository, so it
     /// marks nothing new and leaves a mark as it was, and the next read
     /// that finds the folder decides ([`Self::tab_found_readable`]).
-    pub(super) fn tab_opening_failed(&mut self, could_not_check: bool) {
+    ///
+    /// Returns whether the shown tab's mark landed, the tab unmarked before.
+    pub(super) fn tab_opening_failed(&mut self, could_not_check: bool) -> bool {
         let afresh = matches!(
             self.repository_tabs.recapture,
             Some(Recapture::Reading(generation)) if generation == self.generation
@@ -1928,9 +1936,60 @@ impl GitTurtle {
                         error,
                     });
             } else {
+                let landed = tab.error.is_none() && self.error.is_some();
                 tab.error = self.error.clone();
+                return landed;
             }
         }
+        false
+    }
+    /// Notes, as an Open of the shown tab begins, whether keyboard focus is
+    /// in a menu ([`State::menu_held`]): the Open returns to History, which
+    /// takes focus to the list before its read can mark the tab, so a menu
+    /// open on the tab as the watcher's quiet read found its repository
+    /// gone no longer held focus as the mark landed.
+    pub(super) fn note_menu_focus(&mut self, window: &Window) {
+        self.repository_tabs.menu_held = crate::native_accessibility::focus_in_menu(window);
+    }
+    /// Closes every menu open on the shown tab as its mark lands
+    /// ([`Self::tab_opening_failed`]), as a resize closes them: the
+    /// navigation's, the commit list's and the file list's row menus and
+    /// every button's and right-click menu
+    /// (`native_accessibility::close_button_menus`). A menu belongs to the
+    /// state that drew it (decided 2026-11-11): a branch's menu open as the
+    /// mark landed was hidden, never closed, so focus stayed on a menu no
+    /// frame drew, Escape doing nothing, and the menu came back, still
+    /// focused, with its actions on the branch from before as the mark
+    /// cleared. Focus a closing menu held goes to the mark's way back, never
+    /// to something undrawn: the navigation's Refresh on History, the rail's
+    /// Open repository where the rail stands in its place
+    /// (`mark_way_back`). A dialog or sheet keeps its own menus and focus,
+    /// and another page than the repository's draws none of the tab's.
+    pub(super) fn close_menus_for_the_mark(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page != AppPage::Repository
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+        {
+            return;
+        }
+        // Focus a menu held as the read that marks the tab began, which
+        // Open's return to History took to the list, or holds now in the
+        // frame last drawn, read before any menu closes.
+        let held = std::mem::take(&mut self.repository_tabs.menu_held)
+            || crate::native_accessibility::focus_in_menu(window);
+        self.file_menu_row = None;
+        let rows = [
+            self.nav_menu.take(),
+            self.commit_menu.take(),
+            self.file_menu.take(),
+        ];
+        let closed = rows.iter().any(Option::is_some);
+        drop(rows);
+        crate::native_accessibility::close_button_menus(window, cx);
+        if held || (closed && window.focused(cx).is_none()) {
+            window.focus(&self.mark_way_back, cx);
+        }
+        cx.notify();
     }
     /// Refuses what the tab strip was asked, a ninth tab, a switch past the
     /// retained allowance, closing a tab while its write runs or a library
@@ -5494,6 +5553,246 @@ pub(crate) mod tests {
         );
         assert!(cx.debug_bounds(local).is_some(), "listed again");
         assert!(cx.debug_bounds("navigation-unavailable").is_none());
+    }
+
+    /// A branch's menu open as the tab's mark lands closes, as a resize
+    /// closes it (`GitTurtle::close_menus_for_the_mark`): no menu is drawn,
+    /// focus moves from it to the mark's way back, the navigation's
+    /// Refresh, the keyboard hint goes and the tree is named by its line and
+    /// the way back. It was hidden, never closed: focus stayed on a menu no
+    /// frame drew, Escape doing nothing, the hint still offered the tree's
+    /// keys, and as the mark cleared the menu came back, still focused,
+    /// with its actions on the branch from before. The mark clearing brings
+    /// no menu back.
+    #[gpui::test]
+    async fn a_branch_menu_open_as_the_mark_lands_closes_to_the_way_back(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let tree_name = || {
+            crate::native_accessibility::written::get("repository-navigation")
+                .and_then(|tree| tree.node.label().map(str::to_owned))
+        };
+        // Wide enough for the keyboard hint below the tree.
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let panels = app.read_with(cx, |app, _| app.history_panels.clone());
+        cx.update(|window, cx| {
+            panels.update(cx, |panels, cx| {
+                panels.resize_panel(0, px(320.), window, cx)
+            })
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("navigation-hint").is_some(),
+            "the keyboard hint at rest"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.nav_cursor =
+                    (app.nav_rows.iter()).position(|row| matches!(row, NavRow::Branch(..)));
+                window.focus(&app.nav_focus, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        cx.simulate_keystrokes("shift-f10");
+        draw(cx);
+        assert!(
+            cx.debug_bounds("navigation-menu-overlay").is_some(),
+            "the branch's menu is drawn"
+        );
+        assert!(
+            cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+            "focus is in it"
+        );
+
+        // As a quiet read finds the repository gone (`tab_repository_gone`).
+        let away = fixture.path().join("moved-away");
+        std::fs::rename(root.join(".git"), &away).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.nav_menu.is_none()),
+            "the menu is closed"
+        );
+        assert!(
+            cx.debug_bounds("navigation-menu-overlay").is_none(),
+            "no menu is drawn"
+        );
+        assert!(
+            cx.debug_bounds("navigation-refresh").is_some(),
+            "the way back is drawn"
+        );
+        assert!(
+            cx.update(|window, cx| app.read(cx).mark_way_back.is_focused(window)),
+            "focus is on the way back"
+        );
+        assert!(
+            cx.debug_bounds("navigation-hint").is_none(),
+            "no hint offers the tree's keys"
+        );
+        assert_eq!(
+            tree_name(),
+            Some(format!(
+                "Branches unavailable. {}",
+                crate::branch_actions::UNAVAILABLE_WAY_BACK
+            )),
+            "the tree's name gives the line and the way back, in the mark's words"
+        );
+
+        std::fs::rename(&away, root.join(".git")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "unmarked"
+        );
+        assert!(
+            cx.debug_bounds("nav-section/LOCAL BRANCHES/1").is_some(),
+            "the branches listed again"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.nav_menu.is_none())
+                && cx.debug_bounds("navigation-menu-overlay").is_none(),
+            "no menu comes back"
+        );
+        assert!(
+            cx.debug_bounds("navigation-hint").is_some(),
+            "the hint is back"
+        );
+    }
+
+    /// A button's menu open as the tab's mark lands closes too, as a resize
+    /// closes it, focus moving from it to the mark's way back: here the
+    /// branch picker's, which on a marked tab offers no menu. It stayed
+    /// open over the "Unavailable" picker, its items acting on the branches
+    /// from before.
+    #[gpui::test]
+    async fn a_button_menu_open_as_the_mark_lands_closes_to_the_way_back(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        const ITEM: &str = "menu-item: Find or create a branch… · MenuItem";
+        draw(cx);
+        let picker = cx
+            .debug_bounds("current-branch")
+            .expect("the branch picker");
+        cx.simulate_click(picker.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds(ITEM).is_some(),
+            "the picker's menu is drawn"
+        );
+        assert!(
+            cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+            "focus is in it"
+        );
+
+        let away = fixture.path().join("moved-away");
+        std::fs::rename(root.join(".git"), &away).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        assert!(cx.debug_bounds(ITEM).is_none(), "the menu is closed");
+        assert!(
+            !cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+            "focus left it"
+        );
+        assert!(
+            cx.update(|window, cx| app.read(cx).mark_way_back.is_focused(window)),
+            "focus is on the way back"
+        );
+
+        std::fs::rename(&away, root.join(".git")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "unmarked"
+        );
+        assert!(cx.debug_bounds(ITEM).is_none(), "no menu comes back");
+    }
+
+    /// A row's right-click menu open as the tab's mark lands closes, focus
+    /// moving from it to the mark's way back: here a commit's in History,
+    /// whose row the marked tab no longer draws, the menu going with it.
+    /// Before the mark's close, focus the menu held never reached the way
+    /// back.
+    #[gpui::test]
+    async fn a_right_click_menu_open_as_the_mark_lands_closes_to_the_way_back(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        const ITEM: &str = "menu-item: Revert this commit… · MenuItem";
+        draw(cx);
+        let row = cx.debug_bounds("history-row-0").expect("a commit row");
+        let pointer = point(row.left() + px(16.), row.center().y);
+        cx.simulate_mouse_move(pointer, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(
+            pointer,
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            pointer,
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        cx.executor().run_until_parked();
+        draw(cx);
+        draw(cx);
+        assert!(
+            cx.debug_bounds(ITEM).is_some(),
+            "the commit's menu is drawn"
+        );
+        assert!(
+            cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+            "focus is in it"
+        );
+
+        let away = fixture.path().join("moved-away");
+        std::fs::rename(root.join(".git"), &away).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        assert!(cx.debug_bounds(ITEM).is_none(), "the menu is closed");
+        assert!(
+            !cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+            "focus left it"
+        );
+        assert!(
+            cx.update(|window, cx| app.read(cx).mark_way_back.is_focused(window)),
+            "focus is on the way back"
+        );
     }
 
     /// An explicit Open of a marked tab's folder whose snapshot names a

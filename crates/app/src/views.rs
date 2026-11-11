@@ -979,6 +979,9 @@ impl GitTurtle {
             .child(
                 button("rail-open", "", "folder", false)
                     .debug_selector(|| "rail-open".into())
+                    // A marked tab's way back where the rail stands in the
+                    // navigation's place (`close_menus_for_the_mark`).
+                    .track_focus(&self.mark_way_back)
                     .accessibility_label("Open repository")
                     .tooltip("Open repository")
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1075,8 +1078,12 @@ impl GitTurtle {
                 crate::native_accessibility::clips_children(div()
                     .id("repository-navigation")
                     .role(Role::Tree)
+                    // On a marked tab, the mode's line and its way back, as
+                    // focus meets the tree: it was named "Branches and
+                    // worktrees unavailable", the line and the way back left
+                    // on static text inside a tree with no items.
                     .aria_label(if marked {
-                        NAV_UNAVAILABLE_NAME
+                        nav_unavailable_name(self.nav_mode)
                     } else {
                         "Branches and worktrees. Arrow keys browse; Left and Right collapse or expand; Enter activates; Shift F10 opens branch or worktree actions"
                     })
@@ -1095,9 +1102,30 @@ impl GitTurtle {
                     .on_action(cx.listener(|this, _: &native_accessibility::ActivateNavigation, window, cx| { if let Some(index)=this.nav_cursor {this.activate_navigation(index, window, cx);} }))
                     .on_action(cx.listener(|this, _: &native_accessibility::ManageNavigation, window, cx| this.manage_navigation(window, cx))))
                     .map(|tree| if marked {
+                        // Its way back below the line, Refresh, refused at
+                        // once while a write runs, as the Refresh shortcut
+                        // is; focus goes there from a menu the mark closed
+                        // (`close_menus_for_the_mark`).
+                        let refresh = crate::empty_state::action("navigation-refresh", "Refresh", "refresh")
+                            .track_focus(&self.mark_way_back)
+                            .tooltip(format!(
+                                "Refresh · {}",
+                                shortcuts::label(shortcuts::ShortcutId::Refresh)
+                            ))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.operation_busy.is_none() {
+                                    this.refresh(&Refresh, window, cx);
+                                }
+                            }));
                         tree.child(
                             EmptyState::new("navigation-unavailable", nav_unavailable_line(self.nav_mode))
                                 .tooltip(crate::branch_actions::UNAVAILABLE_WAY_BACK)
+                                .action(crate::workspace::refusing(
+                                    refresh,
+                                    || "navigation-refresh".into(),
+                                    self.operation_busy.is_some(),
+                                    self.operation_shown().is_some(),
+                                ))
                                 .pane(cx),
                         )
                     } else {
@@ -1108,13 +1136,16 @@ impl GitTurtle {
                     // Its keyboard ring on its own edge, over the rows, so
                     // none of them moves.
                     .children(self.focus_ring.edge(&self.nav_focus, rgb(colors.accent)))
-                    .children(self.nav_menu.as_ref().filter(|_| !marked).map(|menu| {
+                    // The mark closes it as it lands
+                    // (`close_menus_for_the_mark`), and a marked tree opens
+                    // none.
+                    .children(self.nav_menu.as_ref().map(|menu| {
                         menu.render("navigation-menu-overlay", Self::dismiss_nav_menu, cx)
                     }))),
             )
             // Each of its lines whole, or none of it: the tree's accessible
-            // name keeps the keys.
-            .when(form.hint, |sidebar| {
+            // name keeps the keys. A marked tree takes none of them.
+            .when(form.hint && !marked, |sidebar| {
                 sidebar.child(
                     div()
                         .debug_selector(|| "navigation-hint".into())
@@ -8395,9 +8426,23 @@ pub(crate) const NAV_FILTER_PLACEHOLDERS: &[&str] =
 /// The navigation filter's accessible name, whole whatever form its
 /// placeholder takes.
 pub(crate) const NAV_FILTER_NAME: &str = "Filter branches and worktrees";
-/// The navigation tree's accessible name on a marked tab, which lists
-/// nothing read before the mark (`GitTurtle::render_sidebar`).
-const NAV_UNAVAILABLE_NAME: &str = "Branches and worktrees unavailable";
+/// The navigation tree's accessible name on a marked tab in `mode`, which
+/// lists nothing read before the mark (`GitTurtle::render_sidebar`): its
+/// line ([`nav_unavailable_line`]) and the mark's way back
+/// (`branch_actions::UNAVAILABLE_WAY_BACK`).
+fn nav_unavailable_name(mode: NavMode) -> &'static str {
+    match mode {
+        NavMode::Local => {
+            "Branches unavailable. Refresh, or choose a repository with Open Repository"
+        }
+        NavMode::Remote => {
+            "Remote branches unavailable. Refresh, or choose a repository with Open Repository"
+        }
+        NavMode::Worktrees => {
+            "Worktrees unavailable. Refresh, or choose a repository with Open Repository"
+        }
+    }
+}
 
 /// What the navigation says on a marked tab in `mode`, as Changes says
 /// "Changes unavailable" there, the mark's way back in its tooltip.

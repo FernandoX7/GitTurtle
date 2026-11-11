@@ -616,6 +616,11 @@ struct GitTurtle {
     nav_ids: Vec<ElementId>,
     nav_cursor: Option<usize>,
     nav_focus: FocusHandle,
+    /// The shown tab's way back from its mark, Refresh or Open…, where the
+    /// page draws it: the navigation's Refresh on History, the rail's Open
+    /// repository where the rail stands in its place. Focus goes there from
+    /// a menu the mark closes (`GitTurtle::close_menus_for_the_mark`).
+    mark_way_back: FocusHandle,
     nav_mode: NavMode,
     expanded_folders: HashSet<String>,
     seed_folders: bool,
@@ -1021,6 +1026,7 @@ impl GitTurtle {
             // of a div that tracks a handle of its own, so a list whose
             // handle is made without it is passed over by Tab and Shift+Tab.
             nav_focus: cx.focus_handle().tab_stop(true),
+            mark_way_back: cx.focus_handle(),
             nav_mode: NavMode::Local,
             expanded_folders: HashSet::new(),
             seed_folders: true,
@@ -1371,8 +1377,10 @@ impl GitTurtle {
                         // on the hub as well, a review past its limit met
                         // the person who closed the tab as Projects' alert.
                         let opening_failed = opening.is_some();
-                        if opening_failed {
-                            this.tab_opening_failed(gitturtle_core::could_not_check(&error));
+                        if opening_failed
+                            && this.tab_opening_failed(gitturtle_core::could_not_check(&error))
+                        {
+                            this.close_menus_for_the_mark(window, cx);
                         }
                         this.status = "Read could not complete".into();
                         this.hub.update(cx, |hub, cx| {
@@ -1415,6 +1423,8 @@ impl GitTurtle {
         if self.tab_open_requested(&path, &scope, window, cx) {
             return;
         }
+        // Before the return to History below takes focus to the list.
+        self.note_menu_focus(window);
         // A repository opened again in place, as History's Refresh opens
         // it, drops what it was preparing, and waits for its read as a
         // switch that drops it does, or holds the wait for a preparation a
