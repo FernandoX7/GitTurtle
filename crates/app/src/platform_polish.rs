@@ -820,17 +820,19 @@ impl AboutDetails {
         );
     }
 
-    /// Enter on the focused button copies as the key goes down, never on a
-    /// held key's repeats, as the toolkit's popover triggers and menus act
-    /// (under X11 a held key arrives as fresh presses, which this cannot
-    /// tell apart). The key goes no further, so GPUI's key-up activation
-    /// copies nothing more. Bound to the dialog's Done, Enter closed About
-    /// and copied nothing; taken as its Confirm, each repeat copied again.
+    /// Enter on the focused button copies once per press, as the key goes
+    /// down, never on a held key's repeats, under X11 too, where they arrive
+    /// as fresh presses that repeat the press the toolkit recorded
+    /// (`enter_press_is_repeat`), as a dialog's Buttons act. The key goes no
+    /// further, so GPUI's key-up activation copies nothing more. Bound to
+    /// the dialog's Done, Enter closed About and copied nothing; taken as
+    /// its Confirm, each repeat copied again; refused only when marked
+    /// held, each X11 repeat copied again and said Copied again.
     fn copy_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.key != "enter" || event.keystroke.modifiers.modified() {
             return;
         }
-        if !event.is_held {
+        if !event.is_held && !gpui_kit::base::enter_press_is_repeat(window, cx) {
             self.copy_report(window, cx);
         }
         cx.stop_propagation();
@@ -1825,6 +1827,76 @@ mod menu_bar_tests {
                 (TITLE.to_owned(), false),
                 "{state}: offered again once it ends"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod about_tests {
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// Whether focus lies on About's Copy bug diagnostics, in its own key
+    /// context ([`super::COPY_KEYS`]).
+    fn on_copy(cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, _| {
+            window
+                .context_stack()
+                .iter()
+                .any(|context| format!("{context:?}").contains(super::COPY_KEYS))
+        })
+    }
+
+    /// Return on About's Copy bug diagnostics copies the report once per
+    /// press, under X11 too: the key's repeats (`REPEATS`) copy nothing
+    /// more, About staying open with focus on the button, and after the
+    /// key-up a new press copies again. Refused only when marked held, each
+    /// X11 repeat, a fresh press there, copied the report again.
+    #[gpui::test]
+    async fn a_held_return_on_copy_bug_diagnostics_copies_once_per_press(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.about(window, cx)));
+        draw(cx);
+        for _ in 0..8 {
+            if on_copy(cx) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+        }
+        assert!(on_copy(cx), "Tab reaches Copy bug diagnostics");
+        const UNTOUCHED: &str = "nothing copied";
+        let reset = |cx: &mut VisualTestContext| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(UNTOUCHED.into()));
+        };
+        let copied = |cx: &mut VisualTestContext| {
+            cx.read(|cx| cx.read_from_clipboard())
+                .and_then(|item| item.text())
+                .is_some_and(|text| text != UNTOUCHED)
+        };
+        for press in ["the first press", "a new press after the key-up"] {
+            reset(cx);
+            enter(cx, Some(false));
+            draw(cx);
+            assert!(copied(cx), "{press}: the report is copied");
+            for (repeat, events) in REPEATS {
+                reset(cx);
+                for down in events {
+                    enter(cx, *down);
+                }
+                draw(cx);
+                assert!(!copied(cx), "{press}, {repeat}: nothing more is copied");
+                assert!(
+                    cx.update(|window, cx| window.has_active_dialog(cx)) && on_copy(cx),
+                    "{press}, {repeat}: About stays open, focus on the button"
+                );
+            }
+            enter(cx, None);
+            draw(cx);
         }
     }
 }
