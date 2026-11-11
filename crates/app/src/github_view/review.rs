@@ -3180,12 +3180,13 @@ impl Panel {
     }
     /// A Button that opens a composer or gives one focus, pressed by `event`: Comment on
     /// selection or a collected comment's Edit, which open the comment, a conversation's
-    /// Reply, which opens its reply, or a section tab that gives a composer focus. An Enter,
-    /// which the Button takes as the key goes down, is held off the composers until it comes
-    /// up, as a review line's is ([`Self::hold_return`]); a click or Space has come up
-    /// already. Each of the held key's repeats, under X11 or marked held, typed a new line
-    /// into the composer the Button gave focus to (decided 2026-11-11: a Return that opens or
-    /// focuses a composer never types into it).
+    /// Reply, which opens its reply, or a Button whose action leaves a composer focused
+    /// ([`Self::hold_enter_on_composer`]). An Enter, which the Button takes as the key goes
+    /// down, is held off the composers until it comes up, as a review line's is
+    /// ([`Self::hold_return`]); a click or Space has come up already. Each of the held key's
+    /// repeats, under X11 or marked held, typed a new line into the composer the Button gave
+    /// focus to (decided 2026-11-11: a Return that opens or focuses a composer never types
+    /// into it).
     pub(super) fn hold_enter_click(
         &mut self,
         event: &ClickEvent,
@@ -3200,6 +3201,27 @@ impl Panel {
             })
         ) {
             self.hold_return(window, cx);
+        }
+    }
+    /// A Button pressed by `event` whose action moved focus, where it may have given a
+    /// composer focus: a section tab, which gives Review's comment or review body, or an open
+    /// conversation's reply, focus; or, used in Review, Add to review, Discard this comment, a
+    /// collected comment's Remove or Save and close reply, which leave focus in the review
+    /// body, or in the comment still open. Its Enter is held off the composers when one holds
+    /// focus now ([`Self::hold_enter_click`]), and otherwise left alone: on the changed-file
+    /// list, a section's first stop or the repository field it takes no new line.
+    pub(super) fn hold_enter_on_composer(
+        &mut self,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .composers(cx)
+            .iter()
+            .any(|composer| composer.is_focused(window))
+        {
+            self.hold_enter_click(event, window, cx);
         }
     }
     /// An Enter came up in the panel: the press [`Self::hold_return`] holds ends once the
@@ -3614,15 +3636,7 @@ impl Panel {
                         .on_click(cx.listener(
                             move |this, event, window, cx| {
                                 this.change_section(section, window, cx);
-                                // A tab that gives a composer focus, Review's comment or review
-                                // body or an open conversation's reply, holds its Return off it.
-                                if this
-                                    .composers(cx)
-                                    .iter()
-                                    .any(|composer| composer.is_focused(window))
-                                {
-                                    this.hold_enter_click(event, window, cx);
-                                }
+                                this.hold_enter_on_composer(event, window, cx);
                             },
                         )),
                     )
@@ -3723,9 +3737,10 @@ impl Panel {
                     .child(
                         self.button("github-add-comment", "Add to review", "plus", true, cx)
                             .disabled(self.pending)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.add_comment(window, cx)),
-                            ),
+                            .on_click(cx.listener(|this, event, window, cx| {
+                                this.add_comment(window, cx);
+                                this.hold_enter_on_composer(event, window, cx);
+                            })),
                     )
                     .child(
                         self.button(
@@ -3736,9 +3751,12 @@ impl Panel {
                             cx,
                         )
                         .disabled(self.pending)
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.discard_composer(window, cx)),
-                        ),
+                        .on_click(cx.listener(
+                            |this, event, window, cx| {
+                                this.discard_composer(window, cx);
+                                this.hold_enter_on_composer(event, window, cx);
+                            },
+                        )),
                     )
                     .child(
                         label(
@@ -4401,7 +4419,7 @@ impl Panel {
                 .child(label(("github-draft-position",index),model::position_label(comment)).font_weight(FontWeight::SEMIBOLD))
                 .child(label(("github-draft-body",index),comment.body.clone()))
                 .child(div().flex().gap_2().child(self.button(("github-edit-inline",index),"Edit","",false, cx).disabled(self.pending||self.review.composing.is_some()).on_click(cx.listener(move|this,event,window,cx|{this.edit_comment(index,window,cx);this.hold_enter_click(event,window,cx);})))
-                    .child(self.button(("github-remove-inline",index),"Remove","",false, cx).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);}})))))))))
+                    .child(self.button(("github-remove-inline",index),"Remove","",false, cx).disabled(self.pending).on_click(cx.listener(move|this,event,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);this.hold_enter_on_composer(event,window,cx);}})))))))))
             .child(self.render_comment_composer(cx)).into_any_element()
     }
 }
@@ -7487,19 +7505,10 @@ mod tests {
     async fn a_return_on_reply_types_nothing_into_its_reply(cx: &mut TestAppContext) {
         use crate::branch_actions::tests::enter;
         let (_fixture, _app, panel, cx) = review_line_panel(cx);
-        let identity = model::fixture_pull(false)
-            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
-        let page = Client(UiTransport::Fixture { moved: false })
-            .review_threads(&identity, None, &OperationControl::default())
-            .unwrap();
+        receive_fixture_threads(&panel, cx);
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
-                panel.destination.update(cx, |input, cx| {
-                    input.set_value("gitturtle-fixture/native-review", window, cx)
-                });
-                panel.account = Some("offline-reviewer".into());
-                panel.receive_threads(page, None);
-                panel.change_section(Section::Overview, window, cx);
+                panel.change_section(Section::Overview, window, cx)
             })
         });
         line_draw(cx);
@@ -7532,6 +7541,115 @@ mod tests {
             "the press opens the reply, focus in its empty text"
         );
         return_held_off(cx, "Reply", text);
+    }
+
+    /// The fixture pull's conversations received for the offline reviewer, so Reply can open
+    /// the first one's reply.
+    fn receive_fixture_threads(panel: &Entity<Panel>, cx: &mut gpui_kit::VisualTestContext) {
+        let identity = model::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.account = Some("offline-reviewer".into());
+                panel.receive_threads(page, None);
+            })
+        });
+        line_draw(cx);
+    }
+
+    /// Return on `route`, a Button used in Review whose action leaves focus in the empty
+    /// review body: Add to review and Discard this comment, beside the comment open on a line,
+    /// a collected comment's Remove, and an open reply's Save and close reply. The press acts
+    /// once and types nothing into the body while the key is held ([`return_held_off`]);
+    /// after the key-up a fresh press types its line. Each Button took the press as the key
+    /// went down, and each of its repeats typed a new line into the body (decided 2026-11-11:
+    /// a Return that opens or focuses a composer never types into it).
+    fn a_return_left_in_the_review_body(cx: &mut TestAppContext, route: &str) {
+        use crate::branch_actions::tests::enter;
+        let (_fixture, _app, panel, cx) = review_line_panel(cx);
+        let button: ElementId = match route {
+            "Add to review" => "github-add-comment".into(),
+            "Discard this comment" => "github-discard-composer".into(),
+            "Remove" => ("github-remove-inline", 0usize).into(),
+            _ => "github-close-reply".into(),
+        };
+        if route == "Save and close reply" {
+            receive_fixture_threads(&panel, cx);
+        }
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if route == "Save and close reply" {
+                    panel.change_section(Section::Review, window, cx);
+                    let target = panel.conversations.threads[0].target.clone();
+                    panel.begin_reply(target, window, cx);
+                    return;
+                }
+                panel.select_review_line(3, false, window, cx);
+                panel.begin_comment(window, cx);
+                panel
+                    .review
+                    .input
+                    .update(cx, |input, cx| input.set_value("Looks right", window, cx));
+                if route == "Remove" {
+                    panel.add_comment(window, cx);
+                }
+                panel.change_section(Section::Review, window, cx);
+            })
+        });
+        line_draw(cx);
+        let focus = panel
+            .read_with(cx, |panel, _| panel.review.buttons.kept(button))
+            .unwrap_or_else(|| panic!("{route} is drawn"));
+        cx.update(|window, cx| focus.focus(window, cx));
+        line_draw(cx);
+        enter(cx, Some(false));
+        line_draw(cx);
+        let (acted, focused) = cx.update(|window, cx| {
+            let panel = panel.read(cx);
+            let acted = match route {
+                "Add to review" => panel.review.comments.len() == 1,
+                "Save and close reply" => panel.conversations.active.is_none(),
+                _ => panel.review.comments.is_empty(),
+            } && panel.review.composing.is_none();
+            (
+                acted,
+                panel.body.read(cx).focus_handle(cx).is_focused(window),
+            )
+        });
+        assert!(
+            acted && focused,
+            "{route}: the press acts, focus in the review body"
+        );
+        let text = |cx: &mut gpui_kit::VisualTestContext| {
+            panel.read_with(cx, |panel, cx| panel.body.read(cx).value().to_string())
+        };
+        return_held_off(cx, route, text);
+    }
+    #[gpui::test]
+    async fn a_return_on_add_to_review_types_nothing_into_the_review_body(cx: &mut TestAppContext) {
+        a_return_left_in_the_review_body(cx, "Add to review");
+    }
+    #[gpui::test]
+    async fn a_return_on_discard_this_comment_types_nothing_into_the_review_body(
+        cx: &mut TestAppContext,
+    ) {
+        a_return_left_in_the_review_body(cx, "Discard this comment");
+    }
+    #[gpui::test]
+    async fn a_return_on_remove_types_nothing_into_the_review_body(cx: &mut TestAppContext) {
+        a_return_left_in_the_review_body(cx, "Remove");
+    }
+    #[gpui::test]
+    async fn a_return_on_save_and_close_reply_types_nothing_into_the_review_body(
+        cx: &mut TestAppContext,
+    ) {
+        a_return_left_in_the_review_body(cx, "Save and close reply");
     }
 
     /// 8,000 deletions and 8,000 additions of 520 bytes, just under the 8 MiB response bound:

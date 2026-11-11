@@ -1324,7 +1324,7 @@ impl Panel {
                 .when_some(self.outcome("github-reply-error","github-reply-cancelled",cx).filter(|_|self.answers_in_reply()),|element,line|element.child(super::review::clipped(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(line)))))
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(self.button("github-review-reply","Review reply…","",true, cx).disabled(self.pending||!valid).on_click(cx.listener(|this,_,window,cx|this.review_reply(window,cx))))
-                .child(self.button("github-close-reply","Save and close reply","",false, cx).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|{this.save_reply(window,cx);this.conversations.active=None;this.confirm=None;this.focus_visible_section(window,cx);cx.notify();})))
+                .child(self.button("github-close-reply","Save and close reply","",false, cx).disabled(self.pending).on_click(cx.listener(|this,event,window,cx|{this.save_reply(window,cx);this.conversations.active=None;this.confirm=None;this.focus_visible_section(window,cx);this.hold_enter_on_composer(event,window,cx);cx.notify();})))
                 .child(self.held_button("github-copy-reply",copy_button(reply_mark(target),"Copy reply", "", cx),cx).on_click(cx.listener(|this,_,window,cx|{if let Some(draft)=this.reply_snapshot(cx){let Draft::Reply(reply)=&draft else {return};copy_feedback::copy(window,cx,Some(reply_mark(&reply.target)),"reply",draft.recovery_text());}})))
                 .child(label("github-reply-save",self.save_status.clone()).role(Role::Status).text_color(rgb(p.muted))))
             .into_any_element()
