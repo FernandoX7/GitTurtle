@@ -5155,11 +5155,19 @@ pub(crate) mod tests {
     /// Whether the last frame drew the installed Button focus ring around
     /// `control`, within a device pixel.
     fn button_ringed(cx: &mut VisualTestContext, control: Bounds<Pixels>) -> bool {
-        cx.update(|window, cx| {
-            let scale = window.scale_factor();
-            let setting = gpui_kit::component::Theme::global(cx).button_focus_ring;
+        cx.update(|window, cx| rings_drawn(window, cx)(control))
+    }
+
+    /// What the last frame drew, kept to ask later whether it drew the
+    /// installed Button focus ring around a control, within a device pixel
+    /// ([`button_ringed`]), once a later frame has said where the control is.
+    fn rings_drawn(window: &Window, cx: &App) -> impl Fn(Bounds<Pixels>) -> bool + use<> {
+        let scale = window.scale_factor();
+        let setting = gpui_kit::component::Theme::global(cx).button_focus_ring;
+        let quads = window.painted_quads();
+        move |control| {
             let footprint = control.dilate(setting.gap + setting.width);
-            window.painted_quads().into_iter().any(|quad| {
+            quads.iter().any(|quad| {
                 let b = quad.bounds;
                 let near = |edge: f32, expected: Pixels| {
                     (px(edge / scale) - expected).abs() <= px(1. / scale)
@@ -5170,7 +5178,7 @@ pub(crate) mod tests {
                     && near(b.bottom().as_f32(), footprint.bottom())
                     && quad.border_widths.top.as_f32() == setting.width.as_f32() * scale
             })
-        })
+        }
     }
 
     /// In the frame being observed, the Your themes control `selector`
@@ -6858,15 +6866,41 @@ pub(crate) mod tests {
         assert!(!settings::page_shows(cx, "delete-custom-theme-7"));
     }
 
-    /// Delete the active Harbor with the keyboard, the store answering before
-    /// the next frame or only after three native frames have drawn the row's
-    /// actions disabled and run the modal focus repair. Either way Space then
-    /// opens New theme…, also once time has passed after the alert closed,
-    /// since nothing returns focus later.
-    fn delete_then_space_opens_new_theme(cx: &mut TestAppContext, late_reply: bool) {
+    /// How a test confirms the delete alert's Delete theme, which Tab
+    /// reaches from Cancel ([`delete_then_space_opens_new_theme`]).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Confirm {
+        Return,
+        Space,
+        /// A pointer press on Delete theme, which Tab did not reach.
+        Pointer,
+    }
+
+    /// Delete the active Harbor through its alert opened by Space on
+    /// Delete…, confirmed by `confirm`, the store answering before the next
+    /// frame or only after three native frames have drawn the row's actions
+    /// disabled and run the modal focus repair. Either way the frame that
+    /// first gives New theme… focus draws its ring after a key's confirm and
+    /// none after a pointer's, as the shared ring does on every button of
+    /// the card (decided 2026-11-10), and Space then opens New theme…, also
+    /// once time has passed after the alert closed, since nothing returns
+    /// focus later.
+    fn delete_then_space_opens_new_theme(
+        cx: &mut TestAppContext,
+        late_reply: bool,
+        confirm: Confirm,
+    ) {
         let (app, cx) = open_app(cx);
+        if confirm == Confirm::Pointer {
+            // The alert slides in on a wall-clock animation: at rest, Delete
+            // theme is where the press lands.
+            cx.update(|_, cx| cx.set_reduce_motion(true));
+        }
         cx.update(|window, _| window.activate_window());
         with_active_harbor(cx, &app);
+        mouse_away(cx);
+        let new_focus =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus("custom-themes-new", cx)));
         // A job queued ahead of the delete holds the serialized writer.
         let release = late_reply.then(|| {
             let (release, hold) = std::sync::mpsc::channel::<()>();
@@ -6879,8 +6913,54 @@ pub(crate) mod tests {
             release
         });
         open_delete_alert(cx, &app);
-        key_frame(cx, "tab", |_, _| ());
-        assert!(!key_frame(cx, "enter", |window, cx| window.has_active_dialog(cx)));
+        let open = match confirm {
+            Confirm::Return | Confirm::Space => {
+                key_frame(cx, "tab", |_, _| ());
+                let key = if confirm == Confirm::Return {
+                    "enter"
+                } else {
+                    "space"
+                };
+                key_frame(cx, key, |window, cx| window.has_active_dialog(cx))
+            }
+            Confirm::Pointer => {
+                let at = cx
+                    .debug_bounds("delete-theme-confirm")
+                    .expect("the alert draws Delete theme")
+                    .center();
+                // As native input, as `key_frames` delivers a key: the press,
+                // the frame after it, the release, the frame after that.
+                let open = cx.update(|window, cx| {
+                    window.dispatch_event(
+                        PlatformInput::MouseDown(MouseDownEvent {
+                            position: at,
+                            modifiers: Modifiers::default(),
+                            button: MouseButton::Left,
+                            click_count: 1,
+                            first_mouse: false,
+                        }),
+                        cx,
+                    );
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    window.dispatch_event(
+                        PlatformInput::MouseUp(MouseUpEvent {
+                            position: at,
+                            modifiers: Modifiers::default(),
+                            button: MouseButton::Left,
+                            click_count: 1,
+                        }),
+                        cx,
+                    );
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    window.has_active_dialog(cx)
+                });
+                cx.run_until_parked();
+                open
+            }
+        };
+        assert!(!open, "{confirm:?} on Delete theme closes the alert");
         if let Some(release) = release {
             for _ in 0..3 {
                 native_frame(cx);
@@ -6897,9 +6977,28 @@ pub(crate) mod tests {
                 app.custom_themes.is_empty() && !app.theme_editor.save_pending()
             })
         });
-        // The first frame draws the card without the row; the next moves focus.
+        // The first frame draws the card without the row; the next moves focus
+        // and draws it there, read before anything draws again.
         native_frame(cx);
-        native_frame(cx);
+        let ringed_around = cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+            rings_drawn(window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            focused_stop(cx),
+            new_focus,
+            "{confirm:?}: New theme… holds focus"
+        );
+        // Where New theme… stands once the row's theme has left the picker
+        // above the card, as in that frame.
+        let new_theme = bounds(cx, "custom-themes-new".into());
+        assert_eq!(
+            ringed_around(new_theme),
+            confirm != Confirm::Pointer,
+            "{confirm:?}: New theme… draws its ring in that frame only after a key's confirm"
+        );
         // Time passes after the alert closed; nothing moves focus later.
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(400));
@@ -6916,14 +7015,132 @@ pub(crate) mod tests {
     fn after_a_delete_answered_before_the_next_frame_focus_is_on_new_theme(
         cx: &mut TestAppContext,
     ) {
-        delete_then_space_opens_new_theme(cx, false);
+        delete_then_space_opens_new_theme(cx, false, Confirm::Return);
     }
 
     #[gpui::test]
     fn after_a_delete_answered_after_the_modal_focus_repair_focus_is_on_new_theme(
         cx: &mut TestAppContext,
     ) {
-        delete_then_space_opens_new_theme(cx, true);
+        delete_then_space_opens_new_theme(cx, true, Confirm::Return);
+    }
+
+    #[gpui::test]
+    fn after_a_delete_confirmed_by_space_new_theme_is_ringed(cx: &mut TestAppContext) {
+        delete_then_space_opens_new_theme(cx, false, Confirm::Space);
+    }
+
+    #[gpui::test]
+    fn after_a_pointer_delete_new_theme_is_focused_without_a_ring(cx: &mut TestAppContext) {
+        delete_then_space_opens_new_theme(cx, false, Confirm::Pointer);
+    }
+
+    #[gpui::test]
+    fn after_a_pointer_delete_answered_late_new_theme_is_focused_without_a_ring(
+        cx: &mut TestAppContext,
+    ) {
+        delete_then_space_opens_new_theme(cx, true, Confirm::Pointer);
+    }
+
+    /// Every button on the Your themes card draws its ring from the shared
+    /// keyboard ring, as the colour picker's trigger does: a key shows it,
+    /// a pointer press ends it, so one card has one rule (decided
+    /// 2026-11-10). Space on Delete… and a pointer press on its alert's
+    /// Cancel gave focus back to Delete… ringed, while the same on Edit…
+    /// gave it back unringed: Import…, Export… and Delete… drew the
+    /// toolkit's ring on any focus. Here each button, reached by Tab, draws
+    /// its ring; New theme…, Edit… and Delete…, opened by Space and closed
+    /// by a pointer press on Cancel, hold focus without one. Export… and
+    /// Import… open the desktop's file chooser, which no press in the
+    /// window closes: cancelled after Space, focus is back on the button
+    /// ringed, and after a pointer press on the button that opened it,
+    /// without a ring.
+    #[gpui::test]
+    fn every_your_themes_button_rings_for_keyboard_focus_only(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, _| window.activate_window());
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(vec![harbor], cx)));
+        settle(cx);
+        mouse_away(cx);
+        let card = cx.update(|_, cx| app.read(cx).theme_editor.card_focus(cx));
+        // In Tab order from the card.
+        let buttons = [
+            "custom-themes-new",
+            "custom-themes-import",
+            "edit-custom-theme-7",
+            "export-custom-theme-7",
+            "delete-custom-theme-7",
+        ];
+        // The button `selector` holds focus, its ring drawn or not.
+        let assert_focus = |cx: &mut VisualTestContext, stop: usize, ringed: bool, at: &str| {
+            let selector = buttons[stop];
+            let handle = cx.update(|_, cx| {
+                app.update(cx, |app, cx| match stop {
+                    0 | 1 => app.page_focus(selector, cx),
+                    n => app.theme_editor.action_focus(7, n - 2, cx),
+                })
+            });
+            assert_eq!(focused_stop(cx), handle, "{at}: {selector} holds focus");
+            let control = bounds(cx, selector.into());
+            assert_eq!(
+                button_ringed(cx, control),
+                ringed,
+                "{at}: {selector} draws its ring only after a key"
+            );
+        };
+        let answer_chooser = |cx: &mut VisualTestContext, stop: usize| {
+            if stop == 1 {
+                cx.simulate_path_prompt_response(|_| None);
+            } else {
+                cx.simulate_new_path_selection(|_| None);
+            }
+            finish_transfer(cx, &app);
+            assert!(!cx.read(|cx| app.read(cx).theme_transfer_busy()));
+        };
+        for (stop, selector) in buttons.into_iter().enumerate() {
+            cx.update(|window, cx| card.focus(window, cx));
+            settle(cx);
+            for _ in 0..=stop {
+                press(cx, "tab");
+            }
+            assert_focus(cx, stop, true, "Tab");
+            press(cx, "space");
+            match stop {
+                0 | 2 => {
+                    assert!(
+                        cx.read(|cx| app.read(cx).theme_editor.form.is_some()),
+                        "Space on {selector} opens the editor"
+                    );
+                    click(cx, "theme-editor-cancel");
+                    assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_none()));
+                }
+                4 => {
+                    assert!(
+                        cx.update(|window, cx| window.has_active_dialog(cx)),
+                        "Space on Delete… opens its alert"
+                    );
+                    click(cx, "delete-theme-cancel");
+                    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+                }
+                _ => {
+                    assert!(
+                        cx.read(|cx| app.read(cx).theme_transfer_busy()),
+                        "Space on {selector} opens the file chooser"
+                    );
+                    answer_chooser(cx, stop);
+                    assert_focus(cx, stop, true, "the chooser Space opened, cancelled");
+                    click(cx, selector);
+                    assert!(
+                        cx.read(|cx| app.read(cx).theme_transfer_busy()),
+                        "a press on {selector} opens the file chooser"
+                    );
+                    answer_chooser(cx, stop);
+                }
+            }
+            mouse_away(cx);
+            assert_focus(cx, stop, false, "after a pointer press");
+        }
     }
 
     /// The card's current export or import result.

@@ -1858,10 +1858,13 @@ impl GitTurtle {
                         .child(
                             button("custom-themes-new", new_label, "plus", false)
                                 .track_focus(&new_theme)
-                                // Ringed for keyboard focus only, so the
+                                // Every button on the card rings for keyboard
+                                // focus only, from the shared ring: a key
+                                // shows it, a pointer press ends it, so the
                                 // theme editor's close by a pointer press
-                                // leaves it focused without a ring, and a key
-                                // close draws it (decided 2026-11-10).
+                                // leaves New theme… focused without a ring,
+                                // and a key close draws it (decided
+                                // 2026-11-10).
                                 .focus_ring(self.focus_ring.shows(&new_theme))
                                 .debug_selector(|| "custom-themes-new".into())
                                 .disabled(pending || full)
@@ -1873,6 +1876,7 @@ impl GitTurtle {
                         .child(
                             button("custom-themes-import", "Import…", "", false)
                                 .track_focus(&import_theme)
+                                .focus_ring(self.focus_ring.shows(&import_theme))
                                 .debug_selector(|| "custom-themes-import".into())
                                 .accessibility_label(import_name)
                                 .disabled(pending || full)
@@ -2239,7 +2243,7 @@ impl GitTurtle {
             (format!("export-custom-theme-{id}"), export_name.clone()),
             (format!("delete-custom-theme-{id}"), delete_name.clone()),
         ]);
-        let edit = self.theme_editor.action_focus(id, 0, cx);
+        let [edit, export, delete] = [0, 1, 2].map(|n| self.theme_editor.action_focus(id, n, cx));
         let row = div()
             .id(("custom-theme", id as usize))
             .debug_selector(move || format!("custom-theme-{id}"))
@@ -2337,9 +2341,8 @@ impl GitTurtle {
             .child(
                 button(("edit-custom-theme", id as usize), "Edit…", "", false)
                     .track_focus(&edit)
-                    // Ringed for keyboard focus only, as New theme… is: the
-                    // theme editor's close gives it focus (decided
-                    // 2026-11-10).
+                    // Ringed for keyboard focus only, as every button on the
+                    // card is (decided 2026-11-10).
                     .focus_ring(self.focus_ring.shows(&edit))
                     .debug_selector(move || format!("edit-custom-theme-{id}"))
                     .accessibility_label(edit_name)
@@ -2373,7 +2376,8 @@ impl GitTurtle {
                     })
                     .child(
                         button(("export-custom-theme", id as usize), "Export…", "", false)
-                            .track_focus(&self.theme_editor.action_focus(id, 1, cx))
+                            .track_focus(&export)
+                            .focus_ring(self.focus_ring.shows(&export))
                             .debug_selector(move || format!("export-custom-theme-{id}"))
                             .accessibility_label(export_name)
                             .disabled(pending)
@@ -2384,7 +2388,8 @@ impl GitTurtle {
             )
             .child(
                 button(("delete-custom-theme", id as usize), "Delete…", "", false)
-                    .track_focus(&self.theme_editor.action_focus(id, 2, cx))
+                    .track_focus(&delete)
+                    .focus_ring(self.focus_ring.shows(&delete))
                     .debug_selector(move || format!("delete-custom-theme-{id}"))
                     .accessibility_label(delete_name)
                     .disabled(pending)
