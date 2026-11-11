@@ -863,8 +863,11 @@ impl SeriesBrowser {
     /// the scrolling body, at 18 pt in a 461 × 490 window, the line scrolled
     /// away with it, overflowed a body the series list's rows do not count,
     /// and moved the content by about 50 px as it came and went (decision,
-    /// 2026-11-10). Its text gives way first, then Cancel's word, then its
-    /// label for its icon (`lfs_download::line_cancel_form`). Cancel tracks
+    /// 2026-11-10). Its text takes all the line leaves beside Cancel, which
+    /// stands at the line's end, so neither a press nor a progress update
+    /// moves it (`lfs_download::ProgressRoom::Line`); the text gives way
+    /// first, then Cancel's word, then its label for its icon
+    /// (`lfs_download::line_cancel_form`). Cancel tracks
     /// the row's handle, so focus on it stays as it moves between the two.
     fn footer_line(
         &self,
@@ -958,6 +961,7 @@ impl SeriesBrowser {
                 .items_center()
                 .child(crate::lfs_download::running_form(
                     progress,
+                    crate::lfs_download::ProgressRoom::Line,
                     (
                         &self.download_cancel,
                         std::rc::Rc::new(move |window, cx| {
@@ -6482,8 +6486,7 @@ mod tests {
         cx.simulate_click(cancel.center(), Modifiers::none());
         crate::tags::tests::draw(cx);
         assert!(
-            app.read_with(cx, |app, _| app.operation_progress())
-                .is_some_and(|progress| progress.starts_with("Cancelling")),
+            app.read_with(cx, |app, _| app.operation_cancelling()),
             "Cancel download cancels the window's write"
         );
         let words = "Git LFS could not reach origin";
@@ -6847,6 +6850,12 @@ mod tests {
     /// whose objects on both sides are missing from the local store, and
     /// that commit's changed files.
     fn missing_both() -> (tempfile::TempDir, GitRepository, Vec<FileChange>) {
+        missing_both_with(&[])
+    }
+
+    /// [`missing_both`], its last commit also adding each of `others`, a
+    /// text file, so the review can show another file of that commit.
+    fn missing_both_with(others: &[&str]) -> (tempfile::TempDir, GitRepository, Vec<FileChange>) {
         use crate::tags::tests::{git, tagged_repository};
         use sha2::{Digest, Sha256};
         let fixture = tempfile::tempdir().unwrap();
@@ -6859,6 +6868,11 @@ mod tests {
                 text.len()
             );
             std::fs::write(repo.path().join("both.mmd"), pointer).unwrap();
+            if message == "After" {
+                for other in others {
+                    std::fs::write(repo.path().join(other), "Notes\n").unwrap();
+                }
+            }
             git(repo.path(), &["add", "."]);
             git(repo.path(), &["commit", "--quiet", "-m", message]);
         }
@@ -7231,10 +7245,23 @@ mod tests {
         let failure = cx
             .debug_bounds("lfs-download-failure")
             .expect("the words are drawn");
+        // They take the sentence's place at its width, which keeps the side's
+        // name and "Failed…".
+        let device = cx.update(|window, _| px(1. / window.scale_factor()));
+        let [slot, least] = cx.update(|window, _| {
+            [crate::lfs_download::DOWNLOAD_EXPLANATION, "After: Failed…"].map(|text| {
+                crate::views::laid_out_text_width(
+                    crate::views::line_widths(&[(text, appearance::ui_text(12.))], window),
+                    window,
+                )
+            })
+        });
         assert!(
-            failure.size.width > Pixels::ZERO
+            (failure.size.width - slot).abs() <= device / 2.
+                && failure.size.width >= least - device / 2.
                 && cx.debug_bounds("lfs-download-failure-icon").is_none(),
-            "at 13 pt in a 1480 × 973 window the words, {failure:?}, need no icon"
+            "at 13 pt in a 1480 × 973 window the words, {failure:?}, stand in the sentence's \
+             place, {slot:?} wide, at least {least:?}, and need no icon"
         );
         assert_eq!(
             written::get("lfs-download-failure")
@@ -7468,6 +7495,109 @@ mod tests {
             "stacked, the words say themselves as drawn, without the side, and Download \
              After… names itself with them"
         );
+        cx.update(|window, _| window.set_scale_factor(initial));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Neither a press nor a progress update moves Cancel download or the
+    /// other side's Download (decision, 2026-11-10): with both sides'
+    /// objects missing, at 18 pt in a 600 × 490 window at scale 2 and at
+    /// 13 pt in a 1480 × 973 window, Before…'s running form keeps its
+    /// progress the room the row reserved for it, so Cancel keeps its bounds
+    /// and After… its place before the press, after it and after a long
+    /// progress update, the progress ending in an ellipsis with its whole
+    /// text in its tooltip and accessible name; and on the dialog's footer,
+    /// while the review shows another file, Cancel keeps its bounds through
+    /// the same steps. The progress grew into the line's spare room as the
+    /// press turned it to "Cancelling… Inspect the result before
+    /// retrying.", pushing Cancel, and After… with it, right.
+    #[gpui::test]
+    async fn cancel_and_the_other_download_stand_still_as_the_progress_grows(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_both_with(&["notes.txt"]);
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let initial = cx.update(|window, _| window.scale_factor());
+        let browser = inspecting(&app, cx, &files);
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.text_mode = 0;
+                    browser.prepare_editor(window, cx);
+                    let body = &browser.body;
+                    body.reveal_next_focus();
+                    body.focus("series-file-preview", cx).focus(window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+        };
+        let long = "Receiving objects: 50% (1/2), 1.20 MiB | 3.40 MiB/s, and a long report \
+                    from Git LFS that runs well past the room the line keeps for it";
+        // Cancel's bounds and, in the row, After…'s left edge.
+        let placed = |cx: &mut gpui::VisualTestContext| {
+            (
+                cx.debug_bounds("cancel-lfs-download")
+                    .expect("Cancel download is drawn"),
+                cx.debug_bounds("download-lfs-side-1")
+                    .map(|after| after.left()),
+            )
+        };
+        for (width, height, text, scale) in [(600., 490., 18, 2.), (1480., 973., 13, initial)] {
+            let at = format!("{width} × {height} at {text} pt");
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.update(|window, _| window.set_scale_factor(scale));
+            for footer in [false, true] {
+                let at = format!("{at}, {}", if footer { "footer" } else { "row" });
+                choose(&browser, cx, file_index(&files, "both.mmd"));
+                shown(cx);
+                let before = cx
+                    .debug_bounds("download-lfs-side-0")
+                    .expect("Download Before… is offered");
+                start_download(&app, &browser, cx, before.center());
+                if footer {
+                    choose(&browser, cx, file_index(&files, "notes.txt"));
+                }
+                cx.executor()
+                    .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+                shown(cx);
+                let resting = placed(cx);
+                assert_eq!(
+                    resting.1.is_some(),
+                    !footer,
+                    "{at}: After… is drawn beside Before…'s running form in the row only"
+                );
+                cx.simulate_click(resting.0.center(), Modifiers::none());
+                shown(cx);
+                assert!(
+                    app.read_with(cx, |app, _| app.operation_cancelling()),
+                    "{at}: the press cancels the write"
+                );
+                assert_eq!(placed(cx), resting, "{at}: the press moves nothing");
+                crate::authentication::CANCELLING_WORDS.set(Some(long));
+                shown(cx);
+                let updated = placed(cx);
+                let said = written::get("lfs-download-progress")
+                    .and_then(|node| node.node.label().map(str::to_owned));
+                let tooltip = !footer && hover_shows(cx, "lfs-download-progress", long);
+                crate::authentication::CANCELLING_WORDS.set(None);
+                assert_eq!(updated, resting, "{at}: a long progress moves nothing");
+                if !footer {
+                    assert_eq!(
+                        (said.as_deref(), tooltip),
+                        (Some(long), true),
+                        "{at}: the progress says its whole text in its accessible name \
+                         and its tooltip"
+                    );
+                }
+                end_download(&app, &browser, cx, Some("Cancelled"));
+            }
+        }
         cx.update(|window, _| window.set_scale_factor(initial));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }

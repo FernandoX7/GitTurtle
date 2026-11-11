@@ -28091,12 +28091,9 @@ pub(crate) mod tests {
         );
         cx.simulate_click(before.2.center(), Modifiers::default());
         draw(cx);
-        let progress = app.read_with(cx, |app, _| app.operation_progress());
         assert!(
-            progress
-                .as_deref()
-                .is_some_and(|progress| progress.starts_with("Cancelling")),
-            "the press cancels the write: {progress:?}"
+            app.read_with(cx, |app, _| app.operation_cancelling()),
+            "the press cancels the write"
         );
         assert_eq!(parts(cx), before, "pressed, Cancel moves nothing");
         drop(held);

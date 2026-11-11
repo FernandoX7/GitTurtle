@@ -559,15 +559,16 @@ fn failure_least(sides: &[usize], failed: usize, share: bool, window: &Window) -
     }
 }
 
-/// Whether a failure's words keep at least "Failed…", with the side's name
-/// where they lead with it ([`failure_least`]), beside the buttons on the
-/// line of the side that `failed`, among `sides` that `share` one line or
-/// stack one to a line, their word given way where `short`, in a row
-/// `column` wide. Where they would not, a warning icon stands in their
-/// place ([`failure_icon`]): a failure never shrinks to a bare ellipsis
-/// (decision, 2026-11-10: at 18 pt in a 461 × 490 window the words of a
-/// failure beside both sides' Downloads were drawn as "…" alone).
-fn failure_words_fit(
+/// The room a failure's words have after the Downloads on the line of the
+/// side that `failed`, among `sides` that `share` one line or stack one to
+/// a line, their word given way where `short`, in a row `column` wide. The
+/// words stand there where it keeps at least "Failed…", with the side's
+/// name where they lead with it ([`failure_least`]); where it would not, a
+/// warning icon stands in their place ([`failure_icon`]): a failure never
+/// shrinks to a bare ellipsis (decision, 2026-11-10: at 18 pt in a 461 × 490
+/// window the words of a failure beside both sides' Downloads were drawn as
+/// "…" alone).
+fn failure_room(
     quick_source: bool,
     sides: &[usize],
     failed: usize,
@@ -575,7 +576,7 @@ fn failure_words_fit(
     short: bool,
     column: Pixels,
     window: &Window,
-) -> bool {
+) -> Pixels {
     let (gap, room) = row_room(column, window);
     let [buttons, _] = side_widths(quick_source, sides, short, false, window);
     let line = sides
@@ -584,7 +585,7 @@ fn failure_words_fit(
         .filter(|(side, _)| share || **side == failed)
         .map(|(_, &button)| gap + button)
         .sum::<Pixels>();
-    failure_least(sides, failed, share, window) + line <= room
+    room - line
 }
 
 /// The width layout gives [`failure_icon`]'s icon, the shared 16 px control
@@ -624,8 +625,9 @@ fn said_tooltip(
 
 /// The warning icon, a circle with "!", that stands for a failure's words
 /// where they would not keep "Failed…" beside the buttons
-/// ([`failure_words_fit`]): it never gives way, the last thing standing in
-/// their place, its tooltip saying them whole as they would be drawn there,
+/// ([`failure_room`]): the last thing standing in their place, drawn only
+/// where it has its whole width there, its tooltip saying them whole as they
+/// would be drawn there,
 /// `drawn`, the side's name leading where two sides share the line ("After:
 /// …"), and the failed side's Download's accessible description saying them
 /// ("Failed: …"), so assistive technology hears them as before, once, as
@@ -897,10 +899,10 @@ pub(crate) fn download_row(
     let slot = (one_line && share)
         .then(|| row_text_width(DOWNLOAD_EXPLANATION, &EXPLANATION_WIDTH, window));
     let said = if let Some((failed, words)) = failure.clone() {
-        let fit = match slot {
-            Some(slot) => failure_least(&sides, failed, share, window) <= slot,
-            None => failure_words_fit(quick_source, &sides, failed, share, short, column, window),
-        };
+        let room = slot.unwrap_or_else(|| {
+            failure_room(quick_source, &sides, failed, share, short, column, window)
+        });
+        let fit = failure_least(&sides, failed, share, window) <= room;
         // Two sides on one line: the words say which failed, which nothing
         // else drawn there tells, and so do the tooltips of what stands for
         // them, which say what is drawn, whole.
@@ -909,26 +911,32 @@ pub(crate) fn download_row(
         } else {
             words
         };
-        let said = if fit {
+        if fit {
             let whole = drawn.clone();
-            label("lfs-download-failure", drawn)
-                .debug_selector(|| "lfs-download-failure".into())
-                .flex_shrink(1.)
-                .min_w_0()
-                .when_some(slot, |words, slot| words.flex_none().w(slot))
-                .truncate()
-                .text_size(appearance::ui_text(12.))
-                .text_color(rgb(warning))
-                .tooltip(said_tooltip("lfs-download-failure", whole))
-                .into_any_element()
+            Some(
+                label("lfs-download-failure", drawn)
+                    .debug_selector(|| "lfs-download-failure".into())
+                    .flex_shrink(1.)
+                    .min_w_0()
+                    .when_some(slot, |words, slot| words.flex_none().w(slot))
+                    .truncate()
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(warning))
+                    .tooltip(said_tooltip("lfs-download-failure", whole))
+                    .into_any_element(),
+            )
         } else {
-            let icon = failure_icon(drawn, warning);
+            // Where even the icon has no room after the last Download on
+            // its line, as in a stacked row narrower than a Download and
+            // the icon, nothing stands for the words, which the failed
+            // side's Download's tooltip and accessible description say
+            // whole: drawn there, the icon ran past the row's text edge.
+            let icon = (failure_icon_width(window) <= room).then(|| failure_icon(drawn, warning));
             match slot {
-                Some(slot) => div().flex_none().w(slot).child(icon).into_any_element(),
+                Some(slot) => Some(div().flex_none().w(slot).children(icon).into_any_element()),
                 None => icon,
             }
-        };
-        Some(said)
+        }
     } else {
         (!sentence_moves).then(|| {
             label("lfs-preview-download-explanation", DOWNLOAD_EXPLANATION)
@@ -941,6 +949,10 @@ pub(crate) fn download_row(
                 .into_any_element()
         })
     };
+    // What the running side's progress keeps, whatever it says.
+    let progressing = running.as_ref().map_or(Pixels::ZERO, |_| {
+        progress_room(quick_source, &sides, short, share, column, window)
+    });
     let items = targets.into_iter().map(|(side, target)| {
         if let (Some((_, progress, cancel)), Some(asked)) = (
             running.as_ref().filter(|(running, ..)| *running == side),
@@ -950,6 +962,7 @@ pub(crate) fn download_row(
             // with the Downloads'.
             return running_form(
                 progress.clone(),
+                ProgressRoom::Reserved(progressing),
                 (&asked.cancel, asked.on_cancel.clone()),
                 cancel.clone(),
                 if short {
@@ -1115,37 +1128,110 @@ pub(crate) fn line_cancel_form(least: &'static str, room: Pixels, window: &Windo
     }
 }
 
+/// The room a running download's progress text takes beside its Cancel
+/// download ([`running_form`]), fixed whatever the progress says, so
+/// neither a press nor a progress update moves Cancel or what follows it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ProgressRoom {
+    /// The Download row's: what its lines were decided from, "Download
+    /// object" whole, or its ellipsis where the buttons' word has given way
+    /// ([`progress_room`]).
+    Reserved(Pixels),
+    /// The dialog footer's line's: all the line leaves beside Cancel, which
+    /// stands at the line's end.
+    Line,
+}
+
+/// The room the Download row keeps for a running download's progress
+/// beside Cancel download, among `sides` that `share` one line or stack,
+/// their word given way where `short`, in a row `column` wide: "Download
+/// object" whole, which the row's lines were decided from ([`side_widths`]);
+/// where the buttons' word has given way, the whole wherever each side's
+/// running form beside the others' Downloads still holds it on its line,
+/// otherwise its ellipsis, which the lines were decided from there. Fixed
+/// for the row, whatever the progress says, so the progress growing never
+/// moves Cancel download or the other side's Download (decision,
+/// 2026-11-10), and at 18 pt in a 600 × 490 window, where the buttons'
+/// word gives way and their line has room, the progress is still whole.
+fn progress_room(
+    quick_source: bool,
+    sides: &[usize],
+    short: bool,
+    share: bool,
+    column: Pixels,
+    window: &Window,
+) -> Pixels {
+    let whole = said_least(false, false, window);
+    if !short {
+        return whole;
+    }
+    let (gap, room) = row_room(column, window);
+    let [buttons, _] = side_widths(quick_source, sides, short, false, window);
+    let running = whole + gap + cancel_width(short, window);
+    let holds = (0..buttons.len()).all(|running_side| {
+        let line = buttons
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| share || *index == running_side)
+            .map(|(index, &button)| {
+                if index == running_side {
+                    running
+                } else {
+                    button
+                }
+            })
+            .fold(-gap, |line, width| line + gap + width);
+        line <= room
+    });
+    if holds {
+        whole
+    } else {
+        said_least(false, short, window)
+    }
+}
+
 /// A running download's progress and its Cancel download, as the
 /// rewritten-series review draws them for the download it asked for: in its
 /// Download row where the pressed Download stood, and on its dialog's footer
 /// while it shows another file or commit. The progress, the window's
-/// progress text, gives way first, ending in an ellipsis, whole in its
-/// tooltip; then, in its `form`, Cancel download's word, as the Downloads'
-/// does beside it, so it reads "Cancel", its accessible name and tooltip
-/// saying what it cancels, and on the footer its label for its icon. Once
-/// pressed it reads "Cancelling…" and is no longer pressable, drawn as wide
-/// as the wider of its labels so the press moves nothing, as the header's
-/// Cancel is (decision, 2026-11-10: kept whole, "Cancel download" stacked a
-/// missing After… under a running Before… at 18 pt in a 461 × 490 window and
-/// cut the comparison's row by 1.5 px; and it stayed "Cancel download" and
-/// pressable after a press).
+/// progress text, takes the `room` its line keeps for it and no more,
+/// ending in an ellipsis where it is longer, whole in its tooltip and its
+/// accessible name; then, in its `form`, Cancel download's word gives way,
+/// as the Downloads' does beside it, so it reads "Cancel", its accessible
+/// name and tooltip saying what it cancels, and on the footer its label for
+/// its icon. Once pressed it reads "Cancelling…" and is no longer
+/// pressable, drawn as wide as the wider of its labels so the press moves
+/// nothing, as the header's Cancel is (decision, 2026-11-10: kept whole,
+/// "Cancel download" stacked a missing After… under a running Before… at
+/// 18 pt in a 461 × 490 window and cut the comparison's row by 1.5 px; and
+/// it stayed "Cancel download" and pressable after a press). The progress
+/// never grows into the line's spare room (decision, 2026-11-10: at 18 pt in
+/// a 600 × 490 window it grew from "Download object" to "Cancelling…
+/// Inspect the result before retrying." as Cancel was pressed, pushing
+/// Cancel, and After… beside a running Before…, right).
 pub(crate) fn running_form(
     progress: SharedString,
+    room: ProgressRoom,
     (focus, on_cancel): (&FocusHandle, OnCancel),
     cancel: RunningCancel,
     form: CancelForm,
     window: &Window,
     cx: &App,
 ) -> Div {
-    let whole = progress.clone();
     let text = div()
         .id("lfs-download-progress")
         .debug_selector(|| "lfs-download-progress".into())
         .role(Role::Status)
         .aria_label(progress.clone())
         .live_region(gpui::accesskit::Live::Off, false)
-        .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
+        .tooltip(said_tooltip("lfs-download-progress", progress.clone()))
         .min_w_0()
+        // It gives way first where its line has less room than it keeps.
+        .flex_shrink(1.)
+        .map(|text| match room {
+            ProgressRoom::Reserved(width) => text.w(width),
+            ProgressRoom::Line => text.flex_1(),
+        })
         .truncate()
         .text_size(appearance::ui_text(12.))
         .text_color(rgb(palette(cx).accent))
@@ -1175,6 +1261,7 @@ pub(crate) fn running_form(
     };
     let drawn = div()
         .flex_shrink(1.)
+        .when(room == ProgressRoom::Line, |drawn| drawn.flex_1())
         .min_w_0()
         .flex()
         .items_center()
@@ -2117,6 +2204,65 @@ mod tests {
                 "{column:?}: {said:?} stands whole, {least:?}, after Download After…, \
                  {after:?}, which keeps its place, {pressed:?}, with no {gone}"
             );
+        }
+    }
+
+    /// A stacked row's warning icon stands only where its line has room for
+    /// it after the Download that failed: at 18 pt and scale 2, the two
+    /// Downloads stacked, a row whose room holds Download Before… and the
+    /// icon draws the icon after it, inside the row's text edge, and one a
+    /// device pixel short draws nothing for the words, which the Download's
+    /// tooltip and accessible description say, Download Before… keeping its
+    /// place either way. Unchecked, the icon was drawn there past the row's
+    /// text edge, into its inset.
+    #[gpui::test]
+    async fn a_stacked_failure_draws_its_icon_only_where_it_has_room(cx: &mut TestAppContext) {
+        let (row, cx) = row_window(cx);
+        let (fits, icon, inset, device) = cx.update(|window, _| {
+            let (gap, _) = row_room(Pixels::ZERO, window);
+            let [buttons, _] = side_widths(false, &[0, 1], false, true, window);
+            let icon = failure_icon_width(window);
+            (
+                column_for(buttons[0] + gap + icon, window),
+                icon,
+                window.pixel_snap(window.rem_size() * 0.75),
+                px(1. / window.scale_factor()),
+            )
+        });
+        for (column, drawn) in [(fits - device, false), (fits, true)] {
+            show(&row, cx, column, false, Shown::Resting);
+            let [rest, after] = ["download-lfs-side-0", "download-lfs-side-1"]
+                .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
+            assert!(
+                after.top() >= rest.bottom() - device / 2.,
+                "{column:?}: the two stack: {rest:?}, {after:?}"
+            );
+            show(&row, cx, column, false, Shown::Failed { side: 0 });
+            let before = cx
+                .debug_bounds("download-lfs-side-0")
+                .expect("Before… is back");
+            let edge = cx
+                .debug_bounds("lfs-download-row")
+                .expect("the row")
+                .right()
+                - inset;
+            assert!(
+                (before.left() - rest.left()).abs() <= device / 2.
+                    && cx.debug_bounds("lfs-download-failure").is_none(),
+                "{column:?}: Download Before…, {before:?}, keeps its place, {rest:?}, and \
+                 no words fit beside it"
+            );
+            match cx.debug_bounds("lfs-download-failure-icon") {
+                Some(said) => assert!(
+                    drawn
+                        && said.size.width >= icon - device / 2.
+                        && said.left() >= before.right() - device / 2.
+                        && said.right() <= edge + device / 2.,
+                    "{column:?}: the icon, {said:?}, stands whole, {icon:?}, after \
+                     {before:?}, inside the row's text edge, {edge:?}, only where it has room"
+                ),
+                None => assert!(!drawn, "{column:?}: the icon has room after {before:?}"),
+            }
         }
     }
 
