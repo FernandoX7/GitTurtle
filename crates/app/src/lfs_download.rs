@@ -518,12 +518,14 @@ fn side_widths(
 }
 
 /// The least a running download's progress keeps beside its Cancel
-/// download in a row that says what it asked for: whole, and where `short`,
-/// the comparison's row having taken the buttons' word, its ellipsis,
-/// whole in its tooltip and its accessible name (decision, 2026-11-10: kept
-/// whole, at 18 pt in a 461 × 490 window both sides' objects missing
-/// stacked the two Downloads in every state and cut the comparison's row by
-/// 1.5 px).
+/// download in a row that says what it asked for, which the row's lines are
+/// decided from: whole, and where `short`, the comparison's row having taken
+/// the buttons' word, its ellipsis, whole in its tooltip and its accessible
+/// name (decision, 2026-11-10: kept whole, at 18 pt in a 461 × 490 window
+/// both sides' objects missing stacked the two Downloads in every state and
+/// cut the comparison's row by 1.5 px). The room the progress then takes
+/// is whole still wherever every side's running form holds it on its line,
+/// and its ellipsis only where one no longer does ([`progress_room`]).
 fn progress_least(short: bool, window: &Window) -> Pixels {
     if short {
         row_text_width(ELLIPSIS, &ELLIPSIS_WIDTH, window)
@@ -1139,9 +1141,11 @@ pub(crate) fn line_cancel_form(least: &'static str, room: Pixels, window: &Windo
 /// neither a press nor a progress update moves Cancel or what follows it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ProgressRoom {
-    /// The Download row's: what its lines were decided from, "Download
-    /// object" whole, or its ellipsis where the buttons' word has given way
-    /// ([`progress_room`]).
+    /// The Download row's: "Download object" whole wherever every side's
+    /// running form beside the others' Downloads holds it on its line, as
+    /// it does wherever the buttons keep their word, and otherwise, the
+    /// buttons' word given way, its ellipsis, which the row's lines were
+    /// decided from there ([`progress_room`]).
     Reserved(Pixels),
     /// The dialog footer's line's: all the line leaves beside Cancel, which
     /// stands at the line's end.
