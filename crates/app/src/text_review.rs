@@ -2674,6 +2674,228 @@ mod tests {
         );
     }
 
+    /// A partial Stage that fails, its index locked by another Git as it
+    /// runs, leaves the Diff view as the press left it: the text, caret,
+    /// line selection and scroll stay, focus stays in the text, the failure
+    /// shows where a write's failures show, the window's error banner, and
+    /// the bar acts again, so a second press can stage the same lines.
+    #[gpui::test]
+    async fn a_failed_partial_stage_leaves_the_diff_view_as_it_was(cx: &mut gpui::TestAppContext) {
+        let (fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &landing_notes()).await;
+        route.assert_kept(
+            &app,
+            cx,
+            "Staging selected changes…",
+            "the frame after Enter",
+        );
+        let lock = fixture
+            .path()
+            .join("narrow")
+            .join(".git")
+            .join("index.lock");
+        std::fs::write(&lock, "").unwrap();
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        std::fs::remove_file(&lock).unwrap();
+        let staged = crate::views::tests::fixture_git_output(
+            &fixture.path().join("narrow"),
+            &["diff", "--cached", "--name-only"],
+        );
+        assert!(staged.stdout.is_empty(), "nothing was staged");
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_busy, None, "the write has ended");
+            assert!(app.operation_error.is_some(), "it failed");
+            assert_eq!(app.patch_view.as_ref(), Some(&route.view), "the same view");
+            assert_eq!(
+                app.patch_editor.as_ref(),
+                Some(&route.editor),
+                "the same text"
+            );
+        });
+        assert!(
+            cx.debug_bounds("operation-error-summary").is_some(),
+            "the failure shows where a write's failures show"
+        );
+        assert!(cx.debug_bounds("empty-state").is_none());
+        assert!(
+            cx.update(|window, cx| route.view.read(cx).focus_handle(cx).is_focused(window)),
+            "focus stays in the text, not on {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+        assert_eq!(
+            text_place(&route.editor, cx),
+            (route.caret, route.scroll),
+            "the caret and scroll"
+        );
+        route.view.read_with(cx, |view, _| {
+            assert_eq!(view.selected_lines(), 2, "the selection stays");
+            assert!(!view.partial_suspended(), "the bar acts again");
+        });
+        assert!(cx.debug_bounds("apply-partial-selection").is_some());
+        assert!(cx.debug_bounds("partial-line-caret").is_some());
+    }
+
+    /// A partial Stage of every changed line keeps the Diff view through
+    /// its write; the file then leaves Unstaged, and the selection follows
+    /// it to its other group, Staged (`retained_area`), as any write that
+    /// moves a file has it: that row is selected with its staged diff shown,
+    /// and focus goes to the list that shows it, its ring drawn whole, never
+    /// to the window frame.
+    #[gpui::test]
+    async fn a_partial_stage_of_every_line_follows_the_file_to_staged(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let notes: String = (1..=40)
+            .map(|line| match line {
+                11 => "added one\nadded two\nnote 11\n".to_owned(),
+                _ => format!("note {line}\n"),
+            })
+            .collect();
+        let (_fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &notes).await;
+        route.assert_kept(
+            &app,
+            cx,
+            "Staging selected changes…",
+            "the frame after Enter",
+        );
+        native_frames(cx);
+        route.assert_kept(
+            &app,
+            cx,
+            "Staging selected changes…",
+            "while the write is held",
+        );
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.working_selected,
+                Some((0, gitturtle_core::ChangeArea::Staged)),
+                "the selection follows the file to Staged"
+            );
+            assert!(
+                matches!(
+                    app.content.as_deref(),
+                    Some(Content::Text { partial: Some(partial), .. })
+                        if partial.diff.area == gitturtle_core::ChangeArea::Staged
+                ),
+                "its staged diff is shown"
+            );
+        });
+        assert!(cx.debug_bounds("empty-state").is_none());
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus goes to the list, not to {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+        let accent: gpui::Hsla =
+            cx.read(|cx| gpui::rgb(crate::appearance::palette(cx).accent).into());
+        let rings = crate::focus_ring::painted_outlines(cx, accent);
+        assert!(
+            rings.iter().any(|ring| ring.whole),
+            "the list draws its ring whole: {rings:?}"
+        );
+    }
+
+    /// An outside change that lands as a partial write runs, a file added
+    /// beside the one shown, its watcher's report waiting for the write as
+    /// every quiet read does, never drops the Diff view either: through the
+    /// write, its reads and the quiet read after them, every frame draws
+    /// the same view with focus in its text, which ends with the staged
+    /// lines landed in place and the new file listed. (A change to the shown
+    /// file itself fails the write's own check, which keeps the view as
+    /// [`a_failed_partial_stage_leaves_the_diff_view_as_it_was`] shows.)
+    #[gpui::test]
+    async fn an_outside_change_during_a_partial_write_keeps_the_diff_view(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let notes = landing_notes();
+        let (fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &notes).await;
+        std::fs::write(fixture.path().join("narrow").join("outside.txt"), "new\n").unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        native_frames(cx);
+        route.assert_kept(
+            &app,
+            cx,
+            "Staging selected changes…",
+            "as the change is reported",
+        );
+        drop(held);
+        for step in 0..32 {
+            app.read_with(cx, |app, _| {
+                app.operations.drain();
+                app.worker.wait_idle();
+            });
+            cx.executor().run_until_parked();
+            crate::tags::tests::draw(cx);
+            assert!(cx.debug_bounds("empty-state").is_none(), "step {step}");
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.patch_view.as_ref(), Some(&route.view), "step {step}");
+            });
+            assert!(
+                cx.update(|window, cx| route.view.read(cx).focus_handle(cx).is_focused(window)),
+                "step {step}: focus in the text, not on {:?}",
+                cx.update(|window, cx| window.focused(cx))
+            );
+            let settled = app.read_with(cx, |app, _| {
+                app.operation_busy.is_none()
+                    && app.status_task.is_none()
+                    && app.task.is_none()
+                    && !app.automatic.quiet_read_running()
+            });
+            if settled {
+                break;
+            }
+        }
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        let shown = route
+            .editor
+            .read_with(cx, |state, _| state.value().to_string());
+        assert!(
+            shown.contains("\n added two\n"),
+            "the staged lines landed: {shown}"
+        );
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.operation_error.is_none(),
+                "the write staged: {:?}",
+                app.operation_error
+            );
+            assert!(
+                app.work_status.as_ref().is_some_and(|status| status
+                    .entries
+                    .iter()
+                    .any(|entry| entry.path.ends_with("outside.txt"))),
+                "the outside change is read"
+            );
+        });
+        assert_eq!(
+            text_place(&route.editor, cx).0,
+            patch_row(&route.editor, cx, " added two"),
+            "the caret's line"
+        );
+    }
+
     #[test]
     fn change_navigation_wraps_and_accumulates_before_layout() {
         assert_eq!(next_change(&[], None, 0, true), None);
