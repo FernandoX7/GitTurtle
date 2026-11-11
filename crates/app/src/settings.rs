@@ -414,6 +414,7 @@ impl GitTurtle {
                 let path = repository.path();
                 (path.to_owned(), self.project_name(path))
             }),
+            marked: self.shown_tab_unavailable(),
         }
     }
 
@@ -2756,6 +2757,9 @@ impl GitTurtle {
 
         let save_identity = self.page_focus("save-repository-identity", cx);
         let reset_identity = self.page_focus("use-current-identity", cx);
+        // A marked tab's repository is the one read before the mark:
+        // Manage named profiles… is refused there with the mark's reason.
+        let marked = self.shown_tab_unavailable();
         let identity = if let Some(repository_name) = repository_name {
             let repository_identity = format!(
                 "{}\n{}",
@@ -2881,8 +2885,16 @@ impl GitTurtle {
                 // A ghost Button at the card's text edge: its icon on the
                 // edge, its frame `pull` before it, as wide as its content
                 // as Settings' other ghost Buttons are. Stretched across the
-                // column, it centred its icon and label in the card.
-                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).track_focus(&manage_profiles).debug_selector(|| "settings-manage-profiles".into()).self_start().ml(-pull).map(|manage| crate::workspace::refusing(manage, || "settings-manage-profiles".into(), busy, looks_busy)).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
+                // column, it centred its icon and label in the card. On a
+                // marked tab it is refused with the mark's reason, as the
+                // profile picker's Manage profiles… and the palette's Manage
+                // Git profiles… are, since no route opens the manager there
+                // (`open_profiles`): it was drawn enabled, and a click opened
+                // nothing and said nothing.
+                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).track_focus(&manage_profiles).debug_selector(|| "settings-manage-profiles".into()).self_start().ml(-pull).map(|manage| {
+                    let manage = crate::workspace::refusing(manage, || "settings-manage-profiles".into(), busy || marked, looks_busy || marked);
+                    says_the_mark(manage, "settings-manage-profiles", "Manage named profiles…", None, marked)
+                }).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
                 .into_any_element()
         } else {
             let open_projects = self.page_focus("settings-open-projects", cx);
@@ -3099,6 +3111,9 @@ struct PageKey {
     status: String,
     profile: Option<gitturtle_core::GitProfile>,
     repository: Option<(PathBuf, String)>,
+    /// Whether the shown tab is marked, which refuses Manage named
+    /// profiles… with the mark's reason.
+    marked: bool,
 }
 
 impl SettingsPage {
@@ -5195,6 +5210,46 @@ fn setting_text<E: Styled + ParentElement>(
                         }),
                 ),
         )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The accessible name each Git identity card action was last built
+    /// with where a marked tab refuses it, or `None` where it was built
+    /// offered, by element ID ([`says_the_mark`]).
+    pub(crate) static MARKED_NAMES: std::cell::RefCell<std::collections::BTreeMap<&'static str, Option<SharedString>>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// `control`, an action of the Git identity card with element ID `id` and
+/// label `label`, which a marked tab refuses (`marked`) with the mark's
+/// reason, as Fetch is refused there (decided 2026-11-11: an entry is
+/// offered only where it can act): its tooltip what it does, `purpose` or
+/// its label, then "Repository unavailable", and its accessible name its
+/// label and the reason, as Fetch's is, since a refused control leaves the
+/// Tab order and its tooltip shows only under the pointer. Offered, it keeps
+/// `purpose` as its tooltip, where it has one. Formatted only on a marked
+/// tab, as the cached page is built again.
+fn says_the_mark(
+    control: Button,
+    id: &'static str,
+    label: &'static str,
+    purpose: Option<&'static str>,
+    marked: bool,
+) -> Button {
+    let reason = crate::branch_actions::UNAVAILABLE_REASON;
+    let name: Option<SharedString> = marked.then(|| format!("{label}: {reason}").into());
+    #[cfg(test)]
+    MARKED_NAMES.with(|names| names.borrow_mut().insert(id, name.clone()));
+    let Some(name) = name else {
+        return match purpose {
+            Some(purpose) => control.tooltip(purpose),
+            None => control,
+        };
+    };
+    let tooltip = format!("{} · {reason}", purpose.unwrap_or(label));
+    crate::views::note_control_tooltip(&id.into(), &tooltip);
+    control.tooltip(tooltip).accessibility_label(name)
 }
 
 /// A labelled field which a write leaves `(refused, dimmed)`

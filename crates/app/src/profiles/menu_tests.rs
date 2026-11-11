@@ -608,6 +608,67 @@ async fn a_marked_tab_s_saved_profiles_say_the_mark(cx: &mut TestAppContext) {
     );
 }
 
+/// Settings' Manage named profiles… on a marked tab is refused with the
+/// mark's reason, as the profile picker's Manage profiles… is: announced
+/// unavailable and dimmed, its tooltip saying "Repository unavailable",
+/// while no route opens the manager there (`open_profiles`). It was drawn
+/// enabled, and a click opened nothing and said nothing. Offered again as
+/// the mark clears.
+#[gpui::test]
+async fn settings_manage_named_profiles_says_the_mark(cx: &mut TestAppContext) {
+    use crate::workspace::refusals::{self, Refusal};
+    const KEY: &str = "settings-manage-profiles";
+    let (_fixture, app, cx) = history_window(cx).await;
+    use_store(&app, cx, two_profiles()).await;
+    hold_quiet_reads_for_test(&app, cx);
+    // The notes outlive a seed's app on its thread; only this one's count.
+    crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow_mut().clear());
+    crate::settings::MARKED_NAMES.with(|names| names.borrow_mut().clear());
+    refusals::forget();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let tooltip =
+        || crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(KEY).cloned());
+    let name = || crate::settings::MARKED_NAMES.with(|names| names.borrow().get(KEY).cloned());
+    let offered = Some(Refusal {
+        announced: false,
+        dimmed: false,
+    });
+    assert_eq!(refusals::get(KEY), offered, "offered before the mark");
+    assert_eq!(tooltip(), None, "no reason to give");
+    set(&app, cx, |app| {
+        let index = app.repository_tabs.active.expect("a tab");
+        app.repository_tabs.tabs[index].error = Some("Repository unavailable".into());
+    });
+    assert_eq!(
+        refusals::get(KEY),
+        Some(Refusal {
+            announced: true,
+            dimmed: true,
+        }),
+        "refused and dimmed on the marked tab"
+    );
+    assert_eq!(
+        tooltip().as_deref(),
+        Some("Manage named profiles… · Repository unavailable"),
+        "its tooltip says why"
+    );
+    assert_eq!(
+        name(),
+        Some(Some(
+            "Manage named profiles…: Repository unavailable".into()
+        )),
+        "its accessible name says why, as Fetch's does: out of the Tab order, \
+         its tooltip shows only under the pointer"
+    );
+    set(&app, cx, |app| {
+        let index = app.repository_tabs.active.expect("a tab");
+        app.repository_tabs.tabs[index].error = None;
+    });
+    assert_eq!(refusals::get(KEY), offered, "offered as the mark clears");
+    assert_eq!(name(), Some(None), "its own name again");
+}
+
 /// Two saved profiles, Work and Personal.
 fn two_profiles() -> Store {
     let mut store = Store::default();
