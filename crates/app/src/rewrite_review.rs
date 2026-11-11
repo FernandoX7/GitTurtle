@@ -7351,12 +7351,10 @@ mod tests {
                 !app.read_with(cx, |app, _| app.operation_cancelling()),
                 "a click on the review's Cancel cancels none of {other:?}'s download"
             );
-            cx.update(|window, cx| {
-                app.update(cx, |app, cx| {
-                    app.simulate_lfs_download_end(None, window, cx)
-                })
-            });
-            crate::tags::tests::draw(cx);
+            // The other download ends, landing the read its end asks for:
+            // read before it did, with the reader slow, the row had not
+            // come back to offer Download Before….
+            end_download(&app, &browser, cx, None);
         }
     }
 
