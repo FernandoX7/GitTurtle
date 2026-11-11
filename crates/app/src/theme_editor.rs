@@ -4974,6 +4974,10 @@ pub(crate) mod tests {
         SpaceOnCancel,
         /// Return in Name.
         ReturnInName,
+        /// Return on Save, reached by Tab from Name.
+        ReturnOnSave,
+        /// Space on Save, reached by Tab from Name.
+        SpaceOnSave,
     }
 
     impl Close {
@@ -4984,7 +4988,10 @@ pub(crate) mod tests {
         }
 
         fn saves(self) -> bool {
-            matches!(self, Close::SavePress | Close::ReturnInName)
+            matches!(
+                self,
+                Close::SavePress | Close::ReturnInName | Close::ReturnOnSave | Close::SpaceOnSave
+            )
         }
     }
 
@@ -4992,9 +4999,11 @@ pub(crate) mod tests {
     /// first frame drawn after the close, which is the only frame the close
     /// draws: Escape closes as its key goes down, Space on Cancel as its key
     /// comes up and a press on Cancel as the pointer is released, and a
-    /// save as the store's answer is handled, the store held behind that
-    /// answer so the selection's save, which the answer submits, answers
-    /// only after `observe`. Then the rest of the input is delivered and the
+    /// save, begun by Return as its key goes down, by Space on Save as its
+    /// key comes up or by a press on Save as the pointer is released, closes
+    /// as the store's answer is handled, the store held behind that answer
+    /// so the selection's save, which the answer submits, answers only
+    /// after `observe`. Then the rest of the input is delivered and the
     /// store answers. Escape, the first key after the pointer, also draws
     /// GPUI's frame for the input's turn to keys before the editor takes
     /// it, which is not the close's ([`escape_reaching_the_editor`]).
@@ -5017,9 +5026,29 @@ pub(crate) mod tests {
             // in the frame after, which the close does not draw.
             mouse_away(cx);
         }
-        if matches!(close, Close::ReturnInName | Close::SpaceOnCancel) {
+        if matches!(
+            close,
+            Close::ReturnInName | Close::SpaceOnCancel | Close::ReturnOnSave | Close::SpaceOnSave
+        ) {
             cx.update(|window, cx| name.focus(window, cx));
             settle(cx);
+        }
+        if matches!(close, Close::ReturnOnSave | Close::SpaceOnSave) {
+            // Forward through the dialog: Shift-Tab from Name, the dialog's
+            // first stop, wraps through the page behind it, and the toolkit's
+            // focus trap gives up after 100 stops there, which a page of 31
+            // saved themes holds.
+            let save = cx.read(|cx| form.read(cx).save_focus.clone());
+            for _ in 0..100 {
+                if cx.update(|window, cx| save.contains_focused(window, cx)) {
+                    break;
+                }
+                press(cx, "tab");
+            }
+            assert!(
+                cx.update(|window, cx| save.contains_focused(window, cx)),
+                "Tab from Name reaches Save"
+            );
         }
         let held = close
             .saves()
@@ -5056,11 +5085,14 @@ pub(crate) mod tests {
                 });
                 draws
             }
-            Close::ReturnInName => {
-                cx.simulate_event(down(key("enter")));
-                cx.simulate_event(KeyUpEvent {
-                    keystroke: key("enter"),
+            Close::ReturnInName | Close::ReturnOnSave | Close::SpaceOnSave => {
+                let key = key(if close == Close::SpaceOnSave {
+                    "space"
+                } else {
+                    "enter"
                 });
+                cx.simulate_event(down(key.clone()));
+                cx.simulate_event(KeyUpEvent { keystroke: key });
                 draw_count(cx, app)
             }
         };
@@ -5182,9 +5214,9 @@ pub(crate) mod tests {
     }
 
     /// In the frame being observed, the Your themes control `selector`
-    /// holds focus through `expected` and lies whole with its ring's room in
-    /// the Settings page, and in the list for a row's action, its ring drawn
-    /// for a key's close and not for a pointer's.
+    /// holds focus through `expected` and lies whole with its ring's room on
+    /// all four sides in the Settings page, and in the list for a row's
+    /// action, its ring drawn for a key's close and not for a pointer's.
     fn assert_focused_in_view(
         cx: &mut VisualTestContext,
         expected: &FocusHandle,
@@ -5198,8 +5230,12 @@ pub(crate) mod tests {
             "{at}, {close:?}: focus is on {selector}"
         );
         let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
-        let control = settings::shown(cx, selector.clone().leak())
-            .unwrap_or_else(|| panic!("{at}, {close:?}: {selector} is drawn"));
+        // From the observed frame itself: a frame that replayed the page
+        // leaves its selectors out, and drawing another frame to find one
+        // would check that frame instead.
+        let control = cx
+            .debug_bounds(selector.clone().leak())
+            .unwrap_or_else(|| panic!("{at}, {close:?}: the observed frame draws {selector}"));
         let mut views = vec![bounds(cx, "settings-scroll".into())];
         if selector.starts_with("edit-custom-theme") {
             views.push(bounds(cx, "custom-themes-rows".into()));
@@ -5207,7 +5243,9 @@ pub(crate) mod tests {
         for view in views {
             assert!(
                 control.top() - ring >= view.top() - px(0.01)
-                    && control.bottom() + ring <= view.bottom() + px(0.01),
+                    && control.bottom() + ring <= view.bottom() + px(0.01)
+                    && control.left() - ring >= view.left() - px(0.01)
+                    && control.right() + ring <= view.right() + px(0.01),
                 "{at}, {close:?}: {control:?} lies whole with its ring's room in {view:?}"
             );
         }
@@ -5282,16 +5320,44 @@ pub(crate) mod tests {
     /// theme…, button, grayed" (decided 2026-11-10). In the first frame
     /// after the close the saved theme's enabled Edit…, named for it, holds
     /// focus, its row scrolled into the list's view and the page's with its
-    /// ring's room, by Return in Name with its ring and by a pointer press
-    /// on Save without one, in a window shrunk while the editor was open.
+    /// ring's room on all four sides, by Return in Name and by Return or
+    /// Space on Save with its ring and by a pointer press on Save without
+    /// one, in a window shrunk while the editor was open: at 13 pt to
+    /// 1000 × 680 and at 18 pt to a 461 × 490 half tile. A pointer press on
+    /// New theme… opens the editor each time.
     #[gpui::test]
     fn a_new_themes_save_gives_focus_to_its_edit(cx: &mut TestAppContext) {
         let (app, cx) = open_at_rest(cx);
-        for close in [Close::ReturnInName, Close::SavePress] {
+        let cases = [
+            (13, size(px(1000.), px(680.))),
+            (18, size(px(461.), px(490.))),
+        ]
+        .into_iter()
+        .flat_map(|(text, viewport)| {
+            [
+                Close::ReturnInName,
+                Close::ReturnOnSave,
+                Close::SpaceOnSave,
+                Close::SavePress,
+            ]
+            .map(|close| (text, viewport, close))
+        });
+        for (text, viewport, close) in cases {
+            let at = format!(
+                "{text} pt in {} × {}",
+                f32::from(viewport.width),
+                f32::from(viewport.height)
+            );
             let seeded = (1..MAX_CUSTOM_THEMES as u32)
                 .map(|n| CustomTheme::from_base(n, format!("Seed {n:02}"), ThemeChoice::Nord))
                 .collect();
-            cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(seeded, cx)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = text;
+                    app.set_custom_themes(seeded, cx)
+                });
+                appearance::apply_text_sizes(text, 12, window, cx);
+            });
             cx.simulate_resize(size(px(1440.), px(2400.)));
             settle(cx);
             cx.update(|window, cx| {
@@ -5303,10 +5369,32 @@ pub(crate) mod tests {
                 })
             });
             settle(cx);
+            // At 18 pt the picker's 20 built-in and 31 custom cards take the
+            // Your themes card below the fold of the tall window: the
+            // pointer presses New theme… where the page, scrolled to it,
+            // shows it.
+            let page = bounds(cx, "settings-scroll".into());
+            let below = bounds(cx, "custom-themes-new".into()).bottom() - page.bottom();
+            if below > px(0.) {
+                cx.update(|_, cx| {
+                    app.update(cx, |app, cx| {
+                        let scroll = app.theme_editor.page_scroll();
+                        let y = scroll.offset().y - below - px(16.);
+                        scroll.set_offset(gpui::point(Pixels::ZERO, y));
+                        app.notify_settings_page(cx);
+                    })
+                });
+                settle(cx);
+            }
+            let new = bounds(cx, "custom-themes-new".into());
+            assert!(
+                new.top() >= page.top() && new.bottom() <= page.bottom(),
+                "{at}: New theme… {new:?} is in view in {page:?} to be pressed"
+            );
             click(cx, "custom-themes-new");
             let form = form(cx, &app);
             let name = cx.read(|cx| form.read(cx).name.read(cx).value().to_string());
-            cx.simulate_resize(size(px(1000.), px(680.)));
+            cx.simulate_resize(viewport);
             settle(cx);
             close_editor(cx, &app, close, |cx| {
                 let (id, saved, full, pending) = cx.read(|cx| {
@@ -5319,14 +5407,14 @@ pub(crate) mod tests {
                         app.theme_editor.save_pending() || app.theme_editor.transfer_pending(),
                     )
                 });
-                assert_eq!(saved, name, "{close:?}: the new theme is saved last");
-                assert!(full, "{close:?}: New theme… is disabled at the bound");
+                assert_eq!(saved, name, "{at}, {close:?}: the new theme is saved last");
+                assert!(full, "{at}, {close:?}: New theme… is disabled at the bound");
                 // Edit… is disabled only while a save or a transfer owns
                 // the card's actions.
-                assert!(!pending, "{close:?}: Edit… is enabled in that frame");
+                assert!(!pending, "{at}, {close:?}: Edit… is enabled in that frame");
                 let edit = cx.read(|cx| app.read(cx).theme_editor.action_focus(id, 0, cx));
                 let selector = format!("edit-custom-theme-{id}");
-                assert_focused_in_view(cx, &edit, selector.clone(), close, "new theme");
+                assert_focused_in_view(cx, &edit, selector.clone(), close, &at);
                 let spoken = cx.read(|cx| {
                     app.read(cx)
                         .theme_action_names
@@ -5338,7 +5426,7 @@ pub(crate) mod tests {
                 assert_eq!(
                     spoken,
                     Some(format!("Edit {name} theme")),
-                    "{close:?}: the focused Edit… is named for the saved theme"
+                    "{at}, {close:?}: the focused Edit… is named for the saved theme"
                 );
             });
         }
