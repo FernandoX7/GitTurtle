@@ -301,13 +301,18 @@ impl Channel {
     }
 
     /// What the slider reports to assistive technology: the drawn digits,
-    /// on a range and step in the same units.
-    fn accessible_value(self, color: Hsla) -> SliderAccessibleValue {
+    /// on a range and step in the same units, the step being what one key
+    /// press moves its state, whose own `step` is a share of the channel's
+    /// 0 to 1 (3.6 degrees for hue at the picker's 0.01). Reported as one,
+    /// hue's step said a press moved it a degree. The step is kept to the
+    /// hundredth, the precision of an `f32` share scaled to the drawn units.
+    fn accessible_value(self, color: Hsla, step: f32) -> SliderAccessibleValue {
+        let most = f64::from(self.most());
         SliderAccessibleValue {
             value: self.digits(color).parse().unwrap_or_default(),
             min: 0.,
-            max: f64::from(self.most()),
-            step: 1.,
+            max: most,
+            step: (f64::from(step) * most * 100.).round() / 100.,
         }
     }
 }
@@ -918,7 +923,8 @@ impl ColorPicker {
 }
 
 /// GitTurtle patch: the slider for `channel` of `color`, named by it and
-/// reporting the digits drawn after it ([`Channel`]).
+/// reporting the digits drawn after it and the step one increment moves it
+/// ([`channel_value`]).
 fn channel_slider(
     state: &Entity<gpui_base::slider::SliderState>,
     channel: Channel,
@@ -929,7 +935,19 @@ fn channel_slider(
         .flex_1()
         .bg(cx.theme().transparent)
         .aria_label(channel.name())
-        .accessible_value(channel.accessible_value(color))
+        .accessible_value(channel_value(state, channel, color, cx))
+}
+
+/// GitTurtle patch: what the slider `state` for `channel` of `color`
+/// reports to assistive technology ([`Channel::accessible_value`]), its step
+/// read from the state, which its arrow keys move by.
+fn channel_value(
+    state: &Entity<gpui_base::slider::SliderState>,
+    channel: Channel,
+    color: Hsla,
+    cx: &App,
+) -> SliderAccessibleValue {
+    channel.accessible_value(color, state.read(cx).step_value())
 }
 
 impl Sizable for ColorPicker {
@@ -1243,6 +1261,44 @@ mod tests {
         enter(cx, true);
         settle(cx);
         assert!(open(cx), "a fresh press after the key-up opens it");
+    }
+
+    /// GitTurtle patch: each HSLA slider reports to assistive technology
+    /// the step one increment (a screen reader's increment action) moves
+    /// it, in the units drawn beside it and read from its state: at the
+    /// picker's step of 0.01, 3.6 degrees for hue and 1 percent for
+    /// saturation, lightness and alpha, on the range the drawn digits take.
+    /// Reported as one for every slider, hue's step said an increment moved
+    /// it a degree.
+    #[gpui::test]
+    fn each_slider_reports_the_step_one_increment_moves_it(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let cx = cx.add_empty_window();
+        let state = cx.update(|window, cx| cx.new(|cx| ColorPickerState::new(window, cx)));
+        let color = hsla(0.3, 0.2, 0.7, 1.);
+        cx.update(|_, cx| {
+            let sliders = state.read(cx).sliders().clone();
+            for (channel, slider, most, step) in [
+                (Channel::Hue, sliders.hue(), 360., 3.6),
+                (Channel::Saturation, sliders.saturation(), 100., 1.),
+                (Channel::Lightness, sliders.lightness(), 100., 1.),
+                (Channel::Alpha, sliders.alpha(), 100., 1.),
+            ] {
+                let pressed = f64::from(slider.read(cx).step_value()) * most;
+                let reported = channel_value(slider, channel, color, cx);
+                assert_eq!(reported.step, step, "{channel:?}: the step it reports");
+                assert!(
+                    (reported.step - pressed).abs() < 1e-6,
+                    "{channel:?}: {} is the step one press moves, {pressed}",
+                    reported.step
+                );
+                assert_eq!(
+                    (reported.min, reported.max),
+                    (0., most),
+                    "{channel:?}: the range of the drawn digits"
+                );
+            }
+        });
     }
 
     /// GitTurtle patch: Up and Down land on the swatch above or below, the

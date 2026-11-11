@@ -2795,11 +2795,20 @@ had no accessible names: Orca read "entry #3B82F6", four unnamed sliders
 reading the picker's 0 to 1, and "dialog" (QA-110, found outside the checks,
 2). Patched, the hex field is "Hex value", each slider is named by the
 channel drawn before it and reports the digits drawn after it, degrees for
-hue and percent otherwise, on a 0 to 360 or 0 to 100 range in steps of one
-(`Channel::digits` draws them and `Channel::accessible_value` reports the
-same digits), and a caller names the popover with `popover_label`, as the
-theme editor names a row's popover by the colour it sets ("Removed color").
+hue and percent otherwise, on a 0 to 360 or 0 to 100 range (`Channel::digits`
+draws them and `Channel::accessible_value` reports the same digits), its
+step the one an increment (a screen reader's increment action; no key moves
+the sliders) moves it in those units, read from the slider's
+state (`channel_value`): 3.6 degrees for hue and 1 percent for the others at
+the picker's step of 0.01 (decided 2026-11-10; reported as one throughout,
+hue's step said an increment moved it a degree), and a caller names the popover
+with `popover_label`, as the theme editor names a row's popover by the
+colour it sets ("Removed color"). `src/popover.rs` gives the forwarded
+`aria_label` a doc comment of its own, so upstream's `anchor` keeps its own.
 `cargo test --locked -p gitturtle
 theme_editor::tests::the_open_pickers_controls_are_named_by_what_they_set`
 opens the theme editor's picker with Enter and reads the popover's, the hex
-field's and the sliders' nodes. Remove it when upstream names them.
+field's and the sliders' nodes, and `scripts/vendor-crate-test.sh
+vendor/gpui-component each_slider_reports_the_step_one_increment_moves_it`
+reads each slider's step from the picker's own slider states. Remove it
+when upstream names them.
