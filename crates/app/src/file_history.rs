@@ -14,6 +14,13 @@ const PAGE_SIZE: usize = 100;
 /// (`FocusReveal::region`).
 const MESSAGE_REGION: &str = "file-history-message";
 
+/// A failed page's message: the region that scrolls it, a Tab stop while it
+/// does, that stop's name, and the message's static text.
+const ERROR_REGION: &str = "file-history-error";
+const ERROR_LABEL: &str = "Page unavailable";
+const ERROR_TEXT: &str = "file-history-error-text";
+const RETRY_PAGE: &str = "retry-file-history";
+
 /// The panel's title, at the header's 12 pt semibold.
 const TITLE: &str = "File history";
 /// Close's label where it keeps one.
@@ -708,37 +715,95 @@ fn page_labels_fit(room: Pixels, window: &Window) -> bool {
     px((f32::from(labelled) * scale).ceil() / scale) <= room
 }
 
-/// Whether a failed page's message, `error`, scrolls in its notice in a
-/// body `body` tall whose message panel takes `message` (none where no
-/// revision is shown; `commit_message::State::revision_panel_height`),
-/// decided from this frame's inputs, never from whether it scrolled in its
-/// last: its text wrapped in the notice's `room` without the cue's gutter,
-/// the notice's `py_2` and `gap_2` and Retry page around it, as the
-/// notice's column lays them out (CSS Flexbox): as tall as its rows, at most
-/// 35% of the body, giving way to the message panel and the revisions'
-/// least row down to its own least, the message taking what is left of it,
-/// at most 100 px and at least its line. Decided from its last frame, a
-/// 150-character message at 13 pt in a 540 px window between 554 and
-/// 698 px tall, which wraps to 90 px without the gutter, kept the gutter
-/// and scrolled at 100 px reached from 300 px tall and drew 90 px with no
-/// cue reached from 1,000 px, Retry page 10 px lower in one than the other.
+/// Whether a failed page's message, `text` tall wrapped in the notice's
+/// room without the cue's gutter (`State::error_lines`), scrolls in its
+/// notice in a body `body` tall whose message panel takes `message` (none
+/// where no revision is shown;
+/// `commit_message::State::revision_panel_height`), decided from this
+/// frame's inputs, never from whether it scrolled in its last: the notice's
+/// `py_2` and `gap_2` and Retry page around it, as the notice's column lays
+/// them out (CSS Flexbox): as tall as its rows, at most 35% of the body,
+/// giving way to the message panel and the revisions' least row down to its
+/// own least, the message taking what is left of it, at most 100 px and at
+/// least its line. Decided from its last frame, a 150-character message at
+/// 13 pt in a 540 px window between 554 and 698 px tall, which wraps to
+/// 90 px without the gutter, kept the gutter and scrolled at 100 px reached
+/// from 300 px tall and drew 90 px with no cue reached from 1,000 px, Retry
+/// page 10 px lower in one than the other. Every length is taken as layout
+/// draws it, on the device pixel: its padding, its gap, Retry page, its
+/// least and the revisions' row as layout rounds a set length, and its 35%
+/// by its edges, worked out in device pixels as layout resolves a share,
+/// from the message panel's foot as layout leaves it before rounding, which
+/// lies off the device pixel where the panel's own 45% binds, and the text
+/// as tall as its element lays it out (`error_text_height`). Taken as
+/// layout's unrounded lengths, at 13 pt on a scale 1 display in a 540 px
+/// window, a four-line message decided it scrolled and kept its gutter where
+/// it drew whole, 809 to 812 px tall, its padding and gap 6.5 px each, 19.5
+/// together, where layout drew 18 and the message panel 152.1 px where it
+/// drew 152; with Retry page taken as 30.15 px where layout drew 30, so did
+/// four lines at 14 pt in 871 to 873 px; and with the 35% taken as its
+/// length rounded, 145.5 px where layout drew 146 below a message panel
+/// ending 187.2 px down the body, five lines at 14 pt at scale 2 kept the
+/// gutter in a 946.5 px window and drew cut with none at 947; and with the
+/// 35%'s foot, 467.5 device pixels down the body, worked out in pixels a
+/// hair past that and taken as 468 where layout drew 467, five lines at 13
+/// pt at scale 1.5 drew a device pixel cut with no gutter in 888.67 and 889
+/// px.
 fn failure_error_scrolls(
-    error: &str,
+    text: Pixels,
     least: &PanelLeast,
     body: Pixels,
     message: Pixels,
-    room: Pixels,
     window: &Window,
 ) -> bool {
-    let edges = window.rem_size() * 1.5;
-    let retry = crate::appearance::ui_size(28.);
+    // GPUI puts a set length on the device pixel before layout, half toward
+    // zero, as `Window::pixel_snap` does: here the notice's `py_2` and
+    // `gap_2`, Retry page, the notice's least and the revisions' row.
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let edges = snap(window.rem_size() * 0.5) * 3.;
+    let retry = snap(crate::appearance::ui_size(28.));
     let cap = px(100.);
-    let text = text_line(11., window) * wrapped(error, 11., room, window);
+    // A share it rounds by its edges after layout, each from the body's
+    // top, which lies on the device pixel: the notice starts at the message
+    // panel's foot, at the panel's 45% share unrounded where that binds and
+    // on the device pixel where its rows do, so its 35% ends at that start
+    // and the share rounded, less the start rounded. Layout resolves a share
+    // in device pixels, of the body on its device pixel, so the edges are
+    // worked out there: a length in pixels at scale 1.5 holds its thirds of
+    // a device pixel only to a residual, which put a foot lying halfway
+    // between two device pixels, which layout rounds toward zero, past the
+    // half.
+    let scale = window.scale_factor();
+    let round = |device: f32| (device.abs() - 0.5).ceil().copysign(device);
+    let tall = round(f32::from(body) * scale);
+    let start = if (message - body * commit_message::MESSAGE_SHARE).abs() <= SETTLED {
+        tall * commit_message::MESSAGE_SHARE
+    } else {
+        round(f32::from(message) * scale)
+    };
+    let share = px((round(start + tall * 0.35) - round(start)) / scale);
     let notice = (edges + text.min(cap) + retry)
-        .min(body * 0.35)
-        .min(body - message - least.row)
-        .max(least.failure);
+        .min(share)
+        .min(body - snap(message) - snap(least.row))
+        .max(snap(least.failure));
     text > (notice - edges - retry).min(cap).max(least.error_line) + SETTLED
+}
+
+/// The height of `error`'s lines at 11 pt wrapped in `room`, as its text
+/// element lays them out (GPUI's `StyledText`): each paragraph's lines at a
+/// line on the device pixel, summed paragraph by paragraph as the element
+/// sums them, then rounded up to the device pixel, as layout takes a
+/// measured element's size. Taken as its lines at a line each, three lines
+/// at 17 pt on a scale 1.25 display, their line 23.2 px, made 69.6 px where
+/// layout drew 70.4, their sum lying a hair past 69.6, and the message
+/// decided it fitted where it scrolled.
+fn error_text_height(error: &str, room: Pixels, window: &Window) -> Pixels {
+    let line = text_line(11., window);
+    let height = error.split('\n').fold(Pixels::ZERO, |height, paragraph| {
+        height + line * wrapped(paragraph.to_owned(), 11., room, window)
+    });
+    let scale = window.scale_factor();
+    px((f32::from(height) * scale).ceil() / scale)
 }
 
 /// What scrolls each of File History's Tab stops into view, whole, as its
@@ -1017,10 +1082,54 @@ pub(super) struct State {
     /// The last toolbar and regions decided, which a frame with the same
     /// inputs takes rather than measuring the rows again (`RegionsInputs`).
     decided: std::cell::RefCell<Option<Decided>>,
+    /// The height of the lines a failed page's message last wrapped to, with
+    /// what it was wrapped for (`State::error_lines`).
+    error_lines: std::cell::RefCell<Option<ErrorLines>>,
     previous: Option<Box<State>>,
 }
 
+/// The height of the lines a failed page's message, `error`, wraps to at
+/// 11 pt in `room` in the interface font and sizes and on the display `line`
+/// holds (`State::error_lines`).
+struct ErrorLines {
+    error: String,
+    room: Pixels,
+    line: crate::views::LineKey,
+    /// The display's scale, which the height's device pixels follow and
+    /// `line` does not hold: kept from a frame at scale 2, two lines' 41 px
+    /// stood for 42 at scale 1 (15 pt).
+    scale: f32,
+    height: Pixels,
+}
+
 impl State {
+    /// The height of the lines a failed page's message, `error`, wraps to at
+    /// 11 pt in the notice's `room` without its cue's gutter, as its text
+    /// lays them out (`error_text_height`), wrapped once for the message,
+    /// the room and the interface font and sizes, and taken from then on
+    /// (`failure_error_scrolls`). Wrapped in every frame while a page stood
+    /// failed, it shaped the whole message in each, a wheel step over the
+    /// revisions included.
+    fn error_lines(&self, error: &str, room: Pixels, window: &Window) -> Pixels {
+        let line = crate::views::LineKey::current(window);
+        let scale = window.scale_factor();
+        let mut kept = self.error_lines.borrow_mut();
+        if let Some(kept) = kept.as_ref().filter(|kept| {
+            kept.room == room && kept.line == line && kept.scale == scale && kept.error == error
+        }) {
+            return kept.height;
+        }
+        let height = error_text_height(error, room, window);
+        *kept = Some(ErrorLines {
+            error: error.to_owned(),
+            room,
+            line,
+            scale,
+            height,
+        });
+        height
+    }
+
     pub(super) fn rescale_lists(&self, scales: settings::ListScales) {
         settings::rescale_list_scroll(&self.scroll, scales.lineage);
         if let Some(previous) = &self.previous {
@@ -1916,11 +2025,10 @@ impl GitTurtle {
                     None => Pixels::ZERO,
                 };
                 Some(failure_error_scrolls(
-                    error,
+                    self.file_history.error_lines(error, room, window),
                     &least,
                     regions.body,
                     message,
-                    room,
                     window,
                 ))
             });
@@ -2219,10 +2327,44 @@ impl GitTurtle {
                 // leaving Retry page below the notice's fold.
                 let surface = crate::tags::Surface::Removed;
                 let failure_cue = crate::tags::ScrollCue::revealing(&reveals.failure, room).on(surface);
+                // Its ring's room around its text, inside the notice's own
+                // padding, so its ring clears the letters on every side
+                // while the text keeps the notice's left edge and its wrap
+                // room: drawn on the text's own edge, the ring lay over the
+                // first column of letters and, at its one-line height, across
+                // the descenders (18 pt in a 461 × 420 window). Its cue keeps
+                // that room too, as the tag dialog's list's does, so its
+                // track lies inside its ring: built with none, the track ran
+                // under the ring.
+                let inset = window.pixel_snap(room);
                 let error_cue = decide(
-                    crate::tags::ScrollCue::new(&lineage.error_scroll, Pixels::ZERO).on(surface),
+                    crate::tags::ScrollCue::new(&lineage.error_scroll, inset).on(surface),
                     error_scrolls,
                 );
+                // While it scrolls, the message is a Tab stop before Retry
+                // page that Up and Down scroll by a line, ringed on its own
+                // edge and revealed whole in the notice and the panel as
+                // Retry page is, as a Git LFS preview's and the rewritten
+                // series' over-tall failures are; its text is static text,
+                // read whole wherever it is scrolled to. As plain text with no
+                // stop, a keyboard could not bring a long message's rest into
+                // view and a screen reader found none of it.
+                let overflows = error_cue.kept();
+                let error_focus = reveals.failure.focus(ERROR_REGION, cx);
+                // A message that stops scrolling while it holds focus, as a
+                // taller window lets it fit, keeps focus, as the LFS line and
+                // the rewritten series' failure do: its handle stays tracked
+                // while it holds focus, no longer a stop, so nothing new is
+                // spoken, Tab goes on from it to Retry page and Shift+Tab
+                // from Retry page passes it; once focus leaves, it is
+                // tracked no more. Untracked, focus fell to the window root
+                // and Tab started again from the window's first stop; moved
+                // to Retry page, focus went where the person had not sent it.
+                let tracked = overflows || error_focus.is_focused(window);
+                let keys = lineage.error_scroll.clone();
+                let step = least.error_line;
+                let own = reveals.failure.control(error_focus.clone(), room);
+                let in_panel = reveals.panel.control_within(error_focus.clone(), room, &reveals.failure);
                 failure_cue.list(div()
                     .on_children_prepainted(failure_cue.observe(reveals.failure.observe()))
                     .id("file-history-failure")
@@ -2231,29 +2373,77 @@ impl GitTurtle {
                     .track_scroll(reveals.failure.scroll())
                     .min_h_0()
                     .px_3()
-                    .py_2()
+                    // The message's ring takes its room above the text from
+                    // this padding, so the text and the notice's rows stay
+                    // where they were: half a rem, as below the message and
+                    // below Retry page, which layout puts on the device
+                    // pixel as it does those (`failure_error_scrolls`).
+                    .pt(window.rem_size() * 0.5 - inset)
+                    .pb_2()
                     .flex()
                     .flex_col()
                     .gap_2()
                     .child(error_cue.list(
                         div()
                             .on_children_prepainted(error_cue.observe(|_, _, _| {}))
-                            .id("file-history-error")
-                            .debug_selector(|| "file-history-error".into())
-                            .max_h(px(100.))
+                            .id(ERROR_REGION)
+                            .debug_selector(|| ERROR_REGION.into())
+                            .max_h(px(100.) + inset * 2.)
                             .min_h_0()
                             .overflow_y_scroll()
                             .track_scroll(&lineage.error_scroll)
+                            .when(tracked, |region| {
+                                region
+                                    // The handle carries the Tab stop: GPUI
+                                    // ignores the `tab_stop` of the div that
+                                    // tracks it.
+                                    .track_focus(&error_focus.clone().tab_stop(overflows))
+                                    .role(Role::Group)
+                                    .aria_label(ERROR_LABEL)
+                                    .on_key_down(cx.listener(
+                                        move |_, event: &KeyDownEvent, _, cx| {
+                                            let down = match event.keystroke.key.as_str() {
+                                                "up" => false,
+                                                "down" => true,
+                                                _ => return,
+                                            };
+                                            let at = -keys.offset().y;
+                                            let end = keys.max_offset().y.max(Pixels::ZERO);
+                                            let to = (if down { at + step } else { at - step })
+                                                .clamp(Pixels::ZERO, end);
+                                            if to != at {
+                                                keys.set_offset(point(keys.offset().x, -to));
+                                                cx.notify();
+                                            }
+                                            cx.stop_propagation();
+                                        },
+                                    ))
+                            })
+                            // Its ring's room on every side, which its
+                            // cue widens at its right to its gutter where it
+                            // scrolls (`tags::ScrollCue::trailing`).
+                            .p(inset)
                             .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.warning))
-                            .child(error.clone()),
+                            .child(crate::native_accessibility::text(ERROR_TEXT, error.clone())),
                         "file-history-error-scrollbar",
                     )
+                    // Its margins give the ring's room back to the notice.
+                    .mx(-inset)
+                    .mb(-inset)
                     // It gives way, down to a line.
                     .flex_shrink(1.)
-                    .min_h(least.error_line))
+                    .min_h(least.error_line + inset * 2.)
+                    // Its ring on its own edge, inside its clip, over the
+                    // text, so none of it moves; and where it lies, for the
+                    // notice's and the panel's reveals.
+                    .children(self.focus_ring.edge(&error_focus, rgb(p.accent)))
+                    .on_children_prepainted(move |bounds, window, cx| {
+                        own(bounds.clone(), window, cx);
+                        in_panel(bounds, window, cx);
+                    }))
                     .child({
-                        let retry = button("retry-file-history", "Retry page", "refresh", false)
+                        let retry = button(RETRY_PAGE, "Retry page", "refresh", false)
                             .disabled(busy || retry.is_none())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if let Some(request) = retry {
@@ -2265,7 +2455,7 @@ impl GitTurtle {
                                     );
                                 }
                             }));
-                        reveals.track(&reveals.failure, "retry-file-history", retry, room, cx)
+                        reveals.track(&reveals.failure, RETRY_PAGE, retry, room, cx)
                     }), "file-history-failure-scrollbar")
                     // It gives way to the revisions' whole row down to its
                     // least, and carries the notice's fill.
@@ -3444,8 +3634,9 @@ pub(crate) mod tests {
     /// scroll their own rows: Close, the anchor path's copy control and the
     /// revision arrows in the header's own scroll, the message panel's Copy
     /// message and Hash, revealed with the message panel as one region, and,
-    /// where a page failed and another follows, Retry page in the failure's
-    /// own scroll and the page arrows in the footer's, each whole, its
+    /// where a page failed and another follows, the failed page's message
+    /// where it scrolls and Retry page in the failure's own scroll and the
+    /// page arrows in the footer's, each whole, its
     /// ring's room included, inside the part of the panel and of its region
     /// the window shows, and inside the panel's view in every frame painted
     /// after the key, the first that draws the focus included; so are the
@@ -3561,7 +3752,7 @@ pub(crate) mod tests {
                 Some("file-history-header")
             } else if FOOTER.contains(&stop) {
                 Some("file-history-footer")
-            } else if stop == RETRY {
+            } else if stop == RETRY || stop == ERROR_REGION {
                 Some("file-history-failure")
             } else {
                 None
@@ -3573,7 +3764,7 @@ pub(crate) mod tests {
             cx.update(|window, cx| {
                 for (reveal, stops) in [
                     (&reveals.header, &HEADER[..]),
-                    (&reveals.failure, &[RETRY][..]),
+                    (&reveals.failure, &[ERROR_REGION, RETRY][..]),
                     (&reveals.footer, &FOOTER[..]),
                 ] {
                     if let Some(id) = reveal.focused(window) {
@@ -3641,10 +3832,11 @@ pub(crate) mod tests {
         for (height, failed) in [(420., false), (420., true), (490., false)] {
             cx.simulate_resize(size(px(461.), px(height)));
             if failed {
-                // A page failed, and another follows.
+                // A page failed, with a message longer than the line its
+                // notice gives way to, and another follows.
                 app.update(cx, |app, cx| {
                     let lineage = app.file_history.lineage.as_mut().unwrap();
-                    lineage.error = Some("The page could not be read.".into());
+                    lineage.error = Some("The page could not be read. ".repeat(3));
                     lineage.page.as_mut().unwrap().next_offset = Some(PAGE_SIZE);
                     cx.notify();
                 });
@@ -3717,7 +3909,14 @@ pub(crate) mod tests {
                 MESSAGE,
             ];
             if failed {
-                expected.extend([RETRY, LIST, "older-file-page"]);
+                // The failed page's message, which scrolls, then Retry
+                // page.
+                let message_scrolls = app.read_with(cx, |app, _| {
+                    let lineage = app.file_history.lineage.as_ref().unwrap();
+                    lineage.error_scroll.max_offset().y > px(0.)
+                });
+                assert!(message_scrolls, "{at}: the failed page's message scrolls");
+                expected.extend([ERROR_REGION, RETRY, LIST, "older-file-page"]);
             } else {
                 expected.push(LIST);
             }
@@ -3756,16 +3955,17 @@ pub(crate) mod tests {
                 "{at}: the revisions {list:?} with their ring whole in {view:?}"
             );
             if failed && scrolls {
-                // The message panel, revealed as one region: from Retry page
-                // with the panel at its foot, where the message panel lies
-                // above the view, Shift+Tab onto Hash shows it whole.
+                // The message panel, revealed as one region: from the failed
+                // page's message with the panel at its foot, where the
+                // message panel lies above the view, Shift+Tab onto it shows
+                // it whole.
                 cx.update(|window, cx| {
                     let scroll = reveals.panel.scroll();
                     scroll.set_offset(point(px(0.), -scroll.max_offset().y));
-                    reveals.failure.focus(RETRY, cx).focus(window, cx);
+                    reveals.failure.focus(ERROR_REGION, cx).focus(window, cx);
                 });
                 draw(cx);
-                assert_eq!(focused(cx), Some(RETRY), "{at}");
+                assert_eq!(focused(cx), Some(ERROR_REGION), "{at}");
                 let message = cx.debug_bounds(MESSAGE).expect("the message panel");
                 assert!(
                     !whole(message, shown(cx, MESSAGE)),
@@ -3774,7 +3974,11 @@ pub(crate) mod tests {
                 reveals.panel.take_painted();
                 cx.simulate_keystrokes("shift-tab");
                 draw(cx);
-                assert_eq!(focused(cx), Some(MESSAGE), "{at}: Shift+Tab onto Hash");
+                assert_eq!(
+                    focused(cx),
+                    Some(MESSAGE),
+                    "{at}: Shift+Tab onto the message panel"
+                );
                 let message = cx.debug_bounds(MESSAGE).expect("the message panel");
                 let view = shown(cx, MESSAGE);
                 assert!(
@@ -3816,7 +4020,7 @@ pub(crate) mod tests {
         use crate::views::tests::{
             draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
         };
-        use gpui_kit::{px, size};
+        use gpui_kit::{point, px, size};
         let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
         cx.update(|_, cx| {
             crate::appearance::ThemeChoice::Midnight.apply(None, cx);
@@ -3988,7 +4192,20 @@ pub(crate) mod tests {
             "{at}: Retry page {retry:?} whole in the notice {notice:?}"
         );
         assert!(error.max_offset().y > px(0.), "{at}: the message scrolls");
+        // The panel, which scrolls at this height, ends above the message's
+        // foot, which it clips with its cue: scrolled to its end, the panel
+        // shows the message whole. Seen through the fold, the foot's fade
+        // lay all but 0.6 px under it, and the ring's room below the
+        // message's last line took that too.
+        let panel = app.read_with(cx, |app, _| app.file_history.reveals.panel.scroll().clone());
+        panel.set_offset(point(px(0.), -panel.max_offset().y));
+        draw(cx);
         let list = error.bounds();
+        let view = cx.debug_bounds("file-history-panel").expect("the panel");
+        assert!(
+            list.top() >= view.top() && list.bottom() <= view.bottom(),
+            "{at}: the message {list:?} whole in the panel's view {view:?}"
+        );
         if list.size.height >= SHORTEST_SCROLL_TRACK {
             assert!(
                 cx.debug_bounds("file-history-error-scrollbar").is_some(),
@@ -5778,6 +5995,88 @@ pub(crate) mod tests {
         cx.update(|_, cx| cx.set_reduce_motion(false));
     }
 
+    /// Focus on a failed page's message, as on Retry page, moves to the
+    /// revisions as its notice goes, the page read again as a click on
+    /// Retry page reads it, and stays there as the page lands, the notice's
+    /// reveal keeping no handle: at 18 pt in a 461 × 420
+    /// window, where a long message scrolls and is a stop. Left on the
+    /// message's handle, which no frame draws once its notice goes, focus
+    /// reached nothing until a click.
+    #[gpui::test]
+    async fn focus_on_a_failed_pages_message_falls_back_to_the_revisions(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(420.)));
+        app.update(cx, |app, cx| {
+            let lineage = app.file_history.lineage.as_mut().unwrap();
+            lineage.error = Some("The page could not be read. ".repeat(40));
+            cx.notify();
+        });
+        draw(cx);
+        let (region, retry, list) = app.read_with(cx, |app, cx| {
+            let failure = &app.file_history.reveals.failure;
+            (
+                failure.focus(ERROR_REGION, cx),
+                failure.focus(RETRY_PAGE, cx),
+                app.file_focus.clone(),
+            )
+        });
+        cx.update(|window, cx| retry.focus(window, cx));
+        draw(cx);
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| region.is_focused(window)),
+            "the message holds focus"
+        );
+        // Read again, as a click on Retry page reads it, which focuses
+        // nothing itself, with the message holding focus.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let request = app
+                    .file_history
+                    .lineage
+                    .as_ref()
+                    .and_then(|lineage| lineage.last_request)
+                    .expect("the failed page's request");
+                app.load_file_history_page(request.offset, request.position, window, cx)
+            })
+        });
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the revisions take focus as the message goes"
+        );
+        first_page_lands(&app, cx);
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("file-history-failure").is_none(),
+            "the notice goes"
+        );
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the revisions keep focus as the page lands"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.file_history.reveals.failure.kept()),
+            0,
+            "the notice's reveal holds no handle"
+        );
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
     /// File history and Blame closed by Escape never leave focus on a
     /// control the restored page does not draw: opened from the narrow
     /// Compare's File actions menu at 18 pt in a 461 × 490 window, whose
@@ -5927,7 +6226,11 @@ pub(crate) mod tests {
                 cx.debug_bounds("file-history-error-scrollbar").is_some(),
                 "{at}: along its scrollbar"
             );
-            let list = error.bounds();
+            // Inside the ring's room the message keeps around its text.
+            let list =
+                error.bounds().dilate(-cx.update(|window, cx| {
+                    window.pixel_snap(crate::appearance::button_ring_room(cx))
+                }));
             let track = Bounds::from_corners(
                 point(
                     list.right() - gpui_kit::component::scroll::Scrollbar::width(),
@@ -5970,20 +6273,22 @@ pub(crate) mod tests {
     }
 
     /// A failed page's message decides whether it scrolls from this frame's
-    /// inputs (`failure_error_scrolls`): at 13 pt in a 540 px window from 480
-    /// to 1,000 px tall, with a message that wraps to a line more inside its
-    /// cue's gutter than without it and fits 100 px without it, the notice,
-    /// its message and Retry page lie where they do reached from a 300 px
-    /// tall window, where the message scrolls, and from a 1,000 px tall
-    /// one, where it fits; the message scrolls exactly where decided; the
-    /// notice holds its rows; and the message panel is as tall as decided
-    /// for the frame (`commit_message::State::revision_panel_height`).
-    /// Decided from its last frame, a 150-character message at 13 pt in
-    /// 540 × 554 to 698 kept its gutter and scrolled at 100 px reached from
-    /// 300 px tall and drew 90 px with no cue reached from 1,000 px, Retry
-    /// page 10 px lower in one than the other.
-    #[gpui::test]
-    async fn a_failed_pages_message_scrolls_where_decided(cx: &mut TestAppContext) {
+    /// inputs (`failure_error_scrolls`), at `text` pt in a window `width`
+    /// wide and each of `heights` tall, with a message that wraps to a line
+    /// more inside its cue's gutter than without it and fits 100 px without
+    /// it: the notice, its message and Retry page lie where they do reached
+    /// from a 300 px tall window, where the message scrolls, and from a
+    /// 1,000 px tall one, where it fits; the message scrolls exactly where
+    /// decided; the notice holds its rows; and the message panel is as tall
+    /// as decided for the frame (`commit_message::State::revision_panel_height`).
+    /// Returns each height with whether the panel scrolls there and whether
+    /// the message does, as drawn reached from 1,000 px tall.
+    async fn failed_message_scrolls_where_decided(
+        cx: &mut TestAppContext,
+        text: u8,
+        width: f32,
+        heights: impl IntoIterator<Item = u32>,
+    ) -> Vec<(u32, bool, bool)> {
         use crate::views::tests::{
             draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
         };
@@ -5994,8 +6299,7 @@ pub(crate) mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
         settle(&app, cx).await;
         open_landed(&app, cx).await;
-        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
-        let width = 540.;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
         let resize = |cx: &mut VisualTestContext, height: f32| {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
@@ -6003,19 +6307,33 @@ pub(crate) mod tests {
         resize(cx, 1000.);
         // The longest message of whole words that fits 100 px without the
         // gutter and wraps to a line more inside it, measured from the
-        // interface font, so the gutter alone would make it overflow.
+        // interface font, so the gutter alone would make it overflow: of one
+        // word repeated, else of words of every length from one letter to
+        // ten, which some room's last line leaves a word's end in the gutter
+        // where one word's length does not.
         let room = app
             .read_with(cx, |app, _| app.inspector_message.details_room())
             .expect("a laid-out toolbar");
         let message = cx
             .update(|window, _| {
                 let line = text_line(11., window);
+                let gutter_wraps = |text: &String| {
+                    let lines = |room| wrapped(text.clone(), 11., room, window);
+                    line * lines(room) <= px(100.)
+                        && lines(room - crate::tags::ScrollCue::gutter()) > lines(room)
+                };
                 (1..60)
                     .map(|words| "unreadable ".repeat(words).trim_end().to_owned())
-                    .rfind(|text| {
-                        let lines = |room| wrapped(text, 11., room, window);
-                        line * lines(room) <= px(100.)
-                            && lines(room - crate::tags::ScrollCue::gutter()) > lines(room)
+                    .rfind(gutter_wraps)
+                    .or_else(|| {
+                        (1..60)
+                            .map(|words| {
+                                (0..words)
+                                    .map(|word| "abcdefghij"[..word % 10 + 1].to_owned())
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            })
+                            .rfind(gutter_wraps)
                     })
             })
             .expect("a message the gutter wraps to another line");
@@ -6023,7 +6341,7 @@ pub(crate) mod tests {
             app.file_history.lineage.as_mut().unwrap().error = Some(message.clone());
             cx.notify();
         });
-        let (failure, error) = app.read_with(cx, |app, _| {
+        let (failure, error, panel_scroll) = app.read_with(cx, |app, _| {
             (
                 app.file_history.reveals.failure.scroll().clone(),
                 app.file_history
@@ -6032,11 +6350,13 @@ pub(crate) mod tests {
                     .unwrap()
                     .error_scroll
                     .clone(),
+                app.file_history.reveals.panel.scroll().clone(),
             )
         });
         let slack = px(0.5);
-        for height in (480..=1000).step_by(10) {
-            let at = format!("13 pt in {width} × {height}");
+        let mut scrolled = Vec::new();
+        for height in heights {
+            let at = format!("{text} pt in {width} × {height}");
             let mut seen = Vec::new();
             for from in [300., 1000.] {
                 resize(cx, from);
@@ -6060,6 +6380,7 @@ pub(crate) mod tests {
                 seen[0], seen[1],
                 "{at}: the notice, its message and Retry page from 300 px tall, then from 1,000"
             );
+            scrolled.push((height, panel_scroll.max_offset().y > slack, seen[1].1));
             let (regions, least, extent) = cx.update(|window, cx| {
                 app.update(cx, |app, cx| {
                     let least = PanelLeast::of(
@@ -6099,7 +6420,8 @@ pub(crate) mod tests {
                 .read_with(cx, |app, _| app.inspector_message.details_room())
                 .expect("a laid-out toolbar");
             let decided = cx.update(|window, _| {
-                failure_error_scrolls(&message, &least, regions.body, panel, room, window)
+                let text = error_text_height(&message, room, window);
+                failure_error_scrolls(text, &least, regions.body, panel, window)
             });
             assert_eq!(
                 seen[1].1, decided,
@@ -6107,6 +6429,1048 @@ pub(crate) mod tests {
                 seen[1].0
             );
         }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+        scrolled
+    }
+
+    /// Whether the walk `scrolled` (`failed_message_scrolls_where_decided`)
+    /// took in a height where the message scrolls and one where it fits, as
+    /// drawn, so that a decision made the same at every height cannot pass
+    /// it: the message wraps to a line more inside its gutter than without
+    /// it, so a decision that it scrolls everywhere makes itself true.
+    fn assert_message_scrolls_and_fits(at: &str, scrolled: &[(u32, bool, bool)]) {
+        assert!(
+            scrolled.iter().any(|(_, _, scrolls)| *scrolls),
+            "{at}: a height where the message scrolls is walked, {scrolled:?}"
+        );
+        assert!(
+            scrolled.iter().any(|(_, _, scrolls)| !*scrolls),
+            "{at}: a height where the message fits is walked, {scrolled:?}"
+        );
+    }
+
+    /// A failed page's message scrolls where decided at 13 pt in a 540 px
+    /// window from 480 to 1,000 px tall
+    /// (`failed_message_scrolls_where_decided`), which takes in heights
+    /// where it scrolls and heights where it fits. Decided from its last
+    /// frame, a 150-character message at 13 pt in 540 × 554 to 698 kept its
+    /// gutter and scrolled at 100 px reached from 300 px tall and drew 90 px
+    /// with no cue reached from 1,000 px, Retry page 10 px lower in one than
+    /// the other.
+    #[gpui::test]
+    async fn a_failed_pages_message_scrolls_where_decided(cx: &mut TestAppContext) {
+        let scrolled =
+            failed_message_scrolls_where_decided(cx, 13, 540., (480..=1000).step_by(10)).await;
+        assert_message_scrolls_and_fits("13 pt in 540 px", &scrolled);
+    }
+
+    /// The same at 18 pt in a 461 px window from 420 to 1,300 px tall, which
+    /// takes in heights where the panel is shorter than its parts' least
+    /// heights and scrolls, its notice and message laid out in the room its
+    /// gutter leaves, and heights where it holds them, and heights where
+    /// the message scrolls and, above about 1,220 px, where it fits: the
+    /// message's decision was walked only at 13 pt, where the panel never
+    /// scrolls, and then only to 700 px, where the message scrolled at every
+    /// height, so a decision that it scrolls everywhere passed the walk.
+    #[gpui::test]
+    async fn a_failed_pages_message_scrolls_where_decided_at_18_pt(cx: &mut TestAppContext) {
+        let scrolled =
+            failed_message_scrolls_where_decided(cx, 18, 461., (420..=1300).step_by(10)).await;
+        assert!(
+            scrolled.iter().any(|(_, scrolls, _)| *scrolls),
+            "18 pt in 461 px: a height where the panel scrolls is walked, {scrolled:?}"
+        );
+        assert!(
+            scrolled.iter().any(|(_, scrolls, _)| !*scrolls),
+            "18 pt in 461 px: a height where the panel holds its parts is walked, {scrolled:?}"
+        );
+        assert_message_scrolls_and_fits("18 pt in 461 px", &scrolled);
+    }
+
+    /// On a scale 1 display at 13 pt, where half a rem is 6.5 px and layout
+    /// puts the notice's padding and gap on the device pixel, a failed
+    /// page's message lies as far below the notice's top as Retry page lies
+    /// above its bottom, and scrolls exactly where decided
+    /// (`failure_error_scrolls`), in a 540 px window reached from 300 and
+    /// from 1,000 px tall: a message of four short lines from 790 to 830 px
+    /// tall, where the message panel's share leaves the notice its room, and
+    /// one of five from 860 to 900, where the notice's 35% does, each taking
+    /// in heights where it scrolls and where it fits; its lines wrap alike
+    /// with and without its cue's gutter, so the decision cannot make itself
+    /// true. With its padding and gap taken as 1.5 rem, 19.5 px where layout
+    /// drew 18, and the message panel's share as 152.1 px where layout drew
+    /// 152, the four lines decided they scrolled at 809 to 812 px tall and
+    /// kept their gutter where they drew whole, and with the notice's 35%
+    /// taken unrounded, the five lines did at 881 px.
+    #[gpui::test]
+    async fn a_failed_pages_message_scrolls_where_decided_at_scale_1(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::px;
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        let error = app.read_with(cx, |app, _| {
+            app.file_history
+                .lineage
+                .as_ref()
+                .unwrap()
+                .error_scroll
+                .clone()
+        });
+        for (lines, heights) in [(4, 790..=830), (5, 860..=900)] {
+            let message = vec!["Bad page."; lines].join("\n");
+            app.update(cx, |app, cx| {
+                app.file_history.lineage.as_mut().unwrap().error = Some(message.clone());
+                cx.notify();
+            });
+            let mut scrolled = Vec::new();
+            for height in heights {
+                let at = format!("{lines} lines at 13 pt in 540 × {height} at scale 1");
+                let mut seen = Vec::new();
+                for from in [300., 1000.] {
+                    resize_at(cx, 540., from, 1.);
+                    resize_at(cx, 540., height as f32, 1.);
+                    assert_eq!(cx.update(|window, _| window.scale_factor()), 1.);
+                    let notice = cx.debug_bounds("file-history-failure").expect("the notice");
+                    let words = cx.debug_bounds(ERROR_TEXT).expect("the message's text");
+                    let retry = cx.debug_bounds(RETRY_PAGE).expect("Retry page");
+                    assert_eq!(
+                        words.top() - notice.top(),
+                        notice.bottom() - retry.bottom(),
+                        "{at} from {from} px tall: the room above the message and below Retry \
+                     page agree, {notice:?} around {words:?} and {retry:?}"
+                    );
+                    seen.push(error.max_offset().y > px(0.5));
+                }
+                assert_eq!(
+                    seen[0], seen[1],
+                    "{at}: the message scrolls alike from 300 px tall and from 1,000"
+                );
+                let decided = cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        let least = PanelLeast::of(
+                            app.inspector_message.revision_message_least(),
+                            true,
+                            window,
+                        );
+                        let entry = app.file_history_entry().cloned().expect("a revision");
+                        let extent = app.message_extent(&entry.commit, Some(&entry), window, cx);
+                        let regions = app.file_history.regions.get().expect("decided regions");
+                        let panel = app
+                            .inspector_message
+                            .revision_panel_height(extent, regions.body)
+                            .expect("a laid-out toolbar");
+                        let room = app
+                            .inspector_message
+                            .details_room()
+                            .expect("a laid-out toolbar");
+                        let text = error_text_height(&message, room, window);
+                        failure_error_scrolls(text, &least, regions.body, panel, window)
+                    })
+                });
+                assert_eq!(
+                    seen[1], decided,
+                    "{at}: the message scrolls exactly where decided"
+                );
+                scrolled.push((height, false, seen[1]));
+            }
+            assert_message_scrolls_and_fits(
+                &format!("{lines} lines at 13 pt in 540 px at scale 1"),
+                &scrolled,
+            );
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// What a failed page's message draws in File History's 540 px window
+    /// (`failed_message_drawn`), and what its scroll decision takes.
+    struct MessageDrawn {
+        /// Whether the message's region keeps its cue's gutter.
+        gutter: bool,
+        /// How far the message's scroll reaches.
+        reach: Pixels,
+        /// How far its text, with its ring's room below it, runs past its
+        /// region's foot.
+        overrun: Pixels,
+        /// Whether `failure_error_scrolls` decides it scrolls from the
+        /// frame's inputs.
+        decided: bool,
+        /// Whether the notice gives way to the revisions' row, the list
+        /// drawn at its least, rather than ending at its 35%.
+        row_bound: bool,
+    }
+
+    /// Draws File History's 540 px window `height` tall at `scale`
+    /// (`resize_at`), its failed page's message `message`, and reads what
+    /// the message draws and what its decision takes.
+    fn failed_message_drawn(
+        app: &gpui_kit::Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        message: &str,
+        height: f32,
+        scale: f32,
+    ) -> MessageDrawn {
+        resize_at(cx, 540., height, scale);
+        let region = cx.debug_bounds(ERROR_REGION).expect("the message's region");
+        let words = cx.debug_bounds(ERROR_TEXT).expect("the message's text");
+        let list = cx
+            .debug_bounds("file-revision-list")
+            .expect("the revisions' list");
+        let (inset, row, reach, decided) = cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let least =
+                    PanelLeast::of(app.inspector_message.revision_message_least(), true, window);
+                let entry = app.file_history_entry().cloned().expect("a revision");
+                let extent = app.message_extent(&entry.commit, Some(&entry), window, cx);
+                let regions = app.file_history.regions.get().expect("decided regions");
+                let panel = app
+                    .inspector_message
+                    .revision_panel_height(extent, regions.body)
+                    .expect("a laid-out toolbar");
+                let room = app
+                    .inspector_message
+                    .details_room()
+                    .expect("a laid-out toolbar");
+                let text = error_text_height(message, room, window);
+                let lineage = app.file_history.lineage.as_ref().expect("a lineage");
+                (
+                    window.pixel_snap(crate::appearance::button_ring_room(cx)),
+                    window.pixel_snap(least.row),
+                    lineage.error_scroll.max_offset().y,
+                    failure_error_scrolls(text, &least, regions.body, panel, window),
+                )
+            })
+        });
+        MessageDrawn {
+            gutter: region.right() - words.right() > inset + SETTLED,
+            reach,
+            overrun: words.bottom() + inset - region.bottom(),
+            decided,
+            row_bound: list.size.height <= row + SETTLED,
+        }
+    }
+
+    /// Asserts that a failed page's message keeps its gutter exactly where
+    /// its scroll reaches past its top, that it reaches as far as its text
+    /// runs past its region, and that it scrolls exactly where decided.
+    fn assert_message_drawn_as_decided(at: &str, drawn: &MessageDrawn) {
+        assert_eq!(
+            drawn.gutter,
+            drawn.reach > Pixels::ZERO,
+            "{at}: the gutter kept exactly where the message scrolls, its reach {:?}",
+            drawn.reach
+        );
+        assert!(
+            (drawn.reach - drawn.overrun.max(Pixels::ZERO)).abs() <= SETTLED,
+            "{at}: its reach {:?} is its text's overrun {:?}",
+            drawn.reach,
+            drawn.overrun
+        );
+        assert_eq!(
+            drawn.decided, drawn.gutter,
+            "{at}: the message scrolls exactly where decided"
+        );
+    }
+
+    /// Where the lengths a failed page's message gives way to lie off the
+    /// whole pixel, it keeps its gutter exactly where it scrolls, its scroll
+    /// reaching as far as its text runs past it, and scrolls exactly where
+    /// decided (`failure_error_scrolls`), in a 540 px window reached from
+    /// 300 and from 1,000 px tall at every device pixel of: four lines at
+    /// 14 pt on a scale 1 display from 862 to 876 px tall and five from 940
+    /// to 952; four at 15 pt at scale 1.5 from 930 to 938 px; and five at
+    /// 13 pt at scale 1.5 from 886.67 to 890.67 px; each taking in heights
+    /// where it scrolls and where it fits. Decided with Retry page taken
+    /// unrounded, 30.15 px where layout drew 30, or the revisions' row,
+    /// 73.23 px where it drew 73, four lines at 14 pt kept the gutter where
+    /// they drew whole at 871 px, as the lengths unrounded did at 871 to
+    /// 873 px, five lines at 947 to 950 and four at 15 pt at 934 to 935; and
+    /// with the 35%'s foot, 467.5 device pixels down the body, worked out in
+    /// pixels a hair past that where layout drew 467, the five lines at
+    /// 13 pt drew a device pixel cut with no gutter at 888.67 and 889.
+    #[gpui::test]
+    async fn a_failed_pages_message_scrolls_where_decided_off_the_whole_pixel(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{
+            history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        for (text, scale, lines, pixels) in [
+            (14, 1., 4, 862..=876),
+            (14, 1., 5, 940..=952),
+            (15, 1.5, 4, 1395..=1407),
+            (13, 1.5, 5, 1330..=1336),
+        ] {
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            let message = vec!["Bad page."; lines].join("\n");
+            app.update(cx, |app, cx| {
+                app.file_history.lineage.as_mut().unwrap().error = Some(message.clone());
+                cx.notify();
+            });
+            let mut scrolled = Vec::new();
+            for pixel in pixels {
+                let height = pixel as f32 / scale;
+                let at = format!("{lines} lines at {text} pt in 540 × {height} at scale {scale}");
+                let mut seen = Vec::new();
+                for from in [300., 1000.] {
+                    resize_at(cx, 540., from, scale);
+                    let drawn = failed_message_drawn(&app, cx, &message, height, scale);
+                    assert_message_drawn_as_decided(&format!("{at} from {from} px tall"), &drawn);
+                    seen.push(drawn.gutter);
+                }
+                assert_eq!(
+                    seen[0], seen[1],
+                    "{at}: the message scrolls alike from 300 px tall and from 1,000"
+                );
+                scrolled.push((pixel, false, seen[1]));
+            }
+            assert_message_scrolls_and_fits(
+                &format!("{lines} lines at {text} pt in 540 px at scale {scale}"),
+                &scrolled,
+            );
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// A failed page's message on a display of `scale`, at each text size
+    /// from 13 to 18 pt, of three lines and of as many as fit 100 px, keeps
+    /// its gutter exactly where it scrolls, its scroll reaching as far as its
+    /// text runs past it, and scrolls exactly where decided
+    /// (`failure_error_scrolls`), in a 540 px window at every device pixel
+    /// within five of the height from which it fits and every whole pixel
+    /// within three, walked up and then down; the walk takes in notices
+    /// that end at their 35% and notices that give way to the revisions'
+    /// row where the message comes to fit.
+    async fn failed_message_scrolls_where_decided_at_scale(cx: &mut TestAppContext, scale: f32) {
+        use crate::views::tests::{
+            history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let mut bound = (false, false);
+        for text in 13..=18 {
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            resize_at(cx, 540., 1000., scale);
+            let line = cx.update(|window, _| text_line(11., window));
+            let most = (100. / f32::from(line)).floor() as usize;
+            for lines in [3, most] {
+                let at = format!("{lines} lines at {text} pt in 540 px at scale {scale}");
+                let message = vec!["Bad page."; lines].join("\n");
+                app.update(cx, |app, cx| {
+                    app.file_history.lineage.as_mut().unwrap().error = Some(message.clone());
+                    cx.notify();
+                });
+                let drawn = |cx: &mut VisualTestContext, pixel: i32| {
+                    failed_message_drawn(&app, cx, &message, pixel as f32 / scale, scale)
+                };
+                // The device pixel from which it fits, between 500 and
+                // 1,500 px tall.
+                let (mut scrolls, mut fits) = ((500. * scale) as i32, (1500. * scale) as i32);
+                assert!(
+                    drawn(cx, scrolls).reach > Pixels::ZERO,
+                    "{at}: the message scrolls 500 px tall"
+                );
+                assert!(
+                    drawn(cx, fits).reach <= Pixels::ZERO,
+                    "{at}: the message fits 1,500 px tall"
+                );
+                while fits - scrolls > 1 {
+                    let mid = (scrolls + fits) / 2;
+                    if drawn(cx, mid).reach > Pixels::ZERO {
+                        scrolls = mid;
+                    } else {
+                        fits = mid;
+                    }
+                }
+                if drawn(cx, scrolls).row_bound {
+                    bound.1 = true;
+                } else {
+                    bound.0 = true;
+                }
+                let whole = (fits as f32 / scale).round() as i32;
+                let mut heights: Vec<f32> = ((fits - 5)..=(fits + 5))
+                    .map(|pixel| pixel as f32 / scale)
+                    .chain(((whole - 3)..=(whole + 3)).map(|height| height as f32))
+                    .collect();
+                heights.sort_by(f32::total_cmp);
+                heights.dedup();
+                for &height in heights.iter().chain(heights.iter().rev()) {
+                    let drawn = failed_message_drawn(&app, cx, &message, height, scale);
+                    assert_message_drawn_as_decided(&format!("{at} × {height}"), &drawn);
+                }
+            }
+        }
+        assert_eq!(
+            bound,
+            (true, true),
+            "at scale {scale}: notices that end at their 35% and notices that give way to the \
+             revisions' row are walked where the message comes to fit"
+        );
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// The walk (`failed_message_scrolls_where_decided_at_scale`) at scale
+    /// 1, where Retry page taken unrounded, 30.15 px where layout drew 30,
+    /// kept the gutter where three lines at 14 pt drew whole at 823 px.
+    #[gpui::test]
+    async fn a_failed_pages_message_scrolls_where_decided_walked_at_scale_1(
+        cx: &mut TestAppContext,
+    ) {
+        failed_message_scrolls_where_decided_at_scale(cx, 1.).await;
+    }
+
+    /// The walk at scale 1.25, where three lines at 17 pt taken as three
+    /// 23.2 px lines, 69.6 px where layout drew 70.4, their sum rounded up to
+    /// the device pixel, decided they fitted and drew cut with no gutter at
+    /// 1,039 px.
+    #[gpui::test]
+    async fn a_failed_pages_message_scrolls_where_decided_walked_at_scale_1_25(
+        cx: &mut TestAppContext,
+    ) {
+        failed_message_scrolls_where_decided_at_scale(cx, 1.25).await;
+    }
+
+    /// The walk at scale 1.5, where the notice's 35% worked out in pixels
+    /// put its foot a hair past the half device pixel that layout rounds
+    /// toward zero, and five lines at 13 pt drew cut with no gutter at
+    /// 888.67 px.
+    #[gpui::test]
+    async fn a_failed_pages_message_scrolls_where_decided_walked_at_scale_1_5(
+        cx: &mut TestAppContext,
+    ) {
+        failed_message_scrolls_where_decided_at_scale(cx, 1.5).await;
+    }
+
+    /// The walk at scale 2, where the notice's 35% taken as its length
+    /// rounded, 145.5 px where layout drew 146 by its edges, kept the gutter
+    /// where five lines at 14 pt drew whole at 946.5 px.
+    #[gpui::test]
+    async fn a_failed_pages_message_scrolls_where_decided_walked_at_scale_2(
+        cx: &mut TestAppContext,
+    ) {
+        failed_message_scrolls_where_decided_at_scale(cx, 2.).await;
+    }
+
+    /// A failed page's message is wrapped once for its text, the notice's
+    /// room and the interface font and sizes (`State::error_lines`), not in
+    /// every frame: a frame drawn again while a page stands failed wraps no
+    /// text, at 13 pt in 1,480 × 980 and 18 pt in 461 × 420; and each of
+    /// what it is wrapped for, changed alone, wraps it again to the lines a
+    /// fresh wrap gives, never the last ones: another interface font, which
+    /// the window's root render reads, wrapped for in the next frame, and
+    /// another message, a narrower room, a larger text size and another
+    /// display scale, which the text's device pixels follow. Wrapped in every
+    /// frame while the page stood failed, it shaped the whole message in
+    /// each, a wheel step over the revisions included; kept across display
+    /// scales, two lines' 41 px from a frame at scale 2 stood for the 42 px
+    /// drawn at scale 1, at 15 pt.
+    #[gpui::test]
+    async fn a_failed_pages_message_wraps_once_for_its_text_room_and_size(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let long = "The page could not be read. ".repeat(12);
+        app.update(cx, |app, cx| {
+            app.file_history.lineage.as_mut().unwrap().error = Some(long.clone());
+            cx.notify();
+        });
+        let wraps = || crate::image_compare::note_tests::WRAPPED.with(std::cell::Cell::get);
+        for (text, width, height) in [(13, 1480., 980.), (18, 461., 420.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            assert!(
+                cx.debug_bounds(ERROR_REGION).is_some(),
+                "{at}: the failed page's message is drawn"
+            );
+            let before = wraps();
+            app.update(cx, |_, cx| cx.notify());
+            draw(cx);
+            assert_eq!(
+                wraps() - before,
+                0,
+                "{at}: a frame drawn again wraps no text"
+            );
+        }
+        // The interface font, changed alone, which the window's root render
+        // reads (`views::LineKey::frame`): the next frame wraps the message
+        // again, for that font, never keeping the last font's lines. The
+        // test text system lays every family out alike, so what tells is
+        // the font the kept lines were wrapped for.
+        let kept_for = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.file_history
+                    .error_lines
+                    .borrow()
+                    .as_ref()
+                    .map(|kept| kept.line.clone())
+            })
+        };
+        let before = kept_for(cx).expect("lines kept for the drawn message");
+        let sans = cx.update(|_, cx| {
+            let theme = gpui_kit::component::Theme::global_mut(cx);
+            std::mem::replace(&mut theme.font_family, theme.mono_font_family.clone())
+        });
+        app.update(cx, |_, cx| cx.notify());
+        draw(cx);
+        assert!(
+            kept_for(cx).is_some_and(|after| after != before),
+            "the interface font: changed alone, the message is wrapped again for it"
+        );
+        cx.update(|_, cx| gpui_kit::component::Theme::global_mut(cx).font_family = sans);
+        app.update(cx, |_, cx| cx.notify());
+        draw(cx);
+        // Each of what the lines are kept for, changed alone, from the lines
+        // kept for the long message at 13 pt in `room`.
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let room = app
+            .read_with(cx, |app, _| app.inspector_message.details_room())
+            .expect("a laid-out toolbar");
+        // With no page failed, so no frame drawn between these wraps keeps
+        // lines of its own.
+        app.update(cx, |app, cx| {
+            app.file_history.lineage.as_mut().unwrap().error = None;
+            cx.notify();
+        });
+        draw(cx);
+        let short = "The page could not be read.";
+        let narrower = room * 0.5;
+        let kept = |cx: &mut VisualTestContext, error: &str, room: Pixels| {
+            cx.update(|window, cx| {
+                let before = wraps();
+                let lines = app.read(cx).file_history.error_lines(error, room, window);
+                (lines, wraps() - before)
+            })
+        };
+        let fresh = |cx: &mut VisualTestContext, error: &str, room: Pixels| {
+            cx.update(|window, _| error_text_height(error, room, window))
+        };
+        let (mut last, _) = kept(cx, &long, room);
+        assert_eq!(
+            kept(cx, &long, room),
+            (last, 0),
+            "the same inputs wrap nothing"
+        );
+        for (part, text, scale, error, room) in [
+            ("its room", 13, None, long.as_str(), narrower),
+            ("the text size", 18, None, long.as_str(), narrower),
+            ("its text", 18, None, short, narrower),
+            ("the display's scale", 18, Some(1.), short, narrower),
+        ] {
+            if text == 18 {
+                cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+            }
+            if let Some(scale) = scale {
+                cx.update(|window, _| window.set_scale_factor(scale));
+            }
+            let lines = fresh(cx, error, room);
+            assert_ne!(
+                lines, last,
+                "{part}: changed alone, it wraps to other lines"
+            );
+            assert_eq!(
+                kept(cx, error, room),
+                (lines, 1),
+                "{part}: changed alone, the message is wrapped again"
+            );
+            assert_eq!(kept(cx, error, room), (lines, 0), "{part}: then kept");
+            last = lines;
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// A failed page's message is read whole and scrolled from the keyboard:
+    /// its text is static text whose value is the whole message, wherever it
+    /// is scrolled to; while it scrolls it is a Tab stop just before Retry
+    /// page, a group named for the page it stands for, ringed on its own
+    /// edge, that Down scrolls by one of its lines and Up back; and a message
+    /// that fits is no stop, Shift+Tab from Retry page passing over it. At
+    /// 13 pt in a 1,480 × 980 window and at 18 pt in 461 × 420. As plain
+    /// text with no stop, a keyboard could not bring the rest of a long
+    /// message into view and a screen reader found none of it.
+    #[gpui::test]
+    async fn a_failed_pages_message_is_read_whole_and_scrolled_by_keys(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{Hsla, px, rgb, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let (region, retry) = app.read_with(cx, |app, cx| {
+            let failure = &app.file_history.reveals.failure;
+            (
+                failure.focus(ERROR_REGION, cx),
+                failure.focus("retry-file-history", cx),
+            )
+        });
+        let accent = cx.update(|_, cx| Hsla::from(rgb(crate::appearance::palette(cx).accent)));
+        // One short word, which fits the line the notice gives way to in a
+        // 109.5 px room at 18 pt in 461 × 420.
+        let short = "Failed.";
+        let long = "The page could not be read. ".repeat(40);
+        for (text, width, height) in [(13, 1480., 980.), (18, 461., 420.)] {
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            for (message, overflows) in [(short, false), (long.as_str(), true)] {
+                let at = format!(
+                    "{text} pt in {width} × {height}, a message {}",
+                    if overflows {
+                        "past its room"
+                    } else {
+                        "that fits"
+                    }
+                );
+                let scroll = app.update(cx, |app, cx| {
+                    let lineage = app.file_history.lineage.as_mut().unwrap();
+                    lineage.error = Some(message.to_owned());
+                    lineage.error_scroll = ScrollHandle::new();
+                    cx.notify();
+                    lineage.error_scroll.clone()
+                });
+                draw(cx);
+                written::forget();
+                draw(cx);
+                let words = written::get(ERROR_TEXT)
+                    .unwrap_or_else(|| panic!("{at}: the message writes static text"))
+                    .node;
+                assert_eq!(
+                    (words.role(), words.value()),
+                    (Role::Label, Some(message)),
+                    "{at}: its text, read whole"
+                );
+                // Past what its cue takes as an end, as its decision is.
+                assert_eq!(
+                    scroll.max_offset().y > crate::tags::AN_END,
+                    overflows,
+                    "{at}: it scrolls only where it runs past its room, {:?} past it, its \
+                     region {:?}",
+                    scroll.max_offset().y,
+                    cx.debug_bounds(ERROR_REGION)
+                );
+                cx.update(|window, cx| retry.focus(window, cx));
+                draw(cx);
+                cx.simulate_keystrokes("shift-tab");
+                draw(cx);
+                assert_eq!(
+                    cx.update(|window, _| region.is_focused(window)),
+                    overflows,
+                    "{at}: Shift+Tab from Retry page reaches the message only where it scrolls"
+                );
+                if !overflows {
+                    continue;
+                }
+                written::forget();
+                draw(cx);
+                let group = written::get(ERROR_REGION)
+                    .unwrap_or_else(|| panic!("{at}: the message writes its region"))
+                    .node;
+                assert_eq!(
+                    (group.role(), group.label()),
+                    (Role::Group, Some(ERROR_LABEL)),
+                    "{at}: a group named for the page it stands for"
+                );
+                assert_eq!(
+                    written::get(ERROR_TEXT).and_then(|words| words.parent),
+                    Some(ERROR_REGION.to_owned()),
+                    "{at}: its text inside it"
+                );
+                let bounds = cx.debug_bounds(ERROR_REGION).expect("the message");
+                let ringed = cx.update(|window, _| {
+                    let scale = window.scale_factor();
+                    window.painted_quads().into_iter().any(|quad| {
+                        let drawn = quad.bounds;
+                        let near = |a: gpui_kit::ScaledPixels, b: Pixels| {
+                            (a.as_f32() / scale - f32::from(b)).abs() < 0.5
+                        };
+                        quad.border_color == accent
+                            && near(drawn.origin.x, bounds.left())
+                            && near(drawn.origin.y, bounds.top())
+                            && near(drawn.origin.x + drawn.size.width, bounds.right())
+                            && near(drawn.origin.y + drawn.size.height, bounds.bottom())
+                    })
+                });
+                assert!(ringed, "{at}: its ring on its own edge, {bounds:?}");
+                let line = cx.update(|window, _| text_line(11., window));
+                cx.simulate_keystrokes("down");
+                draw(cx);
+                assert_eq!(-scroll.offset().y, line, "{at}: Down scrolls it a line");
+                cx.simulate_keystrokes("up");
+                draw(cx);
+                assert_eq!(scroll.offset().y, px(0.), "{at}: Up brings it back");
+                cx.simulate_keystrokes("up");
+                draw(cx);
+                assert_eq!(scroll.offset().y, px(0.), "{at}: Up at its top stays there");
+            }
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// The outer and the inner edges of the rings in the palette's accent
+    /// the frame drew last over a failed page's notice, one pair for each
+    /// ring: GPUI paints a border as one strip per side, each the same quad
+    /// masked to its side (`focus_ring::painted_outlines`).
+    fn rings_over_notice(
+        cx: &mut VisualTestContext,
+    ) -> Vec<(gpui_kit::Bounds<Pixels>, gpui_kit::Bounds<Pixels>)> {
+        use gpui_kit::{Bounds, Hsla, ScaledPixels, point, px, rgb};
+        let notice = cx.debug_bounds("file-history-failure").expect("the notice");
+        let mut rings = cx.update(|window, cx| {
+            let accent = Hsla::from(rgb(crate::appearance::palette(cx).accent));
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.border_color == accent)
+                .map(|quad| {
+                    let (drawn, edge) = (quad.bounds, quad.border_widths);
+                    let outer = Bounds::from_corners(
+                        point(logical(drawn.origin.x), logical(drawn.origin.y)),
+                        point(
+                            logical(drawn.origin.x + drawn.size.width),
+                            logical(drawn.origin.y + drawn.size.height),
+                        ),
+                    );
+                    let inner = Bounds::from_corners(
+                        point(
+                            logical(drawn.origin.x + edge.left),
+                            logical(drawn.origin.y + edge.top),
+                        ),
+                        point(
+                            logical(drawn.origin.x + drawn.size.width - edge.right),
+                            logical(drawn.origin.y + drawn.size.height - edge.bottom),
+                        ),
+                    );
+                    (outer, inner)
+                })
+                .filter(|(_, inner)| inner.intersects(&notice))
+                .collect::<Vec<_>>()
+        });
+        rings.dedup();
+        rings
+    }
+
+    /// A failed page's message, focused, draws its ring clear of its letters
+    /// on every side, its text keeping the notice's left edge and its wrap
+    /// room inside its gutter: the ring's inner edge lies before its first
+    /// glyph's left and top and past its text's right, below its first line
+    /// and, scrolled to its end, below its last, at 13 pt in a 1,480 × 980
+    /// window and at 18 pt in 461 × 420, where the message gives way to a
+    /// line. Drawn on the text's own edge, the ring lay over the first
+    /// column of letters and, at the one-line height, across the descenders.
+    /// Its cue keeps the ring's room too: at 13 pt, along a track a thumb
+    /// moves on, its scrollbar's track lies inside the ring, clear of it;
+    /// at 18 pt its fades lie on its own edge, which its text scrolls
+    /// through. Built with no room, its track ran under the ring.
+    #[gpui::test]
+    async fn a_failed_pages_message_rings_clear_of_its_letters(cx: &mut TestAppContext) {
+        use crate::tags::tests::{painted_fades_on, painted_track_fill};
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{Bounds, point, px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let (region, retry) = app.read_with(cx, |app, cx| {
+            let failure = &app.file_history.reveals.failure;
+            (
+                failure.focus(ERROR_REGION, cx),
+                failure.focus(RETRY_PAGE, cx),
+            )
+        });
+        let removed = cx.update(|_, cx| crate::appearance::palette(cx).removed_background);
+        let long = "The page could not be read. ".repeat(40);
+        for (text, width, height) in [(13, 1480., 980.), (18, 461., 420.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            let scroll = app.update(cx, |app, cx| {
+                let lineage = app.file_history.lineage.as_mut().unwrap();
+                lineage.error = Some(long.clone());
+                lineage.error_scroll = ScrollHandle::new();
+                cx.notify();
+                lineage.error_scroll.clone()
+            });
+            draw(cx);
+            cx.update(|window, cx| retry.focus(window, cx));
+            draw(cx);
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            assert!(
+                cx.update(|window, _| region.is_focused(window)),
+                "{at}: the message holds focus"
+            );
+            let line = cx.update(|window, _| text_line(11., window));
+            // Layout puts the notice's edges on device pixels.
+            let pixel = cx.update(|window, _| px(1. / window.scale_factor()));
+            let room = app
+                .read_with(cx, |app, _| app.inspector_message.details_room())
+                .expect("a laid-out toolbar");
+            for end in [false, true] {
+                let at = format!("{at}, {}", if end { "at its end" } else { "at its top" });
+                if end {
+                    scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+                    app.update(cx, |_, cx| cx.notify());
+                    draw(cx);
+                }
+                let words = cx.debug_bounds(ERROR_TEXT).expect("the message's text");
+                let retry = cx.debug_bounds(RETRY_PAGE).expect("Retry page");
+                assert_eq!(
+                    words.left(),
+                    retry.left(),
+                    "{at}: its text keeps the notice's left edge"
+                );
+                assert!(
+                    (words.size.width - (room - crate::tags::ScrollCue::gutter())).abs() <= pixel,
+                    "{at}: its text keeps its wrap room inside its gutter, {:?} in {room:?}",
+                    words.size.width
+                );
+                let rings = rings_over_notice(cx);
+                let [(_, ring)] = rings[..] else {
+                    panic!("{at}: one ring over the notice, {rings:?}");
+                };
+                let clear = |gap: Pixels| gap >= px(1.);
+                assert!(
+                    clear(words.left() - ring.left()) && clear(ring.right() - words.right()),
+                    "{at}: its ring clears its first glyph's left and its text's right, \
+                     {ring:?} around {words:?}"
+                );
+                if end {
+                    assert!(
+                        clear(ring.bottom() - words.bottom()),
+                        "{at}: its ring clears its last line, {ring:?} around {words:?}"
+                    );
+                } else {
+                    assert!(
+                        clear(words.top() - ring.top())
+                            && clear(ring.bottom() - (words.top() + line)),
+                        "{at}: its ring clears its first line, {ring:?} around {words:?}"
+                    );
+                }
+                // Its cue, in the ring's room it keeps around its text.
+                let list = scroll.bounds();
+                let column = list.dilate(-cx.update(|window, cx| {
+                    window.pixel_snap(crate::appearance::button_ring_room(cx))
+                }));
+                if column.size.height >= crate::tags::SHORTEST_SCROLL_TRACK {
+                    let track = Bounds::from_corners(
+                        point(
+                            column.right() - gpui_kit::base::Scrollbar::width(),
+                            column.top(),
+                        ),
+                        column.bottom_right(),
+                    );
+                    assert!(
+                        clear(ring.right() - track.right())
+                            && clear(track.top() - ring.top())
+                            && clear(ring.bottom() - track.bottom()),
+                        "{at}: its track {track:?} inside its ring {ring:?}"
+                    );
+                    assert!(
+                        painted_track_fill(cx, track).is_some(),
+                        "{at}: its scrollbar's track painted in {track:?}, inside its ring \
+                         {ring:?}"
+                    );
+                } else {
+                    let (top, bottom) = painted_fades_on(cx, list, removed);
+                    assert_eq!(
+                        (top.is_some(), bottom.is_some()),
+                        (end, !end),
+                        "{at}: a fade on its own edge where its text continues past, {list:?}"
+                    );
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// A failed page's message that stops scrolling while it holds focus,
+    /// as a window grown taller lets it fit, keeps focus in the frames drawn
+    /// at the new size, its ring still drawn around its whole text with the
+    /// ring's room between them on every side, the text given its gutter
+    /// back, the frame holding it as the group named for the page, so
+    /// nothing new is spoken; Tab goes on from it to Retry page, and
+    /// Shift+Tab from Retry page passes it to the message panel, a message
+    /// that fits being no stop: at 18 pt from a 461 × 420 window,
+    /// where the message scrolls, to 461 × 1,300, where it fits (decided
+    /// 2026-11-14). Untracked once it fit, its focus fell to the window root
+    /// and Tab started again from the window's first stop; moved to Retry
+    /// page, focus went where the person had not sent it. Checked only for
+    /// enclosing the text, a ring drawn a pixel closer to it passed.
+    #[gpui::test]
+    async fn a_focused_message_that_comes_to_fit_keeps_focus(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::views::tests::{
+            draw, history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::{px, size};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let (region, retry, message, root) = app.read_with(cx, |app, cx| {
+            let reveals = &app.file_history.reveals;
+            (
+                reveals.failure.focus(ERROR_REGION, cx),
+                reveals.failure.focus(RETRY_PAGE, cx),
+                reveals.panel.focus(MESSAGE_REGION, cx),
+                app.app_focus.clone(),
+            )
+        });
+        // Focus on the message held in the frame drawn, not only by the
+        // window, which keeps a handle no frame tracks as focused: the
+        // window's root, which every drawn stop lies in, then holds none.
+        let held = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| region.is_focused(window) && root.contains_focused(window, cx))
+        };
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(420.)));
+        let scroll = app.update(cx, |app, cx| {
+            let lineage = app.file_history.lineage.as_mut().unwrap();
+            lineage.error = Some("The page could not be read.".to_owned());
+            cx.notify();
+            lineage.error_scroll.clone()
+        });
+        draw(cx);
+        assert!(
+            scroll.max_offset().y > crate::tags::AN_END,
+            "at 461 × 420 the message scrolls, {:?}",
+            scroll.max_offset()
+        );
+        cx.update(|window, cx| retry.focus(window, cx));
+        draw(cx);
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(held(cx), "the message holds focus");
+        cx.simulate_resize(size(px(461.), px(1300.)));
+        for frame in 0..3 {
+            if frame > 0 {
+                app.update(cx, |_, cx| cx.notify());
+            }
+            written::forget();
+            draw(cx);
+            let at = format!("frame {frame} at 461 × 1,300");
+            assert!(
+                scroll.max_offset().y <= crate::tags::AN_END,
+                "{at}: the message fits, {:?}",
+                scroll.max_offset()
+            );
+            assert!(
+                held(cx),
+                "{at}: the message keeps focus, {:?} focused",
+                cx.update(|window, cx| window.focused(cx))
+            );
+            let words = cx.debug_bounds(ERROR_TEXT).expect("the message's text");
+            let rings = rings_over_notice(cx);
+            let [(ring, _)] = rings[..] else {
+                panic!("{at}: its ring still drawn, one over the notice, {rings:?}");
+            };
+            // Its whole text inside the ring, the ring's room between the
+            // ring's outer edge and the words on every side, the gutter
+            // given up once it fits.
+            let room =
+                cx.update(|window, cx| window.pixel_snap(crate::appearance::button_ring_room(cx)));
+            let rooms = [
+                words.left() - ring.left(),
+                words.top() - ring.top(),
+                ring.right() - words.right(),
+                ring.bottom() - words.bottom(),
+            ];
+            assert!(
+                rooms.iter().all(|gap| (*gap - room).abs() <= SETTLED),
+                "{at}: its ring drawn around its whole text {words:?} with its room, {room:?}, \
+                 on every side, left, top, right and bottom {rooms:?}, {ring:?}"
+            );
+            let group = written::get(ERROR_REGION)
+                .unwrap_or_else(|| panic!("{at}: the message writes its region"))
+                .node;
+            assert_eq!(
+                (group.role(), group.label()),
+                (Role::Group, Some(ERROR_LABEL)),
+                "{at}: still the group named for the page, so nothing new is spoken"
+            );
+        }
+        cx.simulate_keystrokes("tab");
+        assert!(
+            cx.update(|window, _| retry.is_focused(window)),
+            "Tab goes on from the message to Retry page"
+        );
+        draw(cx);
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| message.contains_focused(window, cx)),
+            "Shift+Tab from Retry page passes the message, which fits, to the message panel, \
+             {:?} focused",
+            cx.update(|window, cx| window.focused(cx))
+        );
         cx.update(|window, cx| {
             cx.set_reduce_motion(false);
             crate::appearance::apply_text_sizes(13, 12, window, cx);

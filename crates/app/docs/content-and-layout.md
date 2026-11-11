@@ -175,26 +175,45 @@ labels, and a body keeping 200 px, the header held at 391 px at scale 1,
 scrolled at 392 beside the labels and held again at 394; labelled also
 where the header scrolled beside them as it did beside their icons, the
 labels went and came back: with header rows 97 px over footers of 40 and
-75 px and a body keeping 150 px, labels at 320 px, icons at 321 and labels
-at 322. A
-failed page's notice and its message cue their own scrolls on the notice's
-removed background (`Surface::Removed`), their tracks resting on it and their
-thumbs fitted to it (`Palette::removed_thumb`); the message gives way inside the
-notice down to its line (`PanelLeast::error_line`), so the notice holds Retry
-page whole and only the message scrolls. Whether the message scrolls is
-decided before layout too (`failure_error_scrolls`): its text wrapped in the
-notice's room without the gutter, in the notice's height for this frame,
-which follows the body's (`Regions::body`) and the message panel's, worked out
-from this frame's toolbar and measured extent
-(`commit_message::State::revision_panel_height`), never from the last frame's
-layout. The revisions cue theirs on the panel
-too: their `uniform_list` keeps the gutter itself (`ScrollCue::trailing`), since
-the kit lays the track over the bounds the list's own scroll handle reports,
-and the cue draws over it (`ScrollCue::around`), its track inside the ring's
-room so the keyboard ring on the list's edge stays whole. Every cued list
-is laid out where its parent puts it, with the sizing and selector its owner
-gives it, and its cue's fades and scrollbar are drawn outside the layout's
-flow, inside any border the list draws itself, after its content
+75 px and a body keeping 150 px, labels at 320 px, icons at 321 and labels at
+322. A failed page's notice and its message cue their own scrolls on the
+notice's removed background (`Surface::Removed`), their tracks resting on it and
+their thumbs fitted to it (`Palette::removed_thumb`); the message gives way
+inside the notice down to its line (`PanelLeast::error_line`), so the notice
+holds Retry page whole and only the message scrolls. Whether the message scrolls
+is decided before layout too (`failure_error_scrolls`): its text wrapped in the
+notice's room without the gutter, in the notice's height for this frame, which
+follows the body's (`Regions::body`) and the message panel's, worked out
+(`commit_message::State::revision_panel_height`) from this frame's toolbar and
+measured extent, never from the last frame's layout, every length taken as
+layout draws it, on the device pixel: the notice's padding, its gap, Retry page,
+its least and the revisions' row as layout rounds a set length, its 35% by its
+edges, worked out in device pixels as layout resolves a share, and the text as
+tall as its element sums its lines and rounds them up (`error_text_height`;
+taken unrounded, its padding above and below and its gap,
+6.5 px each and 19.5 together where
+layout drew 18, at 13 pt on a scale 1 display, kept the gutter of a message
+drawn whole; its 35%'s foot worked out in pixels at scale 1.5 drew one a device
+pixel cut with none), the room above the message's text and below Retry page
+alike, its text's height worked out once (`State::error_lines`) for the message,
+the room, the interface font and sizes and the display's scale, not in every
+frame. While it scrolls, the message is a Tab stop before Retry page that Up and
+Down scroll by a line, ringed on its own edge and revealed in the notice and the
+panel as Retry page is, and its text is static text read whole wherever it is
+scrolled to. Its ring's room lies inside its edge around the text, the region's
+margins giving it back to the notice's padding, so the ring clears the letters
+while the text keeps the notice's left edge and its wrap room and the notice its
+rows, and its cue keeps the same room (`ScrollCue::new`), so its track lies
+inside the ring; a focused message that comes to fit keeps focus and its ring,
+its handle tracked while it holds focus though no longer a stop, so Tab goes on
+from it to Retry page and Shift+Tab from Retry page passes it. The revisions cue
+theirs on the panel too: their `uniform_list` keeps the gutter itself
+(`ScrollCue::trailing`), since the kit lays the track over the bounds the list's
+own scroll handle reports, and the cue draws over it (`ScrollCue::around`), its
+track inside the ring's room so the keyboard ring on the list's edge stays
+whole. Every cued list is laid out where its parent puts it, with the sizing and
+selector its owner gives it, and its cue's fades and scrollbar are drawn outside
+the layout's flow, inside any border the list draws itself, after its content
 (`tags::Cued`): the cue once lay in a flex column of its own around the list,
 and the header's and footer's cost 70 to 94 µs more a frame on a wheel or
 width step. A divider its owner draws, the header's below it, the footer's
