@@ -7243,6 +7243,135 @@ mod tests {
         );
     }
 
+    /// A failure never moves a Download (decision, 2026-11-10): with both
+    /// sides' objects missing, at 13 pt in a 1480 × 973 window, where the
+    /// sentence leads the Downloads' line at rest, a long failure of After…
+    /// takes the sentence's place at its width, and at 18 pt in QA's
+    /// 461 × 490 window at scale 2, where the two share a line without their
+    /// word, its warning icon follows Download After…; either way both
+    /// Downloads keep the places they had at rest. Put before them, the icon
+    /// moved both right by its width and the gap, and at 13 pt the long
+    /// words pushed them to the row's end.
+    #[gpui::test]
+    async fn a_failure_moves_neither_download(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_both();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        let initial = cx.update(|window, _| window.scale_factor());
+        let browser = inspecting(&app, cx, &files);
+        choose(&browser, cx, file_index(&files, "both.mmd"));
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.text_mode = 0;
+                    browser.prepare_editor(window, cx);
+                    let body = &browser.body;
+                    body.reveal_next_focus();
+                    body.focus("series-file-preview", cx).focus(window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+        };
+        let downloads = |cx: &mut gpui::VisualTestContext| {
+            ["download-lfs-side-0", "download-lfs-side-1"]
+                .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")))
+        };
+        let kept =
+            |rest: &[gpui::Bounds<Pixels>; 2], now: &[gpui::Bounds<Pixels>; 2], device: Pixels| {
+                rest.iter()
+                    .zip(now)
+                    .all(|(rest, now)| (rest.left() - now.left()).abs() <= device / 2.)
+            };
+        shown(cx);
+        assert!(
+            cx.debug_bounds("lfs-preview-download-explanation")
+                .is_some(),
+            "at 13 pt in a 1480 × 973 window the sentence leads the line"
+        );
+        let wide = downloads(cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, _| window.set_scale_factor(2.));
+        shown(cx);
+        let narrow = downloads(cx);
+        start_download(&app, &browser, cx, narrow[1].center());
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        shown(cx);
+        let words = "Git LFS could not reach origin: the remote refused the batch request \
+                     for this object because its credentials have expired";
+        end_download(&app, &browser, cx, Some(words));
+        shown(cx);
+        let device = cx.update(|window, _| px(1. / window.scale_factor()));
+        let icon = cx
+            .debug_bounds("lfs-download-failure-icon")
+            .expect("a warning icon stands for the words");
+        let failed = downloads(cx);
+        assert!(
+            kept(&narrow, &failed, device) && icon.left() >= failed[1].right() - device / 2.,
+            "at 18 pt the icon, {icon:?}, follows Download After…, and both Downloads, \
+             {failed:?}, keep their places at rest, {narrow:?}"
+        );
+        cx.update(|window, _| window.set_scale_factor(initial));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        shown(cx);
+        let device = cx.update(|window, _| px(1. / window.scale_factor()));
+        let failure = cx
+            .debug_bounds("lfs-download-failure")
+            .expect("the words are drawn");
+        let failed = downloads(cx);
+        assert!(
+            kept(&wide, &failed, device) && failure.right() <= failed[0].left() + device / 2.,
+            "at 13 pt the words, {failure:?}, take the sentence's place, and both Downloads, \
+             {failed:?}, keep their places at rest, {wide:?}"
+        );
+    }
+
+    /// A lone missing side's failure takes the sentence's place too
+    /// (decision, 2026-11-10): at 13 pt in a 1480 × 973 window, where the
+    /// sentence leads Download Before…'s line at rest, a failure's words
+    /// stand in its place at its width, and the Download keeps the place
+    /// where it was pressed. At their own width before it, the words moved
+    /// it 137 px left as the download failed.
+    #[gpui::test]
+    async fn a_lone_side_s_failure_keeps_its_download_in_place(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_before();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        let sentence = cx
+            .debug_bounds("lfs-preview-download-explanation")
+            .expect("the sentence leads the line");
+        let pressed = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Download Before… is offered");
+        start_download(&app, &browser, cx, pressed.center());
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        end_download(&app, &browser, cx, Some("Git LFS could not reach origin"));
+        draw(cx);
+        let device = cx.update(|window, _| px(1. / window.scale_factor()));
+        let failure = cx
+            .debug_bounds("lfs-download-failure")
+            .expect("the words are drawn");
+        let button = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Download Before… is back");
+        assert!(
+            (button.left() - pressed.left()).abs() <= device / 2.
+                && (failure.left() - sentence.left()).abs() <= device / 2.
+                && (failure.size.width - sentence.size.width).abs() <= device / 2.,
+            "the words, {failure:?}, take the sentence's place, {sentence:?}, and Download \
+             Before…, {button:?}, keeps where it was pressed, {pressed:?}"
+        );
+    }
+
     /// Whether Cancel download was pressed is read from the window's write,
     /// never from the words its progress then reads: with those words
     /// changed, a press still turns the review's Cancel to "Cancelling…",
