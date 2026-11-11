@@ -654,6 +654,15 @@ impl GitTurtle {
                     summary,
                     vanished,
                 }) => {
+                    // A fresh capture's rows went with the replaced
+                    // repository, and so does the traversal they were read
+                    // at, as no history of the found one is installed here:
+                    // kept, Older stayed offered under the empty list and
+                    // asked the found repository for the replaced one's next
+                    // page, and the tab saved the replaced scope.
+                    if replaced {
+                        self.history_paging = Default::default();
+                    }
                     self.refs = metadata.refs;
                     self.branches = metadata.branches;
                     self.worktrees = metadata.worktrees;

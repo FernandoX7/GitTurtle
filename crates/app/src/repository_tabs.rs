@@ -8464,6 +8464,125 @@ pub(crate) mod tests {
         .await;
     }
 
+    /// A quiet read that finds a re-clone at the tab's path while History
+    /// is scoped to a branch the found repository lacks installs the found
+    /// repository's metadata with no rows (`worker::QuietHistory::Retained`)
+    /// and keeps nothing of the replaced history's paging: the scope its
+    /// rows were read at, their offset and the next page go with them, so
+    /// Older, which continued them, offers nothing under the empty list,
+    /// and the tab saves no scope from before. Kept, Older stayed offered
+    /// and, pressed, asked the found repository for the replaced
+    /// traversal's next page, which could not be read, and the tab saved
+    /// the replaced scope's tips (FU44-C3's N4).
+    #[gpui::test]
+    async fn a_quiet_read_that_finds_a_re_clone_beside_a_vanished_scope_keeps_no_paging(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        let page = crate::history_paging::PAGE_SIZE;
+        let (fixture, app, cx) = crate::views::tests::history_window_from(
+            cx,
+            &crate::views::tests::history_script(page + 1, 1),
+        )
+        .await;
+        let base = fixture.path().to_owned();
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        fixture_git(&root, &["branch", "before"]);
+        let scope = worker::Scope::Branch {
+            name: "before".into(),
+            remote: false,
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open(root.clone(), Some(("before".into(), scope)), window, cx)
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        let paging = |app: &GitTurtle, cx: &App| {
+            (
+                app.history_paging.scope.is_some(),
+                app.history_paging.offset,
+                app.history_paging.next_offset,
+                app.tab_bookmark(cx).pinned.is_some(),
+            )
+        };
+        assert_eq!(
+            app.read_with(cx, paging),
+            (true, 0, Some(page), true),
+            "the scoped history read a page at a time, its scope saved"
+        );
+        let third = fixture_repository(base.join("third"));
+        fixture_git(
+            third.path(),
+            &["commit", "-q", "--allow-empty", "-m", "Third"],
+        );
+        std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+        std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+        let found = gitturtle_core::GitRepository::open(&root)
+            .unwrap()
+            .git_dir_inode();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(false);
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        git: true,
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+        // Landed once the found repository's status read and watch, which
+        // the capture asks for on the operation thread and which hold the
+        // rescan back, have answered too: the reader's idle wait alone
+        // never saw the capture land.
+        let landed = |app: &GitTurtle, _: &App| {
+            app.repository
+                .as_ref()
+                .is_some_and(|repo| repo.git_dir_inode() == found)
+                && !app.automatic.quiet_read_requested()
+                && app.automatic.replies_landed()
+                && app.status_task.is_none()
+        };
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            if app.read_with(cx, landed) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.operations.drain());
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+        }
+        assert!(
+            app.read_with(cx, landed),
+            "the capture and its reads landed"
+        );
+        app.update(cx, |app, _| app.automatic.hold_quiet_reads(true));
+        crate::views::tests::settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.commits.is_empty()),
+            "no row from before"
+        );
+        assert_eq!(
+            app.read_with(cx, paging),
+            (false, 0, None, false),
+            "no paging from before"
+        );
+        // Older offers nothing: pressed, it reads nothing.
+        let status = app.read_with(cx, |app, _| app.status.clone());
+        let older = cx.debug_bounds("load-more").expect("Older drawn");
+        cx.simulate_click(older.center(), gpui::Modifiers::default());
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.status.clone()),
+            status,
+            "Older read nothing"
+        );
+    }
+
     #[gpui::test]
     async fn open_s_fresh_capture_shows_nothing_from_before(cx: &mut TestAppContext) {
         assert_a_fresh_capture_shows_nothing_from_before(cx, |_, cx, root| {
