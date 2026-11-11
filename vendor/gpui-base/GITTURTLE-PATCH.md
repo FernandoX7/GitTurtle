@@ -388,7 +388,9 @@ the request it holds is an empty view, and `TooltipOverlay::request_show`
 drops that request as the next comes, counting it as no tooltip shown, its
 grace period included, so the next request waits out its delay, and an
 application that hides the overlay while it holds the empty request finds
-none to hide. The consumer is the header's Pull
+none to hide. The module's own `a_tooltip_built_empty_counts_as_none_shown`
+covers it through `scripts/vendor-crate-test.sh vendor/gpui-base tooltip`, a
+test-only addition. The consumer is the header's Pull
 requests in `crates/app/src/github_view.rs`, which builds its pointer tooltip
 empty beside a keyboard press's answer
 (`a_neighbour_waits_its_delay_after_a_pointer_rested_on_the_answer`). Remove

@@ -19670,6 +19670,133 @@ mod tests {
         }
     }
 
+    /// A pointer that rested on Pull requests beside a keyboard press's answer and then left it
+    /// for blank space leaves no tooltip there as the write ends: Return on the focused button,
+    /// the pointer meeting it in the answer's first frame and resting there past the kit's
+    /// 500 ms show delay, so the kit's overlay holds the button's request, built as nothing,
+    /// then leaving for blank space, the overlay builds that request no more from the frame the
+    /// pointer's leaving draws, and where the write ends before the window draws again, the
+    /// overlay's last build of it draws nothing and hides it; either way no frame in the 600 ms
+    /// after the write's end draws a popup, the reason or the button's idle sentence, and a
+    /// hover on Settings then waits out the whole show delay. A tooltip shows only for what
+    /// the pointer rests on: the request left standing would build the button's idle tooltip as
+    /// the overlay was built again at the write's end, but for the answer it was asked during.
+    #[gpui::test]
+    async fn a_pointer_that_left_the_answer_for_blank_space_draws_no_tooltip_as_the_write_ends(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let away = point(px(1.), px(1.));
+        cx.simulate_mouse_move(away, None, Modifiers::default());
+        compact_header(cx);
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        let (button, settings) = (
+            cx.debug_bounds("pull-requests").expect("the button"),
+            cx.debug_bounds("settings").expect("Settings"),
+        );
+        let tick = |cx: &mut VisualTestContext, by: Duration| {
+            cx.executor().advance_clock(by);
+            cx.run_until_parked();
+            one_frame(cx);
+        };
+        for frames_after_leaving in [true, false] {
+            let pass = if frames_after_leaving {
+                "frames drawn after the pointer left"
+            } else {
+                "no frame drawn after the pointer left"
+            };
+            meet_in_the_answers_first_frame(cx, button.center());
+            draw(cx);
+            tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+            assert!(answer_drawn(cx), "{pass}: the answer stands");
+            assert_eq!(kit_tooltip_popups(cx).len(), 1, "{pass}: the answer alone");
+            assert!(
+                app.read_with(cx, |app, _| app.github_refusal.built_empty.get()),
+                "{pass}: the overlay built the button's request as nothing"
+            );
+
+            // The pointer leaves for blank space, and the write ends: later, or before the
+            // window draws again, the move and the write's end handled in one pass.
+            let leave = gpui::MouseMoveEvent {
+                position: away,
+                modifiers: Modifiers::default(),
+                pressed_button: None,
+            };
+            if frames_after_leaving {
+                cx.simulate_event(leave);
+                draw(cx);
+                tick(cx, Duration::from_millis(100));
+                assert!(
+                    !app.read_with(cx, |app, _| app.github_refusal.built_empty.get()),
+                    "{pass}: the overlay holds the button's request no more once the pointer \
+                     has left"
+                );
+                app.update(cx, |app, cx| {
+                    app.operation_busy = None;
+                    cx.notify();
+                });
+            } else {
+                cx.update(|window, cx| {
+                    window.dispatch_event(gpui::PlatformInput::MouseMove(leave), cx);
+                    app.update(cx, |app, cx| {
+                        app.operation_busy = None;
+                        cx.notify();
+                    });
+                });
+            }
+            one_frame(cx);
+            for step in 0..=12 {
+                let at = format!("{pass}, {} ms after the write", step * 50);
+                assert!(!answer_drawn(cx), "{at}: the answer has gone");
+                let popups = kit_tooltip_popups(cx);
+                assert!(popups.is_empty(), "{at}: no popup: {popups:?}");
+                for idle in [
+                    "pull-requests/tooltip/Discover pull requests and review captured changes",
+                    "pull-requests/tooltip/Pull requests · Discover pull requests and review \
+                     captured changes",
+                ] {
+                    assert!(
+                        cx.debug_bounds(idle).is_none(),
+                        "{at}: no idle tooltip at Pull requests"
+                    );
+                }
+                tick(cx, Duration::from_millis(50));
+            }
+
+            // A hover on Settings waits out the show delay.
+            cx.simulate_mouse_move(settings.center(), None, Modifiers::default());
+            draw(cx);
+            tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
+            let popups = kit_tooltip_popups(cx);
+            assert!(
+                popups.is_empty(),
+                "{pass}: Settings' tooltip waits its show delay: {popups:?}"
+            );
+            tick(cx, Duration::from_millis(100));
+            assert_eq!(
+                kit_tooltip_popups(cx).len(),
+                1,
+                "{pass}: then Settings' tooltip shows"
+            );
+
+            // The next write.
+            cx.simulate_mouse_move(away, None, Modifiers::default());
+            tick(cx, TOOLTIP_DELAY * 2);
+            app.update(cx, |app, cx| {
+                app.operation_busy = Some("Fetching…");
+                cx.notify();
+            });
+            draw(cx);
+        }
+        app.update(cx, |app, _| app.operation_busy = None);
+    }
+
     /// Forgets the side the reason's popup at Pull requests last took and how many times it was
     /// laid out to choose one, so a test counts from a frame that chooses it afresh.
     fn forget_answer_side(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
@@ -19779,8 +19906,11 @@ mod tests {
     /// room there, laid out to choose the pointer's side or drawn as a keyboard press's answer:
     /// Pull requests focused by Tab, the status line keeps the bounds it had before a write
     /// began in the write's first frame and its steady frames, and with the reason standing at
-    /// the button once the status line's note has lapsed. Left in the bar's flow wherever its
-    /// side held or it was drawn, the popup's empty node took one of the bar's gaps from the
+    /// the button once the status line's note has lapsed; and at 13 pt in a 639 × 980 window,
+    /// where a write's status stands in the status bar in the line's place, its progress label
+    /// and the line holding it keep the room they had in a frame that chose the popup's side
+    /// afresh, through the answer's frames and past the note. Left in the bar's flow wherever
+    /// its side held or it was drawn, the popup's empty node took one of the bar's gaps from the
     /// status line in each of those frames, and a write's status the bar carried lost its label.
     #[gpui::test]
     async fn the_pull_requests_answer_takes_no_room_in_the_status_bar(cx: &mut TestAppContext) {
@@ -19821,6 +19951,70 @@ mod tests {
             "the reason stays at the button past the status line's note"
         );
         assert_eq!(line(cx), rest, "beside the reason the line keeps its room");
+
+        // At 13 pt in a 639 × 980 window the write's status stands in the status bar, in the
+        // line's place: the line holding it and its label keep the bounds they had before
+        // Return, in the answer's frames and once the status line's note has lapsed.
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        crate::focus_ring::sweep::interface_size(cx, 13);
+        cx.simulate_resize(size(px(639.), px(980.)));
+        draw(cx);
+        cx.update(|window, cx| window.focus(&opener, cx));
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        draw(cx);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY + Duration::from_millis(50));
+        draw(cx);
+        // A frame that chooses the side afresh lays the popup out with the frame, out of the
+        // flow by the kit's positioner: the label's room with no node of the popup's in the bar.
+        forget_answer_side(&app, cx);
+        one_frame(cx);
+        let bar = cx.debug_bounds("status-bar").expect("the status bar");
+        let label = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("operation-progress")
+                .expect("the write's progress label")
+        };
+        let (before, holding) = (label(cx), line(cx));
+        assert!(
+            bar.contains(&before.center()) && before.size.width > px(0.),
+            "the write's status {before:?} stands in the status bar {bar:?}"
+        );
+        assert!(
+            holding.contains(&before.center()),
+            "the line {holding:?} holds the write's status {before:?}"
+        );
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        for frame in 0..4 {
+            one_frame(cx);
+            assert!(
+                answer_drawn(cx),
+                "frame {frame}: the reason stands at the button"
+            );
+            assert_eq!(
+                (label(cx), line(cx)),
+                (before, holding),
+                "frame {frame} of the answer: the progress label and its line keep their room"
+            );
+        }
+        cx.executor()
+            .advance_clock(crate::copy_feedback::RESTORE_AFTER + Duration::from_millis(50));
+        draw(cx);
+        assert!(
+            answer_drawn(cx) && app.read_with(cx, |app, _| app.github_refusal_line().is_none()),
+            "the reason stays at the button past the status line's note"
+        );
+        assert_eq!(
+            (label(cx), line(cx)),
+            (before, holding),
+            "past the note the progress label and its line keep their room"
+        );
         app.update(cx, |app, _| app.operation_busy = None);
     }
 

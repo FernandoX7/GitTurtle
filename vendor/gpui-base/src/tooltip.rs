@@ -344,6 +344,93 @@ mod tests {
         cx.update(|_, cx| assert!(state.read(cx).content.is_none()));
     }
 
+    /// A window drawing the overlay it holds.
+    struct OverlayHost(gpui::Entity<TooltipOverlay>);
+
+    impl Render for OverlayHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    /// A tooltip's content, drawn as `tip` for the test to find.
+    struct Tip;
+
+    impl Render for Tip {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .debug_selector(|| "tip".into())
+                .size(px(40.))
+                .child("tip")
+        }
+    }
+
+    /// GitTurtle patch: a request whose view was built empty counts as no tooltip shown, so the
+    /// next request waits out its show delay: a request built as `gpui::EmptyView` and drawn,
+    /// then another trigger's, draws nothing until 500 ms have passed, and draws its tooltip
+    /// then. Counted as shown, the empty view let the next request switch to its tooltip at
+    /// once.
+    #[gpui::test]
+    fn a_tooltip_built_empty_counts_as_none_shown(cx: &mut gpui::TestAppContext) {
+        let overlay = cx.update(|cx| cx.new(|_| TooltipOverlay::new()));
+        let (_, cx) = cx.add_window_view({
+            let overlay = overlay.clone();
+            move |_, _| OverlayHost(overlay)
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        cx.update(|window, cx| {
+            overlay.update(cx, |tooltip, cx| {
+                tooltip.request_show(
+                    TooltipRequest::new(bounds(0., 0., 20., 20.), |_, cx| {
+                        cx.new(|_| gpui::EmptyView).into()
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.executor().advance_clock(SHOW_DELAY);
+        draw(cx);
+        cx.update(|_, cx| {
+            let tooltip = overlay.read(cx);
+            assert!(
+                tooltip.content.is_some() && tooltip.shown_empty,
+                "the overlay holds the request it built empty"
+            );
+        });
+
+        cx.update(|window, cx| {
+            overlay.update(cx, |tooltip, cx| {
+                tooltip.request_show(
+                    TooltipRequest::new(bounds(100., 0., 20., 20.), |_, cx| cx.new(|_| Tip).into()),
+                    window,
+                    cx,
+                );
+            });
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("tip").is_none(),
+            "the next tooltip waits out its show delay"
+        );
+        cx.executor()
+            .advance_clock(SHOW_DELAY - Duration::from_millis(50));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("tip").is_none(),
+            "still waiting 50 ms before the delay ends"
+        );
+        cx.executor().advance_clock(Duration::from_millis(100));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("tip").is_some(),
+            "the next tooltip shows once its delay has passed"
+        );
+    }
+
     #[test]
     fn tooltip_priority_exceeds_popup_layer() {
         assert!(TOOLTIP_PRIORITY > crate::POPUP_PRIORITY);
