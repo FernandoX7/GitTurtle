@@ -566,10 +566,8 @@ impl WaylandWindowState {
                     .cast::<c_void>(),
             };
             let config = WgpuSurfaceConfig {
-                size: Size {
-                    width: DevicePixels(f32::from(options.bounds.size.width) as i32),
-                    height: DevicePixels(f32::from(options.bounds.size.height) as i32),
-                },
+                // At the state's initial scale, 1, as `content_size` reports it.
+                size: drawable_size(options.bounds.size, 1.0),
                 transparent: true,
                 // Prefer Mailbox to avoid blocking. Falls back to FIFO if Mailbox is unsupported.
                 preferred_present_mode: Some(wgpu::PresentMode::Mailbox),
@@ -1463,8 +1461,8 @@ impl WaylandWindowStatePtr {
             if let Some(scale) = scale {
                 state.scale = scale;
             }
-            let device_bounds = state.bounds.to_device_pixels(state.scale);
-            state.renderer.update_drawable_size(device_bounds.size);
+            let drawable = drawable_size(state.bounds.size, state.scale);
+            state.renderer.update_drawable_size(drawable);
             (state.bounds.size, state.scale)
         };
 
@@ -1593,6 +1591,96 @@ fn text_input_enabled(accepts_text_input: Option<bool>) -> bool {
     accepts_text_input.unwrap_or(false)
 }
 
+/// The device size of the drawable for a surface `size` logical pixels at
+/// `scale`: each side rounded half away from zero, as
+/// `Size::to_device_pixels` rounds and the fractional-scale protocol asks a
+/// buffer to be sized.
+fn drawable_size(size: Size<Pixels>, scale: f32) -> Size<DevicePixels> {
+    size.to_device_pixels(scale)
+}
+
+/// The content size the window reports for a surface `size` logical pixels
+/// at `scale`, which GPUI lays the root out at: the drawable's device size
+/// divided by the scale, so the root's edges, which GPUI's layout rounds half
+/// toward zero, land on the drawable's last device pixel. GitTurtle patch:
+/// 0.3.4 reported the surface's logical size, so where a side falls on half a
+/// device pixel (461 px at 1.5 is 691.5, 490 px at 1.25 is 612.5) the
+/// drawable rounded up and the root down, and the window never painted its
+/// last device pixel column or row. The content differs from the surface by
+/// at most half a device pixel; window geometry, the viewport destination and
+/// the reported bounds keep the surface's logical size.
+fn content_size_at(size: Size<Pixels>, scale: f32) -> Size<Pixels> {
+    drawable_size(size, scale).to_pixels(scale)
+}
+
+#[cfg(test)]
+mod content_size_tests {
+    use super::{content_size_at, drawable_size};
+    use gpui::{Pixels, px, size};
+
+    /// The device pixel GPUI's layout puts an edge `logical` pixels from the
+    /// root's origin on at `scale`: rounded half toward zero, as GPUI's
+    /// `round_to_device_pixel` (`util.rs`, private to that crate) rounds
+    /// every laid-out and painted edge.
+    fn laid_out_edge(logical: Pixels, scale: f32) -> i32 {
+        let device = f32::from(logical) * scale;
+        (device.abs() - 0.5).ceil().copysign(device) as i32
+    }
+
+    /// A quad across the root's full width and height, as a window's
+    /// background is, ends on the drawable's last device pixel column and
+    /// row: at 461 × 490 its right edge at 1.5 and its bottom edge at 1.25
+    /// fell on half a device pixel, which the drawable rounded up and the
+    /// layout down, a device pixel short.
+    #[test]
+    fn the_root_reaches_the_drawables_last_device_pixel() {
+        let window = size(px(461.), px(490.));
+        for (scale, device) in [(1.25f32, (576, 613)), (1.5, (692, 735))] {
+            let drawable = drawable_size(window, scale);
+            assert_eq!(
+                (drawable.width.0, drawable.height.0),
+                device,
+                "461 × 490 at {scale}: the drawable"
+            );
+            let root = content_size_at(window, scale);
+            assert_eq!(
+                (
+                    laid_out_edge(root.width, scale),
+                    laid_out_edge(root.height, scale)
+                ),
+                device,
+                "461 × 490 at {scale}: the root's right and bottom edges, {root:?}"
+            );
+        }
+    }
+
+    /// Every side from 1 to 4096 logical pixels, at every scale the
+    /// fractional-scale protocol gives from 1 to 3 (a multiple of 1/120):
+    /// the root's edge lands on the drawable's last device pixel, and the
+    /// content stays within half a device pixel of the surface, so a
+    /// pointer's surface-local position meets the same layout.
+    #[test]
+    fn the_root_reaches_the_drawable_at_every_size_and_scale() {
+        for numerator in 120..=360 {
+            let scale = numerator as f32 / 120.;
+            for side in 1..=4096 {
+                let surface = px(side as f32);
+                let drawable = drawable_size(size(surface, surface), scale);
+                let root = content_size_at(size(surface, surface), scale);
+                assert_eq!(
+                    laid_out_edge(root.width, scale),
+                    drawable.width.0,
+                    "{side} px at {scale}: the root {root:?}"
+                );
+                assert!(
+                    (f32::from(root.width) - side as f32).abs() * scale <= 0.5 + 1e-3,
+                    "{side} px at {scale}: the content {root:?} strays from the surface"
+                );
+            }
+        }
+    }
+}
+
 fn extract_states<'a, S: TryFrom<u32> + 'a>(states: &'a [u8]) -> impl Iterator<Item = S> + 'a
 where
     <S as TryFrom<u32>>::Error: 'a,
@@ -1666,7 +1754,8 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn content_size(&self) -> Size<Pixels> {
-        self.borrow().bounds.size
+        let state = self.borrow();
+        content_size_at(state.bounds.size, state.scale)
     }
 
     fn resize(&mut self, size: Size<Pixels>) {
