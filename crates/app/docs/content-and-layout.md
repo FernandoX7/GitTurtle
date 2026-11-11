@@ -134,18 +134,49 @@ texts, the revision and the page's state), so a wheel step over the
 revisions lays out no line, and given their shares of the panel's height in this
 frame, as a column's flex items take them (`file_history::Regions`,
 `PanelLeast::shares`), for each toolbar form the panel weighs, and the footer takes Newer page's and Older page's
-labels, else their icons, where it then holds them, and only otherwise
-scrolls, keeping their icons, laid out in the room its gutter leaves. A
-region holds its rows where they fit its share on the device pixel, and is
-laid out tall enough for them, its rows rounded up to the device pixel
-(`file_history::held_at`), so it cuts none of its padding and a wheel over
-it moves nothing; the body gives what that takes past the share, so a held
-header may pass its 30% cap, and a held footer its 25%, by under one device
+labels where it then holds them and the header beside them is held, or
+where they take it no more room than their icons, else their icons where
+it holds them, and only otherwise scrolls, keeping their icons, laid out in the room its
+gutter leaves: the labels never cost the content a row. A
+region holds its rows where they fit its share on the device pixel, or its
+share as layout lays it out with half a pixel past it, what its cue takes as
+an end, so where its cue could show no scroll of them
+(`file_history::held_at`, `tags::AN_END`), and is laid out tall enough for
+them, its rows rounded up to the device pixel, so it cuts none of its
+padding, a wheel over it moves nothing and it keeps no gutter; the body
+gives what that takes past the share only where it keeps its least, so a
+held header may pass its 30% cap, and a held footer its 25%, by under one
+device pixel, or at scale 2 and above by under that end and half a device
 pixel. One that does not hold them scrolls in its share as layout lays it
-out, or a device pixel less where its rows would otherwise reach no more
-than half a pixel past it, what its cue takes as an end
-(`file_history::scrolled_in`, `tags::AN_END`), so a gutter never stands
-without a scroll its cue shows. A
+out (`file_history::scrolled_in`), its rows reaching more than that end past
+it, so a gutter never stands without a scroll its cue shows. Where the
+panel holds its parts' least heights, the header and the footer take no
+more than the body leaves them keeping its least as layout lays it out, so
+the panel never scrolls for them. The two are decided against each other
+the same way: the footer beside the header's share, the header beside the
+most the footer takes in its share, its rows where it holds them, else as
+many as that share holds (`file_history::holds`). A footer whose rows fit
+its share holds them whole, and where the body cannot give them beside the
+header's share, the header gives that room and scrolls in what is left, at
+most a pixel short of its share as layout lays it out, so the footer holds
+them and draws no gutter; a footer that does not hold its rows
+scrolls in what the header's share leaves it, and a header that does not
+hold its own in what the footer leaves it, on the device pixel. A region
+that scrolls is laid out a device pixel lower still only where its rows
+would otherwise reach past it by no more than that end, which, its rows
+lying on the device pixel, only a header whose rows fit its share meets.
+What each is decided beside grows by no more than the panel, so as the
+panel grows a device pixel at a time a region once held stays held, each
+track appears once, and the labels, once taken, stay. Labelled wherever the
+footer held them, Newer page and Older page on a second row of their own
+scrolled a header their icons left whole as the panel grew: with header
+rows 100 px over footers of 60 px with their icons and 94 px with their
+labels, and a body keeping 200 px, the header held at 391 px at scale 1,
+scrolled at 392 beside the labels and held again at 394; labelled also
+where the header scrolled beside them as it did beside their icons, the
+labels went and came back: with header rows 97 px over footers of 40 and
+75 px and a body keeping 150 px, labels at 320 px, icons at 321 and labels
+at 322. A
 failed page's notice and its message cue their own scrolls on the notice's
 removed background (`Surface::Removed`), their tracks resting on it and their
 thumbs fitted to it (`Palette::removed_thumb`); the message gives way inside the

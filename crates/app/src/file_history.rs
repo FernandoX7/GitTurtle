@@ -206,8 +206,9 @@ const FOLLOWS: &str = "Follows renames and the first parent of each merge.";
 /// rows laid out in that room within its share of the panel
 /// (`PanelLeast::shares`), on the device pixel at or above them where it
 /// holds them (`held_at`); Newer page and Older page keep their labels
-/// where the footer then holds them, else their icons where it holds
-/// those (DESIGN.md's responsive order), and only otherwise does the footer
+/// where the footer then holds them and the header beside them is held,
+/// or where they take it no more room than their icons, else their icons where it holds those (DESIGN.md's responsive order),
+/// and only otherwise does the footer
 /// scroll, keeping their icons, laid out in the room its gutter leaves.
 /// Each scrolls exactly where its rows overflow it so, past what its cue
 /// takes as an end (`scrolled_in`). Laid out in the
@@ -322,49 +323,120 @@ impl Rows {
 
     /// The regions these rows take in a panel `tall` whose parts keep
     /// `least` (`PanelLeast::shares`): Newer page and Older page labelled
-    /// where the footer then holds them, else their icons where it holds
-    /// those, and otherwise the footer scrolls, keeping their icons
-    /// (DESIGN.md's responsive order), its share taken as theirs. A region
-    /// holds its rows where they fit its share on the device pixel, and is
-    /// laid out tall enough for them (`held_at`), so it ends at its last row
-    /// and its padding and a wheel over it moves nothing, the body giving the
-    /// less than one device pixel that takes past its share; one that does
-    /// not scrolls in its share as layout lays it out, its rows reaching
-    /// past it by more than its cue takes as an end (`scrolled_in`). Laid
-    /// out at its share as layout rounds it, half a device pixel toward
+    /// where the footer then holds them and the header beside them is held,
+    /// or where they take it no more room than their icons, so the header's
+    /// rows stay whole before their labels go, else their
+    /// icons, with which the footer holds its rows or scrolls them
+    /// (DESIGN.md's responsive order; `Rows::beside_footer`). Labelled in the
+    /// room its gutter left, Older page lay below the footer's fold at 15 pt
+    /// in a 424 × 600 window. So as the panel grows a device pixel at a time a
+    /// region once held stays held, each track appears once, and the labels,
+    /// once taken, stay. Labelled wherever the footer held them, Newer page
+    /// and Older page on a second row of their own scrolled a header their
+    /// icons left whole as the panel grew: with header rows 100 px over
+    /// footers of 60 px with their icons and 94 px with their labels, and a
+    /// body keeping 200 px, the header held at 391 px at scale 1, scrolled at
+    /// 392 beside the labels and held again at 394; labelled also where the
+    /// header scrolled beside them as it did beside their icons, the labels
+    /// went and came back: with header rows 97 px over footers of 40 and
+    /// 75 px and a body keeping 150 px, labels at 320 px, icons at 321, where
+    /// the header came to hold its rows beside the icons alone, and labels at
+    /// 322.
+    fn regions(&self, least: &PanelLeast, tall: Pixels) -> Regions {
+        let icons = self.beside_footer(least, tall, self.icons, false);
+        match self
+            .labelled
+            .map(|labelled| self.beside_footer(least, tall, labelled, true))
+        {
+            // Labels that take no more room than the icons change nothing
+            // else, so they stay beside a scrolling header too.
+            Some(labelled)
+                if !labelled.footer_scrolls
+                    && (!labelled.header_scrolls
+                        || Regions {
+                            page_labels: false,
+                            ..labelled
+                        } == icons) =>
+            {
+                labelled
+            }
+            _ => icons,
+        }
+    }
+
+    /// The regions these rows take in a panel `tall` whose parts keep
+    /// `least` (`PanelLeast::shares`) beside a footer whose rows are
+    /// `footer` tall, Newer page and Older page labelled where `labels`, its
+    /// share taken as theirs (`Rows::regions`). A region holds its rows
+    /// where its cue could show no scroll of them in its share, and is laid
+    /// out tall enough for them (`held_at`), so it ends at its last row and
+    /// its padding and a wheel over it moves nothing; one that does not
+    /// scrolls in its share as layout lays it out, its rows reaching past it
+    /// by more than its cue takes as an end (`scrolled_in`). Where the panel
+    /// holds its parts' least heights, the two take no more than the body
+    /// leaves them keeping its least as layout lays it out, so the panel
+    /// never scrolls for them, and they are decided against each other the
+    /// same way: the footer beside the header's share, the header beside the
+    /// most the footer takes in its share, its rows where it holds them, else
+    /// as many as that share holds (`holds`). A footer whose rows fit its
+    /// share holds them whole, and where the body cannot give them beside the
+    /// header's share, the header gives that room and scrolls in what is
+    /// left, at most a pixel short of its share as layout lays it out, so the
+    /// footer draws no gutter; a footer that does not hold its rows scrolls in
+    /// what the header's share leaves it, and a header that does not hold its
+    /// own in what the footer leaves it. What each is decided beside grows by
+    /// no more than the panel, so as the panel grows a device pixel at a time
+    /// a region once held stays held. Decided against the header's share
+    /// while the header was decided against the footer's own height, a
+    /// footer the body refused scrolled a device pixel shorter and the header
+    /// took that pixel: header rows 107 px and footer rows 83 px over a body
+    /// keeping 240.5 px held the header and scrolled the footer in a 429.5 px
+    /// panel at scale 2, swapped them at 430 and held both at 430.5; and a
+    /// header held beside a scrolling footer scrolled again where the footer
+    /// came to hold its rows, two device pixels taller as the panel grew one.
+    /// Laid out at its share as layout rounds it, half a device pixel toward
     /// zero, a header whose rows ran up to half a pixel past that was held
     /// there, cut that much of its padding and moved half a pixel under a
     /// wheel with no cue to say so; weighed against the share itself, a
     /// header 0.15 px over its 203.85 px at scale 2 was laid out 204 px
-    /// tall, held its rows whole and still kept a gutter.
-    fn regions(&self, least: &PanelLeast, tall: Pixels) -> Regions {
+    /// tall, held its rows whole and still kept a gutter. Held past a share
+    /// the body could not give, or laid out in shares that layout rounded
+    /// up past what the body left, the two took the body past its least, and
+    /// the panel scrolled 0.67 px at 13 pt in a 664 × 449 window at scale
+    /// 1.5, keeping its gutter beside a toolbar laid out without it.
+    fn beside_footer(
+        &self,
+        least: &PanelLeast,
+        tall: Pixels,
+        footer: Pixels,
+        labels: bool,
+    ) -> Regions {
         let scale = self.scale;
-        let held = |footer: Pixels| {
-            let shares = least.shares(tall, self.header, footer);
-            held_at(footer, shares[1], scale).map(|height| (shares, height))
+        // What the header and the footer take together at most where the
+        // panel holds its parts' least heights; past them the panel
+        // scrolls, and each takes its share.
+        let room = (least.total() <= tall).then(|| tall - laid_out(least.body, scale));
+        let beside = |other: Pixels| room.map(|room| room - other);
+        let shares = least.shares(tall, self.header, footer);
+        // The footer, and the most it takes in its share, which the header
+        // is decided beside: its rows where it holds them, whatever room the
+        // header's share leaves it, the header giving it that room; else as
+        // many as its share holds, its rows scrolling in what the header's
+        // share leaves them.
+        let (footer, footer_scrolls, most) = match held_at(footer, shares[1], None, scale) {
+            Some(footer) => (footer, false, footer),
+            None => (
+                scrolled_in(footer, shares[1], beside(laid_out(shares[0], scale)), scale),
+                true,
+                holds(shares[1], scale),
+            ),
         };
-        let (shares, footer, footer_scrolls, page_labels) =
-            if let Some((shares, footer)) = self.labelled.and_then(held) {
-                (shares, footer, false, true)
-            } else {
-                // Their icons' shares, worked out once whether the footer
-                // holds them or scrolls them. Labelled in the room its
-                // gutter left, Older page lay below the footer's fold at
-                // 15 pt in a 424 × 600 window.
-                let shares = least.shares(tall, self.header, self.icons);
-                match held_at(self.icons, shares[1], scale) {
-                    Some(footer) => (shares, footer, false, false),
-                    None => (
-                        shares,
-                        scrolled_in(self.icons, shares[1], scale),
-                        true,
-                        false,
-                    ),
-                }
-            };
-        let (header, header_scrolls) = match held_at(self.header, shares[0], scale) {
+        let (header, header_scrolls) = match held_at(self.header, shares[0], beside(most), scale) {
             Some(header) => (header, false),
-            None => (scrolled_in(self.header, shares[0], scale), true),
+            None => (
+                scrolled_in(self.header, shares[0], beside(footer), scale),
+                true,
+            ),
         };
         Regions {
             header,
@@ -372,7 +444,7 @@ impl Rows {
             body: (tall - header - footer).max(least.body),
             header_scrolls,
             footer_scrolls,
-            page_labels,
+            page_labels: labels,
         }
     }
 }
@@ -381,32 +453,68 @@ impl Rows {
 /// given and still fit it: layout sums the same lengths in another order.
 const SETTLED: Pixels = px(0.01);
 
-/// The height a region whose rows are `rows` tall is laid out at to hold
-/// them whole in its `share` at `scale`: its rows rounded up to the device
-/// pixel, where they fit the share rounded up to it, so a held region
-/// passes its share, and a held header its 30% cap or a held footer its
-/// 25%, by under one device pixel, which the body gives; `None` where they
-/// do not, and it scrolls (`scrolled_in`). Laid out where layout rounds its
-/// share, half a device pixel toward zero, a held header cut up to half a
-/// pixel of its padding at scale 2.
-fn held_at(rows: Pixels, share: Pixels, scale: f32) -> Option<Pixels> {
-    let up = |length: Pixels| px((f32::from(length - SETTLED) * scale).ceil() / scale);
-    let height = up(rows);
-    (height <= up(share) + SETTLED).then_some(height)
+/// `length` on the device pixel at or above it at `scale`, within
+/// [`SETTLED`].
+fn up(length: Pixels, scale: f32) -> Pixels {
+    px((f32::from(length - SETTLED) * scale).ceil() / scale)
 }
 
-/// The height a region whose `rows` run past its `share` at `scale` is laid
-/// out at while it scrolls them: its share as layout lays it out
-/// (`laid_out`), or the device pixel below where its rows would reach no
-/// further past that than its cue takes as an end (`tags::AN_END`), so the
-/// cue always shows the scroll it keeps a gutter for. Only a device pixel
-/// of half a pixel or less, at scale 2 and above, leaves rows that run past
-/// their share rounded up so near it: at scale 2 a header's 181.5 px of rows
-/// in a 180.9 px share, laid out 181 px tall, scrolled half a pixel and
-/// kept a gutter its cue drew nothing in.
-fn scrolled_in(rows: Pixels, share: Pixels, scale: f32) -> Pixels {
-    let below = (f32::from(rows - crate::tags::AN_END - SETTLED) * scale).floor() / scale;
-    laid_out(share, scale).min(px(below))
+/// `length` on the device pixel at or below it at `scale`, within
+/// [`SETTLED`].
+fn down(length: Pixels, scale: f32) -> Pixels {
+    px((f32::from(length + SETTLED) * scale).floor() / scale)
+}
+
+/// The height a region whose rows are `rows` tall is laid out at to hold
+/// them whole in its `share` at `scale`, taking no more than `room`, what
+/// the body, keeping its least, leaves the header beside the most the footer
+/// takes in its share (`None` for the footer, which the header gives the
+/// room, and where the panel scrolls past its parts' least heights): its
+/// rows rounded up to the device pixel, where that fits the share rounded
+/// up to it, or the share as layout lays it out (`laid_out`) with what its
+/// cue takes as an end past it (`tags::AN_END`), rows its cue would show no
+/// scroll of. So a held region passes its share, and a held header its 30%
+/// cap or a held footer its 25%, by under one device pixel, or, at scale 2
+/// and above, by under `AN_END` and half a device pixel, which the body
+/// gives a header only where it keeps its least, and the header gives a
+/// footer (`Rows::regions`); `None` where it does not hold them, and it
+/// scrolls (`scrolled_in`). Laid out where layout rounds its share, half a
+/// device pixel toward zero, a held header cut up to half a pixel of its
+/// padding at scale 2; held only within its share rounded up, a header's
+/// 181.5 px of rows in a 180.9 px share at scale 2 scrolled half a pixel in
+/// the 181 px layout gave it, which its cue drew as no scroll.
+fn held_at(rows: Pixels, share: Pixels, room: Option<Pixels>, scale: f32) -> Option<Pixels> {
+    let height = up(rows, scale);
+    let fits = height <= up(share, scale) + SETTLED
+        || height <= laid_out(share, scale) + crate::tags::AN_END + SETTLED;
+    let given = room.is_none_or(|room| height <= room + SETTLED);
+    (fits && given).then_some(height)
+}
+
+/// The tallest rows on the device pixel a region holds whole in its `share`
+/// at `scale` (`held_at`): its share rounded up to the device pixel, or its
+/// share as layout lays it out with what its cue takes as an end past it.
+fn holds(share: Pixels, scale: f32) -> Pixels {
+    up(share, scale).max(down(laid_out(share, scale) + crate::tags::AN_END, scale))
+}
+
+/// The height a region whose `rows` it does not hold (`held_at`) is laid
+/// out at while it scrolls them in its `share` at `scale`: its share as
+/// layout lays it out (`laid_out`), on the device pixel within `room`, what
+/// the body, keeping its least, leaves it beside the header's share or the
+/// footer (`None` where the panel scrolls). Its rows reach past that by
+/// more than its cue takes as an end (`tags::AN_END`), so the cue shows the
+/// scroll it keeps a gutter for: where they would otherwise reach past it
+/// by no more than that end, it is laid out a device pixel lower still. Its
+/// rows lie on the device pixel, so only a header whose rows fit its share
+/// meets that, one decided beside more than the footer then takes
+/// (`Rows::regions`). Laid out in what the body left it, a footer's 70.5 px
+/// of rows in 70 px at 13 pt in a 664 × 448.5 window at scale 2 scrolled
+/// half a pixel, which its cue drew as no scroll.
+fn scrolled_in(rows: Pixels, share: Pixels, room: Option<Pixels>, scale: f32) -> Pixels {
+    let shows = px((f32::from(rows - crate::tags::AN_END - SETTLED) * scale).floor() / scale);
+    let height = laid_out(share, scale).min(shows);
+    room.map_or(height, |room| height.min(down(room, scale)))
 }
 
 /// `length` as layout lays a set height out at `scale`: on the device pixel,
@@ -4684,6 +4792,522 @@ pub(crate) mod tests {
             over.iter().any(|over| *over > Pixels::ZERO),
             "the heights reach a footer over its share: {over:?}"
         );
+    }
+
+    /// File History's header at 13 pt in a 664 × 765 window at scale 2,
+    /// whose 181.5 px of rows run 0.6 px past its 180.9 px share, 30% of the
+    /// panel, and half a pixel past that share as layout lays it out, no
+    /// further than its cue takes as an end (`tags::AN_END`), holds them
+    /// whole, with no gutter, passing its cap by under that end and half a
+    /// device pixel (`held_at`). Scrolled in its share it moved half a
+    /// pixel, which its cue draws as no scroll; laid out a device pixel
+    /// shorter to scroll a whole pixel, it kept a 19 px gutter and narrowed
+    /// its rows for the last pixel of its padding.
+    #[gpui::test]
+    async fn a_header_within_an_end_of_its_share_holds_its_rows_whole(cx: &mut TestAppContext) {
+        use crate::views::tests::{
+            history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::px;
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let at = "13 pt in 664 × 765 at scale 2";
+        resize_at(cx, 664., 765., 2.);
+        assert_eq!(
+            cx.update(|window, _| window.scale_factor()),
+            2.,
+            "{at}: drawn at its scale"
+        );
+        let (rows, share, regions) = cx.update(|window, cx| {
+            let app = app.read(cx);
+            let decided = app.file_history.decided.borrow();
+            let decided = decided.as_ref().expect("a decision");
+            let lineage = app.file_history.lineage.as_ref().expect("a lineage");
+            let rows = Rows::measure(lineage, decided.toolbar.room(), window);
+            let least = PanelLeast::of(
+                Some(decided.toolbar.revision_message_least()),
+                false,
+                window,
+            );
+            let footer = if decided.regions.page_labels {
+                rows.labelled.unwrap_or(rows.icons)
+            } else {
+                rows.icons
+            };
+            let share = least.shares(decided.inputs.tall, rows.header, footer)[0];
+            (rows.header, share, decided.regions)
+        });
+        assert_eq!(rows, px(181.5), "{at}: the header's rows");
+        assert!(
+            (share - px(180.9)).abs() < SETTLED,
+            "{at}: the header's share {share:?}"
+        );
+        assert!(
+            !regions.header_scrolls,
+            "{at}: the header holds its rows, {regions:?}"
+        );
+        assert_eq!(regions.header, rows, "{at}: laid out as tall as its rows");
+        assert!(
+            cx.debug_bounds("file-history-header-scrollbar").is_none(),
+            "{at}: the header draws no scrollbar"
+        );
+        let header = cx.debug_bounds("file-history-header").expect("the header");
+        let top = cx
+            .debug_bounds("file-history-top-row")
+            .expect("the top row");
+        let pad = cx.update(|window, _| window.pixel_snap(window.rem_size() * 0.75));
+        assert!(
+            (header.right() - pad - top.right()).abs() <= SETTLED,
+            "{at}: the top row {top:?} keeps its full width in {header:?}, no gutter"
+        );
+        assert_held_whole(&app, cx, false, at);
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+    }
+
+    /// The regions `rows` take in panels growing a device pixel at a time
+    /// through `talls`, the panel's parts keeping `least`: grown, the panel
+    /// never scrolls a region it held, so each region's track appears at
+    /// most once; the two never take the body below its least as layout lays
+    /// it out; and a region that scrolls reaches past what its cue takes as
+    /// an end (`tags::AN_END`). Returns the last panel's regions.
+    fn grown(rows: &Rows, least: &PanelLeast, talls: impl Iterator<Item = Pixels>) -> Regions {
+        let scale = rows.scale;
+        let mut last: Option<Regions> = None;
+        for tall in talls {
+            let at = format!(
+                "a {tall:?} panel at scale {scale} with rows {:?} and {:?} over a body \
+                 keeping {:?}",
+                rows.header, rows.icons, least.body
+            );
+            let regions = rows.regions(least, tall);
+            assert!(
+                regions.header + regions.footer + laid_out(least.body, scale) <= tall + SETTLED,
+                "{at} keeps the body's least, {regions:?}"
+            );
+            for (part, scrolls, held, height) in [
+                (
+                    "header",
+                    regions.header_scrolls,
+                    rows.header,
+                    regions.header,
+                ),
+                ("footer", regions.footer_scrolls, rows.icons, regions.footer),
+            ] {
+                assert!(
+                    !scrolls || held - height > crate::tags::AN_END,
+                    "{at}: its {part} scrolls past its cue's end, {regions:?}"
+                );
+            }
+            if let Some(last) = last {
+                assert!(
+                    !(regions.header_scrolls && !last.header_scrolls)
+                        && !(regions.footer_scrolls && !last.footer_scrolls),
+                    "{at}, grown a device pixel, scrolls a region it held, {last:?} then \
+                     {regions:?}"
+                );
+            }
+            last = Some(regions);
+        }
+        last.expect("decided regions")
+    }
+
+    /// The least heights of a panel whose body keeps `body`, its header 40 px
+    /// and its footer 30 px.
+    fn least_over(body: Pixels) -> PanelLeast {
+        use gpui_kit::px;
+        PanelLeast {
+            header: px(40.),
+            body,
+            failure: Pixels::ZERO,
+            error_line: Pixels::ZERO,
+            row: px(68.),
+            footer: px(30.),
+        }
+    }
+
+    /// File History's header and footer as a panel at scale 2 grows half a
+    /// pixel at a time from 425 to 435 px, with header rows 107 px and
+    /// footer rows 83 px over a body keeping 240.5 px (`grown`): the footer
+    /// holds its rows from 429 px on, where they fit its share, the header
+    /// giving it the room the body could not, and the header holds its own
+    /// from 430.5 px, where the panel gives both. Decided against the
+    /// header's share while the header was decided against the footer's own
+    /// height, the footer scrolled a device pixel shorter at 429.5 px and the
+    /// header held its rows in that pixel; at 430 px they swapped, and at
+    /// 430.5 both held: a track moved from the footer to the header and went.
+    #[test]
+    fn a_footer_the_body_refuses_holds_its_rows_as_the_header_gives_way() {
+        use gpui_kit::px;
+        let least = least_over(px(240.5));
+        let rows = Rows {
+            header: px(107.),
+            labelled: None,
+            icons: px(83.),
+            scale: 2.,
+        };
+        for (tall, header_scrolls) in [(429.5, true), (430., true), (430.5, false)] {
+            let regions = rows.regions(&least, px(tall));
+            assert!(
+                !regions.footer_scrolls && regions.footer == px(83.),
+                "a {tall} px panel holds the footer's 83 px of rows, {regions:?}"
+            );
+            assert_eq!(
+                regions.header_scrolls, header_scrolls,
+                "a {tall} px panel decides whether the header scrolls, {regions:?}"
+            );
+        }
+        let last = grown(&rows, &least, (850..=870).map(|half| px(half as f32 / 2.)));
+        assert!(
+            !last.header_scrolls && !last.footer_scrolls,
+            "a 435 px panel holds both, {last:?}"
+        );
+    }
+
+    /// File History's header and footer as panels grow a device pixel at a
+    /// time at scales 1, 1.5 and 2 (`grown`), from 8 px below to 8 px above
+    /// their rows and the body's least together, over header rows from 60
+    /// to 220 px, footer rows from 40 to 92 px and bodies keeping 150 to
+    /// 403 px. Decided beside the footer's scrolled height, the header held
+    /// its rows where a footer that then came to hold its own took a device
+    /// pixel more than the panel grew: with header rows 60 px and footer rows
+    /// 92 px over a body keeping 276.5 px at scale 1, it held at 426 px,
+    /// scrolled at 427 and held again at 428; and decided against the
+    /// header's share, a footer the body refused gave the header a pixel at
+    /// scale 2 in 672 of these panels.
+    #[test]
+    fn as_a_panel_grows_a_region_once_held_stays_held() {
+        use gpui_kit::px;
+        for scale in [1., 1.5, 2.] {
+            for header in 0..23 {
+                for footer in 0..9 {
+                    for body in 0..11 {
+                        let rows = Rows {
+                            header: up(px(60. + header as f32 * 7.25), scale),
+                            labelled: None,
+                            icons: up(px(40. + footer as f32 * 6.5), scale),
+                            scale,
+                        };
+                        let least = least_over(px(150. + body as f32 * 25.3));
+                        let total = f32::from(rows.header + rows.icons + least.body);
+                        let first = ((total - 8.) * scale).floor() as i32;
+                        let devices = (16. * scale) as i32;
+                        grown(
+                            &rows,
+                            &least,
+                            (first..=first + devices).map(|device| px(device as f32 / scale)),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// File History's footer at 13 pt in a 664 × 448.5 window at scale 2,
+    /// whose 70.5 px of rows with Newer page and Older page labelled fit its
+    /// share but not the 70 px the body leaves beside the header's share,
+    /// holds them whole with their labels and no gutter, the header, which
+    /// scrolls its rows anyway, giving it the room (`Rows::regions`), and the
+    /// panel scrolls none. Laid out in what the body left it, the footer
+    /// scrolled half a pixel with a 19 px gutter its cue showed no scroll
+    /// for; laid out a device pixel lower, it took its icons and scrolled a
+    /// pixel of its padding.
+    #[gpui::test]
+    async fn a_footer_the_body_refuses_keeps_its_labels_as_the_header_gives_way(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{
+            history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::px;
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let at = "13 pt in 664 × 448.5 at scale 2";
+        resize_at(cx, 664., 448.5, 2.);
+        assert_eq!(
+            cx.update(|window, _| window.scale_factor()),
+            2.,
+            "{at}: drawn at its scale"
+        );
+        let (rows, room, regions) = cx.update(|window, cx| {
+            let app = app.read(cx);
+            let decided = app.file_history.decided.borrow();
+            let decided = decided.as_ref().expect("a decision");
+            let lineage = app.file_history.lineage.as_ref().expect("a lineage");
+            let rows = Rows::measure(lineage, decided.toolbar.room(), window);
+            let least = PanelLeast::of(
+                Some(decided.toolbar.revision_message_least()),
+                false,
+                window,
+            );
+            let tall = decided.inputs.tall;
+            let footer = rows
+                .labelled
+                .expect("Newer page's and Older page's labels fit");
+            let shares = least.shares(tall, rows.header, footer);
+            let room = tall - laid_out(least.body, 2.) - laid_out(shares[0], 2.);
+            (rows, room, decided.regions)
+        });
+        assert_eq!(
+            rows.labelled,
+            Some(px(70.5)),
+            "{at}: the labelled footer's rows"
+        );
+        assert_eq!(
+            room,
+            px(70.),
+            "{at}: the body leaves the footer 70 px beside the header's share"
+        );
+        assert!(
+            !regions.footer_scrolls && regions.page_labels && regions.footer == px(70.5),
+            "{at}: the footer holds its labelled rows whole, {regions:?}"
+        );
+        assert!(
+            cx.debug_bounds("file-history-footer-scrollbar").is_none(),
+            "{at}: the footer draws no scrollbar"
+        );
+        let older = cx.debug_bounds("older-file-page").expect("Older page");
+        let square = cx.update(|_, _| crate::appearance::ui_size(28.)) + px(0.5);
+        assert!(
+            older.size.width > square,
+            "{at}: Older page {older:?} keeps its label"
+        );
+        assert_held_whole(&app, cx, true, at);
+        let (header, panel) = app.read_with(cx, |app, _| {
+            let reveals = &app.file_history.reveals;
+            (
+                reveals.header.scroll().clone(),
+                reveals.panel.scroll().clone(),
+            )
+        });
+        assert!(
+            regions.header_scrolls && header.max_offset().y > crate::tags::AN_END,
+            "{at}: the header scrolls {:?}, past its cue's end, {regions:?}",
+            header.max_offset().y
+        );
+        assert_eq!(panel.max_offset().y, px(0.), "{at}: the panel scrolls none");
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+    }
+
+    /// File History's panel at 13 pt 664 px wide at `scale`, through window
+    /// heights a quarter pixel apart and on every device pixel, from 2 px
+    /// above where its header's and its footer's shares first give way to
+    /// the body's least (`PanelLeast::shares`) to 2 px below where its parts'
+    /// least heights no longer fit
+    /// (`file_historys_panel_scrolls_none_where_its_parts_least_fits_at_*`):
+    /// wherever they fit, the panel itself scrolls none, and at every height
+    /// its toolbar is laid out for the room the panel draws it in, and the
+    /// header and the footer scroll exactly where decided
+    /// (`assert_regions_as_decided`); and as the panel grows a device pixel
+    /// at a time, a region once held stays held, so each one's track
+    /// appears at most once. Held up to a device pixel above a share the
+    /// body could not give it, or laid out in shares that layout rounded up
+    /// past what the body's least as laid out left them, the header and the
+    /// footer took the body past its least, and the panel scrolled 0.67 px
+    /// at 664 × 449 at scale 1.5, keeping its 19 px gutter beside a toolbar
+    /// laid out without it. Decided against the header's share while the
+    /// header was decided against the footer's own height, a footer the body
+    /// refused scrolled a device pixel shorter and the header took that
+    /// pixel, so a track moved from the header to the footer and went as
+    /// the panel grew a pixel at a time at scale 2 (`Rows::regions`).
+    async fn panel_scrolls_none_where_its_parts_least_fits(cx: &mut TestAppContext, scale: f32) {
+        use crate::views::tests::{
+            history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        use gpui_kit::px;
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        let panel = app.read_with(cx, |app, _| app.file_history.reveals.panel.scroll().clone());
+        let width = 664.;
+        // The panel's height its regions were decided in, their rows, and
+        // the panel's parts' least heights for the toolbar decided and for
+        // its icon copies.
+        let decided = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                let decided = app.file_history.decided.borrow();
+                let decided = decided.as_ref().expect("a decision");
+                let lineage = app.file_history.lineage.as_ref().expect("a lineage");
+                let leasts: Vec<_> = std::iter::once(decided.toolbar)
+                    .chain(decided.toolbar.with_icon_copies())
+                    .map(|toolbar| {
+                        PanelLeast::of(Some(toolbar.revision_message_least()), false, window)
+                    })
+                    .collect();
+                (
+                    decided.inputs.tall,
+                    Rows::measure(lineage, decided.toolbar.room(), window),
+                    leasts,
+                )
+            })
+        };
+        // Whether the header's and footer's shares give way to the body's
+        // least in a panel `tall` for any of `leasts` that fits it.
+        let shrinking = |rows: &Rows, leasts: &[PanelLeast], tall: Pixels| {
+            let header = |least: &PanelLeast| rows.header.min(tall * 0.30).max(least.header);
+            leasts.iter().any(|least| {
+                least.total() <= tall
+                    && [rows.labelled.unwrap_or(rows.icons), rows.icons]
+                        .into_iter()
+                        .any(|footer| {
+                            header(least) + footer.min(tall * 0.25).max(least.footer) + least.body
+                                > tall
+                        })
+            })
+        };
+        resize_at(cx, width, 1000., scale);
+        let (tall, rows, leasts) = decided(cx);
+        let chrome = px(1000.) - tall;
+        let lowest = leasts.iter().map(PanelLeast::total).fold(tall, Pixels::min);
+        // The tallest panel whose shares shrink, a quarter pixel apart.
+        let highest = (0..)
+            .map(|quarter| lowest + px(quarter as f32 / 4.))
+            .take_while(|at| *at < px(2000.))
+            .filter(|at| shrinking(&rows, &leasts, *at))
+            .last()
+            .unwrap_or(lowest);
+        let top = f32::from(highest + chrome + px(2.));
+        let bottom = f32::from(lowest + chrome - px(2.));
+        // A quarter pixel apart and on every device pixel, from the top down.
+        let mut heights: Vec<f32> = ((bottom * 4.).ceil() as i32..=(top * 4.).ceil() as i32)
+            .map(|quarter| quarter as f32 / 4.)
+            .chain(
+                ((bottom * scale).ceil() as i32..=(top * scale).floor() as i32)
+                    .map(|device| device as f32 / scale),
+            )
+            .collect();
+        heights.sort_by(|a, b| b.total_cmp(a));
+        heights.dedup_by(|a, b| (*a - *b).abs() < 0.001);
+        let mut shrunk = 0;
+        // Per region, the tallest device-pixel height it scrolled at, whether
+        // it held its rows at a taller one, whether it drew its track at the
+        // last, and how many times its track appeared.
+        let mut scrolled: [Option<f32>; 2] = [None; 2];
+        let mut held = [false; 2];
+        let mut drawn = [false; 2];
+        let mut tracks = [0; 2];
+        for height in heights {
+            resize_at(cx, width, height, scale);
+            let at = format!("13 pt in {width} × {height} at scale {scale}");
+            assert_eq!(
+                cx.update(|window, _| window.scale_factor()),
+                scale,
+                "{at}: drawn at its scale"
+            );
+            let (tall, rows, leasts) = decided(cx);
+            if leasts[0].total() <= tall {
+                assert_eq!(
+                    panel.max_offset().y,
+                    px(0.),
+                    "{at}: the panel, {tall:?} tall, holds its parts' least heights and \
+                     scrolls none, {:?}",
+                    app.read_with(cx, |app, _| app.file_history.regions.get())
+                );
+            }
+            shrunk += usize::from(shrinking(&rows, &leasts, tall));
+            let room = app
+                .read_with(cx, |app, _| app.inspector_message.details_room())
+                .expect("a laid-out toolbar");
+            let toolbar = cx
+                .debug_bounds("commit-message-toolbar")
+                .expect("the toolbar");
+            let drawn_in = toolbar.size.width - cx.update(|window, _| window.rem_size()) * 1.5;
+            // The toolbar's width is laid out on whole device pixels.
+            assert!(
+                (room - drawn_in).abs() <= px(1.),
+                "{at}: the toolbar was laid out for {room:?} and drawn in {drawn_in:?}"
+            );
+            assert_regions_as_decided(&app, cx, &at);
+            if ((height * scale).round() - height * scale).abs() >= 0.001 {
+                continue;
+            }
+            let regions = app
+                .read_with(cx, |app, _| app.file_history.regions.get())
+                .expect("decided regions");
+            for (index, (part, scrolls, track)) in [
+                (
+                    "header",
+                    regions.header_scrolls,
+                    "file-history-header-scrollbar",
+                ),
+                (
+                    "footer",
+                    regions.footer_scrolls,
+                    "file-history-footer-scrollbar",
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                match (scrolls, scrolled[index]) {
+                    (true, None) => scrolled[index] = Some(height),
+                    (false, Some(above)) => panic!(
+                        "{at}: the {part} holds its rows, yet scrolled them {above} px tall: \
+                         grown a device pixel at a time, it went from held to scrolling, \
+                         {regions:?}"
+                    ),
+                    (false, None) => held[index] = true,
+                    (true, Some(_)) => {}
+                }
+                let shown = cx.debug_bounds(track).is_some();
+                tracks[index] += usize::from(shown && !drawn[index]);
+                drawn[index] = shown;
+            }
+        }
+        assert!(
+            shrunk > 0,
+            "at scale {scale}, the heights reach the shares' shrinking"
+        );
+        assert!(
+            (0..2).any(|index| held[index] && scrolled[index].is_some()),
+            "at scale {scale}, the heights reach a region that holds its rows and \
+             scrolls them shorter: {held:?}, {scrolled:?}"
+        );
+        for (part, tracks) in ["header", "footer"].into_iter().zip(tracks) {
+            assert!(
+                tracks <= 1,
+                "at scale {scale}, as the panel grows a device pixel at a time, the {part}'s \
+                 track appears {tracks} times"
+            );
+        }
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+    }
+
+    /// As `panel_scrolls_none_where_its_parts_least_fits` at scale 1.
+    #[gpui::test]
+    async fn file_historys_panel_scrolls_none_where_its_parts_least_fits_at_scale_1(
+        cx: &mut TestAppContext,
+    ) {
+        panel_scrolls_none_where_its_parts_least_fits(cx, 1.).await;
+    }
+
+    /// As `panel_scrolls_none_where_its_parts_least_fits` at scale 1.5: there it
+    /// scrolled 0.67 px at 664 × 449.
+    #[gpui::test]
+    async fn file_historys_panel_scrolls_none_where_its_parts_least_fits_at_scale_1_5(
+        cx: &mut TestAppContext,
+    ) {
+        panel_scrolls_none_where_its_parts_least_fits(cx, 1.5).await;
+    }
+
+    /// As `panel_scrolls_none_where_its_parts_least_fits` at scale 2: there a
+    /// track moved from the header to the footer and went as the panel grew.
+    #[gpui::test]
+    async fn file_historys_panel_scrolls_none_where_its_parts_least_fits_at_scale_2(
+        cx: &mut TestAppContext,
+    ) {
+        panel_scrolls_none_where_its_parts_least_fits(cx, 2.).await;
     }
 
     /// File History's header and footer take each form and wrap from the
