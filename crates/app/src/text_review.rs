@@ -448,6 +448,10 @@ impl GitTurtle {
                 cx.subscribe_in(view, window, move |this, view, event, window, cx| {
                     let crate::diff_view::DiffViewEvent::ApplyPartial { diff, selection } = event;
                     if this.path != repository || !this.shows_partial(view, diff) {
+                        // No write runs for it, so no read is to land in
+                        // the view: left waiting, it kept its stale text
+                        // through the next Refresh, which landed there.
+                        view.update(cx, |view, cx| view.end_write(cx));
                         return;
                     }
                     // A write already runs, another tab's, as this one's
@@ -2894,6 +2898,934 @@ mod tests {
             patch_row(&route.editor, cx, " added two"),
             "the caret's line"
         );
+    }
+
+    /// notes.txt's `lines` notes, each of `inserted` after its note, and
+    /// `tail` lines appended.
+    fn notes_with(lines: usize, inserted: &[(usize, &str)], tail: usize) -> String {
+        let mut text = String::new();
+        for line in 1..=lines {
+            text.push_str(&format!("note {line}\n"));
+            for (_, added) in inserted.iter().filter(|(after, _)| *after == line) {
+                text.push_str(added);
+                text.push('\n');
+            }
+        }
+        for line in 0..tail {
+            text.push_str(&format!("tail {line}\n"));
+        }
+        text
+    }
+
+    /// Clicks the shown patch's line `line` in its text, which moves the
+    /// caret there.
+    fn click_line(
+        editor: &gpui::Entity<gpui_kit::component::input::EditorState>,
+        cx: &mut gpui::VisualTestContext,
+        line: &str,
+    ) {
+        let row = patch_row(editor, cx, line);
+        let (origin, height) = editor.read_with(cx, |state, _| {
+            (
+                state.text_bounds().expect("the text is painted").origin,
+                state.line_height().expect("the text is laid out"),
+            )
+        });
+        cx.simulate_click(
+            gpui::point(
+                origin.x + gpui::px(40.),
+                origin.y + height * (row as f32 + 0.5),
+            ),
+            gpui::Modifiers::default(),
+        );
+        crate::tags::tests::draw(cx);
+        assert_eq!(text_place(editor, cx).0, row, "the click's line {line:?}");
+    }
+
+    /// Tab to the selection bar's action, then, with the operations
+    /// executor held, Enter, which starts the write and leaves it held.
+    fn press_action(
+        app: &gpui::Entity<GitTurtle>,
+        view: &gpui::Entity<crate::diff_view::DiffView>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> crate::operations::Held {
+        let apply = view.read_with(cx, |view, _| view.apply_focus_handle());
+        press(cx, "tab");
+        assert!(
+            cx.update(|window, _| apply.is_focused(window)),
+            "Tab reaches the action"
+        );
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        crate::native_accessibility::written::forget();
+        let enter = gpui::Keystroke::parse("enter").unwrap();
+        cx.simulate_keystrokes("enter");
+        cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+        held
+    }
+
+    /// Lets the held write run and its reads land.
+    async fn land_write(
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        held: crate::operations::Held,
+    ) {
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(app, cx).await;
+        crate::tags::tests::draw(cx);
+    }
+
+    /// The staged patch of the fixture, as Git reads it.
+    fn staged_patch(fixture: &tempfile::TempDir) -> String {
+        let staged = crate::views::tests::fixture_git_output(
+            &fixture.path().join("narrow"),
+            &["diff", "--cached"],
+        );
+        String::from_utf8_lossy(&staged.stdout).into_owned()
+    }
+
+    /// A partial write pressed in `area` of `path`, notes.txt's `lines`
+    /// notes edited as `edits` say (staged first for Staged), in QA's
+    /// 1480 × 973 window at 13 pt: the text scrolled so `top` is its first
+    /// row, or with `bottom` its last whole row, a click on each of
+    /// `select`'s lines and Space, a click on `caret`, the text scrolled so
+    /// `then` is its first row where given, Tab and, with the operations
+    /// executor held, Enter.
+    #[allow(clippy::too_many_arguments)]
+    async fn press_lines<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        lines: usize,
+        edits: &[(&str, &str)],
+        area: gitturtle_core::ChangeArea,
+        path: &str,
+        (top, bottom): (&str, bool),
+        select: &[&str],
+        caret: &str,
+        then: Option<&str>,
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<GitTurtle>,
+        &'a mut gpui::VisualTestContext,
+        Route,
+        crate::operations::Held,
+    ) {
+        use crate::views::tests::{fixture_git, settle};
+        let (fixture, app, cx) =
+            working_diff_edited(cx, &crate::views::tests::history_script(1, lines), edits).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        if area == gitturtle_core::ChangeArea::Staged {
+            fixture_git(&fixture.path().join("narrow"), &["add", "--", path]);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            settle(&app, cx).await;
+        }
+        let index = app.read_with(cx, |app, _| {
+            let status = app.work_status.as_ref().expect("the status");
+            status
+                .entries
+                .iter()
+                .position(|entry| entry.path.ends_with(path))
+                .expect("the file's row")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.select_working(index, area, window, cx))
+        });
+        settle(&app, cx).await;
+        cx.simulate_resize(gpui::size(gpui::px(1480.), gpui::px(973.)));
+        crate::focus_ring::sweep::interface_size(cx, 13);
+        let (editor, view) = shown_diff(&app, cx);
+        let row = patch_row(&editor, cx, top);
+        editor.update(cx, |state, cx| {
+            let height = state.line_height().expect("the text is laid out");
+            let first = if bottom {
+                let shown = (state.input_bounds().size.height / height).floor() as usize;
+                (row + 1).saturating_sub(shown)
+            } else {
+                row
+            };
+            state.set_scroll_offset(gpui::point(gpui::px(0.), -height * first as f32), cx);
+        });
+        crate::tags::tests::draw(cx);
+        for line in select {
+            click_line(&editor, cx, line);
+            press(cx, "space");
+        }
+        assert_eq!(
+            view.read_with(cx, |view, _| view.selected_lines()),
+            select.len()
+        );
+        click_line(&editor, cx, caret);
+        if let Some(line) = then {
+            let row = patch_row(&editor, cx, line);
+            editor.update(cx, |state, cx| {
+                let height = state.line_height().expect("the text is laid out");
+                state.set_scroll_offset(gpui::point(gpui::px(0.), -height * row as f32), cx);
+            });
+            crate::tags::tests::draw(cx);
+        }
+        let (caret, scroll) = text_place(&editor, cx);
+        let held = press_action(&app, &view, cx);
+        (
+            fixture,
+            app,
+            cx,
+            Route {
+                editor,
+                view,
+                caret,
+                scroll,
+            },
+            held,
+        )
+    }
+
+    /// A staged hunk's added lines each keep their own place through an
+    /// Unstage: with the caret on the fourth of five, a1 to a5, and the
+    /// text scrolled to the second, unstaging a line of another hunk keeps
+    /// both, and unstaging the fourth alone puts the caret on the fifth,
+    /// the first visible line still the second. Numbered on neither side
+    /// HEAD keeps, each landed on the run's first, a1.
+    #[gpui::test]
+    async fn an_unstage_keeps_each_staged_added_line_in_its_place(cx: &mut gpui::TestAppContext) {
+        let notes = notes_with(
+            40,
+            &[
+                (10, "a1"),
+                (10, "a2"),
+                (10, "a3"),
+                (10, "a4"),
+                (10, "a5"),
+                (30, "b1"),
+            ],
+            60,
+        );
+        let (fixture, app, cx, route, held) = press_lines(
+            cx,
+            40,
+            &[("notes.txt", &notes)],
+            gitturtle_core::ChangeArea::Staged,
+            "notes.txt",
+            ("+a2", false),
+            &["+b1"],
+            "+a4",
+            None,
+        )
+        .await;
+        land_write(&app, cx, held).await;
+        let staged = staged_patch(&fixture);
+        assert!(
+            !staged.contains("+b1") && staged.contains("+a4\n+a5\n"),
+            "b1 was unstaged: {staged}"
+        );
+        route.assert_landed(&app, cx, "+a4", "+a2", "Selected changes unstaged");
+
+        press(cx, "space");
+        let held = press_action(&app, &route.view, cx);
+        land_write(&app, cx, held).await;
+        let staged = staged_patch(&fixture);
+        assert!(staged.contains("+a3\n+a5\n"), "a4 was unstaged: {staged}");
+        route.assert_landed(&app, cx, "+a5", "+a2", "Selected changes unstaged");
+    }
+
+    /// A partial write in `area` of notes.txt edited to `notes` (staged
+    /// first for Staged), of the run's lines `select` with the caret on
+    /// `caret` and, once they are clicked, the text scrolled so `top` is
+    /// its first row: once landed, the index's patch shows `written`, the
+    /// caret is on `landed.0` and `landed.1` is the first visible line.
+    async fn land_in_a_run(
+        cx: &mut gpui::TestAppContext,
+        area: gitturtle_core::ChangeArea,
+        notes: &str,
+        (select, caret, top): (&[&str], &str, &str),
+        written: &str,
+        landed: (&str, &str),
+    ) {
+        let said = if area == gitturtle_core::ChangeArea::Staged {
+            "Selected changes unstaged"
+        } else {
+            "Selected changes staged"
+        };
+        let (fixture, app, cx, route, held) = press_lines(
+            cx,
+            40,
+            &[("notes.txt", notes)],
+            area,
+            "notes.txt",
+            (select[0], false),
+            select,
+            caret,
+            Some(top),
+        )
+        .await;
+        land_write(&app, cx, held).await;
+        let staged = staged_patch(&fixture);
+        assert!(staged.contains(written), "{written:?} in {staged}");
+        route.assert_landed(&app, cx, landed.0, landed.1, said);
+    }
+
+    /// notes.txt with five added lines, a1 to a5, after note 10 and b1
+    /// after note 30, all staged: a1 to a5 are a run of rows numbered on
+    /// neither side an Unstage leaves alone.
+    fn staged_run() -> String {
+        notes_with(
+            40,
+            &[
+                (10, "a1"),
+                (10, "a2"),
+                (10, "a3"),
+                (10, "a4"),
+                (10, "a5"),
+                (30, "b1"),
+            ],
+            60,
+        )
+    }
+
+    /// notes.txt with notes 11 to 15 deleted from the worktree and b1 added
+    /// after note 30: the Unstaged diff's removed lines, numbered on
+    /// neither side a Stage leaves alone, make a run.
+    fn removed_run() -> String {
+        let notes = notes_with(40, &[(30, "b1")], 60);
+        notes
+            .lines()
+            .filter(|line| !(11..=15).any(|note| *line == format!("note {note}")))
+            .map(|line| format!("{line}\n"))
+            .collect()
+    }
+
+    /// Unstaging a2 of a staged run a1 to a5, with the caret on a4 and a3
+    /// the first visible line, keeps both: counted with a2, which the write
+    /// took, the caret went to a5 and a4 became the first line.
+    #[gpui::test]
+    async fn an_unstage_above_the_caret_in_its_run_keeps_its_place(cx: &mut gpui::TestAppContext) {
+        land_in_a_run(
+            cx,
+            gitturtle_core::ChangeArea::Staged,
+            &staged_run(),
+            (&["+a2"], "+a4", "+a3"),
+            "+a1\n+a3\n+a4\n+a5\n",
+            ("+a4", "+a3"),
+        )
+        .await;
+    }
+
+    /// Unstaging a1 and a2 of a staged run a1 to a5, with the caret and
+    /// the first visible line on a2, puts both on a3, the nearest changed
+    /// line after it: counted with a1, the caret skipped a3 for a4.
+    #[gpui::test]
+    async fn an_unstage_through_the_caret_in_its_run_lands_on_the_next_line(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        land_in_a_run(
+            cx,
+            gitturtle_core::ChangeArea::Staged,
+            &staged_run(),
+            (&["+a1", "+a2"], "+a2", "+a2"),
+            " note 10\n+a3\n+a4\n+a5\n",
+            ("+a3", "+a3"),
+        )
+        .await;
+    }
+
+    /// Unstaging a1 to a3 of a staged run a1 to a5, with the caret and the
+    /// first visible line on a3, puts both on a4: counted with a1 and a2,
+    /// the caret's place was past the run's last row, and it went to the
+    /// next hunk's b1.
+    #[gpui::test]
+    async fn an_unstage_of_a_runs_start_lands_on_the_line_it_leaves(cx: &mut gpui::TestAppContext) {
+        land_in_a_run(
+            cx,
+            gitturtle_core::ChangeArea::Staged,
+            &staged_run(),
+            (&["+a1", "+a2", "+a3"], "+a3", "+a3"),
+            " note 10\n+a4\n+a5\n",
+            ("+a4", "+a4"),
+        )
+        .await;
+    }
+
+    /// The Unstage cases' Stage: staging note 12's deletion of an unstaged
+    /// run of deleted notes 11 to 15, with the caret on note 14 and note 13
+    /// first, keeps both.
+    #[gpui::test]
+    async fn a_stage_above_the_caret_in_its_run_keeps_its_place(cx: &mut gpui::TestAppContext) {
+        land_in_a_run(
+            cx,
+            gitturtle_core::ChangeArea::Unstaged,
+            &removed_run(),
+            (&["-note 12"], "-note 14", "-note 13"),
+            " note 11\n-note 12\n note 13\n",
+            ("-note 14", "-note 13"),
+        )
+        .await;
+    }
+
+    /// Staging the deletions of notes 11 and 12, with the caret and the
+    /// first visible line on note 12, puts both on note 13.
+    #[gpui::test]
+    async fn a_stage_through_the_caret_in_its_run_lands_on_the_next_line(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        land_in_a_run(
+            cx,
+            gitturtle_core::ChangeArea::Unstaged,
+            &removed_run(),
+            (&["-note 11", "-note 12"], "-note 12", "-note 12"),
+            " note 10\n-note 11\n-note 12\n note 13\n",
+            ("-note 13", "-note 13"),
+        )
+        .await;
+    }
+
+    /// Staging the deletions of notes 11 to 13, with the caret and the
+    /// first visible line on note 13, puts both on note 14, never on the
+    /// next hunk's b1.
+    #[gpui::test]
+    async fn a_stage_of_a_runs_start_lands_on_the_line_it_leaves(cx: &mut gpui::TestAppContext) {
+        land_in_a_run(
+            cx,
+            gitturtle_core::ChangeArea::Unstaged,
+            &removed_run(),
+            (
+                &["-note 11", "-note 12", "-note 13"],
+                "-note 13",
+                "-note 13",
+            ),
+            " note 10\n-note 11\n-note 12\n-note 13\n note 14\n",
+            ("-note 14", "-note 14"),
+        )
+        .await;
+    }
+
+    /// A staged new file, whose every line is added and so numbered on
+    /// neither side HEAD keeps, keeps its caret and first visible line
+    /// through an Unstage of a line below them: they landed at the file's
+    /// top.
+    #[gpui::test]
+    async fn an_unstage_in_a_staged_new_file_keeps_the_caret_and_scroll(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fresh: String = (1..=80).map(|line| format!("fresh {line}\n")).collect();
+        let notes = notes_with(40, &[(5, "edited")], 0);
+        let (fixture, app, cx, route, held) = press_lines(
+            cx,
+            40,
+            &[("notes.txt", &notes), ("zz-fresh.txt", &fresh)],
+            gitturtle_core::ChangeArea::Staged,
+            "zz-fresh.txt",
+            ("+fresh 20", false),
+            &["+fresh 40"],
+            "+fresh 30",
+            None,
+        )
+        .await;
+        land_write(&app, cx, held).await;
+        let staged = staged_patch(&fixture);
+        assert!(
+            staged.contains("+fresh 39\n+fresh 41\n"),
+            "fresh 40 was unstaged: {staged}"
+        );
+        route.assert_landed(
+            &app,
+            cx,
+            "+fresh 30",
+            "+fresh 20",
+            "Selected changes unstaged",
+        );
+    }
+
+    /// The caret that a landing moves to the nearest changed line is drawn
+    /// in view, revealed by the least scroll: unstaging the line at the
+    /// caret, the text's last whole row, moves it to the next hunk's line,
+    /// seven rows below, which the kept first visible line left out of
+    /// view, where the next Space would select a line the person cannot
+    /// see.
+    #[gpui::test]
+    async fn a_landed_caret_out_of_view_is_revealed(cx: &mut gpui::TestAppContext) {
+        let mut inserted: Vec<(usize, String)> =
+            (1..=60).map(|line| (10, format!("p{line}"))).collect();
+        inserted.extend([
+            (100, "keep".to_owned()),
+            (101, "lone".to_owned()),
+            (190, "far".to_owned()),
+        ]);
+        let inserted: Vec<(usize, &str)> = inserted
+            .iter()
+            .map(|(after, line)| (*after, line.as_str()))
+            .collect();
+        let notes = notes_with(200, &inserted, 0);
+        let (fixture, app, cx, route, held) = press_lines(
+            cx,
+            200,
+            &[("notes.txt", &notes)],
+            gitturtle_core::ChangeArea::Staged,
+            "notes.txt",
+            ("+lone", true),
+            &["+lone"],
+            "+lone",
+            None,
+        )
+        .await;
+        let height = route
+            .editor
+            .read_with(cx, |state, _| state.line_height().expect("laid out"));
+        let room = route
+            .editor
+            .read_with(cx, |state, _| state.input_bounds().size.height);
+        let line = route.scroll.y + height * route.caret as f32;
+        assert!(
+            line + height <= room && line + height * 8. > room,
+            "the caret's line is among the last whole rows before the write"
+        );
+        land_write(&app, cx, held).await;
+        assert!(
+            !staged_patch(&fixture).contains("+lone"),
+            "lone was unstaged"
+        );
+        let (row, scroll) = text_place(&route.editor, cx);
+        assert_eq!(
+            row,
+            patch_row(&route.editor, cx, "+far"),
+            "the caret's line"
+        );
+        let text = route.editor.read_with(cx, |state, _| state.input_bounds());
+        let line = scroll.y + height * row as f32;
+        assert!(
+            line >= gpui::px(0.) && line + height <= text.size.height,
+            "the caret's line is whole in the text: {line:?} of {:?}",
+            text.size.height
+        );
+        assert!(
+            line + height * 2. > text.size.height,
+            "revealed by the least scroll, its last whole row"
+        );
+        let mark = cx
+            .debug_bounds("partial-line-caret")
+            .expect("the caret's mark is drawn");
+        assert!(
+            mark.top() >= text.top() && mark.bottom() <= text.bottom(),
+            "the caret's mark is in view: {mark:?} in {text:?}"
+        );
+    }
+
+    /// What the window last built the shown diff's partial controls saying,
+    /// the bar's action and Clear, the Stage hunk on `hunk` and the
+    /// checkbox on `line`: whether each is announced unavailable and
+    /// whether it looks it (`workspace::refusals`).
+    fn partial_refusals(hunk: usize, line: usize) -> Vec<Option<(bool, bool)>> {
+        [
+            "apply-partial-selection".to_owned(),
+            "clear-partial-selection".to_owned(),
+            format!("partial-hunk-{hunk}"),
+            format!("partial-line-{line}"),
+        ]
+        .iter()
+        .map(|key| {
+            crate::workspace::refusals::get(key).map(|refusal| (refusal.announced, refusal.dimmed))
+        })
+        .collect()
+    }
+
+    /// A partial write that lands within the window's busy-look delay dims
+    /// nothing, as DESIGN.md has every write: the bar's action, Clear, the
+    /// line checkboxes and Stage hunk refuse a press at once, the buttons
+    /// announced unavailable at once, but they look it only once the window
+    /// looks busy, 200 ms into the write. Presses 100 ms in, a hunk's Stage,
+    /// a line's checkbox, Space and the action from the keyboard, do
+    /// nothing: the selection, the caret, focus and the one write stay.
+    /// Every control dimmed as the write was pressed, so each quick Stage
+    /// flashed them disabled.
+    #[gpui::test]
+    async fn a_partial_write_dims_its_controls_only_once_it_looks_busy(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::partial_view::PartialRow;
+        let (fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &landing_notes()).await;
+        let hunk = app.read_with(cx, |app, _| {
+            let Some(Content::Text {
+                partial: Some(partial),
+                ..
+            }) = app.content.as_deref()
+            else {
+                panic!("the diff offers its partial actions");
+            };
+            (route.caret..partial.rows.len())
+                .find(|row| matches!(partial.rows[*row], PartialRow::Hunk(_)))
+                .expect("the tail's hunk")
+        });
+        let twelve = patch_row(&route.editor, cx, "+twelve");
+        crate::workspace::refusals::forget();
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            partial_refusals(hunk, twelve),
+            [
+                Some((true, false)),
+                Some((true, false)),
+                Some((true, false)),
+                Some((false, false)),
+            ],
+            "the press: refused, the buttons announced so, nothing dimmed"
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        native_frames(cx);
+        for selector in [
+            format!("partial-hunk-{hunk}"),
+            format!("partial-line-{twelve}"),
+        ] {
+            let control = cx
+                .debug_bounds(selector.clone().leak())
+                .unwrap_or_else(|| panic!("{selector} is drawn"));
+            cx.simulate_click(control.center(), gpui::Modifiers::default());
+            native_frames(cx);
+        }
+        press(cx, "space");
+        press(cx, "tab");
+        press(cx, "enter");
+        press(cx, "shift-tab");
+        native_frames(cx);
+        crate::workspace::refusals::forget();
+        crate::tags::tests::draw(cx);
+        route.assert_kept(&app, cx, "Staging selected changes…", "100 ms in");
+        assert_eq!(
+            partial_refusals(hunk, twelve),
+            [
+                Some((true, false)),
+                Some((true, false)),
+                Some((true, false)),
+                Some((false, false)),
+            ],
+            "100 ms in: refused, nothing dimmed"
+        );
+        // The frame the window asks for as it looks busy.
+        crate::workspace::refusals::forget();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        native_frames(cx);
+        assert_eq!(
+            partial_refusals(hunk, twelve),
+            [Some((true, true)); 4],
+            "200 ms in, as the window looks busy: dimmed"
+        );
+        land_write(&app, cx, held).await;
+        let staged = staged_patch(&fixture);
+        assert!(
+            staged.contains("+added one\n+added two\n")
+                && !staged.contains("twelve")
+                && !staged.contains("tail"),
+            "one write staged the two lines alone: {staged}"
+        );
+    }
+
+    /// The Stage hunk on the tail's hunk and the checkbox on "+twelve" of
+    /// the Route's diff, as [`partial_refusals`] reads them.
+    fn route_controls(
+        app: &gpui::Entity<GitTurtle>,
+        route: &Route,
+        cx: &mut gpui::VisualTestContext,
+    ) -> (usize, usize) {
+        use crate::partial_view::PartialRow;
+        let hunk = app.read_with(cx, |app, _| {
+            let Some(Content::Text {
+                partial: Some(partial),
+                ..
+            }) = app.content.as_deref()
+            else {
+                panic!("the diff offers its partial actions");
+            };
+            (route.caret..partial.rows.len())
+                .find(|row| matches!(partial.rows[*row], PartialRow::Hunk(_)))
+                .expect("the tail's hunk")
+        });
+        (hunk, patch_row(&route.editor, cx, "+twelve"))
+    }
+
+    /// Lets the held write and its status read land, the reader held so
+    /// the diff's read after them waits: returns the reader's hold.
+    fn land_the_status_alone(
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        held: crate::operations::Held,
+    ) -> crate::worker::ReaderHeld {
+        let reads = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
+        drop(held);
+        for _ in 0..2 {
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.run_until_parked();
+        }
+        app.read_with(cx, |app, cx| {
+            assert_eq!(app.operation_busy, None, "the write has ended");
+            assert!(app.status_task.is_none(), "its status read has landed");
+            assert!(app.lands_partial_write(cx), "the diff's read waits");
+        });
+        reads
+    }
+
+    /// Once the window has looked busy through a partial write, the
+    /// write's controls stay dimmed until its diff lands: the status read
+    /// after the write ends the window's busy spell while the diff's read
+    /// still runs, and there the bar's action, Clear, the line checkboxes
+    /// and Stage hunk, which still refused a press, came back looking
+    /// available, as DESIGN.md has a busy look that has shown stay until
+    /// the work it shows ends.
+    #[gpui::test]
+    async fn a_partial_writes_dimmed_controls_stay_dimmed_until_it_lands(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &landing_notes()).await;
+        let (hunk, twelve) = route_controls(&app, &route, cx);
+        native_frames(cx);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        native_frames(cx);
+        crate::workspace::refusals::forget();
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            partial_refusals(hunk, twelve),
+            [Some((true, true)); 4],
+            "dimmed as the window looks busy"
+        );
+        let reads = land_the_status_alone(&app, cx, held);
+        native_frames(cx);
+        crate::workspace::refusals::forget();
+        crate::tags::tests::draw(cx);
+        assert!(
+            !app.read_with(cx, |app, _| app.busy_shown()),
+            "the window's busy spell has ended"
+        );
+        assert_eq!(
+            partial_refusals(hunk, twelve),
+            [Some((true, true)); 4],
+            "still dimmed while the diff's read runs"
+        );
+        drop(reads);
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        route.assert_landed(
+            &app,
+            cx,
+            " added two",
+            " added one",
+            "Selected changes staged",
+        );
+    }
+
+    /// The read of the diff after a partial write that the reader drops
+    /// unanswered ends the landing as a failed one does: the view goes,
+    /// "Preview unavailable" says why in its place, and focus, here on the
+    /// bar's Clear, which Tab reaches while the write runs, goes to the
+    /// list. Dropped, the read once took the view away with nothing said,
+    /// and focus on the bar fell to the window frame.
+    #[gpui::test]
+    async fn a_dropped_read_after_a_partial_write_says_why_and_focuses_the_list(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &landing_notes()).await;
+        press(cx, "tab tab");
+        let clear = route
+            .view
+            .read_with(cx, |view, _| view.clear_focus_handle());
+        assert!(
+            cx.update(|window, _| clear.is_focused(window)),
+            "Tab reaches Clear during the write"
+        );
+        let reads = land_the_status_alone(&app, cx, held);
+        app.read_with(cx, |app, _| app.worker.cancel());
+        drop(reads);
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        app.read_with(cx, |app, cx| {
+            assert!(!app.lands_partial_write(cx), "nothing waits on the view");
+            assert!(app.patch_view.is_none(), "the view went with its landing");
+            assert_eq!(
+                app.error.as_deref(),
+                Some(crate::workspace::LANDING_INTERRUPTED),
+                "the dropped read is said"
+            );
+        });
+        let body = crate::native_accessibility::written::get("empty-state:Preview unavailable")
+            .expect("the failure takes the view's place");
+        assert!(
+            body.node
+                .value()
+                .is_some_and(|text| text.contains(crate::workspace::LANDING_INTERRUPTED)),
+            "and says why: {:?}",
+            body.node.value()
+        );
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus goes to the list, not to {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+    }
+
+    /// The bar's action, which Tab reaches while the write runs, goes with
+    /// the line selection as the write lands: focus there goes to the text,
+    /// whose landed caret and first visible line the route keeps. Left on
+    /// the action, focus fell to the window frame.
+    #[gpui::test]
+    async fn a_landing_gives_focus_on_the_bar_to_the_text(cx: &mut gpui::TestAppContext) {
+        let (_fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &landing_notes()).await;
+        press(cx, "tab");
+        let apply = route
+            .view
+            .read_with(cx, |view, _| view.apply_focus_handle());
+        assert!(
+            cx.update(|window, _| apply.is_focused(window)),
+            "Tab reaches the bar's action during the write"
+        );
+        land_write(&app, cx, held).await;
+        route.assert_landed(
+            &app,
+            cx,
+            " added two",
+            " added one",
+            "Selected changes staged",
+        );
+    }
+
+    /// The read of the diff after a partial write that fails, here as the
+    /// file can no longer be read, ends the write's landing: the failure is
+    /// said in the Diff view's place, "Preview unavailable" and why, focus
+    /// goes to the list, as a read of the row has it, and nothing waits on
+    /// the view. Kept waiting, the view's controls stayed refused, focus
+    /// fell to the window frame as the failure took the view's place, and
+    /// the next Refresh landed in the view.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_failed_read_after_a_partial_write_says_why_and_focuses_the_list(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        fail_the_landing(cx, None).await;
+    }
+
+    /// [`a_failed_read_after_a_partial_write_says_why_and_focuses_the_list`]
+    /// with focus on the bar's action, which Tab reaches while the write
+    /// runs: focus goes to the list too. Only focus in the text went there,
+    /// and focus on the bar fell to the window frame with the view.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_failed_read_after_a_partial_write_takes_focus_from_the_bar_to_the_list(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        fail_the_landing(cx, Some("tab")).await;
+    }
+
+    /// QA's route, `tabs` pressed while the write is held, the write let
+    /// land and the read of the diff after it failed, as the file can no
+    /// longer be read: asserts the failure said in the view's place and
+    /// focus on the list.
+    #[cfg(unix)]
+    async fn fail_the_landing(cx: &mut gpui::TestAppContext, tabs: Option<&str>) {
+        use std::os::unix::fs::PermissionsExt;
+        let (fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &landing_notes()).await;
+        if let Some(tabs) = tabs {
+            press(cx, tabs);
+            let apply = route
+                .view
+                .read_with(cx, |view, _| view.apply_focus_handle());
+            assert!(
+                cx.update(|window, _| apply.is_focused(window)),
+                "Tab reaches the bar's action during the write"
+            );
+        }
+        let reads = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+        let notes = fixture.path().join("narrow").join("notes.txt");
+        std::fs::set_permissions(&notes, std::fs::Permissions::from_mode(0o000)).unwrap();
+        drop(reads);
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        std::fs::set_permissions(&notes, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let staged = staged_patch(&fixture);
+        assert!(
+            staged.contains("+added one\n+added two\n"),
+            "the write staged: {staged}"
+        );
+        let error = app.read_with(cx, |app, cx| {
+            assert_eq!(app.operation_busy, None, "the write has ended");
+            assert!(app.operation_error.is_none(), "{:?}", app.operation_error);
+            assert!(!app.lands_partial_write(cx), "nothing waits on the view");
+            assert!(app.patch_view.is_none(), "the view went with its landing");
+            app.error.clone().expect("the read failed")
+        });
+        let body = crate::native_accessibility::written::get("empty-state:Preview unavailable")
+            .expect("the failure takes the view's place");
+        assert!(
+            body.node.value().is_some_and(|text| text.contains(&error)),
+            "and says why: {:?} for {error:?}",
+            body.node.value()
+        );
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus goes to the list, not to {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+    }
+
+    /// A press the window refuses, as one on a diff that is no longer its
+    /// own, ends the view's wait for a write's read: the window's next
+    /// Refresh reads the row afresh and builds its view anew, as for any
+    /// diff. Left waiting, the view kept its text through that Refresh,
+    /// whose read then landed in it in place.
+    #[gpui::test]
+    async fn a_refused_partial_press_leaves_refresh_to_rebuild_the_view(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::partial_view::PartialRow;
+        let (fixture, app, cx) = working_diff(cx).await;
+        let (_, view) = shown_diff(&app, cx);
+        let hunk = app.read_with(cx, |app, _| {
+            let Some(Content::Text {
+                partial: Some(partial),
+                ..
+            }) = app.content.as_deref()
+            else {
+                panic!("the diff offers its partial actions");
+            };
+            partial
+                .rows
+                .iter()
+                .position(|row| matches!(row, PartialRow::Hunk(_)))
+                .expect("a hunk")
+        });
+        native_frames(cx);
+        let stage = cx
+            .debug_bounds(format!("partial-hunk-{hunk}").leak())
+            .expect("the hunk's Stage");
+        // The press arrives for a repository the window no longer shows.
+        let path = app.update(cx, |app, _| {
+            app.path.replace(fixture.path().join("another repository"))
+        });
+        cx.simulate_click(stage.center(), gpui::Modifiers::default());
+        app.update(cx, |app, _| app.path = path);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            None,
+            "the press starts nothing"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.patch_view.as_ref().is_some_and(|shown| *shown != view),
+                "Refresh builds the view anew"
+            );
+        });
     }
 
     #[test]

@@ -1198,6 +1198,12 @@ pub(crate) type LfsView = (FileChange, WorkspaceMode, u64);
 /// ([`GitTurtle::busy_reason`]).
 pub(crate) const BUSY_REASON: &str = "Wait for the current Git operation to finish";
 
+/// What the Diff view's place says when the read of its diff after a partial
+/// write is dropped unanswered ([`GitTurtle::end_partial_landing`]): the view
+/// goes, as for a failed read, and once went with nothing said.
+pub(crate) const LANDING_INTERRUPTED: &str =
+    "File preview was interrupted. Refresh to read it again.";
+
 /// `control` as a busy spell leaves it: while `refused`, its own handler or
 /// `write_from` refuses a press at once, and assistive technology hears it
 /// unavailable at once with it, while it takes the disabled look only where
@@ -3658,6 +3664,40 @@ impl GitTurtle {
         );
     }
 
+    /// Ends the landing of a partial write whose diff read failed or was
+    /// dropped unanswered ([`Self::read_written_diff`]), returning whether
+    /// one was waiting: nothing is left to land in the view, which goes,
+    /// the read's failure said in its place ("Preview unavailable" and why,
+    /// [`LANDING_INTERRUPTED`] for a dropped read), and focus held anywhere
+    /// in the view, its text or its bar's action or Clear
+    /// ([`crate::diff_view::DiffView::holds_focus`]), goes to the list,
+    /// where [`Self::select_working`] puts it for a read of the row, never
+    /// to the window frame. Kept, the view waited on with its controls
+    /// refused, focus fell to the window frame as the failure took the
+    /// view's place, and the next Refresh landed in it; focus on the bar,
+    /// reached by Tab during the write, fell there still.
+    pub(super) fn end_partial_landing(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.lands_partial_write(cx) {
+            return false;
+        }
+        let focused = self
+            .patch_view
+            .as_ref()
+            .is_some_and(|view| view.read(cx).holds_focus(window, cx));
+        self.clear_preview();
+        if focused
+            && self.page == AppPage::Repository
+            && !(window.has_active_dialog(cx) || window.has_active_sheet(cx))
+        {
+            window.focus(&self.file_focus, cx);
+        }
+        true
+    }
+
     /// Lands `content`, the diff read again after a partial write, in the
     /// Diff view the write was made in, before the window takes it as its
     /// content: the text replaced in place, its caret, first visible line,
@@ -4164,6 +4204,16 @@ impl GitTurtle {
     /// for a frame [`BUSY_LOOK_DELAY`] later, which shows its look if it
     /// still runs, and one that ends drops its look.
     pub(super) fn track_busy_look(&mut self, cx: &mut Context<Self>) {
+        self.track_busy_spell(cx);
+        // The shown diff's partial controls, which its write refuses, look
+        // it only with the window ([`crate::diff_view::DiffView::dimmed`]).
+        let shown = self.busy_shown();
+        if let Some(view) = &self.patch_view {
+            view.update(cx, |view, _| view.follow_busy_look(shown));
+        }
+    }
+
+    fn track_busy_spell(&mut self, cx: &mut Context<Self>) {
         if !self.busy_spell() {
             self.busy_look = BusyLook::default();
             return;

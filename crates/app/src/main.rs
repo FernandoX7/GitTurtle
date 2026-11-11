@@ -1287,6 +1287,9 @@ impl GitTurtle {
         self.error = None;
         self.preview_read = PreviewRead::of(&job, generation);
         let reviewing = matches!(&job, Job::ReviewText { .. });
+        // A working row's read, which may be the one a partial write's
+        // landing waits for (`end_partial_landing`).
+        let previewing = matches!(&job, Job::WorkingPreview { .. });
         let opening = matches!(&job, Job::Open { .. }).then(|| {
             self.operation_outcomes
                 .begin_open(&self.operation_error, &self.operation_notice)
@@ -1329,6 +1332,12 @@ impl GitTurtle {
                     )),
                     Err(_) => {
                         this.release_text_review(cx);
+                        // A partial write's landing so dropped says why in
+                        // the view's place, as a failed one does: the view
+                        // once went with nothing said.
+                        if previewing && this.end_partial_landing(window, cx) {
+                            this.error = Some(workspace::LANDING_INTERRUPTED.to_owned());
+                        }
                         this.try_automatic_refresh(window, cx);
                         cx.notify();
                         return;
@@ -1348,6 +1357,9 @@ impl GitTurtle {
                     }
                     Err(error) => {
                         this.release_text_review(cx);
+                        if previewing {
+                            this.end_partial_landing(window, cx);
+                        }
                         this.error = Some(format!("{error:#}"));
                         if reviewing {
                             this.text_review_failed();

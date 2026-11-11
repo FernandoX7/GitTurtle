@@ -89,6 +89,14 @@ pub struct DiffView {
     /// window keeps the view, its text, caret, selection and scroll through
     /// both, and that read lands in place ([`Self::land`]).
     writing: bool,
+    /// The changed lines that write sent, whose rows its read no longer
+    /// shows where they had no number on the side it leaves alone, so that
+    /// the rows after them keep their own place ([`Self::land`]).
+    written: BTreeSet<usize>,
+    /// Whether the window looks busy (`GitTurtle::busy_shown`), which the
+    /// partial controls a write refuses wait for to look it
+    /// ([`Self::dimmed`]).
+    busy_look: bool,
     /// What the live region says of the latest Space toggle, with the
     /// count that names its node afresh for each, so each is announced
     /// ([`Self::render_announcement`]), until the text loses focus: focus
@@ -137,10 +145,61 @@ impl DiffView {
         self.writing
     }
 
+    /// Follows the window's busy look, as each of its frames is built: the
+    /// partial controls this view's write refuses dim with it
+    /// ([`Self::dimmed`]). Set before this view renders in that frame, it
+    /// asks for no frame of its own. Once shown through this view's write,
+    /// the look stays until the write's read lands here or the wait for it
+    /// ends ([`Self::land`], [`Self::end_write`]), as DESIGN.md has a busy
+    /// look that has shown stay until the work it shows ends: the window's
+    /// spell ends as the status read after the write lands, while the
+    /// diff's read still runs, and the controls, still refusing a press,
+    /// came back looking available until it landed.
+    pub(crate) fn follow_busy_look(&mut self, shown: bool) {
+        self.busy_look = shown || (self.writing && self.busy_look);
+    }
+
+    /// Whether focus is anywhere in this view: in its text, or on its
+    /// selection bar's action or Clear, which Tab reaches while a write
+    /// runs, before they look refused.
+    pub(crate) fn holds_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus_handle(cx).contains_focused(window, cx)
+            || self.apply_focus.is_focused(window)
+            || self.clear_focus.is_focused(window)
+    }
+
+    /// Whether the partial controls look refused: as they are suspended,
+    /// by a text review or a press the window refused, or, through this
+    /// view's own write, only once the window looks busy, as DESIGN.md has
+    /// every control a write refuses: a write that lands sooner dims
+    /// nothing. They refuse a press and are announced unavailable at once
+    /// all the same (`partial_busy`). Dimmed as the write was pressed,
+    /// every quick Stage flashed them disabled.
+    fn dimmed(&self) -> bool {
+        self.partial_busy && (!self.writing || self.busy_look)
+    }
+
+    /// Ends the wait for the read after this view's partial write, as a
+    /// press the window refuses has it, so the window's next read of the
+    /// file builds the view afresh rather than landing in this one. Its
+    /// controls stay suspended, and look it.
+    pub(crate) fn end_write(&mut self, cx: &mut Context<Self>) {
+        if self.writing {
+            self.writing = false;
+            cx.notify();
+        }
+    }
+
     /// The selection bar's action's focus.
     #[cfg(test)]
     pub(crate) fn apply_focus_handle(&self) -> FocusHandle {
         self.apply_focus.clone()
+    }
+
+    /// The selection bar's Clear's focus.
+    #[cfg(test)]
+    pub(crate) fn clear_focus_handle(&self) -> FocusHandle {
+        self.clear_focus.clone()
     }
 
     /// How many changed lines are selected.
@@ -413,6 +472,8 @@ impl DiffView {
         self.announcement = None;
         self.partial_busy = false;
         self.writing = false;
+        self.written = BTreeSet::new();
+        self.busy_look = false;
     }
 
     /// Lands a read of the diff this view shows in place, as the read after
@@ -421,12 +482,16 @@ impl DiffView {
     /// The caret stays on its line where the new text still shows it (an
     /// added line staged from the unstaged area shows on as context, a
     /// line's identity being its number on the side the write leaves
-    /// alone, the worktree's or HEAD's), else it goes to the nearest changed
-    /// line after it, else before; the first visible line stays at the top
-    /// where it still shows, else the nearest line after it does. The line
-    /// selection stays where the text has not changed, as after a write
-    /// that failed, and otherwise goes with the lines it selected, which
-    /// left the area. Focus is left where it is. Rebuilt for the read
+    /// alone, the worktree's or HEAD's, and a row with none there, as an
+    /// added line in the staged area, its position in its run of such rows
+    /// that the write left), else it goes to the nearest changed line after
+    /// it, else before; the first visible line stays at the top where it
+    /// still shows, else the nearest line after it does, and a caret that
+    /// would land out of view is revealed by the least scroll ([`Landing`]).
+    /// The line selection stays where the text has not changed, as after a
+    /// write that failed, and otherwise goes with the lines it selected,
+    /// which left the area, and its bar with it, whose action or Clear
+    /// gives focus to the text. Focus is otherwise left where it is. Rebuilt for the read
     /// instead, the view went for the write's whole length ("Choose a file"
     /// in its place, focus on the window frame) and came back with its
     /// caret, selection and scroll lost (QA-118 P3.10).
@@ -461,6 +526,7 @@ impl DiffView {
         let selection = std::mem::take(&mut self.selection);
         let bar_room = Rc::clone(&self.bar_room);
         let old = Arc::clone(&self.rows);
+        let written = written_rows(self.partial.as_deref(), &self.written);
         crate::text::refresh_editor(
             &self.editor,
             patch,
@@ -477,23 +543,47 @@ impl DiffView {
             self.bar_room = bar_room;
             return;
         }
-        let new = &presentation.rows;
-        let caret_row = landed_caret(&old, new, staged, caret.line as usize);
-        let top = line_height.filter(|height| *height > px(0.)).map(|height| {
+        let landing = Landing::new(&old, &presentation.rows, staged, &written);
+        let caret_row = landing.caret(caret.line as usize);
+        // The text's room once laid out again, with no bar under it, since
+        // the landed text has no line selected.
+        let bar = bar_room
+            .last
+            .get()
+            .map_or(px(0.), |(bar, _)| bar.max(px(0.)));
+        let room = self.editor.read(cx).input_bounds().size.height + bar;
+        let y = line_height.filter(|height| *height > px(0.)).map(|height| {
             let scrolled = (-offset.y).max(px(0.));
             let row = (f32::from(scrolled) / f32::from(height)).floor() as usize;
             let rest = scrolled - height * row as f32;
-            (landed_line(&old, new, staged, row), rest, height)
+            let y = -(height * landing.line(row) as f32 + rest);
+            // The caret's line revealed by the least scroll, as the text
+            // reveals a moved caret: kept on the first visible line, a
+            // caret moved to the nearest changed line could land out of
+            // view, where the next Space would select a line not drawn.
+            let line = y + height * caret_row as f32;
+            if line < px(0.) {
+                y - line
+            } else if line + height > room && height <= room {
+                y - (line + height - room)
+            } else {
+                y
+            }
         });
         self.editor.update(cx, |state, cx| {
             let position = Position::new(caret_row as u32, caret.character);
             let at = state.text().position_to_offset(&position);
             state.set_selected_range(at..at, cx);
-            let y = top.map_or(offset.y, |(row, rest, height)| {
-                -(height * row as f32 + rest)
-            });
-            state.set_scroll_offset(point(offset.x, y), cx);
+            state.set_scroll_offset(point(offset.x, y.unwrap_or(offset.y)), cx);
         });
+        // The bar goes with the line selection: focus on its action or
+        // Clear, which Tab reaches while the write runs, goes to the text,
+        // as a press of either gives it ([`Self::return_focus`]). Left
+        // there, it fell to the window frame.
+        let bar = self.apply_focus.clone();
+        self.return_focus(&bar, window, cx);
+        let clear = self.clear_focus.clone();
+        self.return_focus(&clear, window, cx);
         cx.notify();
     }
 
@@ -598,6 +688,8 @@ pub fn new_numbered(
             selection: LineSelection::default(),
             partial_busy: false,
             writing: false,
+            written: BTreeSet::new(),
+            busy_look: false,
             announcement: None,
             announcements: 0,
             apply_focus: cx.focus_handle(),
@@ -876,6 +968,7 @@ impl DiffView {
         let diff = Arc::clone(&partial.diff);
         self.partial_busy = true;
         self.writing = true;
+        self.written = ids.iter().copied().collect();
         cx.emit(DiffViewEvent::ApplyPartial {
             diff,
             selection: PartialSelection::Lines(ids),
@@ -937,6 +1030,7 @@ impl DiffView {
             .saturating_add_signed(moved.ceil() as isize)
             .min(rows);
         let action = self.action();
+        let (refused, dimmed) = (self.partial_busy, self.dimmed());
         let mut elements = Vec::new();
         for row in first..end {
             let y = top + line_height * row as f32;
@@ -944,6 +1038,17 @@ impl DiffView {
                 PartialRow::None => {}
                 PartialRow::Hunk(ids) => {
                     let ids = Arc::clone(ids);
+                    let stage = Button::new(("partial-hunk", row))
+                        .debug_selector(move || format!("partial-hunk-{row}"))
+                        .tab_stop(false)
+                        .small()
+                        .w_full()
+                        .h(line_height - px(2.))
+                        .px_1()
+                        .rounded(px(3.))
+                        .text_size(crate::appearance::ui_text(10.))
+                        .label(format!("{action} hunk"))
+                        .accessibility_label(format!("{action} hunk at patch line {}", row + 1));
                     elements.push(
                         div()
                             .absolute()
@@ -952,30 +1057,23 @@ impl DiffView {
                             .w(px(width - 4.))
                             .h(line_height - px(2.))
                             .child(
-                                Button::new(("partial-hunk", row))
-                                    .debug_selector(move || format!("partial-hunk-{row}"))
-                                    .tab_stop(false)
-                                    .small()
-                                    .w_full()
-                                    .h(line_height - px(2.))
-                                    .px_1()
-                                    .rounded(px(3.))
-                                    .text_size(crate::appearance::ui_text(10.))
-                                    .label(format!("{action} hunk"))
-                                    .accessibility_label(format!(
-                                        "{action} hunk at patch line {}",
-                                        row + 1
-                                    ))
-                                    .disabled(self.partial_busy)
-                                    .tooltip(format!(
-                                        "{action} all {} in this hunk",
-                                        crate::counted(ids.len(), "changed line", "changed lines")
-                                    ))
-                                    .on_click(cx.listener(move |this, event, _, cx| {
+                                crate::workspace::refusing(
+                                    stage,
+                                    || format!("partial-hunk-{row}"),
+                                    refused,
+                                    dimmed,
+                                )
+                                .tooltip(format!(
+                                    "{action} all {} in this hunk",
+                                    crate::counted(ids.len(), "changed line", "changed lines")
+                                ))
+                                .on_click(cx.listener(
+                                    move |this, event, _, cx| {
                                         if this.click_matches_row(event, row, cx) {
                                             this.apply_partial(ids.to_vec(), cx);
                                         }
-                                    })),
+                                    },
+                                )),
                             )
                             .into_any_element(),
                     );
@@ -1002,6 +1100,16 @@ impl DiffView {
                     let cell = div();
                     #[cfg(test)]
                     let cell = cell.child(painted_rows::cell(Some(row)));
+                    // Refused at once by its handler, it looks it, and so
+                    // is announced it, only with the bar's controls
+                    // ([`Self::dimmed`]): the kit's Checkbox reports no
+                    // unavailable state apart from its look.
+                    #[cfg(test)]
+                    crate::workspace::refusals::record(
+                        format!("partial-line-{row}"),
+                        dimmed,
+                        dimmed,
+                    );
                     elements.push(
                         cell.debug_selector(move || format!("partial-line-{row}"))
                             .absolute()
@@ -1018,7 +1126,7 @@ impl DiffView {
                                         .tab_stop(false)
                                         .small()
                                         .checked(self.selection.ids.contains(&id))
-                                        .disabled(self.partial_busy)
+                                        .disabled(dimmed)
                                         .accessibility_label(format!(
                                             "Select {} line {line} to {}",
                                             if *added { "added" } else { "removed" },
@@ -1092,13 +1200,22 @@ impl DiffView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let palette = palette(cx);
-        let action = partial_action(&layout.label)
-            .track_focus(&self.apply_focus)
-            .disabled(self.partial_busy)
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.return_focus(&this.apply_focus.clone(), window, cx);
-                this.apply_partial(this.selection.ids.iter().copied().collect(), cx)
-            }));
+        let (refused, dimmed) = (self.partial_busy, self.dimmed());
+        // Refused, either press does nothing, focus included: they look
+        // refused only once the window looks busy ([`Self::dimmed`]).
+        let action = crate::workspace::refusing(
+            partial_action(&layout.label).track_focus(&self.apply_focus),
+            || "apply-partial-selection".into(),
+            refused,
+            dimmed,
+        )
+        .on_click(cx.listener(|this, _, window, cx| {
+            if this.partial_busy {
+                return;
+            }
+            this.return_focus(&this.apply_focus.clone(), window, cx);
+            this.apply_partial(this.selection.ids.iter().copied().collect(), cx)
+        }));
         let action = described_action(action, self.action(), self.selection.ids.len(), window, cx);
         div()
             .debug_selector(|| "partial-selection-bar".into())
@@ -1115,15 +1232,21 @@ impl DiffView {
             .border_color(rgb(palette.border))
             .child(action)
             .child(
-                clear_control(layout.icon)
-                    .track_focus(&self.clear_focus)
-                    .disabled(self.partial_busy)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.return_focus(&this.clear_focus.clone(), window, cx);
-                        this.selection = LineSelection::default();
-                        this.announcement = None;
-                        cx.notify();
-                    })),
+                crate::workspace::refusing(
+                    clear_control(layout.icon).track_focus(&self.clear_focus),
+                    || "clear-partial-selection".into(),
+                    refused,
+                    dimmed,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    if this.partial_busy {
+                        return;
+                    }
+                    this.return_focus(&this.clear_focus.clone(), window, cx);
+                    this.selection = LineSelection::default();
+                    this.announcement = None;
+                    cx.notify();
+                })),
             )
             .into_any_element()
     }
@@ -1558,21 +1681,50 @@ pub(crate) struct LineNumbers {
     pub(crate) new: Option<u64>,
 }
 
+/// A row's place in the file ([`line_places`]): the number of its line on
+/// the side a partial write leaves alone, or of the next such line, whether
+/// the row is that line, and else its position in its run of such rows.
+type Place = (u64, bool, usize);
+
 /// Each row's place in the file, read from its number on the side a partial
-/// write leaves alone (`staged`: HEAD's, else the worktree's), nondecreasing
-/// down the patch: a numbered line is `(number, 1)`, any other row, a removed
-/// line or a header, `(next number, 0)`, just before the line that follows.
-fn line_places(rows: &[LineNumbers], staged: bool) -> Vec<(u64, u8)> {
+/// write leaves alone (`staged`: HEAD's, else the worktree's), increasing
+/// down the patch: a numbered line is `(number, true, 0)`, and any other row,
+/// an added line in the staged area, a removed line in the unstaged one or a
+/// header, `(next number, false, k)`, just before the line that follows, `k`
+/// its position among the rows of its run that the write leaves, so that
+/// each keeps its own place. A row of a run that the write sends
+/// (`written`, as [`written_rows`] reads them), which it takes away, has the
+/// place of the next row it leaves in its run. Placed alike, every row of a run landed on its first: a caret on
+/// the fourth of five staged added lines went to the first as a line of
+/// another hunk was unstaged, and the first visible line with it; counted
+/// with the rows the write took, a caret on the fourth went to the fifth as
+/// the second was unstaged.
+fn line_places(rows: &[LineNumbers], staged: bool, written: &[bool]) -> Vec<Place> {
+    let mut run = 0;
+    let mut places: Vec<Place> = rows
+        .iter()
+        .enumerate()
+        .map(
+            |(row, numbers)| match if staged { numbers.old } else { numbers.new } {
+                Some(number) => {
+                    run = 0;
+                    (number, true, 0)
+                }
+                None if written.get(row).copied().unwrap_or(false) => (u64::MAX, false, run),
+                None => {
+                    run += 1;
+                    (u64::MAX, false, run - 1)
+                }
+            },
+        )
+        .collect();
     let mut next = u64::MAX;
-    let mut places = vec![(u64::MAX, 0); rows.len()];
-    for (row, numbers) in rows.iter().enumerate().rev() {
-        places[row] = match if staged { numbers.old } else { numbers.new } {
-            Some(number) => {
-                next = number;
-                (number, 1)
-            }
-            None => (next, 0),
-        };
+    for place in places.iter_mut().rev() {
+        if place.1 {
+            next = place.0;
+        } else {
+            place.0 = next;
+        }
     }
     places
 }
@@ -1585,40 +1737,99 @@ fn header_rows(rows: &[LineNumbers]) -> usize {
         .unwrap_or(rows.len())
 }
 
-/// Where `row` of the patch `old` lands in the patch `new` ([`DiffView::land`]):
-/// the same line where `new` shows it, a header row by its place among the
-/// headers, else the first row after where it stood.
-fn landed_line(old: &[LineNumbers], new: &[LineNumbers], staged: bool, row: usize) -> usize {
-    let last = new.len().saturating_sub(1);
-    if row < header_rows(old) {
-        return row.min(header_rows(new).saturating_sub(1)).min(last);
-    }
-    let Some(&place) = line_places(old, staged).get(row) else {
-        return row.min(last);
+/// Which rows of the patch `partial` was drawn over a partial write of the
+/// changed lines `ids` sends: those lines, and the header of a hunk whose
+/// every line it sends, as the hunk goes with them. Those numbered on the
+/// side the write leaves alone stay, as context, and the others go.
+fn written_rows(partial: Option<&PartialActions>, ids: &BTreeSet<usize>) -> Vec<bool> {
+    let Some(partial) = partial.filter(|_| !ids.is_empty()) else {
+        return Vec::new();
     };
-    line_places(new, staged)
-        .partition_point(|other| *other < place)
-        .min(last)
+    partial
+        .rows
+        .iter()
+        .map(|row| match row {
+            PartialRow::Change { id, .. } => ids.contains(id),
+            PartialRow::Hunk(hunk) => hunk.iter().all(|id| ids.contains(id)),
+            PartialRow::None => false,
+        })
+        .collect()
 }
 
-/// Where the caret on `row` of the patch `old` lands in the patch `new`
-/// ([`DiffView::land`]): on the same line where `new` shows it, else on the
-/// nearest changed line after it, else before, else where
-/// [`landed_line`] puts it.
-fn landed_caret(old: &[LineNumbers], new: &[LineNumbers], staged: bool, row: usize) -> usize {
-    let places = line_places(new, staged);
-    let Some(&place) = line_places(old, staged).get(row) else {
-        return row.min(new.len().saturating_sub(1));
-    };
-    let at = places.partition_point(|other| *other < place);
-    if place.1 == 1 && places.get(at) == Some(&place) {
-        return at;
+/// Where the rows of the patch `old` land in the patch `new`, read again
+/// after a partial write ([`DiffView::land`]), each by its place
+/// ([`line_places`]), `taken` the rows of `old` the write took away.
+struct Landing<'a> {
+    new: &'a [LineNumbers],
+    old_places: Vec<Place>,
+    new_places: Vec<Place>,
+    taken: Vec<bool>,
+    old_headers: usize,
+    new_headers: usize,
+}
+
+impl<'a> Landing<'a> {
+    /// `written` the rows of `old` the write sent ([`written_rows`]).
+    fn new(old: &[LineNumbers], new: &'a [LineNumbers], staged: bool, written: &[bool]) -> Self {
+        let old_places = line_places(old, staged, written);
+        // Sent, a row numbered on the side the write leaves alone stays,
+        // as context: the caret on a staged added line stays on it.
+        let taken = written
+            .iter()
+            .zip(&old_places)
+            .map(|(written, place)| *written && !place.1)
+            .collect();
+        Self {
+            new,
+            old_places,
+            new_places: line_places(new, staged, &[]),
+            taken,
+            old_headers: header_rows(old),
+            new_headers: header_rows(new),
+        }
     }
-    let changed = |row: &usize| new[*row].old.is_some() != new[*row].new.is_some();
-    (at..new.len())
-        .find(changed)
-        .or_else(|| (0..at).rev().find(changed))
-        .unwrap_or_else(|| landed_line(old, new, staged, row))
+
+    /// The first row of `new` at or after the place of `row`, else the last.
+    fn at(&self, row: usize) -> usize {
+        let last = self.new.len().saturating_sub(1);
+        let Some(place) = self.old_places.get(row) else {
+            return row.min(last);
+        };
+        self.new_places
+            .partition_point(|other| other < place)
+            .min(last)
+    }
+
+    /// Where `row` lands as the first visible line: on its own place where
+    /// `new` shows it, a header row by its place among the headers, else on
+    /// the first row after where it stood.
+    fn line(&self, row: usize) -> usize {
+        if row < self.old_headers {
+            return row
+                .min(self.new_headers.saturating_sub(1))
+                .min(self.new.len().saturating_sub(1));
+        }
+        self.at(row)
+    }
+
+    /// Where the caret on `row` lands: on its own place where `new` shows
+    /// it, else on the nearest changed line after it, else before, else
+    /// where [`Self::line`] puts it. A row the write took away shows
+    /// nowhere, though the next row of its run has its place.
+    fn caret(&self, row: usize) -> usize {
+        let at = self.at(row);
+        let place = self.old_places.get(row);
+        let taken = self.taken.get(row).copied().unwrap_or(false);
+        if !taken && place.is_some() && place == self.new_places.get(at) {
+            return at;
+        }
+        let new = self.new;
+        let changed = |row: &usize| new[*row].old.is_some() != new[*row].new.is_some();
+        (at..new.len())
+            .find(changed)
+            .or_else(|| (0..at).rev().find(changed))
+            .unwrap_or_else(|| self.line(row))
+    }
 }
 
 /// Pure worker-side preparation; the UI constructor only shares these results.
