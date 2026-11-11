@@ -53,10 +53,14 @@ impl<K, T> Default for WaitingReads<K, T> {
     }
 }
 
-/// Where a read of [`WaitingReads`] answers: the latest request's reply
-/// while it waits in the queue, and nothing more once it has started.
+/// Where a read of [`WaitingReads`] answers, and what it runs: the latest
+/// request's reply and read while it waits in the queue, and nothing more
+/// once it has started.
 enum Reply<T> {
-    Waiting(oneshot::Sender<Result<T>>),
+    Waiting(
+        oneshot::Sender<Result<T>>,
+        Box<dyn FnOnce() -> Result<T> + Send>,
+    ),
     Started,
 }
 
@@ -340,9 +344,13 @@ impl SerialExecutor {
 
     /// [`Self::submit_read`] for a read of `key` that reads what is there
     /// as it runs, so a request made while one for the same key still
-    /// waits in the queue is answered by that read instead of queued behind
-    /// it, and the earlier request's reply is dropped, as replacing its task
-    /// drops it: however often it is asked for meanwhile, `key` keeps at most
+    /// waits in the queue takes over that read's slot instead of queuing
+    /// behind it: the read that runs there is the request's own
+    /// `operation`, and the earlier request's reply and operation are
+    /// dropped, as replacing its task drops them. The earlier operation kept
+    /// what it was built with, the shown status read the handle of a
+    /// repository replaced since, whose label the newer request's reply then
+    /// carried. However often it is asked for meanwhile, `key` keeps at most
     /// one slot of the bounded queue. A read that has started, which may
     /// have read before the request, is not taken over: the request queues
     /// a read of its own. Changes' status read is one
@@ -359,14 +367,15 @@ impl SerialExecutor {
         let (reply, response) = oneshot::channel();
         waiting
             .waiting
-            .retain(|(_, read)| matches!(*lock(read), Reply::Waiting(_)));
+            .retain(|(_, read)| matches!(*lock(read), Reply::Waiting(..)));
         if let Some((_, read)) = waiting.waiting.iter().find(|(read, _)| *read == key)
-            && let Reply::Waiting(earlier) = &mut *lock(read)
+            && let Reply::Waiting(earlier, earlier_operation) = &mut *lock(read)
         {
             *earlier = reply;
+            *earlier_operation = Box::new(operation);
             return response;
         }
-        let read = Arc::new(Mutex::new(Reply::Waiting(reply)));
+        let read = Arc::new(Mutex::new(Reply::Waiting(reply, Box::new(operation))));
         let answers = Arc::clone(&read);
         waiting.waiting.retain(|(read, _)| *read != key);
         waiting.waiting.push((key, read));
@@ -375,7 +384,7 @@ impl SerialExecutor {
             // held through the read, a request for the key while it ran
             // waited for it on the UI thread.
             let reply = std::mem::replace(&mut *lock(&answers), Reply::Started);
-            if let Reply::Waiting(reply) = reply {
+            if let Reply::Waiting(reply, operation) = reply {
                 answer(reply, admission, true, operation);
             }
         }));
@@ -709,6 +718,28 @@ mod tests {
         assert_eq!(
             futures::executor::block_on(second).unwrap().unwrap(),
             "shown"
+        );
+    }
+
+    /// A request that takes over a waiting read runs its own operation
+    /// there, never the earlier request's: Changes' status read built with
+    /// the handle of a repository replaced since once answered the newer
+    /// request, which labelled that status with the replaced repository.
+    #[test]
+    fn a_read_taken_over_runs_the_newer_request_s_operation() {
+        let executor = SerialExecutor::new("operation-take-over-test");
+        let mut waiting = WaitingReads::default();
+        let held = executor.hold();
+        let earlier = executor.submit_read_once(&mut waiting, "shown", || Ok("replaced"));
+        let newer = executor.submit_read_once(&mut waiting, "shown", || Ok("found"));
+        drop(held);
+        assert_eq!(
+            futures::executor::block_on(newer).unwrap().unwrap(),
+            "found"
+        );
+        assert!(
+            futures::executor::block_on(earlier).is_err(),
+            "the earlier request's reply is dropped"
         );
     }
 

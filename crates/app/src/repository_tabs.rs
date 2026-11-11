@@ -1649,8 +1649,10 @@ impl GitTurtle {
 /// give a directory created after a delete the inode number of the one
 /// deleted. Where either read none, the inode alone tells, so a birth time
 /// unknown on both sides never makes two directories the same where an
-/// inode is unknown too. Reads what the opens captured, so it touches no
-/// filesystem.
+/// inode is unknown too. A found open in the running session holds the
+/// directory's birth time as it is now: the worker drops its retained
+/// repository once the birth time changes (`worker::RepositoryIdentity`).
+/// Reads what the opens captured, so it touches no filesystem.
 fn same_git_directories(shown: &worker::GitDirectories, found: &worker::GitDirectories) -> bool {
     let (shown_inodes, found_inodes) = (shown.inodes, found.inodes);
     let born_together =
@@ -8017,6 +8019,55 @@ pub(crate) mod tests {
             assert!(app.status_task.is_none(), "the status read landed");
             assert_eq!(app.working_identity.as_ref(), Some(&read));
             assert_ne!(read, worker::GitDirectories::of(&other));
+        });
+    }
+
+    /// A status read asked for again while the first still waits in the
+    /// operation executor takes it over with the newer request's handle:
+    /// with the handle moved meanwhile to a re-clone at the tab's path, the
+    /// status that lands is the re-clone's, labelled with it. The waiting
+    /// read once kept the handle it was built with and answered the newer
+    /// request, so the status was labelled with the replaced repository
+    /// (security re-check O1, FU44-C2).
+    #[gpui::test]
+    async fn a_status_read_taken_over_names_the_newer_request_s_repository(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let base = fixture.path().to_owned();
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let replaced = app.read_with(cx, |app, _| {
+            worker::GitDirectories::of(app.repository.as_ref().expect("opened"))
+        });
+        let third = fixture_repository(base.join("third"));
+        fixture_git(
+            third.path(),
+            &["commit", "-q", "--allow-empty", "-m", "Third"],
+        );
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+        std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+        let found = gitturtle_core::GitRepository::open(&root).unwrap();
+        let found_directories = worker::GitDirectories::of(&found);
+        assert!(!same_git_directories(&replaced, &found_directories));
+        // The handle moves to the re-clone and Changes is read again while
+        // the first read still waits.
+        app.update(cx, |app, _| app.repository = Some(found));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        drop(held);
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            if app.read_with(cx, |app, _| app.status_task.is_none()) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.operations.drain());
+        }
+        app.read_with(cx, |app, _| {
+            assert!(app.status_task.is_none(), "the status read landed");
+            assert_eq!(app.working_identity.as_ref(), Some(&found_directories));
         });
     }
 

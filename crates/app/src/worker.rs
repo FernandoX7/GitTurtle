@@ -7779,6 +7779,51 @@ mod image_tests {
         }
     }
 
+    /// The session's retained repository is dropped once its Git directory
+    /// is born again with the same device and inode, as an overlayfs
+    /// copy-up leaves it (and ext4 or XFS giving a re-clone the deleted
+    /// directory's inode number would), so the next open captures it
+    /// afresh, the new birth time with it. It once compared the device and
+    /// inode alone and returned the handle of its first open, whose birth
+    /// time every capture in the run was then compared with, itself
+    /// included, so only a restart saw the new directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_drops_a_repository_whose_git_directory_was_born_again() {
+        let fixture = Fixture::new();
+        let mut session = RepositorySession::default();
+        let git_dir = GitRepository::open(&fixture.0)
+            .unwrap()
+            .git_dir()
+            .to_owned();
+        let born = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        repository_identity::born_for_test(Some((git_dir.clone(), born)));
+        let opened = session.open(&fixture.0, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let captured = GitDirectories::of(&opened);
+        let retained = |session: &RepositorySession| {
+            Arc::clone(&session.current.as_ref().expect("retained").repository)
+        };
+        let first = retained(&session);
+        session.open(&root, Some(&root), Some(&captured)).unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &retained(&session)),
+            "the same directory keeps the retained repository"
+        );
+
+        let again = born + Duration::from_secs(1);
+        repository_identity::born_for_test(Some((git_dir.clone(), again)));
+        let reopened = session.open(&root, Some(&root), Some(&captured));
+        let holds = (session.current.as_ref()).map(|current| current.identity.is_current());
+        repository_identity::born_for_test(None);
+        assert_eq!(reopened.unwrap().git_dir(), git_dir);
+        assert!(
+            !Arc::ptr_eq(&first, &retained(&session)),
+            "a Git directory born again is captured afresh"
+        );
+        assert_eq!(holds, Some(true), "the new capture read the new birth time");
+    }
+
     /// A repository cloned again at the tab's path has new inodes, which
     /// cannot be told from another repository re-pointed there, so a
     /// restored tab refuses it the same way; an explicit open has no saved
