@@ -270,7 +270,7 @@ pub(crate) trait ManagedTooltipExt:
         self,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        self.managed_tooltip_with_placement(None, true, build_tooltip)
+        self.managed_tooltip_with_placement(None, None, true, build_tooltip)
     }
 
     fn managed_tooltip_at(
@@ -278,17 +278,21 @@ pub(crate) trait ManagedTooltipExt:
         placement: Placement,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        self.managed_tooltip_with_placement(Some(placement), true, build_tooltip)
+        self.managed_tooltip_with_placement(Some(placement), None, true, build_tooltip)
     }
 
     /// GitTurtle patch: `hide_on_press` false keeps the tooltip, shown or
     /// waiting to show, through a press on its trigger, so a trigger whose
     /// tooltip answers the press (a copy button's "Copied") shows it while the
     /// pointer stays on it. Upstream always hides it on mouse down, and only a
-    /// hover change asks for it again.
+    /// hover change asks for it again. `placement_following`, where it holds a
+    /// side as the tooltip is placed, is preferred over `preferred_placement`
+    /// in each frame the tooltip is drawn in
+    /// ([`gpui_base::TooltipRequest::placement_following`]).
     fn managed_tooltip_with_placement(
         self,
         preferred_placement: Option<Placement>,
+        placement_following: Option<Rc<Cell<Option<Placement>>>>,
         hide_on_press: bool,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
@@ -313,6 +317,10 @@ pub(crate) trait ManagedTooltipExt:
                             });
                             let request = match preferred_placement {
                                 Some(placement) => request.placement(placement),
+                                None => request,
+                            };
+                            let request = match placement_following.clone() {
+                                Some(placement) => request.placement_following(placement),
                                 None => request,
                             };
                             o.request_show(request, window, cx);

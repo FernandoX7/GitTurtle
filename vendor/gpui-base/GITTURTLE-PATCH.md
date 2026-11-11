@@ -2,7 +2,7 @@
 
 This directory contains the crates.io `gpui-base` 0.6.0 source, licensed Apache-2.0. The upstream copyright and license are preserved in `LICENSE-APACHE`; `.cargo_vcs_info.json` records the published source revision. The registry archive checksum is `2caaf00ebe0482774dd370a82a936edf4bf19a18a0d1a39353d20ecf61f70330`.
 
-The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/base/blink_cursor.rs`, `src/input/base/selection.rs`, `src/input/editor/decorations.rs`, `src/input/editor/mod.rs`, `src/input/base/kind.rs`, `src/input/mod.rs`, `src/otp_input.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popover.rs`, `src/slider.rs`, `src/popup.rs`, `src/positioner.rs`, `src/resizable/mod.rs` and `src/resizable/panel.rs`; `src/dialog_label.rs`, `src/disabled_focus.rs` and `src/input/base/accessible_text.rs` are added helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook. The Button test module no longer imports `gpui::Element`, which none of its tests use, so the crate's lib tests build without an unused-import warning; this test-only change goes with the module's tests.
+The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/base/blink_cursor.rs`, `src/input/base/selection.rs`, `src/input/editor/decorations.rs`, `src/input/editor/mod.rs`, `src/input/base/kind.rs`, `src/input/mod.rs`, `src/otp_input.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popover.rs`, `src/slider.rs`, `src/popup.rs`, `src/positioner.rs`, `src/tooltip.rs`, `src/resizable/mod.rs` and `src/resizable/panel.rs`; `src/dialog_label.rs`, `src/disabled_focus.rs` and `src/input/base/accessible_text.rs` are added helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook. The Button test module no longer imports `gpui::Element`, which none of its tests use, so the crate's lib tests build without an unused-import warning; this test-only change goes with the module's tests.
 
 The existing rendered-node test now expects disabled metadata. GitTurtle also includes the equivalent rendered-node regression in its application test suite, where the matching GPUI Kit test-support feature is enabled. Run `cargo test --locked -p gitturtle native_accessibility` from the repository root. This verifies generated node role, label, disabled state, click availability and selected/unselected Tab metadata. Native VoiceOver behavior is a separate application validation gate.
 
@@ -358,6 +358,41 @@ once, lists what it added, and runs `cargo test --locked --lib` in
 only for content waiting on the trigger's bounds and places an open popup at
 its trigger's corner in the frame that lays the trigger out, and the tests
 pass without them.
+
+The tooltip-side patch modifies `src/positioner.rs` and `src/tooltip.rs`.
+Upstream a side popup's preferred side is fixed as the popup is built, and a
+tooltip's as its trigger's hover begins (`TooltipRequest::placement`), so a
+tooltip shown before its trigger's caller chose another side kept the old one
+for as long as it stayed shown, and one shown as the side changed took it a
+frame late. `Positioner::placement_following` reads the preferred side from a
+cell as the popup is prepainted, where the cell holds one, and otherwise keeps
+`Positioner::placement`'s, as `Positioner::corner_following` reads a corner;
+`TooltipRequest::placement_following` and `TooltipPositioner::placement_following`
+carry the cell to the positioner the tooltip overlay builds in each frame. A
+caller that sets the cell in a deferred draw registered ahead of the overlay's
+at the same priority has the tooltip take the side in the frame that sets it.
+The component kit's `Button::tooltip_view_at` passes it
+([component patch](../gpui-component/GITTURTLE-PATCH.md)), whose
+`a_shown_tooltip_takes_a_side_changed_in_the_next_frame` covers it through
+`scripts/vendor-crate-test.sh vendor/gpui-component`, and the consumer is the
+header's Pull requests in `crates/app/src/github_view.rs`
+(`a_pointer_tooltip_shown_before_the_refusal_takes_the_answers_side_at_once`).
+Remove this part when upstream reads a popup's side as it places the popup.
+
+The empty-tooltip patch also modifies `src/tooltip.rs`. Upstream the tooltip
+overlay counts any request it holds as a tooltip shown, so a request whose
+view its trigger built as `gpui::EmptyView`, which draws nothing, let the next
+hover elsewhere take its tooltip at once, switching from the empty one,
+without its show delay. `TooltipOverlay` records whether the view it built for
+the request it holds is an empty view, and `TooltipOverlay::request_show`
+drops that request as the next comes, counting it as no tooltip shown, its
+grace period included, so the next request waits out its delay, and an
+application that hides the overlay while it holds the empty request finds
+none to hide. The consumer is the header's Pull
+requests in `crates/app/src/github_view.rs`, which builds its pointer tooltip
+empty beside a keyboard press's answer
+(`a_neighbour_waits_its_delay_after_a_pointer_rested_on_the_answer`). Remove
+this part when upstream counts an empty tooltip view as none shown.
 
 The point-placement patch also modifies `src/positioner.rs`. Upstream places
 a popup at a pointer only by a corner (`Positioner::corner`), which keeps

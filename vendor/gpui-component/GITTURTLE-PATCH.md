@@ -261,6 +261,41 @@ fixed when the pointer entered. Remove this part of the patch when upstream lets
 a trigger keep its tooltip through a press and builds a shown tooltip's content
 as it renders.
 
+The tooltip-placement patch also modifies `src/button/button.rs` and
+`src/tooltip.rs`. Upstream's managed tooltip takes a preferred side, which
+`managed_tooltip_at` passes, but Button always passed none, so its tooltip took
+the positioner's default, above the trigger wherever it fit, over whatever the
+caller knows lies there. `Button::tooltip_view_at` sets the tooltip view as
+`Button::tooltip_view` does and a cell holding the side it prefers, which the
+managed tooltip (`managed_tooltip_with_placement`) hands to gpui-base's
+`TooltipRequest::placement_following`, whose positioner reads it as it places
+the tooltip in each frame ([base patch](../gpui-base/GITTURTLE-PATCH.md)), so a
+tooltip shown before its caller changed the side takes the new side in the
+frame that changes it; the positioner still flips it where it does not fit, and
+a cell holding none, like `tooltip_view` alone, keeps no side. The side was
+first passed by value, read as the hover began, so a tooltip shown kept that
+frame's side for as long as it stayed. The consumer is the header's Pull
+requests (`GitTurtle::refusing_pull_requests` in
+`crates/app/src/github_view.rs`): while the panel is refused, its tooltip
+stands on the side of the button the answer to a refused key press takes,
+clear of the header's and the tab strip's other controls, chosen in the same
+frame by a deferred draw prepainted ahead of the tooltip overlay's.
+`ITERATIONS=20 scripts/vendor-crate-test.sh vendor/gpui-component
+a_tooltip_view_at_a_placement_shows_on_that_side
+a_shown_tooltip_takes_a_side_changed_in_the_next_frame` runs the two tests: the
+first hovers a Button in a 400 x 300 window past the show delay and requires
+its tooltip below it for the bottom side and above it for the top side and for
+none, and fails with the placement not passed; the second changes the side of
+a shown tooltip, below, above, none and below again, and requires it on each in
+the next frame drawn, and fails with the side read as the hover began.
+`cargo test --locked -p gitturtle
+a_refused_pull_requests_answer_covers_no_other_header_control
+a_pointer_tooltip_shown_before_the_refusal_takes_the_answers_side_at_once`
+requires the pointer's tooltip on Pull requests where the answer stood, and
+below the button in the write's first frame under a pointer that rested there
+before it. Remove this part of the patch when upstream Button passes a tooltip
+placement read as the tooltip is placed.
+
 The disabled-switch patch modifies `src/switch.rs`. Upstream Switch fades a
 disabled Switch's track to half opacity (`disabled_bg`) and paints its thumb in
 `switch_thumb` at full strength. Its comment reasoned that the thumb is

@@ -212,6 +212,9 @@ pub struct Positioner {
     /// GitTurtle patch: where a corner popup's position is read as it is
     /// prepainted ([`Positioner::corner_following`]).
     following: Option<Rc<Cell<Point<Pixels>>>>,
+    /// GitTurtle patch: where a side popup's preferred side is read as it is
+    /// prepainted ([`Positioner::placement_following`]).
+    placement_following: Option<Rc<Cell<Option<Placement>>>>,
     occlude: bool,
     children: Vec<AnyElement>,
 }
@@ -234,6 +237,7 @@ impl Positioner {
             margin: px(4.),
             bottom_inset: px(0.),
             following: None,
+            placement_following: None,
             occlude: false,
             children: Vec::new(),
         }
@@ -250,6 +254,7 @@ impl Positioner {
             margin: px(4.),
             bottom_inset: px(0.),
             following: None,
+            placement_following: None,
             occlude: false,
             children: Vec::new(),
         }
@@ -306,11 +311,21 @@ impl Positioner {
     }
 
     /// GitTurtle patch: the strategy as `window` resolves it: a followed
-    /// corner as it stands now, and a point on the window's device pixels.
+    /// corner as it stands now, a followed side as it stands now where it
+    /// holds one, and a point on the window's device pixels.
     fn strategy_in(&self, window: &Window) -> Strategy {
         let mut strategy = self.strategy;
         match (&mut strategy, &self.following) {
             (Strategy::Corner { position, .. }, Some(following)) => *position = following.get(),
+            (Strategy::Side { placement, .. }, _) => {
+                if let Some(followed) = self
+                    .placement_following
+                    .as_ref()
+                    .and_then(|side| side.get())
+                {
+                    *placement = Some(followed);
+                }
+            }
             (Strategy::Point { scale_factor, .. }, _) => *scale_factor = window.scale_factor(),
             _ => {}
         }
@@ -337,6 +352,18 @@ impl Positioner {
         {
             *slot = Some(placement);
         }
+        self
+    }
+
+    /// GitTurtle patch: prefers the side `placement` holds when the popup is
+    /// prepainted, not when it is built, where it holds one, and otherwise
+    /// [`Positioner::placement`]'s. Only meaningful for [`Positioner::side`].
+    /// A caller that chooses the side in the same frame, in a deferred draw
+    /// prepainted ahead of this one, has the popup take it in that frame,
+    /// also once it is shown: a tooltip built as its hover began kept the side
+    /// of that frame for as long as it stayed.
+    pub fn placement_following(mut self, placement: Rc<Cell<Option<Placement>>>) -> Self {
+        self.placement_following = Some(placement);
         self
     }
 

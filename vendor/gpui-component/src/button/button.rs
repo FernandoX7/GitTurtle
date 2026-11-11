@@ -1,9 +1,9 @@
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use crate::styled::apply_focus_ring;
 use crate::{
-    ActiveTheme, Colorize as _, Disableable, Icon, RoleOverride, Selectable, Sizable, Size,
-    StyleSized, StyledExt,
+    ActiveTheme, Colorize as _, Disableable, Icon, Placement, RoleOverride, Selectable, Sizable,
+    Size, StyleSized, StyledExt,
     button::ButtonIcon,
     h_flex,
     select::Caret,
@@ -224,6 +224,9 @@ pub struct Button {
         Option<(Rc<Box<dyn gpui::Action>>, Option<SharedString>)>,
     )>,
     tooltip_builder: Option<Rc<dyn Fn(&mut Window, &mut App) -> gpui::AnyView>>,
+    /// GitTurtle patch: where the side of the button [`Self::tooltip_builder`]'s tooltip
+    /// prefers is read as the tooltip is placed ([`Self::tooltip_view_at`]).
+    tooltip_placement: Option<Rc<Cell<Option<Placement>>>>,
     /// GitTurtle patch: whether a press leaves the tooltip shown.
     tooltip_through_press: bool,
     on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
@@ -272,6 +275,7 @@ impl Button {
             size: Size::Medium,
             tooltip: None,
             tooltip_builder: None,
+            tooltip_placement: None,
             tooltip_through_press: false,
             on_click: None,
             focus_ring_enabled: true,
@@ -396,7 +400,31 @@ impl Button {
         build: impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static,
     ) -> Self {
         self.tooltip_builder = Some(Rc::new(build));
+        self.tooltip_placement = None;
         self
+    }
+
+    /// Set the tooltip of the button as a view built each time the tooltip
+    /// renders ([`Self::tooltip_view`]), placed on the side of the button
+    /// `placement` holds as the tooltip is placed, in each frame it is drawn
+    /// in, where it fits there, and otherwise as the positioner flips it;
+    /// where `placement` holds none, as [`Self::tooltip_view`] places it.
+    ///
+    /// GitTurtle patch: upstream's managed tooltip takes a placement, which
+    /// the Button never passed, so its tooltip always preferred the side
+    /// above, over whatever a caller knows lies there. The side is read as
+    /// the tooltip is prepainted, not as its hover begins, so a caller that
+    /// sets it earlier in the same frame, in a deferred draw prepainted
+    /// first, has a tooltip already shown take it in that frame: read as
+    /// the hover began, the tooltip kept that frame's side while it stayed.
+    pub fn tooltip_view_at(
+        self,
+        placement: Rc<Cell<Option<Placement>>>,
+        build: impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static,
+    ) -> Self {
+        let mut button = self.tooltip_view(build);
+        button.tooltip_placement = Some(placement);
+        button
     }
 
     /// Keep the tooltip through a press: one shown stays, and one waiting
@@ -983,11 +1011,14 @@ impl Button {
         .map(|this| {
             let hide_on_press = !self.tooltip_through_press;
             if let Some(builder) = self.tooltip_builder {
-                this.managed_tooltip_with_placement(None, hide_on_press, move |window, cx| {
-                    builder(window, cx)
-                })
+                this.managed_tooltip_with_placement(
+                    None,
+                    self.tooltip_placement,
+                    hide_on_press,
+                    move |window, cx| builder(window, cx),
+                )
             } else if let Some((tooltip, action)) = self.tooltip {
-                this.managed_tooltip_with_placement(None, hide_on_press, move |window, cx| {
+                this.managed_tooltip_with_placement(None, None, hide_on_press, move |window, cx| {
                     Tooltip::new(tooltip.clone())
                         .when_some(action.clone(), |this, (action, context)| {
                             this.action(
@@ -1759,6 +1790,134 @@ mod tests {
 
         assert_eq!(parent_clicks.get(), 0);
         cx.update(|window, cx| assert!(window.focused(cx).is_some()));
+    }
+
+    /// GitTurtle patch: a page holding one Button centred in the window, its
+    /// tooltip view placed from the cell given, where one is given.
+    struct TooltipPage(Option<Rc<Cell<Option<Placement>>>>);
+    impl gpui::Render for TooltipPage {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let tip = |window: &mut Window, cx: &mut App| {
+                crate::tooltip::Tooltip::element(|_, _| {
+                    div().debug_selector(|| "tip".into()).child("Says where")
+                })
+                .build(window, cx)
+            };
+            let trigger = Button::new("trigger")
+                .label("Trigger")
+                .debug_selector(|| "trigger".into());
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(match self.0.clone() {
+                    Some(placement) => trigger.tooltip_view_at(placement, tip),
+                    None => trigger.tooltip_view(tip),
+                })
+        }
+    }
+
+    /// GitTurtle patch: draws `cx`'s window once, with what it waits for
+    /// before and after.
+    fn settle(cx: &mut gpui::VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    /// GitTurtle patch: a [`TooltipPage`] in a 400 × 300 window whose
+    /// pointer has rested on its Button past the 500 ms show delay, and the
+    /// Button's bounds.
+    fn shown_tooltip(
+        cx: &mut gpui::TestAppContext,
+        placement: Option<Rc<Cell<Option<Placement>>>>,
+    ) -> (&mut gpui::VisualTestContext, gpui::Bounds<Pixels>) {
+        use gpui::{AppContext as _, Modifiers, size};
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let page = cx.new(|_| TooltipPage(placement));
+            crate::Root::new(page, window, cx).bordered(false)
+        });
+        cx.simulate_resize(size(px(400.), px(300.)));
+        settle(cx);
+        let trigger = cx.debug_bounds("trigger").expect("the trigger");
+        cx.simulate_mouse_move(trigger.center(), None, Modifiers::default());
+        settle(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        settle(cx);
+        (cx, trigger)
+    }
+
+    /// GitTurtle patch: a Button's tooltip view set with a placement shows on
+    /// that side of the button where it fits there, and one set without a
+    /// placement, or with the side above, shows above it: the pointer resting
+    /// on a Button in the middle of a 400 × 300 window past the 500 ms show
+    /// delay, the tooltip's content lies wholly below the button for
+    /// `Placement::Bottom` and wholly above it otherwise. The Button once
+    /// passed no placement to its managed tooltip, so every tooltip view
+    /// preferred the side above.
+    #[gpui::test]
+    fn a_tooltip_view_at_a_placement_shows_on_that_side(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        for (placement, below) in [
+            (Some(Placement::Bottom), true),
+            (Some(Placement::Top), false),
+            (None, false),
+        ] {
+            let held = placement.map(|placement| Rc::new(Cell::new(Some(placement))));
+            let (cx, trigger) = shown_tooltip(cx, held);
+            let tip = cx
+                .debug_bounds("tip")
+                .unwrap_or_else(|| panic!("{placement:?}: the tooltip shows"));
+            if below {
+                assert!(
+                    tip.top() >= trigger.bottom(),
+                    "{placement:?}: {tip:?} lies below {trigger:?}"
+                );
+            } else {
+                assert!(
+                    tip.bottom() <= trigger.top(),
+                    "{placement:?}: {tip:?} lies above {trigger:?}"
+                );
+            }
+        }
+    }
+
+    /// GitTurtle patch: a shown Button tooltip takes the side its caller sets
+    /// in the next frame drawn, with no hover change, no notification and no
+    /// new request: shown below the button, the cell set to the side above,
+    /// the next frame draws it wholly above; set to none, above, the
+    /// positioner's default; set back below, below. The side was read as the
+    /// hover began, so a tooltip kept it for as long as it stayed shown.
+    #[gpui::test]
+    fn a_shown_tooltip_takes_a_side_changed_in_the_next_frame(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let side = Rc::new(Cell::new(Some(Placement::Bottom)));
+        let (cx, trigger) = shown_tooltip(cx, Some(side.clone()));
+        for (placement, below) in [
+            (Some(Placement::Bottom), true),
+            (Some(Placement::Top), false),
+            (None, false),
+            (Some(Placement::Bottom), true),
+        ] {
+            side.set(placement);
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let tip = cx
+                .debug_bounds("tip")
+                .unwrap_or_else(|| panic!("{placement:?}: the tooltip stays shown"));
+            if below {
+                assert!(
+                    tip.top() >= trigger.bottom(),
+                    "{placement:?}: {tip:?} lies below {trigger:?} in the next frame"
+                );
+            } else {
+                assert!(
+                    tip.bottom() <= trigger.top(),
+                    "{placement:?}: {tip:?} lies above {trigger:?} in the next frame"
+                );
+            }
+        }
     }
 
     #[gpui::test]
