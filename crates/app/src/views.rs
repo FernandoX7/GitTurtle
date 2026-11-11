@@ -12250,9 +12250,30 @@ pub(crate) mod tests {
         let text: String = (0..400)
             .map(|line| format!("asset line {line}\n"))
             .collect();
+        // A file whose objects are missing on both sides, whose row offers
+        // two Downloads.
+        let both = |object: char| {
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+                object.to_string().repeat(64)
+            )
+        };
+        let (both_before, both_after) = (both('c'), both('d'));
         let input = file_commits(&[
-            ("before", &[("asset.txt", pointer.as_bytes())]),
-            ("after", &[("asset.txt", text.as_bytes())]),
+            (
+                "before",
+                &[
+                    ("asset.txt", pointer.as_bytes()),
+                    ("both.txt", both_before.as_bytes()),
+                ],
+            ),
+            (
+                "after",
+                &[
+                    ("asset.txt", text.as_bytes()),
+                    ("both.txt", both_after.as_bytes()),
+                ],
+            ),
         ]);
         let (_fixture, app, cx) = history_window_from(cx, &input).await;
         cx.update(|_, cx| cx.set_reduce_motion(true));
@@ -12375,6 +12396,32 @@ pub(crate) mod tests {
         );
         changes("new review options", &mut work);
         scroll(cx, "1200 × 973 at 18 pt, whitespace hidden", &mut work);
+        // Another file whose row offers both sides' Downloads: of what the
+        // heights follow from, only what the row offers changes, the
+        // window's write, the column and the options as they were, so it
+        // alone measures again, and a frame after it measures nothing.
+        let both = app.read_with(cx, |app, _| {
+            app.files
+                .iter()
+                .position(|file| file.path() == std::path::Path::new("both.txt"))
+                .expect("the commit changes both.txt")
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(both, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            ["download-lfs-side-0", "download-lfs-side-1"]
+                .iter()
+                .all(|id| cx.debug_bounds(id).is_some()),
+            "both.txt's row offers both sides' Downloads"
+        );
+        changes("a file offering both sides' Downloads", &mut work);
+        cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            work().1,
+            0,
+            "a frame after both.txt's row is drawn measures nothing"
+        );
         probe::stop();
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
