@@ -2029,6 +2029,17 @@ mod tests {
         }
     }
 
+    /// The display scales the row's tests draw at: 2, as QA's 461 × 490
+    /// window draws the review's, and 1.5, a common Hyprland scale, where
+    /// layout centres a line's parts on whole device pixels, a third of a
+    /// pixel apart (decided 2026-11-10: centring, not a defect).
+    const SCALES: [f32; 2] = [2., 1.5];
+
+    /// Draws the window at display scale `scale`.
+    fn at_scale(cx: &mut VisualTestContext, scale: f32) {
+        cx.update(|window, _| window.set_scale_factor(scale));
+    }
+
     /// A window drawing the row at 18 pt and scale 2, as QA's 461 × 490
     /// window draws the review's.
     fn row_window(cx: &mut TestAppContext) -> (Entity<Row>, &mut VisualTestContext) {
@@ -2080,7 +2091,8 @@ mod tests {
         "lfs-download-failure",
     ];
 
-    /// Whether the drawn parts stand on one line, apart, inside the row.
+    /// Whether the drawn parts stand on one line, their centres within a
+    /// device pixel, apart, inside the row.
     fn one_line_inside(cx: &mut VisualTestContext, device: Pixels) -> Result<(), String> {
         let row = cx.debug_bounds("lfs-download-row").expect("the row");
         let drawn: Vec<_> = PARTS
@@ -2089,7 +2101,7 @@ mod tests {
             .collect();
         let first = drawn[0].1;
         for (index, (id, part)) in drawn.iter().enumerate() {
-            if (part.center().y - first.center().y).abs() > device / 2. {
+            if (part.center().y - first.center().y).abs() > device {
                 return Err(format!("{id}, {part:?}, is not on {first:?}'s line"));
             }
             if part.left() < row.left() - device / 2. || part.right() > row.right() + device / 2. {
@@ -2117,44 +2129,49 @@ mod tests {
     #[gpui::test]
     async fn the_sentence_measures_one_side_running_at_a_time(cx: &mut TestAppContext) {
         let (row, cx) = row_window(cx);
-        cx.simulate_resize(size(px(1600.), px(400.)));
-        let (column, sentence, device) = cx.update(|window, _| {
-            let (gap, _) = row_room(Pixels::ZERO, window);
-            let widths = side_widths(false, &[0, 1], false, true, window);
-            let sentence = row_text_width(DOWNLOAD_EXPLANATION, &EXPLANATION_WIDTH, window);
-            let one = sentence + gap + widest_line(&widths, gap);
-            let both = sentence + widths[1].iter().map(|&width| gap + width).sum::<Pixels>();
-            assert!(
-                one < both,
-                "one side running, {one:?}, takes less than both, {both:?}"
-            );
-            (
-                column_for((one + both) / 2., window),
-                sentence,
-                px(1. / window.scale_factor()),
-            )
-        });
-        for shown in [
-            Shown::Resting,
-            Shown::Running {
-                side: 0,
-                cancelling: false,
-            },
-            Shown::Running {
-                side: 1,
-                cancelling: false,
-            },
-        ] {
-            show(&row, cx, column, false, shown);
-            let said = cx
-                .debug_bounds("lfs-preview-download-explanation")
-                .unwrap_or_else(|| panic!("{shown:?}: the sentence stands in a {column:?} row"));
-            assert!(
-                said.size.width >= sentence - device / 2.,
-                "{shown:?}: the sentence, {said:?}, is whole, {sentence:?}"
-            );
-            if let Err(why) = one_line_inside(cx, device) {
-                panic!("{shown:?}: {why}");
+        for scale in SCALES {
+            at_scale(cx, scale);
+            cx.simulate_resize(size(px(1600.), px(400.)));
+            let (column, sentence, device) = cx.update(|window, _| {
+                let (gap, _) = row_room(Pixels::ZERO, window);
+                let widths = side_widths(false, &[0, 1], false, true, window);
+                let sentence = row_text_width(DOWNLOAD_EXPLANATION, &EXPLANATION_WIDTH, window);
+                let one = sentence + gap + widest_line(&widths, gap);
+                let both = sentence + widths[1].iter().map(|&width| gap + width).sum::<Pixels>();
+                assert!(
+                    one < both,
+                    "one side running, {one:?}, takes less than both, {both:?}"
+                );
+                (
+                    column_for((one + both) / 2., window),
+                    sentence,
+                    px(1. / window.scale_factor()),
+                )
+            });
+            for shown in [
+                Shown::Resting,
+                Shown::Running {
+                    side: 0,
+                    cancelling: false,
+                },
+                Shown::Running {
+                    side: 1,
+                    cancelling: false,
+                },
+            ] {
+                show(&row, cx, column, false, shown);
+                let said = cx
+                    .debug_bounds("lfs-preview-download-explanation")
+                    .unwrap_or_else(|| {
+                        panic!("{shown:?}: the sentence stands in a {column:?} row")
+                    });
+                assert!(
+                    said.size.width >= sentence - device / 2.,
+                    "{shown:?}: the sentence, {said:?}, is whole, {sentence:?}"
+                );
+                if let Err(why) = one_line_inside(cx, device) {
+                    panic!("{shown:?}: {why}");
+                }
             }
         }
     }
@@ -2189,62 +2206,65 @@ mod tests {
     #[gpui::test]
     async fn a_stacked_failure_keeps_failed_or_only_its_download_s_glyph(cx: &mut TestAppContext) {
         let (row, cx) = row_window(cx);
-        let (fits, failed, device) = cx.update(|window, _| {
-            let (gap, _) = row_room(Pixels::ZERO, window);
-            let [buttons, _] = side_widths(false, &[0, 1], false, true, window);
-            let failed = row_text_width(FAILED, &FAILED_WIDTH, window);
-            (
-                column_for(buttons[1] + gap + failed, window),
-                failed,
-                px(1. / window.scale_factor()),
-            )
-        });
-        for (column, words) in [(fits - device, false), (fits, true)] {
-            show(&row, cx, column, false, Shown::Resting);
-            let [before, pressed] = ["download-lfs-side-0", "download-lfs-side-1"]
-                .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
-            assert!(
-                pressed.top() >= before.bottom() - device / 2.,
-                "{column:?}: the two stack: {before:?}, {pressed:?}"
-            );
-            assert_eq!(glyphs(), [PULL, PULL].map(|glyph| glyph.map(str::to_owned)));
-            show(&row, cx, column, false, Shown::Failed { side: 1 });
-            let after = cx
-                .debug_bounds("download-lfs-side-1")
-                .expect("After… is back");
-            let edge = cx
-                .debug_bounds("lfs-download-row")
-                .expect("the row")
-                .right();
-            assert!(
-                (after.left() - pressed.left()).abs() <= device / 2.,
-                "{column:?}: Download After…, {after:?}, keeps its place, {pressed:?}"
-            );
-            assert_eq!(
-                glyphs(),
-                [PULL, WARNING].map(|glyph| glyph.map(str::to_owned)),
-                "{column:?}: the failed Download draws the warning glyph"
-            );
-            match cx.debug_bounds("lfs-download-failure") {
-                Some(said) => assert!(
-                    words
-                        && said.size.width >= failed - device / 2.
-                        && said.left() >= after.right() - device / 2.
-                        && said.right() <= edge + device / 2.
-                        && (said.center().y - after.center().y).abs() <= device / 2.,
-                    "{column:?}: the words, {said:?}, stand whole, {failed:?}, after Download \
+        for scale in SCALES {
+            at_scale(cx, scale);
+            let (fits, failed, device) = cx.update(|window, _| {
+                let (gap, _) = row_room(Pixels::ZERO, window);
+                let [buttons, _] = side_widths(false, &[0, 1], false, true, window);
+                let failed = row_text_width(FAILED, &FAILED_WIDTH, window);
+                (
+                    column_for(buttons[1] + gap + failed, window),
+                    failed,
+                    px(1. / window.scale_factor()),
+                )
+            });
+            for (column, words) in [(fits - device, false), (fits, true)] {
+                show(&row, cx, column, false, Shown::Resting);
+                let [before, pressed] = ["download-lfs-side-0", "download-lfs-side-1"]
+                    .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
+                assert!(
+                    pressed.top() >= before.bottom() - device / 2.,
+                    "{column:?}: the two stack: {before:?}, {pressed:?}"
+                );
+                assert_eq!(glyphs(), [PULL, PULL].map(|glyph| glyph.map(str::to_owned)));
+                show(&row, cx, column, false, Shown::Failed { side: 1 });
+                let after = cx
+                    .debug_bounds("download-lfs-side-1")
+                    .expect("After… is back");
+                let edge = cx
+                    .debug_bounds("lfs-download-row")
+                    .expect("the row")
+                    .right();
+                assert!(
+                    (after.left() - pressed.left()).abs() <= device / 2.,
+                    "{column:?}: Download After…, {after:?}, keeps its place, {pressed:?}"
+                );
+                assert_eq!(
+                    glyphs(),
+                    [PULL, WARNING].map(|glyph| glyph.map(str::to_owned)),
+                    "{column:?}: the failed Download draws the warning glyph"
+                );
+                match cx.debug_bounds("lfs-download-failure") {
+                    Some(said) => assert!(
+                        words
+                            && said.size.width >= failed - device / 2.
+                            && said.left() >= after.right() - device / 2.
+                            && said.right() <= edge + device / 2.
+                            && (said.center().y - after.center().y).abs() <= device,
+                        "{column:?}: the words, {said:?}, stand whole, {failed:?}, after Download \
                      After…, {after:?}, only where they keep \"Failed…\""
-                ),
-                None => {
-                    assert!(
-                        !words,
-                        "{column:?}: the words keep \"Failed…\" after {after:?}"
-                    );
-                    assert_eq!(
-                        described(1),
-                        Some(format!("Failed: {WORDS}")),
-                        "{column:?}: Download After…'s description says the words whole"
-                    );
+                    ),
+                    None => {
+                        assert!(
+                            !words,
+                            "{column:?}: the words keep \"Failed…\" after {after:?}"
+                        );
+                        assert_eq!(
+                            described(1),
+                            Some(format!("Failed: {WORDS}")),
+                            "{column:?}: Download After…'s description says the words whole"
+                        );
+                    }
                 }
             }
         }
@@ -2263,54 +2283,57 @@ mod tests {
     #[gpui::test]
     async fn a_failure_without_room_marks_its_download_in_place(cx: &mut TestAppContext) {
         let (row, cx) = row_window(cx);
-        let (stacked, icon, inset, device) = cx.update(|window, _| {
-            let (gap, _) = row_room(Pixels::ZERO, window);
-            let [buttons, _] = side_widths(false, &[0, 1], false, true, window);
-            let icon = window.pixel_snap(appearance::ui_size(16.));
-            (
-                column_for(buttons[0] + gap + icon, window) - px(1. / window.scale_factor()),
-                gap + icon,
-                window.pixel_snap(window.rem_size() * 0.75),
-                px(1. / window.scale_factor()),
-            )
-        });
-        for (sides, column, failed) in [(vec![1], px(243.5), 1), (vec![0, 1], stacked, 0)] {
-            let at = format!("{sides:?} in a {column:?} column");
-            row.update(cx, |row, _| row.sides = sides.clone());
-            show(&row, cx, column, false, Shown::Resting);
-            let id = ["download-lfs-side-0", "download-lfs-side-1"][failed];
-            let rest = cx.debug_bounds(id).unwrap_or_else(|| panic!("{at}: {id}"));
-            assert_eq!(drawn_glyph(failed).as_deref(), PULL, "{at}: at rest");
-            show(&row, cx, column, false, Shown::Failed { side: failed });
-            let now = cx.debug_bounds(id).unwrap_or_else(|| panic!("{at}: {id}"));
-            let edge = cx
-                .debug_bounds("lfs-download-row")
-                .expect("the row")
-                .right()
-                - inset;
-            assert!(
-                edge - now.right() < icon,
-                "{at}: the room after {now:?}, to {edge:?}, is narrower than {icon:?}"
-            );
-            assert!(
-                (now.left() - rest.left()).abs() <= device / 2.
-                    && (now.top() - rest.top()).abs() <= device / 2.
-                    && cx.debug_bounds("lfs-download-failure").is_none(),
-                "{at}: the failed Download, {now:?}, keeps its place, {rest:?}, and nothing \
+        for scale in SCALES {
+            at_scale(cx, scale);
+            let (stacked, icon, inset, device) = cx.update(|window, _| {
+                let (gap, _) = row_room(Pixels::ZERO, window);
+                let [buttons, _] = side_widths(false, &[0, 1], false, true, window);
+                let icon = window.pixel_snap(appearance::ui_size(16.));
+                (
+                    column_for(buttons[0] + gap + icon, window) - px(1. / window.scale_factor()),
+                    gap + icon,
+                    window.pixel_snap(window.rem_size() * 0.75),
+                    px(1. / window.scale_factor()),
+                )
+            });
+            for (sides, column, failed) in [(vec![1], px(243.5), 1), (vec![0, 1], stacked, 0)] {
+                let at = format!("{sides:?} in a {column:?} column");
+                row.update(cx, |row, _| row.sides = sides.clone());
+                show(&row, cx, column, false, Shown::Resting);
+                let id = ["download-lfs-side-0", "download-lfs-side-1"][failed];
+                let rest = cx.debug_bounds(id).unwrap_or_else(|| panic!("{at}: {id}"));
+                assert_eq!(drawn_glyph(failed).as_deref(), PULL, "{at}: at rest");
+                show(&row, cx, column, false, Shown::Failed { side: failed });
+                let now = cx.debug_bounds(id).unwrap_or_else(|| panic!("{at}: {id}"));
+                let edge = cx
+                    .debug_bounds("lfs-download-row")
+                    .expect("the row")
+                    .right()
+                    - inset;
+                assert!(
+                    edge - now.right() < icon,
+                    "{at}: the room after {now:?}, to {edge:?}, is narrower than {icon:?}"
+                );
+                assert!(
+                    (now.left() - rest.left()).abs() <= device / 2.
+                        && (now.top() - rest.top()).abs() <= device / 2.
+                        && cx.debug_bounds("lfs-download-failure").is_none(),
+                    "{at}: the failed Download, {now:?}, keeps its place, {rest:?}, and nothing \
                  follows it"
-            );
-            assert_eq!(
-                drawn_glyph(failed).as_deref(),
-                WARNING,
-                "{at}: the failed Download draws the warning glyph"
-            );
-            assert_eq!(
-                described(failed),
-                Some(format!("Failed: {WORDS}")),
-                "{at}: its description says the words whole"
-            );
+                );
+                assert_eq!(
+                    drawn_glyph(failed).as_deref(),
+                    WARNING,
+                    "{at}: the failed Download draws the warning glyph"
+                );
+                assert_eq!(
+                    described(failed),
+                    Some(format!("Failed: {WORDS}")),
+                    "{at}: its description says the words whole"
+                );
+            }
+            row.update(cx, |row, _| row.sides = vec![0, 1]);
         }
-        row.update(cx, |row, _| row.sides = vec![0, 1]);
     }
 
     /// On a line two sides share, a failure's words keep the side's name
@@ -2331,109 +2354,118 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let (row, cx) = row_window(cx);
-        for (short, failed) in [(true, 1), (false, 0)] {
-            let name = side_name(false, failed);
-            let (fits, shared, least, device) = cx.update(|window, _| {
-                let (gap, _) = row_room(Pixels::ZERO, window);
-                let widths = side_widths(false, &[0, 1], short, true, window);
-                let line = widths[0]
-                    .iter()
-                    .fold(-gap, |line, &width| line + gap + width);
-                let text = format!("{name}: Failed…");
-                let [least, failed] = [text.as_str(), "Failed…"].map(|text| {
-                    crate::views::laid_out_text_width(
-                        crate::views::line_widths(&[(text, appearance::ui_text(12.))], window),
-                        window,
+        for scale in SCALES {
+            at_scale(cx, scale);
+            for (short, failed) in [(true, 1), (false, 0)] {
+                let name = side_name(false, failed);
+                let (fits, shared, least, device) = cx.update(|window, _| {
+                    let (gap, _) = row_room(Pixels::ZERO, window);
+                    let widths = side_widths(false, &[0, 1], short, true, window);
+                    let line = widths[0]
+                        .iter()
+                        .fold(-gap, |line, &width| line + gap + width);
+                    let text = format!("{name}: Failed…");
+                    let [least, failed] = [text.as_str(), "Failed…"].map(|text| {
+                        crate::views::laid_out_text_width(
+                            crate::views::line_widths(&[(text, appearance::ui_text(12.))], window),
+                            window,
+                        )
+                    });
+                    // The narrowest row whose sides share a line in every state.
+                    let reserved = if short { Pixels::ZERO } else { gap + failed };
+                    (
+                        column_for(line + gap + least, window),
+                        column_for(widest_line(&widths, gap).max(line + reserved), window),
+                        least,
+                        px(1. / window.scale_factor()),
                     )
                 });
-                // The narrowest row whose sides share a line in every state.
-                let reserved = if short { Pixels::ZERO } else { gap + failed };
-                (
-                    column_for(line + gap + least, window),
-                    column_for(widest_line(&widths, gap).max(line + reserved), window),
-                    least,
-                    px(1. / window.scale_factor()),
-                )
-            });
-            let fits = fits.max(shared);
-            for (column, words) in [(fits - device, false), (fits, true)] {
-                let at = format!("short {short}, {column:?}");
-                show(&row, cx, column, short, Shown::Resting);
-                let rest = ["download-lfs-side-0", "download-lfs-side-1"]
-                    .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
-                if column < shared {
-                    // A device pixel short of the line's own least: the two
-                    // stack, and the words follow the failed Download alone,
-                    // without the side's name.
-                    assert!(
-                        !short && rest[1].top() >= rest[0].bottom() - device / 2.,
-                        "{at}: the two stack: {rest:?}"
-                    );
-                    show(&row, cx, column, short, Shown::Failed { side: failed });
-                    let said = cx
-                        .debug_bounds("lfs-download-failure")
-                        .unwrap_or_else(|| panic!("{at}: the words beside their Download"));
-                    let value = crate::native_accessibility::written::get("lfs-download-failure")
-                        .and_then(|node| node.node.value().map(str::to_owned));
-                    assert!(
-                        value.as_deref() == Some(WORDS)
-                            && (said.center().y - rest[failed].center().y).abs() <= device / 2.,
-                        "{at}: the words, {said:?}, {value:?}, stand beside {:?} unnamed",
-                        rest[failed]
-                    );
-                    continue;
-                }
-                assert!(
-                    (rest[0].center().y - rest[1].center().y).abs() <= device / 2.,
-                    "{at}: the two share a line: {rest:?}"
-                );
-                show(&row, cx, column, short, Shown::Failed { side: failed });
-                let sides = ["download-lfs-side-0", "download-lfs-side-1"]
-                    .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
-                for (side, rest) in sides.iter().zip(&rest) {
-                    assert!(
-                        (side.left() - rest.left()).abs() <= device / 2.,
-                        "{at}: {side:?} keeps its place, {rest:?}"
-                    );
-                }
-                let mut drawn = [PULL, PULL];
-                drawn[failed] = WARNING;
-                assert_eq!(
-                    glyphs(),
-                    drawn.map(|glyph| glyph.map(str::to_owned)),
-                    "{at}: only the failed Download draws the warning glyph"
-                );
-                match cx.debug_bounds("lfs-download-failure") {
-                    Some(said) => {
+                // The boundaries on the device pixel grid, where a window's
+                // columns stand: off it, at scale 1.5, rounding put the
+                // narrowest shared row a hair short of its line.
+                let on_grid = |column: Pixels| (column * scale).ceil() / scale;
+                let shared = on_grid(shared);
+                let fits = on_grid(fits).max(shared);
+                for (column, words) in [(fits - device, false), (fits, true)] {
+                    let at = format!("short {short}, {column:?}");
+                    show(&row, cx, column, short, Shown::Resting);
+                    let rest = ["download-lfs-side-0", "download-lfs-side-1"]
+                        .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
+                    if column < shared {
+                        // A device pixel short of the line's own least: the two
+                        // stack, and the words follow the failed Download alone,
+                        // without the side's name.
+                        assert!(
+                            !short && rest[1].top() >= rest[0].bottom() - device / 2.,
+                            "{at}: the two stack: {rest:?}"
+                        );
+                        show(&row, cx, column, short, Shown::Failed { side: failed });
+                        let said = cx
+                            .debug_bounds("lfs-download-failure")
+                            .unwrap_or_else(|| panic!("{at}: the words beside their Download"));
                         let value =
                             crate::native_accessibility::written::get("lfs-download-failure")
                                 .and_then(|node| node.node.value().map(str::to_owned));
                         assert!(
-                            words
-                                && said.size.width >= least - device / 2.
-                                && said.left() >= sides[1].right() - device / 2.
-                                && value == Some(format!("{name}: {WORDS}")),
-                            "{at}: the words, {said:?}, {value:?}, stand at least {least:?} \
+                            value.as_deref() == Some(WORDS)
+                                && (said.center().y - rest[failed].center().y).abs() <= device,
+                            "{at}: the words, {said:?}, {value:?}, stand beside {:?} unnamed",
+                            rest[failed]
+                        );
+                        continue;
+                    }
+                    assert!(
+                        (rest[0].center().y - rest[1].center().y).abs() <= device,
+                        "{at}: the two share a line: {rest:?}"
+                    );
+                    show(&row, cx, column, short, Shown::Failed { side: failed });
+                    let sides = ["download-lfs-side-0", "download-lfs-side-1"]
+                        .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
+                    for (side, rest) in sides.iter().zip(&rest) {
+                        assert!(
+                            (side.left() - rest.left()).abs() <= device / 2.,
+                            "{at}: {side:?} keeps its place, {rest:?}"
+                        );
+                    }
+                    let mut drawn = [PULL, PULL];
+                    drawn[failed] = WARNING;
+                    assert_eq!(
+                        glyphs(),
+                        drawn.map(|glyph| glyph.map(str::to_owned)),
+                        "{at}: only the failed Download draws the warning glyph"
+                    );
+                    match cx.debug_bounds("lfs-download-failure") {
+                        Some(said) => {
+                            let value =
+                                crate::native_accessibility::written::get("lfs-download-failure")
+                                    .and_then(|node| node.node.value().map(str::to_owned));
+                            assert!(
+                                words
+                                    && said.size.width >= least - device / 2.
+                                    && said.left() >= sides[1].right() - device / 2.
+                                    && value == Some(format!("{name}: {WORDS}")),
+                                "{at}: the words, {said:?}, {value:?}, stand at least {least:?} \
                              wide after Download After…, {:?}, naming the side, only where \
                              they keep it",
-                            sides[1]
-                        )
+                                sides[1]
+                            )
+                        }
+                        None => {
+                            assert!(
+                                !words,
+                                "{at}: the words keep {least:?} after {:?}",
+                                sides[1]
+                            );
+                            assert_eq!(
+                                described(failed),
+                                Some(format!("Failed: {WORDS}")),
+                                "{at}: the failed Download's description says the words whole"
+                            );
+                        }
                     }
-                    None => {
-                        assert!(
-                            !words,
-                            "{at}: the words keep {least:?} after {:?}",
-                            sides[1]
-                        );
-                        assert_eq!(
-                            described(failed),
-                            Some(format!("Failed: {WORDS}")),
-                            "{at}: the failed Download's description says the words whole"
-                        );
+                    if let Err(why) = one_line_inside(cx, device) {
+                        panic!("{at}: {why}");
                     }
-                }
-                if let Err(why) = one_line_inside(cx, device) {
-                    panic!("{at}: {why}");
                 }
             }
         }
@@ -2449,60 +2481,63 @@ mod tests {
     #[gpui::test]
     async fn the_pressed_label_alone_decides_the_shared_line(cx: &mut TestAppContext) {
         let (row, cx) = row_window(cx);
-        let (shared, tight, device) = cx.update(|window, _| {
-            let (gap, _) = row_room(Pixels::ZERO, window);
-            let widths = side_widths(false, &[0, 1], true, true, window);
-            let line = widths[0]
-                .iter()
-                .fold(-gap, |line, &width| line + gap + width);
-            let cancel = crate::labelled_button_width(CANCEL, &SHORT_CANCEL_WIDTH, window);
+        for scale in SCALES {
+            at_scale(cx, scale);
+            let (shared, tight, device) = cx.update(|window, _| {
+                let (gap, _) = row_room(Pixels::ZERO, window);
+                let widths = side_widths(false, &[0, 1], true, true, window);
+                let line = widths[0]
+                    .iter()
+                    .fold(-gap, |line, &width| line + gap + width);
+                let cancel = crate::labelled_button_width(CANCEL, &SHORT_CANCEL_WIDTH, window);
+                assert!(
+                    cancel < cancel_width(true, window),
+                    "\"Cancel\" is narrower than \"Cancelling…\""
+                );
+                let running = progress_least(true, window) + gap + cancel;
+                let unpressed = widths[0]
+                    .iter()
+                    .fold(Pixels::ZERO, |most, &button| most.max(running - button));
+                (
+                    column_for(widest_line(&widths, gap), window),
+                    column_for(line + unpressed, window),
+                    px(1. / window.scale_factor()),
+                )
+            });
+            assert!(tight < shared, "{tight:?} lies short of {shared:?}");
+            show(&row, cx, tight, true, Shown::Resting);
+            let [before, after] = ["download-lfs-side-0", "download-lfs-side-1"]
+                .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
             assert!(
-                cancel < cancel_width(true, window),
-                "\"Cancel\" is narrower than \"Cancelling…\""
+                after.top() >= before.bottom() - device / 2.,
+                "in a {tight:?} row the two stack: {before:?}, {after:?}"
             );
-            let running = progress_least(true, window) + gap + cancel;
-            let unpressed = widths[0]
-                .iter()
-                .fold(Pixels::ZERO, |most, &button| most.max(running - button));
-            (
-                column_for(widest_line(&widths, gap), window),
-                column_for(line + unpressed, window),
-                px(1. / window.scale_factor()),
-            )
-        });
-        assert!(tight < shared, "{tight:?} lies short of {shared:?}");
-        show(&row, cx, tight, true, Shown::Resting);
-        let [before, after] = ["download-lfs-side-0", "download-lfs-side-1"]
-            .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
-        assert!(
-            after.top() >= before.bottom() - device / 2.,
-            "in a {tight:?} row the two stack: {before:?}, {after:?}"
-        );
-        for side in [0, 1] {
-            let running = Shown::Running {
-                side,
-                cancelling: false,
-            };
-            show(&row, cx, shared, true, running);
-            let cancel = cx.debug_bounds("cancel-lfs-download").expect("Cancel");
-            if let Err(why) = one_line_inside(cx, device) {
-                panic!("side {side}: {why}");
-            }
-            let pressed = Shown::Running {
-                side,
-                cancelling: true,
-            };
-            show(&row, cx, shared, true, pressed);
-            let label = crate::views::COMPACT_LABELS
-                .with(|labels| labels.borrow().get("cancel-lfs-download").cloned());
-            assert_eq!(label.as_deref(), Some(CANCELLING), "side {side}: pressed");
-            assert_eq!(
-                cx.debug_bounds("cancel-lfs-download"),
-                Some(cancel),
-                "side {side}: pressed, Cancel keeps its bounds"
-            );
-            if let Err(why) = one_line_inside(cx, device) {
-                panic!("side {side}, pressed: {why}");
+            for side in [0, 1] {
+                let running = Shown::Running {
+                    side,
+                    cancelling: false,
+                };
+                show(&row, cx, shared, true, running);
+                let cancel = cx.debug_bounds("cancel-lfs-download").expect("Cancel");
+                if let Err(why) = one_line_inside(cx, device) {
+                    panic!("side {side}: {why}");
+                }
+                let pressed = Shown::Running {
+                    side,
+                    cancelling: true,
+                };
+                show(&row, cx, shared, true, pressed);
+                let label = crate::views::COMPACT_LABELS
+                    .with(|labels| labels.borrow().get("cancel-lfs-download").cloned());
+                assert_eq!(label.as_deref(), Some(CANCELLING), "side {side}: pressed");
+                assert_eq!(
+                    cx.debug_bounds("cancel-lfs-download"),
+                    Some(cancel),
+                    "side {side}: pressed, Cancel keeps its bounds"
+                );
+                if let Err(why) = one_line_inside(cx, device) {
+                    panic!("side {side}, pressed: {why}");
+                }
             }
         }
     }
