@@ -180,6 +180,13 @@ struct RowFill {
 pub(super) struct DraftState {
     branch: String,
     identity: Option<(PathBuf, (String, String))>,
+    /// The settings whose save last failed, in use and not on disk, until a
+    /// save of the settings in use succeeds: Return in Default branch saves
+    /// them again, as Retry save does (`GitTurtle::save_default_branch`),
+    /// whatever the window's error line says by then. Read from that
+    /// line's text, the failure was forgotten once another operation's
+    /// error replaced it, and Return in the field saved nothing.
+    failed_save: Option<AppSettings>,
 }
 
 impl DraftState {
@@ -187,6 +194,7 @@ impl DraftState {
         Self {
             branch,
             identity: None,
+            failed_save: None,
         }
     }
     fn branch_update(&mut self, saved: &str, edited: &str) -> Option<String> {
@@ -526,6 +534,7 @@ impl GitTurtle {
         self.settings.normalize();
         if let Err(error) = self.settings.validate() {
             self.operation_error = Some(format!("Could not save settings: {error:#}").into());
+            self.settings_drafts.failed_save = Some(self.settings.clone());
             cx.notify();
             return;
         }
@@ -555,11 +564,13 @@ impl GitTurtle {
                         {
                             this.operation_error = None;
                         }
+                        this.settings_drafts.failed_save = None;
                         this.status = "Settings saved".into();
                     }
                     Err(error) => {
                         this.operation_error =
                             Some(format!("Could not save settings: {error:#}").into());
+                        this.settings_drafts.failed_save = Some(submitted);
                     }
                 }
                 // A completed save costs a whole-window frame, so it only asks
@@ -1262,13 +1273,12 @@ impl GitTurtle {
         }
         // A save that failed leaves the value it carried in use and on screen,
         // with the failure and Retry save beside it, as every setting's does:
-        // a press then saves it again, as Retry save would. A press found
-        // nothing new and did nothing, so Return in the field, which still
-        // shows the value, was a dead key until another setting changed.
-        let save_failed = self
-            .operation_error
-            .as_ref()
-            .is_some_and(|error| error.starts_with("Could not save settings:"));
+        // a press then saves it again, as Retry save would, until a save
+        // succeeds, even once another operation's error has replaced the
+        // failure's (`DraftState::failed_save`). A press found nothing new
+        // and did nothing, so Return in the field, which still shows the
+        // value, was a dead key until another setting changed.
+        let save_failed = self.settings_drafts.failed_save.as_ref() == Some(&self.settings);
         if edited == self.settings && !save_failed {
             return;
         }
@@ -8419,6 +8429,69 @@ mod picker_tests {
             "a new press saves it"
         );
         assert!(!failed(cx), "and the failure goes");
+    }
+
+    /// Return in the Default branch field saves the settings again after a
+    /// save that failed though another operation's error has replaced the
+    /// failure in the window's error line since: the failed save is its own
+    /// record (`DraftState::failed_save`), not that line's text, and the
+    /// save that then succeeds leaves the other error standing. Read from
+    /// the line, the press found nothing new and saved nothing.
+    #[gpui::test]
+    fn return_in_the_default_branch_saves_after_another_error_replaced_its_failure(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::enter;
+        use crate::theme_editor::tests::drain_preference_writer;
+        let (app, cx) = open_app(cx);
+        drain_preference_writer(cx, &app);
+        let store = crate::preferences::settings_path().expect("the store's path");
+        if store.exists() {
+            std::fs::remove_file(&store).unwrap();
+        }
+        std::fs::create_dir(&store).unwrap();
+        let field = cx.read(|cx| app.read(cx).settings_branch.clone());
+        cx.update(|window, cx| {
+            field.update(cx, |input, cx| input.set_value("trunk", window, cx));
+            field.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        settle(cx);
+        let press = |cx: &mut VisualTestContext| {
+            enter(cx, Some(false));
+            drain_preference_writer(cx, &app);
+            enter(cx, None);
+            settle(cx);
+        };
+        let error = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.operation_error.as_deref().map(str::to_owned)
+            })
+        };
+        press(cx);
+        assert!(
+            error(cx).is_some_and(|error| error.starts_with("Could not save settings:")),
+            "the save fails and says so"
+        );
+        let other = "Could not fetch origin: the remote hung up";
+        app.update(cx, |app, cx| {
+            app.operation_error = Some(other.into());
+            cx.notify();
+        });
+        settle(cx);
+        std::fs::remove_dir(&store).unwrap();
+        press(cx);
+        assert_eq!(
+            crate::preferences::Preferences::load()
+                .settings
+                .default_branch,
+            "trunk",
+            "a fresh press saves it"
+        );
+        assert_eq!(
+            error(cx).as_deref(),
+            Some(other),
+            "the other operation's error stands"
+        );
     }
 
     /// Linux: while the Omarchy theme locks Follow system, the row's title,
