@@ -622,6 +622,13 @@ pub(super) const WORKING_NO_MATCH_SHORT: &str = "No matches";
 /// The no-match state's action, which empties the filter.
 const CLEAR_FILTER: &str = "Clear filter";
 
+/// What follows core's refusal of a write whose repository is no longer the
+/// one at its path ("… Git now finds the repository at …. Git was not
+/// started."): the window reads the repository again
+/// ([`GitTurtle::read_after_write`]), so the person need not find Refresh.
+pub(crate) const REFUSED_READ_AGAIN: &str =
+    "Nothing was written, and the tab reads the repository again.";
+
 /// How the Working Changes inspector's rows fit its height, chosen before
 /// layout from the inspector's measured height and the heights its rows
 /// would take, so no row is cut and no frame shows one form and then the
@@ -4577,6 +4584,12 @@ impl GitTurtle {
                 this.operation_repository=None;
                 this.finish_operation_control(window, cx);
                 let succeeded=result.is_ok();
+                // Refused by the identity check before Git started
+                // (`gitturtle_core::write_refused`): the tab's handle is on a
+                // repository no longer at its path, so its reads recapture
+                // the one found there, as a quiet read that finds a re-clone
+                // does, whatever the write would have read after it.
+                let refused = result.as_ref().err().is_some_and(gitturtle_core::write_refused);
                 let lfs_failure = result.as_ref().err().filter(|_| downloading_lfs).map(|error| views::OperationFailure::of(error).banner());
                 match result {
                     Ok(outcome) => {
@@ -4600,7 +4613,9 @@ impl GitTurtle {
                         }
                     }
                     Err(error) => {
-                        this.tab_operation_feedback(&path, None, Some(views::OperationFailure::of(&error)), cx);
+                        let failure = views::OperationFailure::of(&error);
+                        let failure = if refused { failure.followed_by(REFUSED_READ_AGAIN) } else { failure };
+                        this.tab_operation_feedback(&path, None, Some(failure), cx);
                     }
                 }
                 if let Some(profile) = submitted_profile { this.finish_profile_write(&path, profile, succeeded, window, cx); }
@@ -4618,7 +4633,7 @@ impl GitTurtle {
                     this.branch_name.update(cx,|input,cx|input.set_value("",window,cx));
                 }
                 let download = downloading_lfs.then(|| (succeeded, this.lfs_download_ends(lfs_failure, lfs_selection)));
-                this.read_after_write(&path, refresh_history, download, window, cx);
+                this.read_after_write(&path, refresh_history || refused, download, window, cx);
                 cx.notify();
             });
         }));
@@ -4631,6 +4646,13 @@ impl GitTurtle {
     /// from, if that preview is still shown; any other write reads the
     /// working state. Then a read asked for while the write ran, in
     /// whichever repository is shown, runs ([`Self::read_deferred_working`]).
+    ///
+    /// A write the identity check refused asks for the quiet refresh
+    /// whatever it is, since its reopen recaptures the repository found at
+    /// the path ([`REFUSED_READ_AGAIN`]). Read through the window's handle,
+    /// the working state of a re-clone came back under the replaced
+    /// repository's identity, and every Stage, Discard or other write that
+    /// refreshes no History was refused again until Refresh.
     pub(super) fn read_after_write(
         &mut self,
         path: &std::path::Path,

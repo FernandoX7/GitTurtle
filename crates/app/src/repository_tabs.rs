@@ -8573,6 +8573,27 @@ pub(crate) mod tests {
             std::fs::rename(&self.third_git, self.root.join(".git")).unwrap();
         }
 
+        /// The tab's repository cloned again from the remote it pushed to,
+        /// `main` at the same commit tracking the same branch, its Git
+        /// directory moved to the tab's `.git` and the replaced one aside, as
+        /// deleting the folder's `.git` and cloning again leaves it: the
+        /// status the tab shows reads the same, and only the Git directory's
+        /// identity tells the two apart.
+        fn again_in_place(&self, elsewhere: &Path) {
+            let again = elsewhere.join("again");
+            crate::views::tests::fixture_git(
+                elsewhere,
+                &[
+                    "clone",
+                    "-q",
+                    self.bare_a.to_str().unwrap(),
+                    again.to_str().unwrap(),
+                ],
+            );
+            std::fs::rename(self.root.join(".git"), self.base.join("before-git-away")).unwrap();
+            std::fs::rename(again.join(".git"), self.root.join(".git")).unwrap();
+        }
+
         /// Neither remote took a push: the first holds what the tab pushed
         /// before, the second nothing.
         fn assert_remotes_untouched(&self) {
@@ -8714,6 +8735,402 @@ pub(crate) mod tests {
                 None,
                 "no branch made in {}",
                 git_dir.display()
+            );
+        }
+    }
+
+    /// A press in Changes of a write that reads only the working state
+    /// after it.
+    #[derive(Clone, Copy, Debug)]
+    enum WorkingPress {
+        /// The row's Stage control.
+        Stage,
+        /// Changes' Stage all.
+        StageAll,
+        /// Discard…'s review, confirmed.
+        Discard,
+    }
+
+    /// `press` on the untracked `fresh.txt`, after the tab's repository was
+    /// cloned again in place from its remote where no read has seen it
+    /// ([`ReClone::again_in_place`]), is refused before Git starts, writes
+    /// nothing in either repository, and leads to its own recovery: the tab
+    /// reads the repository again, so without a Refresh it holds the found
+    /// repository, its status and history, the refusal says so, and the
+    /// same press then writes there. Read through the window's handle, the
+    /// working state after it came back under the replaced repository's
+    /// identity, the same as before, so nothing else read again and every
+    /// such press was refused until Refresh (FU44-C4 re-check S2).
+    async fn a_refused_press_reads_the_repository_again(
+        cx: &mut TestAppContext,
+        press: WorkingPress,
+    ) {
+        use crate::views::tests::fixture_git_output;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let clone = ReClone::prepare(fixture.path(), &root);
+        // The imported commit checked out, so its file reads as unchanged.
+        crate::views::tests::fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        std::fs::write(root.join("fresh.txt"), "the person's\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle_tab_test(&app, cx).await;
+        // The tab watched as the window watches a shown tab: the settle
+        // forgets the watch, and the write's working read then subscribed
+        // afresh, whose rescan read the repository again and found the
+        // re-clone whatever the write asked for, so these tests passed
+        // with the recapture removed. Watched, that read checks the watch
+        // and reads the working state only, as it does in the product.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.ensure_local_watcher(false, window, cx))
+        });
+        // Nothing waits to read: the press's own read is the only one that
+        // can find the re-clone.
+        let quiet = |app: &GitTurtle, _: &App| {
+            app.automatic.watching()
+                && !app.automatic.quiet_read_requested()
+                && app.automatic.replies_landed()
+                && app.status_task.is_none()
+        };
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            if app.read_with(cx, quiet) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.operations.drain());
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+        }
+        assert!(app.read_with(cx, quiet), "the opening reads landed");
+        crate::path_filter::filters_land(&app, cx);
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        if let WorkingPress::Discard = press {
+            let entry = app.read_with(cx, |app, _| {
+                (app.work_status.as_ref().expect("a status").entries.iter())
+                    .find(|entry| entry.path == Path::new("fresh.txt"))
+                    .cloned()
+                    .expect("the untracked row")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(entry, window, cx)));
+            for _ in 0..8 {
+                app.read_with(cx, |app, _| app.operations.drain());
+                crate::views::tests::draw(cx);
+                if cx.debug_bounds("confirm-discard").is_some() {
+                    break;
+                }
+            }
+        }
+        let replaced = app.read_with(cx, |app, _| {
+            (app.repository.as_ref().expect("opened")).git_dir_inode()
+        });
+        let elsewhere = tempfile::tempdir().unwrap();
+        clone.again_in_place(elsewhere.path());
+        let found = gitturtle_core::GitRepository::open(&root).unwrap();
+        assert_ne!(found.git_dir_inode(), replaced, "another Git directory");
+        let row = app.read_with(cx, |app, _| {
+            let entries = &app.work_status.as_ref().expect("a status").entries;
+            (app.working_rows.iter())
+                .position(|row| {
+                    matches!(row, crate::workspace::WorkingRow::File(index, _)
+                        if entries[*index].path == Path::new("fresh.txt"))
+                })
+                .expect("fresh.txt's row")
+        });
+        let selector = match press {
+            WorkingPress::Stage => format!("working-stage-{row}"),
+            WorkingPress::StageAll => "stage-all".to_owned(),
+            WorkingPress::Discard => "confirm-discard".to_owned(),
+        };
+        let selector: &'static str = selector.leak();
+        crate::views::tests::draw(cx);
+        let control = cx.debug_bounds(selector).expect(selector);
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.simulate_click(control.center(), gpui::Modifiers::default());
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_some()),
+            "{press:?} submitted"
+        );
+        app.update(cx, |app, _| {
+            assert!(
+                !app.automatic.quiet_read_requested() && app.automatic.watching(),
+                "{press:?}: no read but the write's own waits, the tab watched"
+            );
+            app.automatic.hold_quiet_reads(false);
+        });
+        drop(held);
+        let landed = |app: &GitTurtle, _: &App| {
+            app.repository
+                .as_ref()
+                .is_some_and(|repo| repo.git_dir_inode() == found.git_dir_inode())
+                && app.operation_busy.is_none()
+                && !app.automatic.quiet_read_requested()
+                && app.automatic.replies_landed()
+                && app.status_task.is_none()
+        };
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            if app.read_with(cx, landed) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.operations.drain());
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+        }
+        assert!(
+            app.read_with(cx, landed),
+            "{press:?}: the tab read the found repository, with no Refresh"
+        );
+        settle_tab_test(&app, cx).await;
+        clone.assert_refused(&app, cx);
+        let banner = app.read_with(cx, |app, _| {
+            (app.operation_error.as_ref()).map(|error| error.banner().to_string())
+        });
+        assert!(
+            banner
+                .as_deref()
+                .is_some_and(|banner| banner.ends_with(crate::workspace::REFUSED_READ_AGAIN)),
+            "{press:?}: it says what the tab does: {banner:?}"
+        );
+        // Nothing written: neither index holds the file, which is still
+        // there with its bytes.
+        for git_dir in [root.join(".git"), clone.base.join("before-git-away")] {
+            let staged = fixture_git_output(
+                &root,
+                &[
+                    "--git-dir",
+                    git_dir.to_str().unwrap(),
+                    "--work-tree",
+                    root.to_str().unwrap(),
+                    "ls-files",
+                    "--stage",
+                    "--",
+                    "fresh.txt",
+                ],
+            );
+            assert!(
+                staged.status.success() && staged.stdout.is_empty(),
+                "{press:?}: nothing staged in {}",
+                git_dir.display()
+            );
+        }
+        assert_eq!(
+            std::fs::read(root.join("fresh.txt")).unwrap(),
+            b"the person's\n",
+            "{press:?}: nothing discarded"
+        );
+        // The found repository's state, with no Refresh.
+        let head = fixture_git_output(&root, &["rev-parse", "HEAD"]);
+        let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.working_identity.as_ref(),
+                Some(&worker::GitDirectories::of(&found)),
+                "{press:?}: the status is the found repository's"
+            );
+            assert_eq!(
+                app.work_status
+                    .as_ref()
+                    .and_then(|status| status.head.clone()),
+                Some(head.clone()),
+                "{press:?}: its HEAD"
+            );
+            assert_eq!(
+                app.commits.first().map(|commit| commit.oid.clone()),
+                Some(head),
+                "{press:?}: History shows the found repository's newest commit"
+            );
+        });
+        clone.assert_remotes_untouched();
+        // The same press again writes, in the found repository only.
+        if let WorkingPress::Discard = press {
+            return;
+        }
+        crate::views::tests::draw(cx);
+        let control = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(control.center(), gpui::Modifiers::default());
+        let write = (app.update(cx, |app, _| app.operation_task.take())).expect("written");
+        write.await;
+        settle_tab_test(&app, cx).await;
+        for (git_dir, staged) in [
+            (root.join(".git"), true),
+            (clone.base.join("before-git-away"), false),
+        ] {
+            let index = fixture_git_output(
+                &root,
+                &[
+                    "--git-dir",
+                    git_dir.to_str().unwrap(),
+                    "--work-tree",
+                    root.to_str().unwrap(),
+                    "ls-files",
+                    "--stage",
+                    "--",
+                    "fresh.txt",
+                ],
+            );
+            assert_eq!(
+                !index.stdout.is_empty(),
+                staged,
+                "{press:?} again: staged in the found repository only ({})",
+                git_dir.display()
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn a_stage_refused_after_a_re_clone_reads_the_repository_again(cx: &mut TestAppContext) {
+        a_refused_press_reads_the_repository_again(cx, WorkingPress::Stage).await;
+    }
+
+    #[gpui::test]
+    async fn a_stage_all_refused_after_a_re_clone_reads_the_repository_again(
+        cx: &mut TestAppContext,
+    ) {
+        a_refused_press_reads_the_repository_again(cx, WorkingPress::StageAll).await;
+    }
+
+    #[gpui::test]
+    async fn a_discard_refused_after_a_re_clone_reads_the_repository_again(
+        cx: &mut TestAppContext,
+    ) {
+        a_refused_press_reads_the_repository_again(cx, WorkingPress::Discard).await;
+    }
+
+    /// The refusal of a write through a repository at a 74-character root
+    /// under `base`, as macOS's per-user temporary folder gives one, after
+    /// another repository's Git directory took its `.git`: core's sentence
+    /// around both paths, followed by what the window does, as the write's
+    /// reply builds it.
+    fn a_refusal_at_a_74_character_root(base: &Path) -> crate::views::OperationFailure {
+        use crate::views::tests::fixture_repository;
+        std::fs::create_dir_all(base).unwrap();
+        let pad = 74_usize
+            .checked_sub(base.as_os_str().len() + 1)
+            .filter(|pad| *pad > 0)
+            .expect("a temporary folder shorter than 74 characters");
+        let root = base.join("r".repeat(pad));
+        assert_eq!(root.as_os_str().len(), 74);
+        let repository = fixture_repository(&root);
+        let third = fixture_repository(base.join("third"));
+        std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+        std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+        let error = gitturtle_core::run_controlled(Default::default(), || {
+            repository.execute(&gitturtle_core::WriteCommand::CreateBranch {
+                name: "made-after".into(),
+                start_point: None,
+            })
+        })
+        .expect_err("refused");
+        assert!(gitturtle_core::write_refused(&error), "{error:#}");
+        crate::views::OperationFailure::of(&error).followed_by(crate::workspace::REFUSED_READ_AGAIN)
+    }
+
+    /// At the largest interface text size, 18 pt, in a half tile 461
+    /// pixels wide, the refusal's banner row grows with its line: the
+    /// line's box keeps its whole bounded height, which scales with the
+    /// text and is taller than 100 pixels there, the lines past it
+    /// scrolling inside it, and the box lies inside the row with its
+    /// padding, the row inside the window. Clipped at 100 pixels, the row
+    /// cut that box, its first and last lines drawn outside the banner.
+    #[gpui::test]
+    async fn a_refused_write_s_banner_row_grows_with_its_line_at_18_pt(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        cx.simulate_resize(size(px(461.), px(680.)));
+        let interface = *appearance::INTERFACE_TEXT_RANGE.end();
+        assert_eq!(interface, 18, "the largest interface text size");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = interface;
+                let code = app.settings.code_text_size;
+                appearance::apply_text_sizes(interface, code, window, cx);
+                app.operation_error = Some(refusal);
+                cx.notify();
+            })
+        });
+        crate::views::tests::draw(cx);
+        let bound = appearance::ui_size(100.);
+        assert!(bound > px(100.), "18 pt bounds the line at {bound:?}");
+        let row = cx.debug_bounds("operation-error-row").expect("the banner");
+        let summary = (cx.debug_bounds("operation-error-summary")).expect("its line");
+        let text = (cx.debug_bounds("operation-error-text")).expect("the refusal's text");
+        let (viewport, device) =
+            cx.update(|window, _| (window.viewport_size(), px(1.) / window.scale_factor()));
+        assert!(
+            text.size.height > bound,
+            "its words take more than the bounded height: {text:?}"
+        );
+        assert!(
+            (summary.size.height - bound).abs() <= device,
+            "the line's box keeps its bounded height {bound:?}: {summary:?} in {row:?}"
+        );
+        assert!(
+            summary.top() > row.top() && summary.bottom() < row.bottom(),
+            "inside the row and its padding: {summary:?} in {row:?}"
+        );
+        assert!(
+            row.top() >= px(0.) && row.bottom() <= viewport.height,
+            "the row inside the window: {row:?} in {viewport:?}"
+        );
+    }
+
+    /// A refusal before Git started, of a repository at a 74-character
+    /// root as macOS's per-user temporary folder gives one, is laid out
+    /// whole on screen, half tile or wide: wrapped inside its box, on as
+    /// many lines as its words take, scrolled inside a bounded height
+    /// where they take more, and inside the banner's row with its padding.
+    /// Cut to one line with an ellipsis, it hid the path Git now finds and
+    /// "Git was not started" in any window narrower than about 1,600
+    /// pixels, and the row, clipped at 100 pixels, hid the top and bottom
+    /// of a taller line.
+    #[gpui::test]
+    async fn a_refused_write_s_line_is_laid_out_whole_at_every_width(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        let line = refusal.banner().to_string();
+        let text_size = crate::appearance::ui_text(11.);
+        for width in [461., 1480.] {
+            cx.simulate_resize(size(px(width), px(680.)));
+            // One line's height: a line Git answered, cut to one.
+            app.update(cx, |app, cx| {
+                app.operation_error = Some("Short".into());
+                cx.notify();
+            });
+            draw(cx);
+            let one = cx.debug_bounds("operation-error-summary").expect("a line");
+            app.update(cx, |app, cx| {
+                app.operation_error = Some(refusal.clone());
+                cx.notify();
+            });
+            draw(cx);
+            let at = format!("{width} wide");
+            let row = cx.debug_bounds("operation-error-row").expect("the banner");
+            let summary = cx
+                .debug_bounds("operation-error-summary")
+                .expect("its line");
+            let text = (cx.debug_bounds("operation-error-text")).expect("the refusal's text");
+            let whole =
+                cx.update(|window, _| crate::views::line_widths(&[(&line, text_size)], window));
+            assert!(
+                whole > summary.size.width,
+                "{at}: the line needs more than one line"
+            );
+            assert!(
+                text.size.width <= summary.size.width,
+                "{at}: wrapped inside its box"
+            );
+            // Every line at most the box's width, so the lines laid out
+            // hold the whole line's width only if none was cut.
+            assert!(
+                f32::from(text.size.height) * f32::from(text.size.width)
+                    >= f32::from(whole) * f32::from(one.size.height),
+                "{at}: {text:?} holds {whole:?} at {one:?} a line"
+            );
+            assert!(
+                summary.size.height <= crate::appearance::ui_size(100.),
+                "{at}: a bounded height, which scrolls: {summary:?}"
+            );
+            assert!(
+                summary.top() > row.top() && summary.bottom() < row.bottom(),
+                "{at}: inside the row and its padding: {summary:?} in {row:?}"
             );
         }
     }

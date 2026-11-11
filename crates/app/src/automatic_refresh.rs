@@ -105,6 +105,13 @@ impl State {
     pub(crate) fn replies_landed(&self) -> bool {
         self.task.is_none() && self.watch_task.is_none()
     }
+    /// Whether the repository is watched, its roots known, as the window
+    /// keeps a shown tab, for tests in other modules: a check of the watch
+    /// then subscribes nothing new and asks for no rescan.
+    #[cfg(test)]
+    pub(crate) fn watching(&self) -> bool {
+        self.watcher.is_some() && self.roots.is_some()
+    }
     /// Reports `change` through the repository's subscription, as the
     /// watcher reports a change made outside the app, for tests in other
     /// modules: the window takes it as it takes the watcher's

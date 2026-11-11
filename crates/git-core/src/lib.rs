@@ -2693,13 +2693,16 @@ impl std::fmt::Display for GitFailure {
 
 impl std::error::Error for GitFailure {}
 
-/// A write core refused before it started Git
+/// A write core refused before it started the write's Git
 /// ([`GitRepository::ensure_found_at_path`]): core's own sentence, which
-/// names the repository's paths, and nothing Git wrote. Its line is drawn
-/// whole ([`write_refused`]): cut at a line of Git's length, the refusal
-/// lost "Git was not started" and the found path wherever its two paths ran
-/// past 66 characters each, as every repository in macOS's per-user
-/// temporary folder does (hosted run 42964793991, 2026-11-11).
+/// names the repository's path and the one found there, a path Git's
+/// discovery printed (`rev-parse` in [`GitRepository::found_at_path`]) or
+/// the Git directory found replaced (`Identity::replaced`), and nothing a
+/// write's Git command wrote. Its line is drawn whole ([`write_refused`]):
+/// cut at a line of Git's length, the refusal lost "Git was not started"
+/// and the found path wherever its two paths ran past 66 characters each,
+/// as every repository in macOS's per-user temporary folder does (hosted
+/// run 42964793991, 2026-11-11).
 #[derive(Debug)]
 pub struct WriteRefused(String);
 
@@ -2713,8 +2716,10 @@ impl std::error::Error for WriteRefused {}
 
 /// Whether `error` is a write core refused before starting Git
 /// ([`WriteRefused`]), with any words of ours added around it: its report
-/// holds no output of Git's, so a banner draws its line whole, where a
-/// failure Git answered has its line cut to bound what Git can write.
+/// holds our sentence and two paths, the found one from `rev-parse`
+/// ([`GitRepository::found_at_path`]), and nothing else of Git's, so a
+/// banner draws its line whole, where a failure Git answered has its line
+/// cut to bound what Git can write.
 pub fn write_refused(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<WriteRefused>())
 }

@@ -9253,6 +9253,10 @@ pub(crate) fn laid_out_text_width(width: Pixels, window: &Window) -> Pixels {
 pub(crate) struct OperationFailure {
     report: String,
     banner: SharedString,
+    /// The line is drawn whole, wrapped to as many lines as it needs as the
+    /// notice's is: a write core refused before it started Git
+    /// ([`Self::of`]). Every other line is cut to one with an ellipsis.
+    whole: bool,
 }
 
 impl OperationFailure {
@@ -9263,18 +9267,34 @@ impl OperationFailure {
     /// output ever starts one, and a banner that searched the report for a
     /// marker lost what `git fetch nope` says went wrong.
     ///
-    /// A write core refused before it started Git is our own sentence,
-    /// holding no output of Git's, and its line is drawn whole
-    /// (`gitturtle_core::write_refused`): cut at 220 characters, the
-    /// refusal of a repository in macOS's temporary folder lost "Git was
-    /// not started" and the path Git now finds.
+    /// A write core refused before it started Git is core's own sentence,
+    /// naming the repository's path and the one Git's discovery finds there,
+    /// and its line is drawn whole (`gitturtle_core::write_refused`),
+    /// wrapped on screen: cut at 220 characters, the refusal of a
+    /// repository in macOS's temporary folder lost "Git was not started"
+    /// and the path Git now finds, and cut to one line on screen it lost
+    /// them in any window narrower than about 1,600 pixels.
     pub(crate) fn of(error: &anyhow::Error) -> Self {
         let report = format!("{error:#}");
         if gitturtle_core::write_refused(error) {
             let banner = first_line_with_text(&report).to_owned().into();
-            return Self { report, banner };
+            return Self {
+                report,
+                banner,
+                whole: true,
+            };
         }
         Self::summarized(report, gitturtle_core::failure_summary(error))
+    }
+
+    /// This failure with `sentence`, what the window does about it, after
+    /// its report and its line alike.
+    pub(crate) fn followed_by(self, sentence: &str) -> Self {
+        Self {
+            report: format!("{} {sentence}", self.report),
+            banner: format!("{} {sentence}", self.banner).into(),
+            whole: self.whole,
+        }
     }
 
     /// `error`, a read's failure named by `what`: "`what`: …", in its report
@@ -9290,7 +9310,11 @@ impl OperationFailure {
     /// its first line with text.
     pub(crate) fn summarized(report: String, summary: Option<String>) -> Self {
         let banner = banner_line(summary.as_deref().unwrap_or(&report));
-        Self { report, banner }
+        Self {
+            report,
+            banner,
+            whole: false,
+        }
     }
 
     /// The line the banner draws.
@@ -10556,9 +10580,12 @@ impl Render for GitTurtle {
             )
             .when(self.page == AppPage::Repository, |el| {
                 el.children(self.operation_error.as_ref().map(|error| {
+                    // Unbounded, as the notice's row is: the line bounds
+                    // itself. Clipped at 100 pixels, the row hid the top and
+                    // bottom of a refusal's wrapped line, and the lines its
+                    // scroll reaches with them.
                     div()
-                        .max_h(px(100.))
-                        .overflow_hidden()
+                        .debug_selector(|| "operation-error-row".into())
                         .px_4()
                         .py_2()
                         .flex()
@@ -10580,12 +10607,29 @@ impl Render for GitTurtle {
                                 .alert(native_accessibility::bounded_accessible_text(&**error))
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
                                 .text_size(crate::appearance::ui_text(11.))
-                                .child({
+                                .map(|summary| {
                                     #[cfg(test)]
                                     BANNER_DRAWN.with_borrow_mut(|drawn| *drawn = Some(error.banner()));
-                                    error.banner()
+                                    // A refusal before Git started wraps to as
+                                    // many lines as it needs, as the notice
+                                    // does, so the path Git now finds and "Git
+                                    // was not started" are read at every width;
+                                    // a long one scrolls inside a bounded
+                                    // height. A line Git answered stays one
+                                    // line, cut with an ellipsis.
+                                    if error.whole {
+                                        summary
+                                            .max_h(crate::appearance::ui_size(100.))
+                                            .overflow_y_scroll()
+                                            .child(
+                                                div()
+                                                    .debug_selector(|| "operation-error-text".into())
+                                                    .child(error.banner()),
+                                            )
+                                    } else {
+                                        summary.truncate().child(error.banner())
+                                    }
                                 }),
                         ))
                         .child(
