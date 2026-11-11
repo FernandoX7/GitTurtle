@@ -2839,10 +2839,14 @@ impl GitTurtle {
         self.ensure_local_watcher(true, window, cx);
         if self.mode == WorkspaceMode::Working {
             self.invalidate_read();
-            self.clear_preview();
-            self.files.clear();
-            self.file_paths.reset();
-            self.selected_file = None;
+            // A partial write's diff stays shown while the status after it
+            // is read ([`Self::land_partial_write`]).
+            if !self.lands_partial_write(cx) {
+                self.clear_preview();
+                self.files.clear();
+                self.file_paths.reset();
+                self.selected_file = None;
+            }
         }
         let for_write =
             self.status_task.is_some() && self.status_after_write == Some(self.work_generation);
@@ -3133,7 +3137,11 @@ impl GitTurtle {
         if !quiet && self.mode == WorkspaceMode::Working {
             self.invalidate_read();
             if let Some((index, area)) = self.working_selected {
-                self.select_working(index, area, window, cx);
+                if self.shows_written_diff(index, area, cx) {
+                    self.read_written_diff(index, area, window, cx);
+                } else {
+                    self.select_working(index, area, window, cx);
+                }
             } else {
                 self.clear_preview();
                 self.files.clear();
@@ -3574,6 +3582,138 @@ impl GitTurtle {
             window,
             cx,
         );
+    }
+
+    /// Whether the shown diff is a partial write's own, the write running or
+    /// its reads yet to land there ([`crate::diff_view::DiffView::awaits_write`]):
+    /// the window keeps it shown through them.
+    pub(super) fn lands_partial_write(&self, cx: &App) -> bool {
+        self.mode == WorkspaceMode::Working
+            && self
+                .patch_view
+                .as_ref()
+                .is_some_and(|view| view.read(cx).awaits_write())
+    }
+
+    /// Whether the working row of `index` in `area` is the file and side of
+    /// the partial write's diff still shown ([`Self::lands_partial_write`]):
+    /// a status read after the write that leaves the file in that area reads
+    /// its diff again in place ([`Self::read_written_diff`]). One that finds
+    /// the file gone from the area, every changed line staged or unstaged,
+    /// selects where the selection followed the file, its other group
+    /// (`retained_area`), as any write that moves a file does: that row's
+    /// preview, with focus on the list that shows it selected.
+    fn shows_written_diff(&self, index: usize, area: ChangeArea, cx: &App) -> bool {
+        let Some(Content::Text {
+            partial: Some(partial),
+            ..
+        }) = self.content.as_deref()
+        else {
+            return false;
+        };
+        self.lands_partial_write(cx)
+            && partial.diff.area == area
+            && self
+                .work_status
+                .as_ref()
+                .and_then(|status| status.entries.get(index))
+                .is_some_and(|entry| {
+                    crate::working_selection::same_path(&entry.path, &partial.diff.path)
+                })
+    }
+
+    /// Reads the diff of the working row of `index` in `area` again for the
+    /// partial write whose diff is still shown, leaving that diff, and
+    /// focus, where they are: the read lands in place
+    /// ([`Self::land_partial_write`]). [`Self::select_working`] clears the
+    /// preview and focuses the list for the read, as a row chosen there
+    /// wants.
+    fn read_written_diff(
+        &mut self,
+        index: usize,
+        area: ChangeArea,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(repo), Some(status)) = (self.repository.clone(), self.work_status.as_ref())
+        else {
+            return;
+        };
+        let Some(entry) = status.entries.get(index).cloned() else {
+            return;
+        };
+        let head = status.head.clone();
+        self.working_selected = Some((index, area));
+        self.interaction_started = Some(Instant::now());
+        self.request(
+            Job::WorkingPreview {
+                repo,
+                entry,
+                area,
+                head,
+            },
+            "Reading working comparison…",
+            window,
+            cx,
+        );
+    }
+
+    /// Lands `content`, the diff read again after a partial write, in the
+    /// Diff view the write was made in, before the window takes it as its
+    /// content: the text replaced in place, its caret, first visible line,
+    /// selection and focus kept as [`crate::diff_view::DiffView::land`]
+    /// says, and the other editors already built given their new text, as a
+    /// quiet read's changed preview is (`replace_quiet_preview`). Content
+    /// that is no longer text is shown afresh. Does nothing for any other
+    /// read.
+    pub(super) fn land_partial_write(
+        &mut self,
+        content: &Arc<Content>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.lands_partial_write(cx) {
+            return;
+        }
+        let (
+            Some(view),
+            Content::Text {
+                patch,
+                old,
+                new,
+                presentation,
+                partial,
+                split,
+                ..
+            },
+        ) = (self.patch_view.clone(), content.as_ref())
+        else {
+            self.clear_preview();
+            return;
+        };
+        self.review = crate::text_review::State::default();
+        if let Some(editor) = &self.before_editor {
+            crate::text::refresh_editor(editor, old, None, window, cx);
+        }
+        if let Some(editor) = &self.after_editor {
+            crate::text::refresh_editor(editor, new, None, window, cx);
+        }
+        if let Some(split_view) = &self.split_view {
+            split_view.update(cx, |split_view, cx| {
+                split_view.refresh(Arc::clone(split), window, cx)
+            });
+        }
+        let decorations = self.patch_decoration.clone();
+        view.update(cx, |view, cx| {
+            view.land(
+                patch,
+                decorations.as_ref(),
+                presentation,
+                partial.clone(),
+                window,
+                cx,
+            )
+        });
     }
 
     /// The person's explicit choice of the selected working file, a click on
@@ -4334,12 +4474,22 @@ impl GitTurtle {
         self.status_outcome = None;
         self.work_generation = self.work_generation.wrapping_add(1);
         self.status_task = None;
+        // A partial Stage or Unstage keeps the diff it was made in, with its
+        // text, caret, selection, scroll and focus, through the write and
+        // the reads after it, which land there in place
+        // ([`Self::land_partial_write`]): torn down here, the Diff view read
+        // "Choose a file" for the write's whole length, focus fell to the
+        // window frame and the caret, selection and scroll were lost.
+        let in_place =
+            matches!(&command, WriteCommand::ApplyPartial { .. }) && self.lands_partial_write(cx);
         if self.mode == WorkspaceMode::Working && !downloading_lfs {
             self.invalidate_read();
-            self.clear_preview();
-            self.files.clear();
-            self.file_paths.reset();
-            self.selected_file = None;
+            if !in_place {
+                self.clear_preview();
+                self.files.clear();
+                self.file_paths.reset();
+                self.selected_file = None;
+            }
         }
         let target = activity::target(
             &command,

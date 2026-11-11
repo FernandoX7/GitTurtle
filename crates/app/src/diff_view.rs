@@ -84,6 +84,11 @@ pub struct DiffView {
     partial: Option<Arc<PartialActions>>,
     selection: LineSelection,
     partial_busy: bool,
+    /// Whether the partial write this view asked for runs, or has ended and
+    /// the read after it has yet to land here ([`Self::awaits_write`]): the
+    /// window keeps the view, its text, caret, selection and scroll through
+    /// both, and that read lands in place ([`Self::land`]).
+    writing: bool,
     /// What the live region says of the latest Space toggle, with the
     /// count that names its node afresh for each, so each is announced
     /// ([`Self::render_announcement`]), until the text loses focus: focus
@@ -122,6 +127,14 @@ impl DiffView {
     /// or a partial write runs.
     pub(crate) fn partial_suspended(&self) -> bool {
         self.partial_busy
+    }
+
+    /// Whether this view asked for a partial write that runs, or has ended
+    /// with its read yet to land here: the window keeps the view through
+    /// both, rather than tearing it down for the read, and lands that read
+    /// in place ([`Self::land`]).
+    pub(crate) fn awaits_write(&self) -> bool {
+        self.writing
     }
 
     /// The selection bar's action's focus.
@@ -399,6 +412,89 @@ impl DiffView {
         self.selection = LineSelection::default();
         self.announcement = None;
         self.partial_busy = false;
+        self.writing = false;
+    }
+
+    /// Lands a read of the diff this view shows in place, as the read after
+    /// its partial write does: the text takes `patch`, and its caret, first
+    /// visible line and line selection stay where the person left them.
+    /// The caret stays on its line where the new text still shows it (an
+    /// added line staged from the unstaged area shows on as context, a
+    /// line's identity being its number on the side the write leaves
+    /// alone, the worktree's or HEAD's), else it goes to the nearest changed
+    /// line after it, else before; the first visible line stays at the top
+    /// where it still shows, else the nearest line after it does. The line
+    /// selection stays where the text has not changed, as after a write
+    /// that failed, and otherwise goes with the lines it selected, which
+    /// left the area. Focus is left where it is. Rebuilt for the read
+    /// instead, the view went for the write's whole length ("Choose a file"
+    /// in its place, focus on the window frame) and came back with its
+    /// caret, selection and scroll lost (QA-118 P3.10).
+    pub(crate) fn land(
+        &mut self,
+        patch: &str,
+        decorations: Option<&crate::editor_find::PatchDecorations>,
+        presentation: &PatchPresentation,
+        partial: Option<Arc<PartialActions>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let staged = partial
+            .as_ref()
+            .or(self.partial.as_ref())
+            .is_some_and(|partial| partial.diff.area == ChangeArea::Staged);
+        let (unchanged, caret, offset, line_height) = {
+            let state = self.editor.read(cx);
+            (
+                state.value().as_ref() == patch,
+                state.cursor_position(),
+                state.scroll_offset(),
+                state.line_height(),
+            )
+        };
+        let same_rows = match (&self.partial, &partial) {
+            (Some(was), Some(now)) => was.rows == now.rows,
+            (None, None) => true,
+            _ => false,
+        };
+        let kept = unchanged && same_rows;
+        let selection = std::mem::take(&mut self.selection);
+        let bar_room = Rc::clone(&self.bar_room);
+        let old = Arc::clone(&self.rows);
+        crate::text::refresh_editor(
+            &self.editor,
+            patch,
+            decorations.map(|collection| (collection, presentation)),
+            window,
+            cx,
+        );
+        self.refresh(presentation, partial, cx);
+        if kept {
+            // The same text, as after a write that failed: the caret, any
+            // text selection and the scroll stay as `refresh_editor` keeps
+            // them, and so do the line selection and its bar.
+            self.selection = selection;
+            self.bar_room = bar_room;
+            return;
+        }
+        let new = &presentation.rows;
+        let caret_row = landed_caret(&old, new, staged, caret.line as usize);
+        let top = line_height.filter(|height| *height > px(0.)).map(|height| {
+            let scrolled = (-offset.y).max(px(0.));
+            let row = (f32::from(scrolled) / f32::from(height)).floor() as usize;
+            let rest = scrolled - height * row as f32;
+            (landed_line(&old, new, staged, row), rest, height)
+        });
+        self.editor.update(cx, |state, cx| {
+            let position = Position::new(caret_row as u32, caret.character);
+            let at = state.text().position_to_offset(&position);
+            state.set_selected_range(at..at, cx);
+            let y = top.map_or(offset.y, |(row, rest, height)| {
+                -(height * row as f32 + rest)
+            });
+            state.set_scroll_offset(point(offset.x, y), cx);
+        });
+        cx.notify();
     }
 
     /// The text's accessible name, such as "Read-only Before source", for
@@ -501,6 +597,7 @@ pub fn new_numbered(
             partial: None,
             selection: LineSelection::default(),
             partial_busy: false,
+            writing: false,
             announcement: None,
             announcements: 0,
             apply_focus: cx.focus_handle(),
@@ -778,6 +875,7 @@ impl DiffView {
         };
         let diff = Arc::clone(&partial.diff);
         self.partial_busy = true;
+        self.writing = true;
         cx.emit(DiffViewEvent::ApplyPartial {
             diff,
             selection: PartialSelection::Lines(ids),
@@ -1458,6 +1556,69 @@ fn paint_gutter(
 pub(crate) struct LineNumbers {
     pub(crate) old: Option<u64>,
     pub(crate) new: Option<u64>,
+}
+
+/// Each row's place in the file, read from its number on the side a partial
+/// write leaves alone (`staged`: HEAD's, else the worktree's), nondecreasing
+/// down the patch: a numbered line is `(number, 1)`, any other row, a removed
+/// line or a header, `(next number, 0)`, just before the line that follows.
+fn line_places(rows: &[LineNumbers], staged: bool) -> Vec<(u64, u8)> {
+    let mut next = u64::MAX;
+    let mut places = vec![(u64::MAX, 0); rows.len()];
+    for (row, numbers) in rows.iter().enumerate().rev() {
+        places[row] = match if staged { numbers.old } else { numbers.new } {
+            Some(number) => {
+                next = number;
+                (number, 1)
+            }
+            None => (next, 0),
+        };
+    }
+    places
+}
+
+/// The rows before the patch's first numbered line, its file headers and
+/// first hunk's header.
+fn header_rows(rows: &[LineNumbers]) -> usize {
+    rows.iter()
+        .position(|numbers| numbers.old.is_some() || numbers.new.is_some())
+        .unwrap_or(rows.len())
+}
+
+/// Where `row` of the patch `old` lands in the patch `new` ([`DiffView::land`]):
+/// the same line where `new` shows it, a header row by its place among the
+/// headers, else the first row after where it stood.
+fn landed_line(old: &[LineNumbers], new: &[LineNumbers], staged: bool, row: usize) -> usize {
+    let last = new.len().saturating_sub(1);
+    if row < header_rows(old) {
+        return row.min(header_rows(new).saturating_sub(1)).min(last);
+    }
+    let Some(&place) = line_places(old, staged).get(row) else {
+        return row.min(last);
+    };
+    line_places(new, staged)
+        .partition_point(|other| *other < place)
+        .min(last)
+}
+
+/// Where the caret on `row` of the patch `old` lands in the patch `new`
+/// ([`DiffView::land`]): on the same line where `new` shows it, else on the
+/// nearest changed line after it, else before, else where
+/// [`landed_line`] puts it.
+fn landed_caret(old: &[LineNumbers], new: &[LineNumbers], staged: bool, row: usize) -> usize {
+    let places = line_places(new, staged);
+    let Some(&place) = line_places(old, staged).get(row) else {
+        return row.min(new.len().saturating_sub(1));
+    };
+    let at = places.partition_point(|other| *other < place);
+    if place.1 == 1 && places.get(at) == Some(&place) {
+        return at;
+    }
+    let changed = |row: &usize| new[*row].old.is_some() != new[*row].new.is_some();
+    (at..new.len())
+        .find(changed)
+        .or_else(|| (0..at).rev().find(changed))
+        .unwrap_or_else(|| landed_line(old, new, staged, row))
 }
 
 /// Pure worker-side preparation; the UI constructor only shares these results.

@@ -1804,6 +1804,9 @@ impl GitTurtle {
                     }
                     Content::Notice(_) | Content::Conflict(_) | Content::Rich(_) => {}
                 }
+                // The read after a partial write lands in the Diff view the
+                // write was made in, which stays built.
+                self.land_partial_write(&content, window, cx);
                 self.content = Some(content);
                 // Compare or Working, as checked above; on the repository
                 // page, an editor for it is built now.
