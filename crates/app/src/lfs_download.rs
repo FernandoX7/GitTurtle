@@ -630,48 +630,48 @@ thread_local! {
 }
 
 /// `button`, side `side`'s Download in a row that `asks` for its own
-/// download or Compare's, drawing the glyph at `path`: where `failed`, in
-/// place of its pull glyph, in `own` where set, or else the button's text
+/// download or Compare's, otherwise built whole, handed its glyph, the one
+/// at `path`: its pull glyph or, where its download failed, the warning
+/// glyph in its place, in `own` where set, or else the button's text
 /// colour, the kit's disabled one while the button is dimmed. The glyph's
 /// colour is set here and nowhere else, and the Download notes, where it is
-/// drawn, the glyph and the colour it is painted in, resolved as the icon
-/// resolves it, for a test: a colour set on the icon beside the note once
-/// drew the warning colour on a dimmed Download while the note said the
-/// disabled one. A row measured and not drawn notes nothing.
+/// drawn, the glyph and the colour it is painted in, for a test: the colour
+/// the icon handed to the button holds (`Icon::own_color`, a kit patch),
+/// resolved as the icon resolves it. Noted from `own` beside the icon, a
+/// dimmed Download drawing its glyph in the warning colour passed. Handed
+/// last, the Download going on as an element, the glyph is re-coloured by
+/// nothing after it is noted: no Button call can follow, and the kit sizes
+/// a Button's icon and never colours it. A row measured and not drawn notes
+/// nothing.
 fn noted_glyph(
     button: Button,
     (asks, side): (bool, usize),
-    (path, failed): (SharedString, bool),
+    path: SharedString,
     own: Option<gpui::Hsla>,
-) -> Button {
-    let button = if failed {
-        button.icon(
-            crate::control_icon_at(path.clone()).when_some(own, |icon, own| icon.text_color(own)),
-        )
-    } else {
-        button
-    };
+) -> AnyElement {
     #[cfg(test)]
-    {
-        button.child(
-            gpui::canvas(
-                move |_, window, _| {
-                    let color = own.unwrap_or_else(|| window.text_style().color);
-                    DRAWN_GLYPHS.with(|drawn| {
-                        drawn.borrow_mut().insert((asks, side), (path, color));
-                    });
-                },
-                |_, _, _, _| {},
-            )
-            .absolute()
-            .size_0(),
+    let noted = path.clone();
+    let glyph = crate::control_icon_at(path).when_some(own, |glyph, own| glyph.text_color(own));
+    #[cfg(test)]
+    let painted = glyph.own_color();
+    let button = button.icon(glyph);
+    #[cfg(test)]
+    let button = button.child(
+        gpui::canvas(
+            move |_, window, _| {
+                let color = painted.unwrap_or_else(|| window.text_style().color);
+                DRAWN_GLYPHS.with(|drawn| {
+                    drawn.borrow_mut().insert((asks, side), (noted, color));
+                });
+            },
+            |_, _, _, _| {},
         )
-    }
+        .absolute()
+        .size_0(),
+    );
     #[cfg(not(test))]
-    {
-        let _ = (asks, side, path, own);
-        button
-    }
+    let _ = (asks, side);
+    button.node_recorded().into_any_element()
 }
 
 /// Whether the sides of `sides`, their Download buttons' word given way
@@ -718,7 +718,9 @@ pub(crate) fn drawn_glyph(asks: bool, side: usize) -> Option<String> {
     })
 }
 
-/// The colour [`drawn_glyph`]'s glyph was painted in, for a test.
+/// The colour [`drawn_glyph`]'s glyph was painted in, for a test: the one
+/// set on the icon its Download was handed, or else the text colour the icon
+/// inherits ([`noted_glyph`]).
 #[cfg(test)]
 pub(crate) fn drawn_glyph_color(asks: bool, side: usize) -> Option<gpui::Hsla> {
     DRAWN_GLYPHS.with(|drawn| drawn.borrow().get(&(asks, side)).map(|(_, color)| *color))
@@ -1043,16 +1045,11 @@ pub(crate) fn download_row(
             .debug_selector(move || format!("download-lfs-side-{side}"))
             .flex_none()
             .child(
-                noted_glyph(
-                    button(
-                        ("download-lfs-side", side),
-                        if short { short_label(full) } else { full },
-                        "pull",
-                        false,
-                    ),
-                    (asks, side),
-                    (glyph, failed),
-                    own,
+                button(
+                    ("download-lfs-side", side),
+                    if short { short_label(full) } else { full },
+                    "pull",
+                    false,
                 )
                 .when_some(focus, |button, focus| button.track_focus(&focus))
                 // The side that failed says the failure's words, drawn
@@ -1102,7 +1099,8 @@ pub(crate) fn download_row(
                     )
                 })
                 .on_click(move |_, window, cx| download(side, target.clone(), window, cx))
-                .node_recorded(),
+                // Its glyph last, so nothing re-colours it once it is noted.
+                .map(|button| noted_glyph(button, (asks, side), glyph, own)),
             )
             .into_any_element()
     });

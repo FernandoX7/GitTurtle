@@ -8210,7 +8210,9 @@ mod tests {
     /// the warning colour again (decision, 2026-11-10 night: set on the
     /// glyph, the warning colour outlasted the button's disabled look, so
     /// the dimmed Download read half enabled); and the failed Download keeps
-    /// its width at rest, within half a device pixel.
+    /// its width at rest, within half a device pixel. The glyph's colour is
+    /// read from the icon the Download is handed (`lfs_download::noted_glyph`):
+    /// read from the colour meant for it, a glyph drawn in another passed.
     #[gpui::test]
     async fn another_caller_s_start_keeps_the_review_s_failure(cx: &mut gpui_kit::TestAppContext) {
         use crate::lfs_download::Asker;
