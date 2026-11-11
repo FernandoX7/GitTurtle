@@ -1161,7 +1161,10 @@ repeats arrive as fresh presses, so a dialog opened while Enter is down
 also takes no Enter, neither its `Confirm` nor a press of its Buttons,
 until that Enter comes up: a keystroke interceptor marks Enter down in its
 window before any binding runs, `dialog_opened`, which the component
-`Root` calls as it opens a dialog, turns the mark into a wait, and
+`Root` calls as it opens a dialog and the app calls as a Return opens a
+review line's comment (`github_view::review`, tested by
+`a_held_return_on_a_review_line_answers_once_per_press`), turns the mark
+into a wait, and
 `note_key_up`, which the dialog host and the component `Root` call on every
 key-up in the window, ends both. A dialog opened by a click or with no key
 down takes its first Enter as before; Escape and Space are unchanged. The
