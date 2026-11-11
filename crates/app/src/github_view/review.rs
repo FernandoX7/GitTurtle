@@ -3038,8 +3038,20 @@ impl Panel {
                 } else {
                     self.focus_file_content(window, cx);
                 }
-            } else {
+            } else if !gpui_kit::base::enter_press_is_repeat(window, cx)
+                && gpui_kit::base::enter_press_began_on(&self.review.line_focus, window, cx)
+            {
+                // Return on a line begins its comment once per press, never
+                // on a held key's repeats, under X11 too, nor for a press
+                // that began on the changed-file list, whose Return gave
+                // the patch focus: each repeat refused again where no line
+                // could take a comment, and one that reached the patch
+                // from the list began a comment. The press gives focus to
+                // the comment's text, which takes none of its repeats until
+                // the key comes up, as a dialog an Enter opened takes none
+                // (`dialog_opened`): each typed a new line there.
                 self.begin_comment(window, cx);
+                gpui_kit::base::dialog_opened(window, cx);
             }
             return;
         }
@@ -6606,6 +6618,127 @@ mod tests {
         cx.run_until_parked();
         (fixture, app, panel, cx)
     }
+    /// Return on a review line answers once per press, under X11 too, through each of a held
+    /// key's repeats (`REPEATS`): a press that began on the changed-file list, which gives the
+    /// patch focus, begins no comment there; with no line chosen a press is refused once, and
+    /// after the key-up a new press is refused again; on a chosen line a press opens its comment
+    /// with focus in the comment's text, which the repeats leave empty. Begun on every Enter
+    /// key-down, the comment opened from the list's press, a refusal was said on each repeat
+    /// and each repeat typed a new line into the comment just opened.
+    #[gpui::test]
+    async fn a_held_return_on_a_review_line_answers_once_per_press(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        let (_fixture, app, panel, cx) = review_panel(cx);
+        let pull = model::fixture_pull(false);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.review.show_list = false;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        cx.executor().run_until_parked();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.select_review_file(0, window, cx))
+        });
+        cx.executor().run_until_parked();
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        // The refusals said, whether a comment is open, and its text.
+        let seen = |cx: &mut gpui_kit::VisualTestContext| {
+            panel.read_with(cx, |panel, cx| {
+                (
+                    panel.presses.error,
+                    panel.review.composing.is_some(),
+                    panel.review.input.read(cx).value().to_string(),
+                )
+            })
+        };
+        let hold = |cx: &mut gpui_kit::VisualTestContext, at: &str| {
+            let held = seen(cx);
+            for (repeat, events) in REPEATS {
+                for down in events {
+                    enter(cx, *down);
+                }
+                draw(cx);
+                assert_eq!(seen(cx), held, "{at}, {repeat}: nothing more is answered");
+            }
+            enter(cx, None);
+            draw(cx);
+        };
+
+        // Begun on the changed-file list, with a line chosen.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_line(3, false, window, cx);
+                panel.review.file_focus.focus(window, cx);
+            })
+        });
+        draw(cx);
+        let before = seen(cx);
+        enter(cx, Some(false));
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| panel.read(cx).review.line_focus.is_focused(window)),
+            "the list's Return gives the patch focus"
+        );
+        assert_eq!(seen(cx), before, "the list's Return begins no comment");
+        hold(cx, "begun on the list");
+
+        // No line chosen: refused once per press.
+        for press in ["the first press", "a new press after the key-up"] {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.review.anchor = None;
+                    panel.review.selected_row = None;
+                    panel.review.line_focus.focus(window, cx);
+                })
+            });
+            draw(cx);
+            let refusals = seen(cx).0;
+            enter(cx, Some(false));
+            draw(cx);
+            assert_eq!(seen(cx).0, refusals + 1, "no line, {press}: refused once");
+            hold(cx, &format!("no line, {press}"));
+        }
+
+        // A chosen line: one comment, its text untouched by the repeats.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_line(3, false, window, cx);
+                panel.review.line_focus.focus(window, cx);
+            })
+        });
+        draw(cx);
+        enter(cx, Some(false));
+        draw(cx);
+        let (_, composing, text) = seen(cx);
+        assert!(composing && text.is_empty(), "a line: its comment opens");
+        assert!(
+            cx.update(|window, cx| {
+                panel
+                    .read(cx)
+                    .review
+                    .input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            }),
+            "a line: focus moves to the comment's text"
+        );
+        hold(cx, "a line");
+    }
+
     /// 8,000 deletions and 8,000 additions of 520 bytes, just under the 8 MiB response bound:
     /// 16,001 inline rows, inside the 20,000-row limit, and above Compare's bounds, so no
     /// presentation is prepared.
