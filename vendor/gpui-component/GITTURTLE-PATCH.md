@@ -865,8 +865,11 @@ focus given into a dialog as it opens and focus given back as it closes are
 as before. The kit's `tab_wraps_inside_a_focus_trap_past_any_number_of_stops`
 and `tab_in_a_focus_trap_without_stops_moves_nothing`
 (`scripts/vendor-crate-test.sh vendor/gpui-component focus_trap`) put 150
-stops on each side of a trap. Remove it when upstream wraps a focus trap
-without walking the window, and those tests pass without it.
+stops on each side of a trap, and the app's
+`theme_editor::tests::tab_stays_in_the_editor_over_a_page_of_saved_themes`
+opens the theme editor over Settings with 31 saved themes, which draws more
+than 100 stops behind it. Remove it when upstream wraps a focus trap without
+walking the window, and those tests pass without it.
 
 The secondary-edge patch modifies `src/theme/mod.rs` and
 `src/button/button.rs`. Upstream draws a bordered secondary Button's edge in

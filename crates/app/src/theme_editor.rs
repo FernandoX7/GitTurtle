@@ -3822,6 +3822,73 @@ pub(crate) mod tests {
         });
     }
 
+    /// Over Settings holding 31 saved themes, one short of the bound, the
+    /// editor keeps focus inside however many stops the page behind it
+    /// holds: Shift-Tab from Name, its first stop, wraps to Save, its last,
+    /// and Tab from Save wraps to Name, each with the editor still open,
+    /// while inside it Shift-Tab and Tab still step between Save and Cancel.
+    /// The toolkit's focus trap walked on back from Name through the page's
+    /// stops, at most 100 of them, and Settings draws more behind the open
+    /// editor, so Shift-Tab from Name left focus on a Settings Button behind
+    /// it (decided 2026-11-10).
+    #[gpui::test]
+    fn tab_stays_in_the_editor_over_a_page_of_saved_themes(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        seed_themes(cx, &app, MAX_CUSTOM_THEMES as u32 - 1);
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        let name = cx.read(|cx| form.read(cx).name.read(cx).focus_handle(cx));
+        let (cancel, save) = cx.read(|cx| {
+            let form = form.read(cx);
+            (form.cancel_focus.clone(), form.save_focus.clone())
+        });
+        assert!(
+            cx.update(|window, _| name.is_focused(window)),
+            "the editor opens with Name focused"
+        );
+        // The stops GPUI's own step back from Name meets behind the editor
+        // before it comes back inside: the toolkit's walk took at most 100.
+        let behind = cx.update(|window, cx| {
+            let editor =
+                gpui_kit::base::active_focus_trap(window, cx).expect("the editor traps focus");
+            let mut behind = 0;
+            window.focus_prev(cx);
+            while !editor.contains_focused(window, cx) && behind <= 1000 {
+                behind += 1;
+                window.focus_prev(cx);
+            }
+            window.focus(&name, cx);
+            behind
+        });
+        settle(cx);
+        assert!(
+            (101..=1000).contains(&behind),
+            "more than 100 stops lie behind the editor, not {behind}"
+        );
+        for (key, from, to, control) in [
+            ("shift-tab", "Name", "Save", &save),
+            ("shift-tab", "Save", "Cancel", &cancel),
+            ("tab", "Cancel", "Save", &save),
+            ("tab", "Save", "Name", &name),
+        ] {
+            cx.simulate_keystrokes(key);
+            settle(cx);
+            cx.update(|window, cx| {
+                assert!(
+                    window.has_active_dialog(cx),
+                    "{key} from {from}: the editor stays open"
+                );
+                assert!(
+                    control.contains_focused(window, cx),
+                    "{key} from {from} focuses {to}, not {:?}",
+                    window.focused(cx)
+                );
+            });
+        }
+        assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_some()));
+    }
+
     /// Return in a valid hex field rewrites it in canonical form and saves
     /// nothing; Return on the focused Cancel button cancels.
     #[gpui::test]
