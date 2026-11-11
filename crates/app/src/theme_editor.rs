@@ -6090,38 +6090,53 @@ pub(crate) mod tests {
     }
 
     /// The status bar's top edge as the last frame painted it: the quad
-    /// across the window's full width at its foot with only a top rule. It is
-    /// [`STATUS_BAR_HEIGHT`] tall at the interface text size.
+    /// across the window's full width at its foot with only a top rule,
+    /// compared in device pixels, where it ends on the drawable's last
+    /// column and row at every scale. The drawable is the window's size
+    /// rounded half away from zero, as the Linux backend sizes it, and the
+    /// window's content size is that over the scale
+    /// (`views::tests::simulate_window_at_scale`); laid out at a size that
+    /// falls on half a device pixel, the bar ended a device pixel short of
+    /// it. It is [`STATUS_BAR_HEIGHT`] tall at the interface text size, to
+    /// the device pixel.
     pub(crate) fn status_bar_top(cx: &mut VisualTestContext) -> Pixels {
         cx.update(|window, _| {
             let scale = window.scale_factor();
-            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
-            let viewport = window.viewport_size();
+            let drawable = window.viewport_size().to_device_pixels(scale);
+            let (right, foot) = (
+                ScaledPixels::from(drawable.width),
+                ScaledPixels::from(drawable.height),
+            );
+            let none = ScaledPixels(0.);
             let mut bars: Vec<_> = window
                 .painted_quads()
                 .into_iter()
                 .filter(|quad| {
                     let widths = quad.border_widths;
-                    logical(widths.top) > px(0.)
+                    widths.top > none
                         && [widths.right, widths.bottom, widths.left]
                             .iter()
-                            .all(|width| logical(*width) == px(0.))
-                        && logical(quad.bounds.left()) == px(0.)
-                        && logical(quad.bounds.right()) == viewport.width
-                        && logical(quad.bounds.bottom()) == viewport.height
+                            .all(|width| *width == none)
+                        && quad.bounds.left() == none
+                        && quad.bounds.right() == right
+                        && quad.bounds.bottom() == foot
                 })
-                .map(|quad| logical(quad.bounds.top()))
+                .map(|quad| quad.bounds.top())
                 .collect();
             bars.dedup();
             let [top] = bars[..] else {
-                panic!("one status bar at the window's foot: {bars:?}")
+                panic!(
+                    "one status bar ending on the drawable's last column and row, \
+                     {drawable:?} at {scale}: {bars:?}"
+                )
             };
+            let tall = window.pixel_snap(appearance::ui_size(STATUS_BAR_HEIGHT));
             assert_eq!(
-                viewport.height - top,
-                window.pixel_snap(appearance::ui_size(STATUS_BAR_HEIGHT)),
-                "the status bar is STATUS_BAR_HEIGHT tall at the text size"
+                foot - top,
+                ScaledPixels((f32::from(tall) * scale).round()),
+                "the status bar is STATUS_BAR_HEIGHT tall at the text size, {tall:?} at {scale}"
             );
-            top
+            px(top.as_f32() / scale)
         })
     }
 

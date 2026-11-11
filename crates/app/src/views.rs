@@ -35211,12 +35211,76 @@ pub(crate) mod tests {
         assert!(!open(cx), "the menu closed with its file");
     }
 
+    /// Sizes the test window as the Linux backend reports a window `size`
+    /// logical pixels at `scale` (`content_size_at` in `vendor/gpui-pre-linux`'s
+    /// `wayland/window.rs`): its drawable's device size, each side rounded
+    /// half away from zero, divided by the scale, which is the size GPUI lays
+    /// the root out at; then sets the scale. The test platform reports the
+    /// size it is given, and a resize takes its own factor, 2, as the
+    /// window's scale again (`Window::bounds_changed`), so the scale is set
+    /// after the resize; the caller asserts `window.scale_factor()` once it
+    /// has drawn.
+    pub(crate) fn simulate_window_at_scale(
+        cx: &mut VisualTestContext,
+        size: Size<Pixels>,
+        scale: f32,
+    ) {
+        cx.simulate_resize(size.to_device_pixels(scale).to_pixels(scale));
+        cx.update(|window, _| window.set_scale_factor(scale));
+    }
+
+    /// A 461 × 490 window at scale 1.25 and 1.5, sized as the Linux backend
+    /// reports it, paints its last device pixel column and row: its
+    /// background, across the root's full width and height, and the status
+    /// bar across its foot end on the drawable's right side and foot. At 1.5
+    /// the window's right side falls on half a device pixel, 691.5, and at
+    /// 1.25 its foot does, 612.5; the drawable rounds those up and the layout
+    /// rounds edges down, so laid out at the window's own size every
+    /// full-width quad ended a device pixel short and the last column or row
+    /// was never painted.
+    #[gpui::test]
+    async fn a_window_paints_its_last_device_pixel_at_every_scale(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(4, 1)).await;
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        let surface = size(px(461.), px(490.));
+        for scale in [1.25f32, 1.5] {
+            simulate_window_at_scale(cx, surface, scale);
+            settle(&app, cx).await;
+            draw(cx);
+            let (drawn, quads) =
+                cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+            assert_eq!(drawn, scale, "drawn at its scale");
+            let drawable = surface.to_device_pixels(scale);
+            let whole = Bounds::from_corners(
+                point(gpui_kit::ScaledPixels(0.), gpui_kit::ScaledPixels(0.)),
+                point(drawable.width.into(), drawable.height.into()),
+            );
+            let background = quads
+                .iter()
+                .filter(|quad| quad.bounds.origin == whole.origin)
+                .map(|quad| quad.bounds)
+                .max_by(|a, b| {
+                    let far = |quad: &Bounds<gpui_kit::ScaledPixels>| {
+                        quad.right().as_f32() + quad.bottom().as_f32()
+                    };
+                    far(a).total_cmp(&far(b))
+                })
+                .expect("a quad at the window's origin");
+            assert_eq!(
+                background, whole,
+                "at {scale}: the window's background ends on the drawable's last column and row"
+            );
+            crate::theme_editor::tests::status_bar_top(cx);
+        }
+    }
+
     /// Shift-F10 on History's lowest whole row scrolls nothing and moves no
     /// row, at display scale 1 and 1.5 and at 13 and 18 pt in a 461 × 490
-    /// window, its width on whole device pixels (461.33 px, 692 device
-    /// pixels, at 1.5): the row's foot lies under the list's 1 px edge, which
-    /// the menu's row place counts as shown (`ListRow::framed`), so its
-    /// reveal has nothing to do, however a fractional scale rounds that edge.
+    /// window, sized as the Linux backend reports it
+    /// ([`simulate_window_at_scale`]): the row's foot lies under the list's
+    /// 1 px edge, which the menu's row place counts as shown
+    /// (`ListRow::framed`), so its reveal has nothing to do, however a
+    /// fractional scale rounds that edge.
     #[gpui::test]
     async fn a_keyboard_menu_on_the_lowest_row_moves_nothing_at_any_scale(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 1)).await;
@@ -35227,18 +35291,8 @@ pub(crate) mod tests {
         for scale in [1.0f32, 1.5] {
             for text in [13, 18] {
                 let at = format!("{text} pt at {scale}x");
-                // The test platform's window reports scale 2, which a resize
-                // takes as the window's scale again (`Window::bounds_changed`):
-                // set before the resize, the scale lasted only until it, and
-                // the test ran at scale 2 alone. A display lays a window out
-                // on whole device pixels, which 461 px at 1.5, 691.5 of them,
-                // is not: layout ended the status bar at 691.
-                let width = (461. * scale).round() / scale;
-                cx.simulate_resize(size(px(width), px(490.)));
-                cx.update(|window, cx| {
-                    window.set_scale_factor(scale);
-                    appearance::apply_text_sizes(text, 12, window, cx)
-                });
+                simulate_window_at_scale(cx, size(px(461.), px(490.)), scale);
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
                 settle(&app, cx).await;
                 assert_eq!(
                     cx.update(|window, _| window.scale_factor()),
