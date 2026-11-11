@@ -635,6 +635,10 @@ impl GitTurtle {
         if let Some(found) = found {
             self.repository_tabs.follow_read_repository(found);
         }
+        // A fresh capture whose found repository lacks History's scope
+        // reads All history in place, as an Open with a vanished scope does
+        // ([`Self::read_all_history_in_place`]).
+        let mut read_history = false;
         let entries = if replaced {
             self.forget_captured_history(window, cx);
             true
@@ -663,24 +667,32 @@ impl GitTurtle {
                 }) => {
                     // A fresh capture's rows went with the replaced
                     // repository, and so does the traversal they were read
-                    // at, as no history of the found one is installed here:
-                    // kept, Older stayed offered under the empty list and
-                    // asked the found repository for the replaced one's next
-                    // page, and the tab saved the replaced scope.
+                    // at: kept, Older stayed offered under the empty list
+                    // and asked the found repository for the replaced one's
+                    // next page, and the tab saved the replaced pinned tips.
+                    // No history of the found one is installed here, so it
+                    // reads All history, as an Open with a vanished scope
+                    // does, and says so as that lands: "The displayed
+                    // history is retained" stood over an empty History. The
+                    // tab's own repository keeps its rows, their paging and
+                    // that banner.
                     if replaced {
                         self.history_paging = Default::default();
+                        read_history = true;
                     }
                     self.refs = metadata.refs;
                     self.branches = metadata.branches;
                     self.worktrees = metadata.worktrees;
                     self.repository = Some(metadata.repository);
                     self.rebuild_navigation(cx);
-                    self.history_updates.report_scope_error(
-                        &error,
-                        summary.as_deref(),
-                        vanished.as_ref(),
-                        &mut self.operation_error,
-                    );
+                    if !replaced {
+                        self.history_updates.report_scope_error(
+                            &error,
+                            summary.as_deref(),
+                            vanished.as_ref(),
+                            &mut self.operation_error,
+                        );
+                    }
                 }
                 Err(error) => {
                     self.operation_error.get_or_insert_with(|| {
@@ -703,6 +715,12 @@ impl GitTurtle {
             } else if self.mode == WorkspaceMode::Compare {
                 self.mode = WorkspaceMode::History;
                 self.sidebar = self.history_sidebar;
+            }
+            if read_history {
+                // After Back, which ends the read it would start: its
+                // landing selects and searches as an Open's does.
+                self.read_all_history_in_place(window, cx);
+                return entries;
             }
             self.select_newest_as_an_open_does(window, cx);
             if !self.search.read(cx).value().is_empty() {

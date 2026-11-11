@@ -1303,9 +1303,9 @@ impl GitDirectories {
     /// or, for a restored tab, by the inode it saved or, where both these
     /// and the open have one, the birth time, the Git directory before the
     /// common one; `None` where both match. A session never saves the
-    /// device, so a restored tab has none to compare: in a run only
-    /// `repository_tabs::same_git_directories` and `RepositoryIdentity`
-    /// compare it. Reads what the repository's open captured, so it
+    /// device, so a restored tab has none to compare: in a run, the app
+    /// compares it only in `repository_tabs::same_git_directories` and
+    /// `RepositoryIdentity`, and core before a write (`Identity::replaced`). Reads what the repository's open captured, so it
     /// touches no filesystem.
     fn mismatch(&self, repository: &GitRepository) -> Option<PathBuf> {
         let differs = |saved: Option<u64>, found: Option<u64>| {

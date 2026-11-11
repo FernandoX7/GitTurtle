@@ -221,6 +221,20 @@ fn classify_update(
     Some(Update::Changed)
 }
 
+/// What a history discovery read reads for, which decides where its
+/// landing shows the history it read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Discovery {
+    /// Show latest: History is shown and its search ends.
+    Latest,
+    /// The commit a write created, selected in History.
+    CreatedCommit,
+    /// All history in place of a scope that vanished with the repository a
+    /// quiet read replaced ([`GitTurtle::read_all_history_in_place`]): the
+    /// window stays where it stands, and a typed search runs again.
+    InPlace,
+}
+
 fn follows_latest(mode: WorkspaceMode, searching: bool, deep: bool, offset: f32) -> bool {
     mode == WorkspaceMode::History && !searching && !deep && offset >= -0.5
 }
@@ -382,7 +396,42 @@ impl GitTurtle {
                 scope: self.scope.as_ref().map(|scope| scope.1.clone()),
                 limit: history_paging::PAGE_SIZE,
             },
-            false,
+            Discovery::Latest,
+            window,
+            cx,
+        );
+    }
+
+    /// Reads the tab's history again from its root, where the window
+    /// stands, as an Open with a vanished scope reads it: the worker reads
+    /// All history where the scope is gone, and the landing says so
+    /// ("History scope changed: …. Showing All history.",
+    /// [`Self::accept_snapshot_scope`]), drops the scope, selects as an Open
+    /// does and runs a typed search again. A quiet read that captured a
+    /// re-clone lacking History's scope asks for it
+    /// (`worker::QuietHistory::Retained`), the rows gone with the replaced
+    /// repository: it showed an empty History under "The displayed history
+    /// is retained". An Open would leave Changes and cancel an open form.
+    pub(super) fn read_all_history_in_place(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        self.request_history_discovery(
+            Job::Open {
+                root: Some(path.clone()),
+                git_dir: self
+                    .repository_tabs
+                    .reopen_root(&path, self.scope.as_ref().map(|scope| &scope.1))
+                    .and_then(|(_, git_dir)| git_dir),
+                path,
+                scope: self.scope.as_ref().map(|scope| scope.1.clone()),
+                limit: history_paging::PAGE_SIZE,
+            },
+            Discovery::InPlace,
             window,
             cx,
         );
@@ -402,7 +451,7 @@ impl GitTurtle {
                 offset: 0,
                 limit: 1,
             },
-            true,
+            Discovery::CreatedCommit,
             window,
             cx,
         );
@@ -411,7 +460,7 @@ impl GitTurtle {
     fn request_history_discovery(
         &mut self,
         job: Job,
-        view_commit: bool,
+        discovery: Discovery,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -423,7 +472,7 @@ impl GitTurtle {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let path = self.path.clone();
-        self.loading = Some(if view_commit {
+        self.loading = Some(if discovery == Discovery::CreatedCommit {
             "Reading created commit…"
         } else {
             "Reading latest local history…"
@@ -440,13 +489,17 @@ impl GitTurtle {
                 this.task = None;
                 match result {
                     Ok(Ok(output)) => {
-                        this.show_history(window, cx);
-                        if view_commit && this.history_search_active() {
-                            this.restore_normal_history(window, cx);
+                        let in_place = discovery == Discovery::InPlace;
+                        if !in_place {
+                            this.show_history(window, cx);
+                            if discovery == Discovery::CreatedCommit && this.history_search_active()
+                            {
+                                this.restore_normal_history(window, cx);
+                            }
+                            this.discard_history_search();
+                            this.search
+                                .update(cx, |input, cx| input.set_value("", window, cx));
                         }
-                        this.discard_history_search();
-                        this.search
-                            .update(cx, |input, cx| input.set_value("", window, cx));
                         match output {
                             Output::Snapshot(snapshot) => {
                                 // A repository cloned again at the tab's
@@ -472,13 +525,20 @@ impl GitTurtle {
                                 this.accept_snapshot_scope(&snapshot);
                                 this.history_updates.captured(&snapshot);
                                 this.install_current_history(snapshot, true, window, cx);
-                                this.status =
-                                    "Latest local history · selected inspector retained".into();
+                                if !in_place {
+                                    this.status =
+                                        "Latest local history · selected inspector retained".into();
+                                }
                                 if replaced {
                                     this.seed_navigation_folders();
                                     this.rebuild_navigation(cx);
                                     this.refresh_worktree(window, cx);
+                                }
+                                if replaced || in_place {
                                     this.select_newest_as_an_open_does(window, cx);
+                                }
+                                if in_place && !this.search.read(cx).value().is_empty() {
+                                    this.history_query_changed(window, cx);
                                 }
                             }
                             Output::HistoryPage(result) => {

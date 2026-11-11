@@ -8645,8 +8645,9 @@ pub(crate) mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
         // What the switch asked for lands before Push is drawn: the shown
         // tab's watch is set up on the operation thread, which neither the
-        // reader's idle wait nor a park waits for, and its reply landing
-        // between the press and the release would draw the bar again.
+        // reader's idle wait nor a park waits for. Landing it first is a
+        // precaution: no reply of it can then land, and draw, between the
+        // press and the release.
         for _ in 0..8 {
             app.read_with(cx, |app, _| app.operations.drain());
             app.read_with(cx, |app, _| app.worker.wait_idle());
@@ -9198,17 +9199,18 @@ pub(crate) mod tests {
     }
 
     /// A quiet read that finds a re-clone at the tab's path while History
-    /// is scoped to a branch the found repository lacks installs the found
-    /// repository's metadata with no rows (`worker::QuietHistory::Retained`)
-    /// and keeps nothing of the replaced history's paging: the scope its
-    /// rows were read at, their offset and the next page go with them, so
-    /// Older, which continued them, offers nothing under the empty list,
-    /// and the tab saves no scope from before. Kept, Older stayed offered
-    /// and, pressed, asked the found repository for the replaced
-    /// traversal's next page, which could not be read, and the tab saved
-    /// the replaced scope's tips (FU44-C3's N4).
+    /// is scoped to a branch the found repository lacks does what an Open
+    /// with a vanished scope does: it reads the found repository's All
+    /// history in place, says "History scope changed: …. Showing All
+    /// history." and drops the scope, so the tab saves neither the scope
+    /// nor the pinned tips from before, and History selects its newest row
+    /// as an Open does. The replaced history's paging goes with its rows:
+    /// kept, Older asked the found repository for the replaced traversal's
+    /// next page (FU44-C3's N4). Installing only the found repository's
+    /// metadata, it once left History empty under "The displayed history is
+    /// retained".
     #[gpui::test]
-    async fn a_quiet_read_that_finds_a_re_clone_beside_a_vanished_scope_keeps_no_paging(
+    async fn a_quiet_read_that_finds_a_re_clone_beside_a_vanished_scope_reads_all_history(
         cx: &mut TestAppContext,
     ) {
         use crate::views::tests::{fixture_git, fixture_repository};
@@ -9245,6 +9247,11 @@ pub(crate) mod tests {
             (true, 0, Some(page), true),
             "the scoped history read a page at a time, its scope saved"
         );
+        let tip = |root: &Path| {
+            let output = crate::views::tests::fixture_git_output(root, &["rev-parse", "HEAD"]);
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        let replaced_tip = tip(&root);
         let third = fixture_repository(base.join("third"));
         fixture_git(
             third.path(),
@@ -9252,6 +9259,7 @@ pub(crate) mod tests {
         );
         std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
         std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+        let found_tip = tip(&root);
         let found = gitturtle_core::GitRepository::open(&root)
             .unwrap()
             .git_dir_inode();
@@ -9271,12 +9279,14 @@ pub(crate) mod tests {
         });
         // Landed once the found repository's status read and watch, which
         // the capture asks for on the operation thread and which hold the
-        // rescan back, have answered too: the reader's idle wait alone
-        // never saw the capture land.
+        // rescan back, and the history it reads in place have answered too:
+        // the reader's idle wait alone never saw the capture land.
         let landed = |app: &GitTurtle, _: &App| {
             app.repository
                 .as_ref()
                 .is_some_and(|repo| repo.git_dir_inode() == found)
+                && app.loading.is_none()
+                && app.task.is_none()
                 && !app.automatic.quiet_read_requested()
                 && app.automatic.replies_landed()
                 && app.status_task.is_none()
@@ -9295,24 +9305,136 @@ pub(crate) mod tests {
         );
         app.update(cx, |app, _| app.automatic.hold_quiet_reads(true));
         crate::views::tests::settle(&app, cx).await;
+        let (subjects, selected, scope, notice, banner) = app.read_with(cx, |app, cx| {
+            (
+                (app.commits.iter())
+                    .map(|commit| commit.subject.clone())
+                    .collect::<Vec<_>>(),
+                app.selected_commit,
+                (app.scope.is_some(), app.tab_bookmark(cx).scope.is_some()),
+                app.operation_notice.clone(),
+                app.operation_error_text(),
+            )
+        });
+        assert_eq!(
+            subjects.first().map(String::as_str),
+            Some("Third"),
+            "the found repository's history, newest first: {subjects:?}"
+        );
         assert!(
-            app.read_with(cx, |app, _| app.commits.is_empty()),
-            "no row from before"
+            subjects.len() < page,
+            "no row from before: {} rows",
+            subjects.len()
+        );
+        assert_eq!(
+            selected,
+            Some(0),
+            "its newest row selected, as an Open selects"
+        );
+        assert_eq!(
+            scope,
+            (false, false),
+            "All history, saved without the scope"
+        );
+        assert!(
+            notice.as_deref().is_some_and(|notice| {
+                notice.starts_with("History scope changed: ")
+                    && notice.ends_with("Showing All history.")
+            }),
+            "it says so: {notice:?}"
+        );
+        assert!(
+            !banner
+                .as_deref()
+                .is_some_and(|banner| banner.contains("retained")),
+            "no claim of a history it does not show: {banner:?}"
+        );
+        let (next, pinned) = app.read_with(cx, |app, cx| {
+            (app.history_paging.next_offset, app.tab_bookmark(cx).pinned)
+        });
+        assert_eq!(next, None, "no page from before");
+        assert!(
+            matches!(&pinned, Some(SavedHistoryScope::Pinned(tips))
+                if tips.contains(&found_tip) && !tips.contains(&replaced_tip)),
+            "the found repository's tips pinned, none from before: {pinned:?}"
+        );
+    }
+
+    /// A quiet read that finds the tab's own repository lacking History's
+    /// scope, a branch deleted outside the app, keeps the displayed history
+    /// as its banner says: its rows, and the paging they were read at, so
+    /// Older still continues them and the tab saves their pinned tips and
+    /// offset. Only a re-clone's landing drops the paging and reads All
+    /// history, its rows gone with the replaced repository (FU44-C5
+    /// re-check S1).
+    #[gpui::test]
+    async fn a_quiet_read_that_finds_the_scope_gone_keeps_the_history_it_shows(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::fixture_git;
+        let page = crate::history_paging::PAGE_SIZE;
+        let (_fixture, app, cx) = crate::views::tests::history_window_from(
+            cx,
+            &crate::views::tests::history_script(page + 1, 1),
+        )
+        .await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        fixture_git(&root, &["branch", "before"]);
+        let scope = worker::Scope::Branch {
+            name: "before".into(),
+            remote: false,
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open(root.clone(), Some(("before".into(), scope)), window, cx)
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        let paging = |app: &GitTurtle, cx: &App| {
+            (
+                app.history_paging.scope.is_some(),
+                app.history_paging.offset,
+                app.history_paging.next_offset,
+                app.tab_bookmark(cx).pinned.is_some(),
+            )
+        };
+        assert_eq!(app.read_with(cx, paging), (true, 0, Some(page), true));
+        let rows = app.read_with(cx, |app, _| app.commits.len());
+        fixture_git(&root, &["branch", "-D", "before"]);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(false);
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        git: true,
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+        quiet_reads_landed(&app, cx);
+        app.update(cx, |app, _| app.automatic.hold_quiet_reads(true));
+        crate::views::tests::settle(&app, cx).await;
+        let banner = app.read_with(cx, |app, _| app.operation_error_text());
+        assert!(
+            banner
+                .as_deref()
+                .is_some_and(|banner| banner.contains("The displayed history is retained")),
+            "{banner:?}"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.commits.len()),
+            rows,
+            "its rows kept"
         );
         assert_eq!(
             app.read_with(cx, paging),
-            (false, 0, None, false),
-            "no paging from before"
-        );
-        // Older offers nothing: pressed, it reads nothing.
-        let status = app.read_with(cx, |app, _| app.status.clone());
-        let older = cx.debug_bounds("load-more").expect("Older drawn");
-        cx.simulate_click(older.center(), gpui::Modifiers::default());
-        crate::views::tests::settle(&app, cx).await;
-        assert_eq!(
-            app.read_with(cx, |app, _| app.status.clone()),
-            status,
-            "Older read nothing"
+            (true, 0, Some(page), true),
+            "its paging kept, the bookmark pinned"
         );
     }
 
