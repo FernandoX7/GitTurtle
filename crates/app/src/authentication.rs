@@ -28,10 +28,10 @@ pub(crate) const CANCEL_NAME: &str = "Cancel the running Git operation";
 /// What Cancel's tooltip says it stops while a Git operation runs.
 pub(crate) const CANCEL_TOOLTIP: &str = "Stop Git and its child processes. Local or remote changes may already have applied; inspect before retrying.";
 
-/// What the running write's progress reads once its Cancel was pressed: the
-/// longest it says of its own, which the review's footer keeps whole beside
-/// its Cancel download where its line holds it
-/// (`lfs_download::footer_progress_room`).
+/// What the running write's progress reads once its Cancel was pressed,
+/// whose first words, "Cancelling…", the review's footer keeps whole beside
+/// its Cancel download where its line holds them, the rest ending in an
+/// ellipsis (`lfs_download::footer_progress_room`).
 pub(crate) const CANCELLING_PROGRESS: &str = "Cancelling… Inspect the result before retrying.";
 
 #[cfg(test)]

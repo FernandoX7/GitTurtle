@@ -1195,13 +1195,16 @@ pub(crate) fn line_cancel_form(least: &'static str, room: Pixels, window: &Windo
     }
 }
 
-/// The widest a review's download says on its dialog's footer, shaped in
-/// the interface font, with the font and sizes it was shaped in
+/// What a review's download's line on its dialog's footer keeps room for,
+/// its name and the first words its progress says once Cancel is pressed
+/// ("Downloading flow.mmd's Before object · Cancelling…"), as layout shapes
+/// them and as GPUI's cut of a longer text measures them, its characters'
+/// advances summed, with the font and sizes they were measured in
 /// ([`footer_progress_room`]): the review keeps one with each download it
 /// asks for, whose object, and so whose words, never changes, so they are
 /// measured once for the object, and again only where the font or sizes
 /// change.
-pub(crate) type FooterWidest = std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>>;
+pub(crate) type FooterWidest = std::cell::RefCell<Option<(crate::views::LineKey, Pixels, Pixels)>>;
 
 #[cfg(test)]
 thread_local! {
@@ -1211,40 +1214,67 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
+/// The first words the window's progress says once Cancel is pressed,
+/// "Cancelling…", up to the ellipsis that ends them
+/// (`authentication::CANCELLING_PROGRESS`).
+fn cancelling_lead() -> &'static str {
+    let said = crate::authentication::CANCELLING_PROGRESS;
+    said.split_inclusive('…').next().unwrap_or(said)
+}
+
 /// The room a review's download's progress keeps on its dialog's footer,
-/// on a line `slot` wide beside Back to repository, its Cancel download in
-/// its `form` after it ([`running_form`]): the narrower of the widest its
-/// line says (`widest`, "Downloading flow.mmd's Before object · Cancelling…
-/// Inspect the result before retrying."), shaped once for the object and
-/// kept in `measured`, and all the line leaves beside Cancel. So in a wide
-/// window the text is whole in every state, Cancel standing right after
-/// it, and in a narrow one the text takes what the line leaves, Cancel at
-/// its end; fixed whatever the progress says, so neither a press nor a
-/// progress update moves Cancel, as in the row ([`progress_room`]). Taking
-/// all the line left, the text stood Cancel at the line's end, at 13 pt in a
+/// its line naming what downloads, `name` ("Downloading flow.mmd's Before
+/// object"), on a line `slot` wide beside Back to repository, its Cancel
+/// download in its `form` after it ([`running_form`]): the narrower of the
+/// name with the first words its progress says once Cancel is pressed,
+/// "Downloading flow.mmd's Before object · Cancelling…", measured once for
+/// the object and kept in `measured`, and all the line leaves beside
+/// Cancel. So in a wide window the name, all the line says until the press,
+/// stands a short room from Cancel, and once pressed those words are whole,
+/// the rest of the sentence ("Inspect the result before retrying."), "Waiting
+/// for your authentication response…" and any longer report from Git
+/// ending in an ellipsis inside the room, whole in
+/// the text's tooltip and accessible name, as the row keeps "Download
+/// object" and cuts the same sentence; in a narrow window the text takes
+/// what the line leaves, Cancel at its end; fixed whatever the progress
+/// says, so neither a press nor a progress update moves Cancel, as in the
+/// row ([`progress_room`]). The room lies past where GPUI's cut of a longer
+/// text measures those words (its characters' advances summed, wider than
+/// their shaping where a font kerns them), by a device pixel at most, since
+/// the cut keeps only what comes to less than the room with its ellipsis:
+/// at their own width it took the last letter before "…". Taking all the
+/// line left, the text stood Cancel at the line's end, at 13 pt in a
 /// 1480 × 973 window about 340 px from its words, where the two read as a
 /// pair of dialog buttons with Back to repository and the text's tooltip
-/// showed over the blank footer between them (decision, 2026-11-10).
+/// showed over the blank footer between them (decision, 2026-11-10); kept
+/// for the whole cancelling sentence, the room still stood Cancel far from
+/// the name before any press, where Cancel may read as Back to repository's
+/// (decision, 2026-11-11).
 pub(crate) fn footer_progress_room(
-    widest: impl FnOnce() -> String,
+    name: &str,
     measured: &FooterWidest,
     slot: Pixels,
     form: CancelForm,
     window: &Window,
 ) -> Pixels {
     let key = crate::views::LineKey::current(window);
-    let shaped = {
+    let (shaped, advances) = {
         let mut measured = measured.borrow_mut();
         match &*measured {
-            Some((kept, shaped)) if *kept == key => *shaped,
+            Some((kept, shaped, advances)) if *kept == key => (*shaped, *advances),
             _ => {
                 #[cfg(test)]
                 FOOTER_MEASURES.set(FOOTER_MEASURES.get() + 1);
-                let widest = widest();
-                let shaped =
-                    crate::views::line_widths(&[(&widest, appearance::ui_text(12.))], window);
-                *measured = Some((key, shaped));
-                shaped
+                let words = format!("{name} · {}", cancelling_lead());
+                let size = appearance::ui_text(12.);
+                let shaped = crate::views::line_widths(&[(&words, size)], window);
+                let system = window.text_system();
+                let font = system.resolve_font(&window.text_style().font());
+                let advances = words.chars().fold(Pixels::ZERO, |width, character| {
+                    width + system.layout_width(font, size, character)
+                });
+                *measured = Some((key, shaped, advances));
+                (shaped, advances)
             }
         }
     };
@@ -1254,11 +1284,31 @@ pub(crate) fn footer_progress_room(
         CancelForm::Icon => window.pixel_snap(appearance::ui_size(28.)),
         form => cancel_width(form == CancelForm::Short, window),
     };
-    // Rounded as layout places it at the display's scale, which may change
-    // while the words stay shaped as they were.
-    crate::views::laid_out_text_width(shaped, window)
-        .min(slot - gap - cancel)
-        .max(Pixels::ZERO)
+    // Rounded as layout places the words at the display's scale, which may
+    // change while they stay measured as they were.
+    kept_room(
+        crate::views::laid_out_text_width(shaped, window),
+        advances,
+        window.scale_factor(),
+    )
+    .min(slot - gap - cancel)
+    .max(Pixels::ZERO)
+}
+
+/// The room that keeps whole words laid out `placed` wide, which GPUI's cut
+/// of a longer text measures `advances` wide, at display scale `scale`: the
+/// wider of `placed` and the first device pixel past `advances`. The cut
+/// keeps only what comes to less than its room with its ellipsis, so at the
+/// advances themselves it took the last letter before "…", and the device
+/// pixel past them, divided back by the scale, can land on them in `f32`
+/// (at 1.75, the 227th device pixel and 129.71428 px), so there it is the
+/// next one.
+fn kept_room(placed: Pixels, advances: Pixels, scale: f32) -> Pixels {
+    let next = (f32::from(advances) * scale).floor() + 1.;
+    let past = Some(px(next / scale))
+        .filter(|past| *past > advances)
+        .unwrap_or_else(|| px((next + 1.) / scale));
+    placed.max(past)
 }
 
 /// The room the Download row keeps for a running download's progress
@@ -2073,6 +2123,76 @@ mod tests {
     use core::prelude::v1::test;
     use gpui::{TestAppContext, VisualTestContext};
 
+    /// The footer's room for "Downloading flow.mmd's Before object ·
+    /// Cancelling…" lies on the first device pixel past where GPUI's cut of
+    /// the longer cancelling sentence measures those words, so the cut
+    /// draws them whole, at scales 1, 1.5 and 2, where the test font's
+    /// advances, 6 px a character at 10 px, end on a device pixel and its
+    /// shaping, rounded up, lands on them: at the words' own width the cut
+    /// took the last letter before "…". And where the device pixel past the
+    /// advances, divided back by the scale, lands on them in `f32`, as at
+    /// 1.75 on the 227th device pixel, the room is the next one.
+    #[gpui::test]
+    async fn the_footer_s_room_keeps_cancelling_whole_as_gpui_cuts_it(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let kept = "Downloading flow.mmd's Before object · Cancelling…";
+        let pressed = format!(
+            "Downloading flow.mmd's Before object · {}",
+            crate::authentication::CANCELLING_PROGRESS
+        );
+        let size = px(10.);
+        for scale in [1., 1.5, 2.] {
+            let (advances, room, cut) = cx.update(|window, _| {
+                let style = window.text_style();
+                let system = window.text_system();
+                let font = system.resolve_font(&style.font());
+                let advances = kept.chars().fold(Pixels::ZERO, |width, character| {
+                    width + system.layout_width(font, size, character)
+                });
+                let room = kept_room(advances, advances, scale);
+                let cut = system
+                    .line_wrapper(style.font(), size)
+                    .truncate_line(
+                        SharedString::from(pressed.clone()),
+                        room,
+                        "…",
+                        &[style.to_run(pressed.len())],
+                        gpui::TruncateFrom::End,
+                    )
+                    .0
+                    .to_string();
+                (advances, room, cut)
+            });
+            let device = f32::from(advances) * scale;
+            assert_eq!(
+                device.fract(),
+                0.,
+                "at {scale} the words, {advances:?}, end on a device pixel"
+            );
+            assert_eq!(
+                (
+                    room > advances,
+                    (f32::from(room) * scale).round(),
+                    cut.as_str()
+                ),
+                (true, device + 1., kept),
+                "at {scale} the room, {room:?}, is the device pixel past the words, \
+                 {advances:?}, and the cut draws them whole"
+            );
+        }
+        let advances = px(f32::from_bits(1124185819));
+        assert_eq!(
+            (f32::from(advances) * 1.75).floor() + 1.,
+            227.,
+            "at 1.75 {advances:?} lies just short of the 227th device pixel"
+        );
+        let room = kept_room(advances, advances, 1.75);
+        assert!(
+            room > advances,
+            "at 1.75 the room, {room:?}, lies past the words, {advances:?}"
+        );
+    }
+
     /// What the drawn row says of the download it asked for.
     #[derive(Clone, Copy, Debug, PartialEq)]
     enum Shown {
@@ -2210,10 +2330,11 @@ mod tests {
         needed - row_room(Pixels::ZERO, window).1
     }
 
-    /// The ids of what may stand on the row's lines.
+    /// The ids of what may stand on the row's lines: the running progress
+    /// by the room it keeps, which its words here, "Download object", fill.
     const PARTS: [&str; 6] = [
         "lfs-preview-download-explanation",
-        "lfs-download-progress",
+        "lfs-download-progress-room",
         "cancel-lfs-download",
         "download-lfs-side-0",
         "download-lfs-side-1",
@@ -2221,9 +2342,20 @@ mod tests {
     ];
 
     /// Whether the drawn parts stand on one line, their centres within a
-    /// device pixel, apart, inside the row.
+    /// device pixel, apart, inside the row, a running progress's words
+    /// inside the room it keeps.
     fn one_line_inside(cx: &mut VisualTestContext, device: Pixels) -> Result<(), String> {
         let row = cx.debug_bounds("lfs-download-row").expect("the row");
+        if let (Some(words), Some(room)) = (
+            cx.debug_bounds("lfs-download-progress"),
+            cx.debug_bounds("lfs-download-progress-room"),
+        ) && (words.left() < room.left() - device / 2.
+            || words.right() > room.right() + device / 2.)
+        {
+            return Err(format!(
+                "the progress, {words:?}, runs outside its room, {room:?}"
+            ));
+        }
         let drawn: Vec<_> = PARTS
             .iter()
             .filter_map(|id| cx.debug_bounds(id).map(|bounds| (*id, bounds)))

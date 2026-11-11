@@ -458,8 +458,8 @@ struct ReviewDownload {
     /// review showed another file or commit waits for the person to come
     /// back to its file, where the row says it.
     seen: std::cell::Cell<bool>,
-    /// The widest its line on the dialog's footer says, measured once for
-    /// its object, whose room the line keeps
+    /// The words its line on the dialog's footer keeps room for, its name
+    /// and "Cancelling…", measured once for its object
     /// (`lfs_download::footer_progress_room`).
     footer_widest: crate::lfs_download::FooterWidest,
 }
@@ -868,9 +868,10 @@ impl SeriesBrowser {
     /// away with it, overflowed a body the series list's rows do not count,
     /// and moved the content by about 50 px as it came and went (decision,
     /// 2026-11-10). Its text keeps a room as the row's does, the narrower
-    /// of the widest the line says, measured once for the download's
+    /// of its name with "· Cancelling…", measured once for the download's
     /// object, and what the line leaves beside Cancel, which stands right
-    /// after it, so neither a press nor a progress update moves Cancel
+    /// after it, so neither a press nor a progress update moves Cancel,
+    /// and longer words end in an ellipsis inside it
     /// (`lfs_download::footer_progress_room`); the text gives way first,
     /// then Cancel's word, then its label for its icon
     /// (`lfs_download::line_cancel_form`). Cancel tracks
@@ -954,7 +955,7 @@ impl SeriesBrowser {
         let object = asked.object();
         let form = crate::lfs_download::line_cancel_form(LINE_LEAST, width, window);
         let room = crate::lfs_download::footer_progress_room(
-            || format!("{name} · {}", crate::authentication::CANCELLING_PROGRESS),
+            &name,
             &asked.footer_widest,
             width,
             form,
@@ -7681,26 +7682,33 @@ mod tests {
     }
 
     /// The footer's progress keeps a room of its own as the row's does
-    /// (decision, 2026-11-10): the narrower of what its line leaves beside
-    /// Cancel download and the widest it says, "Downloading both.mmd's
-    /// Before object · Cancelling… Inspect the result before retrying.",
-    /// measured once for the download's object. At 13 pt in a 1480 × 973
-    /// window the room is that wide, Cancel stands a gap after it and keeps
-    /// its bounds through a long Git LFS progress before any press, the
-    /// press and "Cancelling…", nothing measured again; the text's tooltip
-    /// shows over its words, never over the blank room after shorter words
-    /// or the footer past Cancel; a text size changed while it runs
-    /// measures them again, once. At 18 pt in 600 × 490 and 461 × 490
-    /// windows, as before, the room takes what the line leaves and Cancel
-    /// stands at its end. Taking all the line left, the text drew Cancel at
-    /// the line's end, far from its words in the wide window, so it read as
-    /// a pair with Back to repository, and the text's tooltip showed over
-    /// the blank footer between them.
+    /// (decisions, 2026-11-10 and 2026-11-11): the narrower of what its line
+    /// leaves beside Cancel download and its name with the first words its
+    /// progress says once pressed, "Downloading both.mmd's Before object ·
+    /// Cancelling…", measured once for the download's object. At 13 pt and
+    /// scale 1 in a 1480 × 973 window the room is that wide, so before any
+    /// press the blank between the name, all the line says, and Cancel is
+    /// at most "· Cancelling…" and the line's gap; Cancel stands a gap after
+    /// the room and keeps its bounds through a long Git LFS progress before
+    /// any press, the press and "Cancelling…", nothing measured again; once
+    /// pressed the text draws those words whole, as GPUI cuts the sentence
+    /// at the text's drawn width, the rest of it cut, whole in its tooltip
+    /// and accessible name; the text's tooltip shows over its words, never
+    /// over the blank room after shorter words or the footer past Cancel; a
+    /// text size changed while it runs measures them again, once. At 18 pt
+    /// in 600 × 490 and 461 × 490 windows, as before, the room takes what
+    /// the line leaves and Cancel stands at its end. Taking all the line
+    /// left, the text drew Cancel at the line's end, far from its words in
+    /// the wide window, so it read as a pair with Back to repository, and
+    /// the text's tooltip showed over the blank footer between them; kept
+    /// for the whole cancelling sentence, the room still stood Cancel far
+    /// from the name before any press.
     #[gpui::test]
     async fn the_footer_s_progress_keeps_its_room_with_cancel_beside_it(
         cx: &mut gpui_kit::TestAppContext,
     ) {
         use crate::lfs_download::FOOTER_MEASURES;
+        use crate::native_accessibility::written;
         use crate::tags::tests::draw;
         let (_fixture, repo, files) = missing_both_with(&["notes.txt"]);
         let (app, cx) = crate::tags::tests::window(cx, &repo);
@@ -7722,33 +7730,63 @@ mod tests {
             draw(cx);
         };
         let name = "Downloading both.mmd's Before object";
-        let widest = format!("{name} · {}", crate::authentication::CANCELLING_PROGRESS);
-        // The widest words as layout places them, the line's gap and a
-        // device pixel.
+        let kept = format!("{name} · Cancelling…");
+        let cancelling = format!("{name} · {}", crate::authentication::CANCELLING_PROGRESS);
+        // The kept words and what they keep past the name as layout places
+        // them, the line's gap and a device pixel.
         let measure = |cx: &mut gpui::VisualTestContext| {
             cx.update(|window, _| {
-                (
+                let placed = |text: &str| {
                     crate::views::laid_out_text_width(
-                        crate::views::line_widths(&[(&widest, appearance::ui_text(12.))], window),
+                        crate::views::line_widths(&[(text, appearance::ui_text(12.))], window),
                         window,
-                    ),
+                    )
+                };
+                (
+                    placed(&kept),
+                    placed(" · Cancelling…"),
                     window.pixel_snap(window.rem_size() * 0.5),
                     px(1. / window.scale_factor()),
                 )
+            })
+        };
+        // What GPUI's cut of `text` draws in a text `width` wide, as the
+        // progress's text element cuts it.
+        let cut = |cx: &mut gpui::VisualTestContext, text: &str, width: Pixels| {
+            cx.update(|window, _| {
+                let style = window.text_style();
+                window
+                    .text_system()
+                    .line_wrapper(style.font(), appearance::ui_text(12.))
+                    .truncate_line(
+                        SharedString::from(text.to_owned()),
+                        width,
+                        "…",
+                        &[style.to_run(text.len())],
+                        gpui::TruncateFrom::End,
+                    )
+                    .0
+                    .to_string()
             })
         };
         let long = "Receiving objects: 50% (1/2), 1.20 MiB | 3.40 MiB/s, and a long report \
                     from Git LFS that runs well past the room the line keeps for it";
         let said = format!("{name} · {long}");
         for (width, height, text, scale) in [
-            (1480., 973., 13, initial),
+            (1480., 973., 13, 1.),
             (600., 490., 18, 2.),
             (461., 490., 18, 2.),
         ] {
             let at = format!("{width} × {height} at {text} pt");
             cx.simulate_resize(size(px(width), px(height)));
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            // After the resize, which sets the test window's scale back.
             cx.update(|window, _| window.set_scale_factor(scale));
+            assert_eq!(
+                cx.update(|window, _| window.scale_factor()),
+                scale,
+                "{at}: the window draws at {scale}"
+            );
             choose(&browser, cx, file_index(&files, "both.mmd"));
             shown(cx);
             let before = cx
@@ -7759,7 +7797,7 @@ mod tests {
             cx.executor()
                 .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
             shown(cx);
-            let (reserved, gap, device) = measure(cx);
+            let (reserved, beyond, gap, device) = measure(cx);
             let [line, room, progress, rest] = [
                 "series-download-status",
                 "lfs-download-progress-room",
@@ -7770,14 +7808,28 @@ mod tests {
                 cx.debug_bounds(id)
                     .unwrap_or_else(|| panic!("{at}: the footer draws {id}"))
             });
+            // The room keeps the words, past them by a device pixel at most,
+            // where GPUI's cut keeps them whole.
+            let keeps = |room: Bounds<Pixels>, reserved: Pixels, device: Pixels| {
+                room.size.width >= reserved - device / 2.
+                    && room.size.width <= reserved + device + device / 2.
+            };
             let wide = width > 1000.;
             if wide {
                 assert!(
-                    (room.size.width - reserved).abs() <= device / 2.
+                    keeps(room, reserved, device)
                         && (rest.left() - (room.right() + gap)).abs() <= device / 2.
                         && rest.right() < line.right() - device,
                     "{at}: the progress's room, {room:?}, keeps {reserved:?}, and Cancel, \
                      {rest:?}, stands a gap after it, short of the line's end, {line:?}"
+                );
+                // Before any press the line says the name alone: Cancel
+                // stands at most "· Cancelling…" and the gap from it, and the
+                // device pixel the room may lie past those words.
+                assert!(
+                    rest.left() - progress.right() <= beyond + gap + device,
+                    "{at}: the blank between the name, {progress:?}, and Cancel, {rest:?}, \
+                     is at most {beyond:?} and the gap, {gap:?}"
                 );
                 // The words before any press, the name alone, are shorter
                 // than the room: the text, and its tooltip, take them only,
@@ -7811,7 +7863,11 @@ mod tests {
             crate::authentication::PROGRESS_WORDS.set(Some(long));
             shown(cx);
             let updated = cx.debug_bounds("cancel-lfs-download");
-            // A long progress fills the room, its tooltip saying it whole.
+            let named = written::get("lfs-download-progress")
+                .and_then(|node| node.node.label().map(str::to_owned));
+            // A long progress fills the room, ending in an ellipsis inside
+            // it, its tooltip and accessible name saying it whole.
+            let filled = cx.debug_bounds("lfs-download-progress");
             let tooltip = hover_shows(cx, "lfs-download-progress", &said);
             crate::authentication::PROGRESS_WORDS.set(None);
             assert_eq!(
@@ -7819,9 +7875,49 @@ mod tests {
                 Some(rest),
                 "{at}: a long progress before any press moves nothing"
             );
-            assert!(tooltip, "{at}: the text's tooltip says its words");
+            assert!(
+                filled.is_some_and(|filled| {
+                    filled.left() >= room.left() - device / 2.
+                        && filled.right() <= room.right() + device / 2.
+                }),
+                "{at}: a long progress, {filled:?}, stays inside its room, {room:?}"
+            );
+            assert_eq!(
+                (tooltip, named.as_deref()),
+                (true, Some(said.as_str())),
+                "{at}: the text's tooltip and accessible name say its words whole"
+            );
             cx.simulate_click(rest.center(), Modifiers::none());
             shown(cx);
+            if wide {
+                // Once pressed, the name with "· Cancelling…" is drawn whole
+                // inside the room, as GPUI cuts the sentence at the text's
+                // drawn width, the rest of it cut, and the tooltip and the
+                // accessible name say it whole.
+                let drawn = cx
+                    .debug_bounds("lfs-download-progress")
+                    .expect("the progress is drawn");
+                let shows = cut(cx, &cancelling, drawn.size.width);
+                let named = written::get("lfs-download-progress")
+                    .and_then(|node| node.node.label().map(str::to_owned));
+                assert!(
+                    drawn.size.width >= reserved - device / 2.
+                        && drawn.left() >= room.left() - device / 2.
+                        && drawn.right() <= room.right() + device / 2.,
+                    "{at}: the cancelling text, {drawn:?}, holds {reserved:?} inside its room, \
+                     {room:?}"
+                );
+                assert_eq!(
+                    (
+                        shows.as_str(),
+                        hover_shows(cx, "lfs-download-progress", &cancelling),
+                        named.as_deref(),
+                    ),
+                    (kept.as_str(), true, Some(cancelling.as_str())),
+                    "{at}: the text draws its name and \"Cancelling…\" whole and cuts the \
+                     rest, saying it whole in its tooltip and accessible name"
+                );
+            }
             // Its tooltip is its name in every form once pressed.
             let pressed = crate::views::CONTROL_TOOLTIPS
                 .with(|tooltips| tooltips.borrow().get("cancel-lfs-download").cloned());
@@ -7839,7 +7935,7 @@ mod tests {
             assert_eq!(
                 FOOTER_MEASURES.get(),
                 0,
-                "{at}: the line's widest words are measured once for its object"
+                "{at}: the line's kept words are measured once for its object"
             );
             if wide {
                 // A text size changed while it runs: the words are measured
@@ -7848,12 +7944,12 @@ mod tests {
                 cx.update(|window, cx| appearance::apply_text_sizes(12, 12, window, cx));
                 shown(cx);
                 shown(cx);
-                let (reserved, _, device) = measure(cx);
+                let (reserved, _, _, device) = measure(cx);
                 let room = cx
                     .debug_bounds("lfs-download-progress-room")
                     .expect("the progress's room");
                 assert!(
-                    FOOTER_MEASURES.get() == 1 && (room.size.width - reserved).abs() <= device / 2.,
+                    FOOTER_MEASURES.get() == 1 && keeps(room, reserved, device),
                     "{at}: at 12 pt the words are measured again, once ({}), and the \
                      progress's room, {room:?}, keeps {reserved:?}",
                     FOOTER_MEASURES.get()
