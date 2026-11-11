@@ -1774,7 +1774,10 @@ impl GitTurtle {
     /// [`Self::choose_text_mode`] where `held` says whether focus was in
     /// Quick source's text pane as the person reached for the mode: the
     /// collapsed modes' menu holds focus while its choice acts, so it passes
-    /// where focus was as it opened ([`Self::take_mode_menu_held`]).
+    /// where focus was as its press opened it ([`Self::take_mode_menu_note`]).
+    /// A choice of the mode already shown moves nothing: Rendered chosen
+    /// again from the rendered view's own stop moved focus to the pane's
+    /// group, its name spoken again.
     fn choose_text_mode_held(
         &mut self,
         mode: TextMode,
@@ -1782,9 +1785,12 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let shown = self.text_mode == mode;
         self.text_mode = mode;
         self.ensure_editor(window, cx);
-        self.keep_quick_source_pane_focus(held, window, cx);
+        if !shown {
+            self.keep_quick_source_pane_focus(held, window, cx);
+        }
         cx.notify();
     }
 

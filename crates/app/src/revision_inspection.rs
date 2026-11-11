@@ -93,12 +93,23 @@ struct Inspection {
     /// Whether focus was in Quick source's text pane as a press opened the
     /// collapsed modes' menu ([`GitTurtle::note_mode_menu_press`]), which
     /// the menu's choice acts on as the menu is built from it
-    /// ([`GitTurtle::take_mode_menu_held`]): the menu holds focus while its
+    /// ([`GitTurtle::take_mode_menu_note`]): the menu holds focus while its
     /// choice acts, so asked then, focus was never in the pane, and the
     /// menu's close gave the pane's focus to the information. A key opens
     /// the menu only from its Button, which holds focus, outside the pane,
-    /// and finds nothing noted.
+    /// and acts on no note, even one a press it never answered left.
     mode_menu_held: std::cell::Cell<bool>,
+}
+
+/// The inspection a press that opened the collapsed modes' menu found focus
+/// in the text pane of ([`GitTurtle::take_mode_menu_note`]): its repository
+/// tab and the file it inspects, so the menu's choice acts on that focus
+/// only where it lands on the same inspection
+/// ([`GitTurtle::mode_menu_note_holds`]).
+#[derive(Clone, PartialEq)]
+pub(super) struct ModeMenuNote {
+    tab: Option<usize>,
+    file: PathBuf,
 }
 enum Target {
     Comparison(RevisionComparison),
@@ -657,13 +668,33 @@ impl GitTurtle {
         }
     }
 
-    /// Whether focus was in Quick source's text pane as the collapsed modes'
-    /// menu opened, taken as the menu is built ([`Inspection::mode_menu_held`]).
-    pub(super) fn take_mode_menu_held(&self) -> bool {
-        self.revision_inspection
-            .active
-            .as_deref()
-            .is_some_and(|active| active.mode_menu_held.take())
+    /// The inspection whose text pane held focus as a press opened the
+    /// collapsed modes' menu, taken as the menu is built
+    /// ([`Inspection::mode_menu_held`]), or `None` where it held none.
+    pub(super) fn take_mode_menu_note(&self) -> Option<ModeMenuNote> {
+        let active = self.revision_inspection.active.as_deref()?;
+        if !active.mode_menu_held.take() {
+            return None;
+        }
+        self.mode_menu_note()
+    }
+
+    /// Whether the menu's choice lands on the inspection `note` was taken
+    /// in, so it acts on the focus noted there: Ctrl+Tab from an open menu
+    /// shows another tab, whose focus a choice made then once moved.
+    pub(super) fn mode_menu_note_holds(&self, note: &ModeMenuNote) -> bool {
+        self.mode_menu_note().as_ref() == Some(note)
+    }
+
+    /// Quick source's inspection as a [`ModeMenuNote`] names it.
+    fn mode_menu_note(&self) -> Option<ModeMenuNote> {
+        let Target::File { entry, .. } = &self.revision_inspection.active.as_deref()?.target else {
+            return None;
+        };
+        Some(ModeMenuNote {
+            tab: self.repository_tabs.active,
+            file: entry.path.clone(),
+        })
     }
 
     /// Quick source's text pane drawing `content` in place of its text while
@@ -3596,6 +3627,210 @@ mod tests {
         assert!(kept && !pane, "focus stays on the information");
         assert!(information.is_some(), "ringed there, as the keys left it");
         assert!(ring.is_none(), "and not on the text pane");
+    }
+
+    /// From the text, Rendered and Diagrams chosen from the collapsed menu,
+    /// by keys or by a click on the item, give focus to the pane, named by
+    /// its view and ringed on its edge from the choice's first frame, as the
+    /// mode buttons do, and Source from the pane gives it back to the text.
+    #[gpui::test]
+    async fn quick_source_mode_menu_from_the_text_by_keys_and_pointer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx) = rendered_landing(cx, 1).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let collapsed = cx.debug_bounds("text-mode-menu").is_some();
+        // Read first, the text size restored before any assertion.
+        let mut seen = Vec::new();
+        for (item, keys) in [("Rendered", "end enter"), ("Diagrams", "home down enter")] {
+            for pointer in [false, true].into_iter().filter(|_| collapsed) {
+                choose_from_menu(cx, "home enter");
+                let on_text = quick_source_text(&app, cx)
+                    .is_some_and(|text| cx.update(|window, _| text.is_focused(window)));
+                crate::native_accessibility::written::forget();
+                if pointer {
+                    let menu = cx.debug_bounds("text-mode-menu").expect("the modes' menu");
+                    cx.simulate_click(menu.center(), gpui::Modifiers::none());
+                    draw(cx);
+                    let listed = if item == "Rendered" {
+                        "menu-item: Rendered · MenuItemCheckBox False"
+                    } else {
+                        "menu-item: Diagrams · MenuItemCheckBox False"
+                    };
+                    let at = cx
+                        .debug_bounds(listed)
+                        .unwrap_or_else(|| panic!("{item} is listed"));
+                    cx.simulate_click(at.center(), gpui::Modifiers::none());
+                    crate::width_walk::frame(cx);
+                } else {
+                    choose_from_menu(cx, keys);
+                }
+                seen.push((
+                    item,
+                    pointer,
+                    on_text,
+                    menu_choice(&app, cx),
+                    written_pane_name(),
+                ));
+            }
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(collapsed, "a narrow window collapses the modes");
+        for (item, pointer, on_text, choice, named) in seen {
+            let at = format!("{item} {}", if pointer { "clicked" } else { "by keys" });
+            let (mode, (focused, pane), _, ring, content, information) = choice;
+            let (shown, name) = if item == "Rendered" {
+                (TextMode::Markdown, "Rendered Markdown")
+            } else {
+                (TextMode::Diagrams, "Mermaid diagrams")
+            };
+            assert!(on_text, "{at}: Source from the menu gave the text focus");
+            assert!(mode == shown, "{at}: chosen");
+            assert!(focused && pane, "{at}: the pane takes focus from the text");
+            assert!(
+                ring.is_some() && ring == content,
+                "{at}: ringed on its edge"
+            );
+            assert!(information.is_none(), "{at}: and not on the information");
+            assert_eq!(named.as_deref(), Some(name), "{at}: named by its view");
+        }
+    }
+
+    /// A note left by a press on the collapsed modes' menu that opened
+    /// nothing, with focus in the text pane, is not one the menu a key opens
+    /// later from its Button acts on: Diagrams chosen from it leaves focus
+    /// on the Button, renamed "Comparison mode: Diagrams", and the pane
+    /// holds none. The menu opens as the press goes down and takes the note
+    /// as it is built, so only a press it never answered leaves one; such a
+    /// note outlived its press, and the later choice moved focus into the
+    /// pane.
+    #[gpui::test]
+    async fn quick_source_mode_menu_opened_by_a_key_acts_on_no_earlier_press(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx) = rendered_landing(cx, 1).await;
+        let source = app.read_with(cx, |app, _| app.source_focus.clone());
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let mut seen = None;
+        if cx.debug_bounds("text-mode-menu").is_some() {
+            // The note the menu's press leaves with focus in the pane.
+            cx.update(|window, cx| app.read(cx).note_mode_menu_press(window, cx));
+            let opened = cx
+                .debug_bounds("menu-item: Diagrams · MenuItemCheckBox False")
+                .is_some();
+            let kept = cx.debug_bounds("quick-source-pane").is_some();
+            // The Button, the stop before the pane.
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            let button = cx.update(|window, cx| window.focused(cx));
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            let listed = cx
+                .debug_bounds("menu-item: Diagrams · MenuItemCheckBox False")
+                .is_some();
+            // A key-opened menu starts on its first item, Source.
+            cx.simulate_keystrokes("down enter");
+            crate::width_walk::frame(cx);
+            seen = Some((
+                (opened, kept, button.clone(), listed),
+                app.read_with(cx, |app, _| app.text_mode),
+                cx.update(|window, cx| window.focused(cx)) == button,
+                crate::views::COMPACT_LABELS
+                    .with(|names| names.borrow().get("text-mode-menu").cloned()),
+                cx.debug_bounds("quick-source-pane").is_some(),
+                cx.debug_bounds("compare-text-ring").is_some(),
+            ));
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        let ((opened, kept, button, listed), mode, on_button, label, pane, ring) =
+            seen.expect("a narrow window collapses the modes");
+        assert!(!opened, "no menu is open");
+        assert!(kept, "and the pane holds focus as the press was noted");
+        assert!(
+            button.is_some() && button != Some(source),
+            "Shift+Tab reaches the Button"
+        );
+        assert!(listed, "Enter on it opens the menu");
+        assert!(mode == TextMode::Diagrams, "Diagrams is chosen");
+        assert!(on_button, "focus returns to the menu's Button");
+        assert_eq!(
+            label.as_deref(),
+            Some("Comparison mode: Diagrams"),
+            "renamed by the mode chosen"
+        );
+        assert!(!pane && !ring, "the pane holds no focus and draws no ring");
+    }
+
+    /// Rendered chosen again from the rendered view's own stop, with the
+    /// pane holding focus around it, moves no focus and renames nothing:
+    /// the choice of the mode already shown moved focus to the pane's
+    /// group, and its name, "Rendered Markdown", was spoken again.
+    #[gpui::test]
+    async fn quick_source_choosing_the_mode_shown_moves_nothing(cx: &mut gpui::TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx) = rendered_landing(cx, 0).await;
+        let rendered = app
+            .read_with(cx, |app, cx| {
+                app.markdown_view
+                    .as_ref()
+                    .map(|view| view.read(cx).focus_handle())
+            })
+            .expect("the Markdown is rendered");
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| rendered.is_focused(window)),
+            "Tab reaches the rendered view's own stop"
+        );
+        let mut renames = Renames::start(cx);
+        let button = cx.debug_bounds("Rendered").expect("Rendered is offered");
+        cx.simulate_click(button.center(), gpui::Modifiers::none());
+        let first = renames.next(cx);
+        assert!(
+            cx.update(|window, _| rendered.is_focused(window)),
+            "the rendered view's stop keeps focus"
+        );
+        assert_eq!(written_pane_name().as_deref(), Some("Rendered Markdown"));
+        if let Some(first) = first {
+            assert_eq!(first, Vec::<String>::new(), "nothing is renamed");
+        }
+        let later = renames.next(cx);
+        assert!(cx.update(|window, _| rendered.is_focused(window)));
+        if let Some(later) = later {
+            assert_eq!(later, Vec::<String>::new(), "nor later");
+        }
+    }
+
+    /// Rendered to Diagrams with the pane holding focus renames the pane
+    /// once, "Mermaid diagrams", in the choice's first frame, its focus and
+    /// ring kept on the pane's edge, and nothing after it: one spoken result
+    /// for one change.
+    #[gpui::test]
+    async fn quick_source_rendered_to_diagrams_from_the_pane_says_one_name(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_fixture, app, cx) = rendered_landing(cx, 1).await;
+        let source = app.read_with(cx, |app, _| app.source_focus.clone());
+        let mut renames = Renames::start(cx);
+        let button = cx.debug_bounds("Diagrams").expect("Diagrams is offered");
+        cx.simulate_click(button.center(), gpui::Modifiers::none());
+        let first = renames.next(cx);
+        assert_eq!(written_pane_name().as_deref(), Some("Mermaid diagrams"));
+        assert_pane_rings(cx, &source, "Diagrams' first frame");
+        if let Some(first) = first {
+            assert_eq!(first, vec!["Mermaid diagrams".to_owned()], "renamed once");
+        }
+        let later = renames.next(cx);
+        assert_pane_rings(cx, &source, "the frame after it");
+        if let Some(later) = later {
+            assert_eq!(later, Vec::<String>::new(), "and not again");
+        }
     }
 
     /// Text that landed while Settings showed, its tab then left from

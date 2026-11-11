@@ -3879,21 +3879,33 @@ impl GitTurtle {
                                 }
                             }
                         })
-                        .app_menu(move |menu, _, cx| {
+                        .app_menu(move |menu, window, cx| {
                             // Built when opened; a choice acts on the page
                             // as it is then, as a mode button does, and on
                             // focus where it was as the menu opened, since
-                            // the menu holds it while the choice acts.
-                            let held = owner
+                            // the menu holds it while the choice acts. The
+                            // note is taken here, once: the menu must not be
+                            // built again while open, or the note is lost.
+                            // A key-opened menu acts on none, even one a
+                            // press the menu never answered left.
+                            let note = owner
                                 .upgrade()
-                                .is_some_and(|app| app.read(cx).take_mode_menu_held());
+                                .and_then(|app| app.read(cx).take_mode_menu_note())
+                                .filter(|_| !window.last_input_was_keyboard());
                             available.iter().fold(menu, |menu, &(mode, name)| {
                                 let owner = owner.clone();
+                                let note = note.clone();
                                 menu.item(
                                     PopupMenuItem::new(name).checked(mode == current).on_click(
                                         move |_, window, cx| {
                                             let _ = owner.update(cx, |this, cx| {
                                                 if this.page == AppPage::Repository {
+                                                    // Noted in this tab's
+                                                    // inspection, not one
+                                                    // Ctrl+Tab showed since.
+                                                    let held = note.as_ref().is_some_and(|note| {
+                                                        this.mode_menu_note_holds(note)
+                                                    });
                                                     this.choose_text_mode_held(
                                                         mode, held, window, cx,
                                                     );
