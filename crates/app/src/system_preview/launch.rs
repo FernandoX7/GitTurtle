@@ -660,7 +660,12 @@ mod tests {
         let lines: Vec<&str> = record.lines().collect();
         assert_eq!(lines[0], "1", "exactly one argument");
         assert_eq!(lines[1], copy.to_str().unwrap());
-        assert_eq!(Path::new(lines[2]), directory);
+        // As the kernel spells it, without a link `directory` is reached
+        // through (a `TMPDIR` behind a link).
+        assert_eq!(
+            Path::new(lines[2]).canonicalize().unwrap(),
+            directory.canonicalize().unwrap()
+        );
         let (pid, group) = lines[3].split_once(' ').unwrap();
         assert_eq!(pid, group, "the launcher leads its own process group");
         assert_eq!(&lines[4..7], ["/dev/null"; 3]);

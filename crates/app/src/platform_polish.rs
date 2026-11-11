@@ -1214,9 +1214,18 @@ mod launcher_tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
+        // The argument is the path as given; the working directory is the
+        // one the shell reads from the kernel, spelled without a link the
+        // given path is reached through (a `TMPDIR` behind a link).
+        let recorded = std::fs::read_to_string(&record).unwrap();
+        let (argument, working) = recorded.split_once('\n').unwrap();
+        assert_eq!(argument, format!("--dir={}", repository.display()));
         assert_eq!(
-            std::fs::read_to_string(&record).unwrap(),
-            format!("--dir={0}\n{0}\n", repository.display())
+            Path::new(working.trim_end_matches('\n'))
+                .canonicalize()
+                .unwrap(),
+            repository.canonicalize().unwrap(),
+            "{recorded}"
         );
     }
 }
