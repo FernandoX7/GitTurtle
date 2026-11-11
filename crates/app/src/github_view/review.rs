@@ -45,9 +45,15 @@ pub(super) fn init(cx: &mut App) {
             KeyBinding::new("pagedown", ReviewPageDown, Some(context)),
             KeyBinding::new("shift-up", ReviewExtendUp, Some(context)),
             KeyBinding::new("shift-down", ReviewExtendDown, Some(context)),
-            KeyBinding::new("enter", ReviewAccept, Some(context)),
         ]);
     }
+    // Return on the patch is its key-down listener's ([`Panel::comment_on_return`]), which
+    // reads the key's held mark that an action does not carry: bound to no action there,
+    // neither a review action nor the dialog's default Confirm takes the key.
+    cx.bind_keys([
+        KeyBinding::new("enter", ReviewAccept, Some("GitTurtleGithubFiles")),
+        KeyBinding::new("enter", gpui_kit::NoAction, Some("GitTurtleGithubPatch")),
+    ]);
     // The outbound confirmation's region scrolls its destination and text by line, by page
     // and to either end while it holds focus ([`Panel::scroll_confirmation`]).
     let context = Some(CONFIRMATION);
@@ -3032,26 +3038,14 @@ impl Panel {
             return;
         }
         if key == "enter" {
+            // The changed-file list's Return; a line's is the patch's own
+            // ([`Self::comment_on_return`]).
             if is_file {
                 if self.review.selected_file.is_none() {
                     self.select_review_file(0, window, cx);
                 } else {
                     self.focus_file_content(window, cx);
                 }
-            } else if !gpui_kit::base::enter_press_is_repeat(window, cx)
-                && gpui_kit::base::enter_press_began_on(&self.review.line_focus, window, cx)
-            {
-                // Return on a line begins its comment once per press, never
-                // on a held key's repeats, under X11 too, nor for a press
-                // that began on the changed-file list, whose Return gave
-                // the patch focus: each repeat refused again where no line
-                // could take a comment, and one that reached the patch
-                // from the list began a comment. The press gives focus to
-                // the comment's text, which takes none of its repeats until
-                // the key comes up, as a dialog an Enter opened takes none
-                // (`dialog_opened`): each typed a new line there.
-                self.begin_comment(window, cx);
-                gpui_kit::base::dialog_opened(window, cx);
             }
             return;
         }
@@ -3082,6 +3076,45 @@ impl Panel {
         } else {
             self.select_review_line(index, extend, window, cx);
         }
+    }
+    /// Return on a review line, taken as the key goes down on the patch: it begins the line's
+    /// comment, or says why it cannot ([`Self::begin_comment`]), once per press. Never for a
+    /// key marked held, as macOS and Wayland mark a held key's repeats and so the first Enter
+    /// of a Return held down elsewhere (another window or application) as the patch takes
+    /// focus, nor for one that repeats the press the toolkit recorded
+    /// (`enter_press_is_repeat`), as X11 sends a held key's repeats unmarked, nor for a
+    /// modified Return. A press begun on the changed-file list, whose Return gives the patch
+    /// focus, repeats there, so it begins none. The patch took Return through `ReviewAccept`,
+    /// an action that carries no held mark, so a Return held as the patch took focus began a
+    /// local draft, or was refused with no line chosen (decided 2026-11-10: a press acts once,
+    /// and only on the control its key-down began on). Where the press began is not asked
+    /// (`enter_press_began_on`): the toolkit records the focus at a press's first key-down and
+    /// counts every later key-down of it a repeat, and no binding runs ahead of this listener
+    /// to move focus, so a key-down that is no repeat began on the patch.
+    ///
+    /// The press gives focus to the comment's text, which takes none of its repeats until the
+    /// key comes up, as a dialog an Enter opened takes none (`dialog_opened`): each typed a
+    /// new line there.
+    fn comment_on_return(
+        &mut self,
+        event: &gpui_kit::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keystroke = &event.keystroke;
+        if keystroke.key != "enter"
+            || keystroke.modifiers.modified()
+            || !self.review.line_focus.is_focused(window)
+        {
+            return;
+        }
+        // Every plain Return on the patch is its own, as the binding took it.
+        cx.stop_propagation();
+        if event.is_held || gpui_kit::base::enter_press_is_repeat(window, cx) {
+            return;
+        }
+        self.begin_comment(window, cx);
+        gpui_kit::base::dialog_opened(window, cx);
     }
 
     pub(super) fn captured(&self, cx: &App) -> Option<CapturedPull> {
@@ -4206,7 +4239,7 @@ impl Panel {
         );
         // The keyboard ring lies over the rows' edge, so no row moves.
         let ringed = self.ringed(&self.review.line_focus, cx);
-        crate::native_accessibility::clips_children(div().id("github-patch-focus").key_context("GitTurtleGithubPatch").on_action(cx.listener(|this,_:&ReviewUp,window,cx|{this.review_key("up",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewDown,window,cx|{this.review_key("down",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewHome,window,cx|{this.review_key("home",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewEnd,window,cx|{this.review_key("end",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageUp,window,cx|{this.review_key("pageup",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageDown,window,cx|{this.review_key("pagedown",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendUp,window,cx|{this.review_key("up",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendDown,window,cx|{this.review_key("down",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewAccept,window,cx|{this.review_key("enter",false,window,cx);cx.stop_propagation();})).debug_selector(||"github-patch".into()).flex_1().min_h_0().min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden()
+        crate::native_accessibility::clips_children(div().id("github-patch-focus").key_context("GitTurtleGithubPatch").on_action(cx.listener(|this,_:&ReviewUp,window,cx|{this.review_key("up",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewDown,window,cx|{this.review_key("down",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewHome,window,cx|{this.review_key("home",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewEnd,window,cx|{this.review_key("end",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageUp,window,cx|{this.review_key("pageup",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageDown,window,cx|{this.review_key("pagedown",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendUp,window,cx|{this.review_key("up",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendDown,window,cx|{this.review_key("down",true,window,cx);cx.stop_propagation();})).on_key_down(cx.listener(Self::comment_on_return)).debug_selector(||"github-patch".into()).flex_1().min_h_0().min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden()
             // A context row's surface, so the strip below the rows reads as part of the patch.
             .bg(rgb(p.canvas))
             .relative().track_focus(&self.review.line_focus).role(Role::ListBox).aria_label("Captured pull request patch lines").aria_description("Up and Down move through lines. Shift extends a same-side range. Return starts an inline comment. Source offers exact text selection and Find.")
@@ -6628,42 +6661,9 @@ mod tests {
     #[gpui::test]
     async fn a_held_return_on_a_review_line_answers_once_per_press(cx: &mut TestAppContext) {
         use crate::branch_actions::tests::{REPEATS, enter};
-        let (_fixture, app, panel, cx) = review_panel(cx);
-        let pull = model::fixture_pull(false);
-        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
-        let files = Client(UiTransport::Fixture { moved: false })
-            .files(&captured, 1, &OperationControl::default())
-            .unwrap()
-            .items;
-        cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| {
-                panel.pull = Some(pull);
-                panel.review.files = files;
-                panel.review.section = Section::Files;
-                panel.review.show_list = false;
-                panel.close(window, cx);
-            });
-            app.update(cx, |app, cx| app.open_github(window, cx));
-        });
-        cx.executor().run_until_parked();
-        cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| panel.select_review_file(0, window, cx))
-        });
-        cx.executor().run_until_parked();
-        let draw = |cx: &mut gpui_kit::VisualTestContext| {
-            cx.update(|window, cx| window.draw(cx).clear(cx));
-            cx.run_until_parked();
-        };
-        // The refusals said, whether a comment is open, and its text.
-        let seen = |cx: &mut gpui_kit::VisualTestContext| {
-            panel.read_with(cx, |panel, cx| {
-                (
-                    panel.presses.error,
-                    panel.review.composing.is_some(),
-                    panel.review.input.read(cx).value().to_string(),
-                )
-            })
-        };
+        let (_fixture, _app, panel, cx) = review_line_panel(cx);
+        let draw = line_draw;
+        let seen = |cx: &mut gpui_kit::VisualTestContext| line_seen(&panel, cx);
         let hold = |cx: &mut gpui_kit::VisualTestContext, at: &str| {
             let held = seen(cx);
             for (repeat, events) in REPEATS {
@@ -6737,6 +6737,143 @@ mod tests {
             "a line: focus moves to the comment's text"
         );
         hold(cx, "a line");
+    }
+
+    /// [`review_panel`] open on Files with the fixture pull's files, the first one's rows
+    /// prepared, as the review line's Return tests start.
+    fn review_line_panel(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        &mut gpui_kit::VisualTestContext,
+    ) {
+        let (fixture, app, panel, cx) = review_panel(cx);
+        let pull = model::fixture_pull(false);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.review.show_list = false;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        cx.executor().run_until_parked();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.select_review_file(0, window, cx))
+        });
+        cx.executor().run_until_parked();
+        (fixture, app, panel, cx)
+    }
+    fn line_draw(cx: &mut gpui_kit::VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+    /// The refusals the panel said, whether a comment is open, and its text.
+    fn line_seen(
+        panel: &Entity<Panel>,
+        cx: &mut gpui_kit::VisualTestContext,
+    ) -> (usize, bool, String) {
+        panel.read_with(cx, |panel, cx| {
+            (
+                panel.presses.error,
+                panel.review.composing.is_some(),
+                panel.review.input.read(cx).value().to_string(),
+            )
+        })
+    }
+    /// Gives the patch focus, on `line` or with no line chosen.
+    fn focus_line(
+        panel: &Entity<Panel>,
+        line: Option<usize>,
+        cx: &mut gpui_kit::VisualTestContext,
+    ) {
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                match line {
+                    Some(line) => panel.select_review_line(line, false, window, cx),
+                    None => {
+                        panel.review.anchor = None;
+                        panel.review.selected_row = None;
+                    }
+                }
+                panel.review.line_focus.focus(window, cx);
+            })
+        });
+        line_draw(cx);
+    }
+    fn composer_focused(panel: &Entity<Panel>, cx: &mut gpui_kit::VisualTestContext) -> bool {
+        cx.update(|window, cx| {
+            panel
+                .read(cx)
+                .review
+                .input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        })
+    }
+
+    /// A Return the window never saw go down begins nothing on a review line as its held
+    /// repeats arrive, marked held, as on macOS and in GPUI's own Wayland repeat: one held
+    /// down in another window or application as the patch takes focus, with no line chosen
+    /// and with one. After the key-up a fresh press begins one comment, focus in its text,
+    /// and the key's repeats (`REPEATS`), under X11 too, begin no other and type nothing
+    /// there. The line took Return through its `ReviewAccept` binding, which carries no held
+    /// mark, so the first held repeat looked like a fresh press: with no line it was refused,
+    /// and on a line it began a local draft (FU41-B7 code re-check, S1).
+    #[gpui::test]
+    async fn a_return_held_as_the_patch_takes_focus_begins_nothing(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        let (_fixture, _app, panel, cx) = review_line_panel(cx);
+        for (case, line) in [("no line chosen", None), ("a line chosen", Some(3))] {
+            focus_line(&panel, line, cx);
+            let before = line_seen(&panel, cx);
+            for repeat in 0..3 {
+                enter(cx, Some(true));
+                line_draw(cx);
+                assert_eq!(
+                    line_seen(&panel, cx),
+                    before,
+                    "{case}, held repeat {repeat}: nothing begins or is refused"
+                );
+            }
+            enter(cx, None);
+            line_draw(cx);
+            assert_eq!(line_seen(&panel, cx), before, "{case}, the key-up");
+        }
+        enter(cx, Some(false));
+        line_draw(cx);
+        let (refusals, composing, text) = line_seen(&panel, cx);
+        assert!(
+            composing && text.is_empty(),
+            "a fresh press begins its comment"
+        );
+        assert!(
+            composer_focused(&panel, cx),
+            "focus moves to the comment's text"
+        );
+        for (repeat, events) in REPEATS {
+            for down in events {
+                enter(cx, *down);
+            }
+            line_draw(cx);
+            assert_eq!(
+                line_seen(&panel, cx),
+                (refusals, true, String::new()),
+                "{repeat}: nothing more begins or is typed"
+            );
+        }
+        enter(cx, None);
+        line_draw(cx);
     }
 
     /// 8,000 deletions and 8,000 additions of 520 bytes, just under the 8 MiB response bound:
