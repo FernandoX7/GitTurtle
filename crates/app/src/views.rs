@@ -34822,9 +34822,10 @@ pub(crate) mod tests {
 
     /// Shift-F10 on History's lowest whole row scrolls nothing and moves no
     /// row, at display scale 1 and 1.5 and at 13 and 18 pt in a 461 × 490
-    /// window: the row's foot lies under the list's 1 px edge, which the
-    /// menu's row place counts as shown (`ListRow::framed`), so its reveal
-    /// has nothing to do, however a fractional scale rounds that edge.
+    /// window, its width on whole device pixels (461.33 px, 692 device
+    /// pixels, at 1.5): the row's foot lies under the list's 1 px edge, which
+    /// the menu's row place counts as shown (`ListRow::framed`), so its
+    /// reveal has nothing to do, however a fractional scale rounds that edge.
     #[gpui::test]
     async fn a_keyboard_menu_on_the_lowest_row_moves_nothing_at_any_scale(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 1)).await;
@@ -34835,12 +34836,24 @@ pub(crate) mod tests {
         for scale in [1.0f32, 1.5] {
             for text in [13, 18] {
                 let at = format!("{text} pt at {scale}x");
+                // The test platform's window reports scale 2, which a resize
+                // takes as the window's scale again (`Window::bounds_changed`):
+                // set before the resize, the scale lasted only until it, and
+                // the test ran at scale 2 alone. A display lays a window out
+                // on whole device pixels, which 461 px at 1.5, 691.5 of them,
+                // is not: layout ended the status bar at 691.
+                let width = (461. * scale).round() / scale;
+                cx.simulate_resize(size(px(width), px(490.)));
                 cx.update(|window, cx| {
                     window.set_scale_factor(scale);
                     appearance::apply_text_sizes(text, 12, window, cx)
                 });
-                cx.simulate_resize(size(px(461.), px(490.)));
                 settle(&app, cx).await;
+                assert_eq!(
+                    cx.update(|window, _| window.scale_factor()),
+                    scale,
+                    "{at}: drawn at its scale"
+                );
                 let status = crate::theme_editor::tests::status_bar_top(cx);
                 let lowest = (0..40)
                     .filter_map(|row| bounds_of(cx, format!("history-row-{row}")).map(|b| (row, b)))

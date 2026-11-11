@@ -4464,7 +4464,7 @@ pub(crate) mod tests {
             let scroll = region.scroll();
             let list = scroll.bounds();
             assert_eq!(
-                scroll.max_offset().y > px(0.5),
+                scroll.max_offset().y > crate::tags::AN_END,
                 scrolls,
                 "{at}: {list:?} scrolls {:?} exactly where it keeps its gutter, {regions:?}",
                 scroll.max_offset().y
@@ -4614,8 +4614,8 @@ pub(crate) mod tests {
     /// scales 1, 1.5 and 2, at a width where its cue's gutter wraps none of
     /// its rows anew, through window heights a quarter pixel apart from 8 px
     /// below to 2 px above the height where `Regions` first decides it
-    /// scrolls: it scrolls more than half a pixel, past what its cue takes as
-    /// an end, exactly where it was decided to, so a gutter never stands
+    /// scrolls: it scrolls past what its cue takes as an end
+    /// (`tags::AN_END`) exactly where it was decided to, so a gutter never stands
     /// without a scroll, and where it holds its rows it cuts none of its
     /// padding and a wheel over it moves nothing (`assert_held_whole`).
     /// Returns how far its rows ran past the height each frame decided it.
@@ -4623,7 +4623,6 @@ pub(crate) mod tests {
         use crate::views::tests::{
             history_script, history_window_from, hold_quiet_reads_for_test, settle,
         };
-        use gpui_kit::px;
         let part = if footer { "footer" } else { "header" };
         let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
         cx.update(|_, cx| cx.set_reduce_motion(true));
@@ -4733,7 +4732,7 @@ pub(crate) mod tests {
                 let reach = scroll.max_offset().y;
                 let [whole, _] = rows(cx, regions.page_labels);
                 assert_eq!(
-                    reach > px(0.5),
+                    reach > crate::tags::AN_END,
                     decided,
                     "{at}: the {part} scrolls {reach:?} exactly where it keeps its gutter, \
                      its rows {whole:?} in its share, {regions:?}"
@@ -4888,6 +4887,11 @@ pub(crate) mod tests {
                 regions.header + regions.footer + laid_out(least.body, scale) <= tall + SETTLED,
                 "{at} keeps the body's least, {regions:?}"
             );
+            let footer = match (regions.page_labels, rows.labelled) {
+                (true, Some(labelled)) if !regions.footer_scrolls => labelled,
+                (true, _) => panic!("{at} labels a footer that does not hold them, {regions:?}"),
+                (false, _) => rows.icons,
+            };
             for (part, scrolls, held, height) in [
                 (
                     "header",
@@ -4895,7 +4899,7 @@ pub(crate) mod tests {
                     rows.header,
                     regions.header,
                 ),
-                ("footer", regions.footer_scrolls, rows.icons, regions.footer),
+                ("footer", regions.footer_scrolls, footer, regions.footer),
             ] {
                 assert!(
                     !scrolls || held - height > crate::tags::AN_END,
@@ -4908,6 +4912,11 @@ pub(crate) mod tests {
                         && !(regions.footer_scrolls && !last.footer_scrolls),
                     "{at}, grown a device pixel, scrolls a region it held, {last:?} then \
                      {regions:?}"
+                );
+                assert!(
+                    !(last.page_labels && !regions.page_labels),
+                    "{at}, grown a device pixel, gives up Newer page's and Older page's \
+                     labels, {last:?} then {regions:?}"
                 );
             }
             last = Some(regions);
@@ -4968,40 +4977,120 @@ pub(crate) mod tests {
     }
 
     /// File History's header and footer as panels grow a device pixel at a
-    /// time at scales 1, 1.5 and 2 (`grown`), from 8 px below to 8 px above
-    /// their rows and the body's least together, over header rows from 60
-    /// to 220 px, footer rows from 40 to 92 px and bodies keeping 150 to
-    /// 403 px. Decided beside the footer's scrolled height, the header held
-    /// its rows where a footer that then came to hold its own took a device
-    /// pixel more than the panel grew: with header rows 60 px and footer rows
-    /// 92 px over a body keeping 276.5 px at scale 1, it held at 426 px,
-    /// scrolled at 427 and held again at 428; and decided against the
-    /// header's share, a footer the body refused gave the header a pixel at
-    /// scale 2 in 672 of these panels.
+    /// time at scales 1, 1.5 and 2 (`grown`), from 8 px below their rows
+    /// and the body's least together with Newer page's and Older page's
+    /// icons to 8 px above them with their labels, over header rows from 60
+    /// to 220 px, footer rows from 40 to 92 px with their icons, and with
+    /// their labels none, as tall, or a 28 px square and the 6.5 px gap
+    /// taller, where the labels take a second row as they do at 13 pt, and
+    /// bodies keeping 150 to 403 px. Decided beside the footer's scrolled
+    /// height, the header held its rows where a footer that then came to
+    /// hold its own took a device pixel more than the panel grew: with
+    /// header rows 60 px and footer rows 92 px over a body keeping 276.5 px
+    /// at scale 1, it held at 426 px, scrolled at 427 and held again at 428;
+    /// decided against the header's share, a footer the body refused gave
+    /// the header a pixel at scale 2 in 672 of these panels; labelled
+    /// wherever the footer held them, Newer page and Older page on a second
+    /// row scrolled a header their icons left whole in 1,186 of these
+    /// panels at scale 1
+    /// (`a_footer_keeps_its_icons_where_its_labels_would_scroll_the_header`);
+    /// and labelled also where the header scrolled beside them as it did
+    /// beside their icons, the labels went and came back over two pixels:
+    /// with header rows 97 px over footers of 40 and 75 px and a body keeping
+    /// 150 px at scale 1, labels at 320 px, icons at 321 and labels at 322,
+    /// and with header rows 110 px over 40 and 74 px and a body keeping
+    /// 175.3 px, at 363, 364 and 365.
     #[test]
     fn as_a_panel_grows_a_region_once_held_stays_held() {
         use gpui_kit::px;
         for scale in [1., 1.5, 2.] {
+            // Each panel's header rows, footer rows with Newer page's and
+            // Older page's icons and with their labels, and body's least.
+            let mut panels: Vec<(f32, f32, Option<f32>, f32)> = Vec::new();
             for header in 0..23 {
                 for footer in 0..9 {
-                    for body in 0..11 {
-                        let rows = Rows {
-                            header: up(px(60. + header as f32 * 7.25), scale),
-                            labelled: None,
-                            icons: up(px(40. + footer as f32 * 6.5), scale),
-                            scale,
-                        };
-                        let least = least_over(px(150. + body as f32 * 25.3));
-                        let total = f32::from(rows.header + rows.icons + least.body);
-                        let first = ((total - 8.) * scale).floor() as i32;
-                        let devices = (16. * scale) as i32;
-                        grown(
-                            &rows,
-                            &least,
-                            (first..=first + devices).map(|device| px(device as f32 / scale)),
-                        );
+                    for labelled in [None, Some(0.), Some(28. + 6.5)] {
+                        for body in 0..11 {
+                            let icons = 40. + footer as f32 * 6.5;
+                            panels.push((
+                                60. + header as f32 * 7.25,
+                                icons,
+                                labelled.map(|taller| icons + taller),
+                                150. + body as f32 * 25.3,
+                            ));
+                        }
                     }
                 }
+            }
+            panels.extend([(97., 40., Some(75.), 150.), (110., 40., Some(74.), 175.3)]);
+            for (header, icons, labelled, body) in panels {
+                let rows = Rows {
+                    header: up(px(header), scale),
+                    labelled: labelled.map(|labelled| up(px(labelled), scale)),
+                    icons: up(px(icons), scale),
+                    scale,
+                };
+                let least = least_over(px(body));
+                let lowest = f32::from(rows.header + rows.icons + least.body);
+                let highest =
+                    f32::from(rows.header + rows.labelled.unwrap_or(rows.icons) + least.body);
+                grown(
+                    &rows,
+                    &least,
+                    (((lowest - 8.) * scale).floor() as i32
+                        ..=((highest + 8.) * scale).ceil() as i32)
+                        .map(|device| px(device as f32 / scale)),
+                );
+            }
+        }
+    }
+
+    /// File History's footer whose Newer page and Older page take a second
+    /// row with their labels, as a panel grows a device pixel at a time at
+    /// scales 1, 1.5 and 2 (`grown`): with header rows 100 px over footer
+    /// rows 60 px with their icons and 94 px with their labels, over a body
+    /// keeping 200 px, and with header rows 60 px over 40 and 75 px over a
+    /// body keeping 175.3 px, the header holds its rows at every height, the
+    /// footer keeping its icons where its labels would scroll them, and
+    /// takes its labels where the header holds its rows beside them too
+    /// (`Rows::regions`). Labelled wherever the footer held them, the first
+    /// held the header at 391 px at scale 1, scrolled it at 392 with the
+    /// labels and held it again at 394, and the second held it at 308 px and
+    /// scrolled it at 309: the content gave way before the labels.
+    #[test]
+    fn a_footer_keeps_its_icons_where_its_labels_would_scroll_the_header() {
+        use gpui_kit::px;
+        for scale in [1., 1.5, 2.] {
+            for (header, icons, labelled, body, from, to) in [
+                (100., 60., 94., 200., 386., 400.),
+                (60., 40., 75., 175.3, 302., 316.),
+            ] {
+                let rows = Rows {
+                    header: up(px(header), scale),
+                    labelled: Some(up(px(labelled), scale)),
+                    icons: up(px(icons), scale),
+                    scale,
+                };
+                let least = least_over(px(body));
+                let devices = (from * scale) as i32..=(to * scale) as i32;
+                for tall in devices.clone().map(|device| px(device as f32 / scale)) {
+                    let regions = rows.regions(&least, tall);
+                    assert!(
+                        !regions.header_scrolls && !regions.footer_scrolls,
+                        "a {tall:?} panel at scale {scale} with header rows {header} px over \
+                         footers of {icons} and {labelled} px holds both, {regions:?}"
+                    );
+                }
+                let last = grown(
+                    &rows,
+                    &least,
+                    devices.map(|device| px(device as f32 / scale)),
+                );
+                assert!(
+                    last.page_labels,
+                    "a {to} px panel at scale {scale} with header rows {header} px labels \
+                     Newer page and Older page, {last:?}"
+                );
             }
         }
     }
@@ -5096,9 +5185,9 @@ pub(crate) mod tests {
         cx.update(|_, cx| cx.set_reduce_motion(false));
     }
 
-    /// File History's panel at 13 pt 664 px wide at `scale`, through window
-    /// heights a quarter pixel apart and on every device pixel, from 2 px
-    /// above where its header's and its footer's shares first give way to
+    /// File History's panel at `text` pt `width` px wide at `scale`, through
+    /// window heights a quarter pixel apart where `quarters` and on every
+    /// device pixel, from 2 px above where its header's and its footer's shares first give way to
     /// the body's least (`PanelLeast::shares`) to 2 px below where its parts'
     /// least heights no longer fit
     /// (`file_historys_panel_scrolls_none_where_its_parts_least_fits_at_*`):
@@ -5107,7 +5196,12 @@ pub(crate) mod tests {
     /// header and the footer scroll exactly where decided
     /// (`assert_regions_as_decided`); and as the panel grows a device pixel
     /// at a time, a region once held stays held, so each one's track
-    /// appears at most once. Held up to a device pixel above a share the
+    /// appears at most once. At `text` pt in a window `width` px wide whose
+    /// Newer page and Older page take a second row with their labels, the
+    /// heights go on, a device pixel apart, over the 10 px below where the
+    /// footer takes them, and reach a footer of each form; where the page's layout above the
+    /// panel changes with the window's height, the panel's growth starts
+    /// anew. Held up to a device pixel above a share the
     /// body could not give it, or laid out in shares that layout rounded up
     /// past what the body's least as laid out left them, the header and the
     /// footer took the body past its least, and the panel scrolled 0.67 px
@@ -5117,7 +5211,13 @@ pub(crate) mod tests {
     /// refused scrolled a device pixel shorter and the header took that
     /// pixel, so a track moved from the header to the footer and went as
     /// the panel grew a pixel at a time at scale 2 (`Rows::regions`).
-    async fn panel_scrolls_none_where_its_parts_least_fits(cx: &mut TestAppContext, scale: f32) {
+    async fn panel_scrolls_none_where_its_parts_least_fits(
+        cx: &mut TestAppContext,
+        quarters: bool,
+        text: u8,
+        width: f32,
+        scale: f32,
+    ) {
         use crate::views::tests::{
             history_script, history_window_from, hold_quiet_reads_for_test, settle,
         };
@@ -5128,8 +5228,8 @@ pub(crate) mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
         settle(&app, cx).await;
         open_landed(&app, cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
         let panel = app.read_with(cx, |app, _| app.file_history.reveals.panel.scroll().clone());
-        let width = 664.;
         // The panel's height its regions were decided in, their rows, and
         // the panel's parts' least heights for the toolbar decided and for
         // its icon copies.
@@ -5177,14 +5277,29 @@ pub(crate) mod tests {
             .filter(|at| shrinking(&rows, &leasts, *at))
             .last()
             .unwrap_or(lowest);
-        let top = f32::from(highest + chrome + px(2.));
+        // Where Newer page's and Older page's labels take a second row, the
+        // lowest panel whose footer takes them, a device pixel apart.
+        let wraps = rows
+            .labelled
+            .is_some_and(|labelled| labelled > rows.icons + SETTLED);
+        let labels = (0..)
+            .map(|device| lowest + px(device as f32 / scale))
+            .take_while(|at| wraps && *at < px(2000.))
+            .find(|at| rows.regions(&leasts[0], *at).page_labels)
+            .unwrap_or(highest);
+        let shrinks = f32::from(highest + chrome + px(2.));
+        let top = f32::from(highest.max(labels) + chrome + px(2.));
         let bottom = f32::from(lowest + chrome - px(2.));
-        // A quarter pixel apart and on every device pixel, from the top down.
-        let mut heights: Vec<f32> = ((bottom * 4.).ceil() as i32..=(top * 4.).ceil() as i32)
+        // A quarter pixel apart up to where the shares shrink, where
+        // `quarters`, and on every device pixel up to there and over the
+        // 10 px below where the footer takes its labels, from the top down.
+        let mut heights: Vec<f32> = ((bottom * 4.).ceil() as i32..=(shrinks * 4.).ceil() as i32)
+            .filter(|_| quarters)
             .map(|quarter| quarter as f32 / 4.)
             .chain(
                 ((bottom * scale).ceil() as i32..=(top * scale).floor() as i32)
-                    .map(|device| device as f32 / scale),
+                    .map(|device| device as f32 / scale)
+                    .filter(|height| *height <= shrinks || *height >= top - 10.),
             )
             .collect();
         heights.sort_by(|a, b| b.total_cmp(a));
@@ -5192,14 +5307,36 @@ pub(crate) mod tests {
         let mut shrunk = 0;
         // Per region, the tallest device-pixel height it scrolled at, whether
         // it held its rows at a taller one, whether it drew its track at the
-        // last, and how many times its track appeared.
+        // last, and how many times its track appeared, as the panel grows: the
+        // window's chrome above it, at the last device-pixel height, changes
+        // with the page's layout, which starts the panel's growth anew.
         let mut scrolled: [Option<f32>; 2] = [None; 2];
         let mut held = [false; 2];
         let mut drawn = [false; 2];
         let mut tracks = [0; 2];
+        let mut above: Option<Pixels> = None;
+        // Whether a region held its rows and scrolled them shorter, and
+        // whether the footer took each of its forms.
+        let mut both = false;
+        let mut forms = [false; 2];
+        let mut regime_ends = |scrolled: &mut [Option<f32>; 2],
+                               held: &mut [bool; 2],
+                               drawn: &mut [bool; 2],
+                               tracks: &mut [usize; 2],
+                               at: &str| {
+            for (part, tracks) in ["header", "footer"].into_iter().zip(*tracks) {
+                assert!(
+                    tracks <= 1,
+                    "{at}: as the panel grows a device pixel at a time, the {part}'s track \
+                     appears {tracks} times"
+                );
+            }
+            both |= (0..2).any(|index| held[index] && scrolled[index].is_some());
+            (*scrolled, *held, *drawn, *tracks) = ([None; 2], [false; 2], [false; 2], [0; 2]);
+        };
         for height in heights {
             resize_at(cx, width, height, scale);
-            let at = format!("13 pt in {width} × {height} at scale {scale}");
+            let at = format!("{text} pt in {width} × {height} at scale {scale}");
             assert_eq!(
                 cx.update(|window, _| window.scale_factor()),
                 scale,
@@ -5235,6 +5372,18 @@ pub(crate) mod tests {
             let regions = app
                 .read_with(cx, |app, _| app.file_history.regions.get())
                 .expect("decided regions");
+            let chrome = px(height) - tall;
+            if above.is_some_and(|above| (above - chrome).abs() > SETTLED) {
+                regime_ends(
+                    &mut scrolled,
+                    &mut held,
+                    &mut drawn,
+                    &mut tracks,
+                    &format!("{text} pt {width} wide at scale {scale} above {height}"),
+                );
+            }
+            above = Some(chrome);
+            forms[usize::from(regions.page_labels)] = true;
             for (index, (part, scrolls, track)) in [
                 (
                     "header",
@@ -5265,23 +5414,44 @@ pub(crate) mod tests {
                 drawn[index] = shown;
             }
         }
+        let at = format!("{text} pt {width} wide at scale {scale}");
+        regime_ends(&mut scrolled, &mut held, &mut drawn, &mut tracks, &at);
+        assert!(shrunk > 0, "{at}: the heights reach the shares' shrinking");
         assert!(
-            shrunk > 0,
-            "at scale {scale}, the heights reach the shares' shrinking"
+            both,
+            "{at}: the heights reach a region that holds its rows and scrolls them shorter"
         );
         assert!(
-            (0..2).any(|index| held[index] && scrolled[index].is_some()),
-            "at scale {scale}, the heights reach a region that holds its rows and \
-             scrolls them shorter: {held:?}, {scrolled:?}"
+            !wraps || forms == [true; 2],
+            "{at}: the heights reach a footer with Newer page's and Older page's icons and one \
+             with their labels on a second row, {forms:?}"
         );
-        for (part, tracks) in ["header", "footer"].into_iter().zip(tracks) {
-            assert!(
-                tracks <= 1,
-                "at scale {scale}, as the panel grows a device pixel at a time, the {part}'s \
-                 track appears {tracks} times"
-            );
-        }
-        cx.update(|_, cx| cx.set_reduce_motion(false));
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// As `panel_scrolls_none_where_its_parts_least_fits` at 15 pt in a 480 px
+    /// window at scale 1, where Newer page's and Older page's labels take a
+    /// second row, 139 px of footer rows to their icons' 100, and the height
+    /// where the footer takes its labels, beside a header that holds its
+    /// 278 px of rows; below 531 px the page's layout above the panel gives
+    /// it 120 px more.
+    #[gpui::test]
+    async fn file_historys_panel_scrolls_none_where_its_page_labels_wrap_at_scale_1(
+        cx: &mut TestAppContext,
+    ) {
+        panel_scrolls_none_where_its_parts_least_fits(cx, false, 15, 480., 1.).await;
+    }
+
+    /// As `file_historys_panel_scrolls_none_where_its_page_labels_wrap_at_scale_1`
+    /// at scale 1.5.
+    #[gpui::test]
+    async fn file_historys_panel_scrolls_none_where_its_page_labels_wrap_at_scale_1_5(
+        cx: &mut TestAppContext,
+    ) {
+        panel_scrolls_none_where_its_parts_least_fits(cx, false, 15, 480., 1.5).await;
     }
 
     /// As `panel_scrolls_none_where_its_parts_least_fits` at scale 1.
@@ -5289,7 +5459,7 @@ pub(crate) mod tests {
     async fn file_historys_panel_scrolls_none_where_its_parts_least_fits_at_scale_1(
         cx: &mut TestAppContext,
     ) {
-        panel_scrolls_none_where_its_parts_least_fits(cx, 1.).await;
+        panel_scrolls_none_where_its_parts_least_fits(cx, true, 13, 664., 1.).await;
     }
 
     /// As `panel_scrolls_none_where_its_parts_least_fits` at scale 1.5: there it
@@ -5298,7 +5468,7 @@ pub(crate) mod tests {
     async fn file_historys_panel_scrolls_none_where_its_parts_least_fits_at_scale_1_5(
         cx: &mut TestAppContext,
     ) {
-        panel_scrolls_none_where_its_parts_least_fits(cx, 1.5).await;
+        panel_scrolls_none_where_its_parts_least_fits(cx, true, 13, 664., 1.5).await;
     }
 
     /// As `panel_scrolls_none_where_its_parts_least_fits` at scale 2: there a
@@ -5307,7 +5477,7 @@ pub(crate) mod tests {
     async fn file_historys_panel_scrolls_none_where_its_parts_least_fits_at_scale_2(
         cx: &mut TestAppContext,
     ) {
-        panel_scrolls_none_where_its_parts_least_fits(cx, 2.).await;
+        panel_scrolls_none_where_its_parts_least_fits(cx, true, 13, 664., 2.).await;
     }
 
     /// File History's header and footer take each form and wrap from the
