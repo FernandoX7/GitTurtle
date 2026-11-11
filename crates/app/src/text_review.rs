@@ -2742,6 +2742,819 @@ mod tests {
         assert!(cx.debug_bounds("partial-line-caret").is_some());
     }
 
+    /// How a key held on a partial control repeats: marked held, as macOS
+    /// and Wayland send a held key's repeats; as fresh presses with no
+    /// key-up between, as GPUI's X11 client delivers them; or as a release
+    /// and a fresh press together, before the application next runs a
+    /// task, as an X11 repeat whose release GPUI did not drop, or an input
+    /// method's, arrives; or as a release that ends one batch of X11 events
+    /// and a press that begins the next, with an idle pass between them and
+    /// no frame.
+    #[derive(Clone, Copy, Debug)]
+    enum Repeats {
+        Held,
+        X11,
+        Paired,
+        Split,
+    }
+
+    /// Sends `times` repeats of the held `key`, as `repeats` says.
+    fn repeat_key(cx: &mut gpui::VisualTestContext, key: &str, repeats: Repeats, times: usize) {
+        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        let down = gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: matches!(repeats, Repeats::Held),
+            prefer_character_input: false,
+        };
+        for _ in 0..times {
+            if let Repeats::Paired | Repeats::Split = repeats {
+                let up = gpui::KeyUpEvent {
+                    keystroke: keystroke.clone(),
+                };
+                cx.update(|window, cx| {
+                    window.dispatch_event(gpui::PlatformInput::KeyUp(up), cx);
+                });
+                if let Repeats::Split = repeats {
+                    cx.run_until_parked();
+                }
+                cx.update(|window, cx| {
+                    window.dispatch_event(gpui::PlatformInput::KeyDown(down.clone()), cx);
+                });
+                cx.run_until_parked();
+            } else {
+                cx.simulate_event(down.clone());
+            }
+        }
+        crate::tags::tests::draw(cx);
+    }
+
+    /// Releases the held `key`, then draws, as the window does before a
+    /// person presses a key again.
+    fn release_key(cx: &mut gpui::VisualTestContext, key: &str) {
+        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        crate::tags::tests::draw(cx);
+    }
+
+    /// Route's Stage in Unstaged held and made to fail (a held index lock),
+    /// Tab to the bar's action, then `key` down on it while the write runs
+    /// and held, repeating as `repeats` says, until the write has failed,
+    /// which keeps the view, its selection and focus on the action: the
+    /// fixture, its window and route, with the key still down.
+    async fn hold_on_the_action_through_a_failure<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        key: &str,
+        repeats: Repeats,
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<GitTurtle>,
+        &'a mut gpui::VisualTestContext,
+        Route,
+    ) {
+        hold_on_the_action_through_a_failure_with(cx, key, repeats, None).await
+    }
+
+    /// [`hold_on_the_action_through_a_failure`], with `other`, where given,
+    /// the other of Return and Space pressed and released on the action
+    /// while the write runs, after which `key` repeats no more, as
+    /// autorepeat follows the key pressed last.
+    async fn hold_on_the_action_through_a_failure_with<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        key: &str,
+        repeats: Repeats,
+        other: Option<&str>,
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<GitTurtle>,
+        &'a mut gpui::VisualTestContext,
+        Route,
+    ) {
+        let (fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &landing_notes()).await;
+        cx.update(|window, _| window.activate_window());
+        crate::tags::tests::draw(cx);
+        assert!(
+            cx.update(|window, _| window.is_window_active()),
+            "the window has the keyboard"
+        );
+        let action = route
+            .view
+            .read_with(cx, |view, _| view.apply_focus_handle());
+        press(cx, "tab");
+        let lock = fixture
+            .path()
+            .join("narrow")
+            .join(".git")
+            .join("index.lock");
+        std::fs::write(&lock, "").unwrap();
+        cx.simulate_keystrokes(key);
+        repeat_key(cx, key, repeats, 2);
+        if let Some(other) = other {
+            press(cx, other);
+        }
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        std::fs::remove_file(&lock).unwrap();
+        if other.is_none() {
+            repeat_key(cx, key, repeats, 2);
+        }
+        assert!(
+            app.read_with(cx, |app, _| app.operation_error.is_some()),
+            "the write failed"
+        );
+        assert!(
+            cx.update(|window, _| action.is_focused(window)),
+            "focus stays on the action"
+        );
+        assert_eq!(route.view.read_with(cx, |view, _| view.selected_lines()), 2);
+        (fixture, app, cx, route)
+    }
+
+    /// What the index stages once any write a key started has ended.
+    async fn staged_once_settled(
+        fixture: &tempfile::TempDir,
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> String {
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(app, cx).await;
+        crate::tags::tests::draw(cx);
+        staged_patch(fixture)
+    }
+
+    /// The next press of the action after a refused one: it stages the two
+    /// selected lines, once.
+    async fn the_next_press_stages(
+        fixture: &tempfile::TempDir,
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        key: &str,
+        at: &str,
+    ) {
+        assert_eq!(staged_patch(fixture), "", "{at}: nothing staged before");
+        press(cx, key);
+        let staged = staged_once_settled(fixture, app, cx).await;
+        assert!(
+            staged.contains("+added one\n+added two\n") && !staged.contains("twelve"),
+            "{at}: the next {key} stages the two lines: {staged}"
+        );
+    }
+
+    /// How a partial write a key is held through ends.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Ending {
+        /// The write fails (a held index lock): the view, its selection and
+        /// focus on the control the key went down on stay.
+        Failed,
+        /// The write lands: its lines leave the area with their selection,
+        /// and focus goes to the text.
+        Landed,
+    }
+
+    /// Route's write held, a Stage in Unstaged that fails, or an Unstage
+    /// in Staged that lands, Tab (twice for Clear, `on_clear`) to the bar's
+    /// refused control, then `key` down on it and held, repeating as
+    /// `repeats` says before and after the window looks busy and after the
+    /// write ends as `ending` says, then released: the key-up starts no
+    /// write, changes the index no more and changes no selection, as a
+    /// refused press stays refused for its whole press. A key held on the
+    /// action through a failed write and released after it started a second
+    /// write of the lines (FU45-A3's security re-check: the failure keeps
+    /// focus on the action, where GPUI clicks as the key comes up), and
+    /// Space so held under X11, its repeats fresh presses, went on toggling
+    /// the line the landed caret is on, in the text the landing gave focus
+    /// to. After a failure, the next press acts.
+    async fn hold_a_key_through_a_partial_write(
+        cx: &mut gpui::TestAppContext,
+        key: &str,
+        repeats: Repeats,
+        ending: Ending,
+        on_clear: bool,
+    ) {
+        let area = match ending {
+            Ending::Failed => gitturtle_core::ChangeArea::Unstaged,
+            Ending::Landed => gitturtle_core::ChangeArea::Staged,
+        };
+        let (fixture, app, cx, route, held) = Route::press(cx, area, &landing_notes()).await;
+        let staged_before = staged_patch(&fixture);
+        let at = format!(
+            "{key} held ({repeats:?}) on the {} through a {ending:?} write",
+            if on_clear { "Clear" } else { "action" }
+        );
+        let control = route.view.read_with(cx, |view, _| {
+            if on_clear {
+                view.clear_focus_handle()
+            } else {
+                view.apply_focus_handle()
+            }
+        });
+        press(cx, if on_clear { "tab tab" } else { "tab" });
+        assert!(
+            cx.update(|window, _| control.is_focused(window)),
+            "{at}: Tab reaches the refused control"
+        );
+        let lock = fixture
+            .path()
+            .join("narrow")
+            .join(".git")
+            .join("index.lock");
+        if ending == Ending::Failed {
+            std::fs::write(&lock, "").unwrap();
+        }
+        cx.simulate_keystrokes(key);
+        crate::tags::tests::draw(cx);
+        repeat_key(cx, key, repeats, 2);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        native_frames(cx);
+        repeat_key(cx, key, repeats, 2);
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        if ending == Ending::Failed {
+            std::fs::remove_file(&lock).unwrap();
+        }
+        let staged = staged_patch(&fixture);
+        let (failed, same) = app.read_with(cx, |app, _| {
+            (
+                app.operation_error.is_some(),
+                app.patch_view.as_ref() == Some(&route.view),
+            )
+        });
+        assert_eq!(
+            failed,
+            ending == Ending::Failed,
+            "{at}: the write's outcome"
+        );
+        assert!(same, "{at}: the Diff view stays");
+        let (focus, selected) = (
+            cx.update(|window, _| control.is_focused(window)),
+            route.view.read_with(cx, |view, _| view.selected_lines()),
+        );
+        match ending {
+            Ending::Failed => {
+                assert!(staged.is_empty(), "{at}: the failed write staged nothing");
+                assert!(focus, "{at}: focus stays on the control the key is held on");
+                assert_eq!(selected, 2, "{at}: the failure keeps the selection");
+            }
+            Ending::Landed => {
+                assert!(
+                    staged_before.contains("+added one\n+added two\n")
+                        && !staged.contains("added one")
+                        && !staged.contains("added two")
+                        && staged.contains("+twelve"),
+                    "{at}: the write unstaged its two lines alone: {staged}"
+                );
+                assert!(
+                    patch_row(&route.editor, cx, "-note 12") == text_place(&route.editor, cx).0,
+                    "{at}: the caret lands on the next changed line, where Space selects"
+                );
+                assert!(
+                    cx.update(|window, cx| route.view.read(cx).focus_handle(cx).is_focused(window)),
+                    "{at}: the landing gives focus to the text"
+                );
+                assert_eq!(selected, 0, "{at}: the lines left with their selection");
+            }
+        }
+        // The key still held after the write ended, then released.
+        repeat_key(cx, key, repeats, 3);
+        release_key(cx, key);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            None,
+            "{at}: the key-up starts no write"
+        );
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        assert_eq!(staged_patch(&fixture), staged, "{at}: nothing more staged");
+        assert_eq!(
+            route.view.read_with(cx, |view, _| view.selected_lines()),
+            selected,
+            "{at}: the selection as the write left it"
+        );
+        if ending == Ending::Failed && !on_clear {
+            // The refusal was the press's: the next press of the action acts.
+            press(cx, key);
+            app.read_with(cx, |app, _| app.operations.drain());
+            crate::views::tests::settle(&app, cx).await;
+            let staged = staged_patch(&fixture);
+            assert!(
+                staged.contains("+added one\n+added two\n") && !staged.contains("twelve"),
+                "{at}: the next {key} stages the two lines: {staged}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn a_return_held_on_the_action_through_a_failed_write_starts_none(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "enter", Repeats::Held, Ending::Failed, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_return_repeated_on_the_action_through_a_failed_write_starts_none(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "enter", Repeats::X11, Ending::Failed, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_space_held_on_the_action_through_a_failed_write_starts_none(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "space", Repeats::Held, Ending::Failed, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_space_repeated_on_the_action_through_a_failed_write_starts_none(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "space", Repeats::X11, Ending::Failed, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_return_repeated_in_pairs_on_the_action_through_a_failed_write_starts_none(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "enter", Repeats::Paired, Ending::Failed, false)
+            .await;
+    }
+
+    #[gpui::test]
+    async fn a_space_repeated_on_clear_through_a_failed_write_keeps_the_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "space", Repeats::X11, Ending::Failed, true).await;
+    }
+
+    #[gpui::test]
+    async fn a_return_held_on_the_action_through_a_landing_does_nothing_more(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "enter", Repeats::Held, Ending::Landed, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_return_repeated_on_the_action_through_a_landing_does_nothing_more(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "enter", Repeats::X11, Ending::Landed, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_space_held_on_the_action_through_a_landing_does_nothing_more(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "space", Repeats::Held, Ending::Landed, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_space_repeated_on_the_action_through_a_landing_selects_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "space", Repeats::X11, Ending::Landed, false).await;
+    }
+
+    /// An X11 repeat whose release ends one batch of events and whose press
+    /// begins the next, the idle pass between them, continues the refused
+    /// press: ended at that idle pass, the rest of the hold was a fresh
+    /// press, which its key-up let write.
+    #[gpui::test]
+    async fn a_return_repeated_in_split_pairs_on_the_action_through_a_failed_write_starts_none(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        hold_a_key_through_a_partial_write(cx, "enter", Repeats::Split, Ending::Failed, false)
+            .await;
+    }
+
+    /// Return held on the refused action through a failed write, then
+    /// Space pressed with it after the failure, then each released, in
+    /// either order: neither key-up starts a write, as GPUI clicks on
+    /// either key's release after either's press, and the Space pressed
+    /// while the refused Return was down acts no more than it. Space,
+    /// pressed last, repeats until it comes up, and Return then repeats no
+    /// more, as autorepeat follows the key pressed last on every platform.
+    /// The next press stages the lines once.
+    async fn return_and_space_together_on_the_refused_action(
+        cx: &mut gpui::TestAppContext,
+        repeats: Repeats,
+        space_first: bool,
+    ) {
+        let (fixture, app, cx, _route) =
+            hold_on_the_action_through_a_failure(cx, "enter", repeats).await;
+        let at = format!("Return then Space ({repeats:?}), Space up first: {space_first}");
+        cx.simulate_keystrokes("space");
+        repeat_key(cx, "space", repeats, 2);
+        let (first, second) = if space_first {
+            ("space", "enter")
+        } else {
+            ("enter", "space")
+        };
+        release_key(cx, first);
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "{at}: {first} up writes nothing"
+        );
+        if second == "space" {
+            repeat_key(cx, second, repeats, 2);
+        }
+        release_key(cx, second);
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "{at}: {second} up writes nothing"
+        );
+        the_next_press_stages(&fixture, &app, cx, "enter", &at).await;
+    }
+
+    #[gpui::test]
+    async fn return_up_before_a_space_pressed_with_it_on_the_refused_action_starts_no_write(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        return_and_space_together_on_the_refused_action(cx, Repeats::X11, false).await;
+    }
+
+    #[gpui::test]
+    async fn space_up_before_a_return_it_was_pressed_with_on_the_refused_action_starts_no_write(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        return_and_space_together_on_the_refused_action(cx, Repeats::Held, true).await;
+    }
+
+    /// A Space coming up on the refused action whose press the window never
+    /// saw, while Return is held there through a failed write, starts no
+    /// write: GPUI clicks on it after the Return's key-down.
+    #[gpui::test]
+    async fn a_space_up_without_its_press_on_the_refused_action_starts_no_write(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, _route) =
+            hold_on_the_action_through_a_failure(cx, "enter", Repeats::X11).await;
+        release_key(cx, "space");
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "Space up writes nothing"
+        );
+        repeat_key(cx, "enter", Repeats::X11, 2);
+        release_key(cx, "enter");
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "Return up writes nothing"
+        );
+        the_next_press_stages(&fixture, &app, cx, "enter", "after a lone Space up").await;
+    }
+
+    /// `first` held on the refused action through a failed write, the
+    /// other of Return and Space pressed and released there while it is
+    /// down, as the write runs (`during`) or after it failed, then pressed
+    /// and released again, then `first` released: none of them starts a
+    /// write, as every Return or Space pressed while a refused one is down
+    /// is refused, and the refused press outlasts the other's. Ended with
+    /// the other's press, it left the third press to begin afresh, which
+    /// started a second write of the lines as it came up (FU45-A5's
+    /// security re-check). The next press stages the lines once.
+    async fn a_key_pressed_again_while_a_refused_one_is_down(
+        cx: &mut gpui::TestAppContext,
+        first: &str,
+        repeats: Repeats,
+        during: bool,
+    ) {
+        let other = if first == "enter" { "space" } else { "enter" };
+        let at = format!("{first} held ({repeats:?}), {other} pressed during the write: {during}");
+        let (fixture, app, cx, _route) =
+            hold_on_the_action_through_a_failure_with(cx, first, repeats, during.then_some(other))
+                .await;
+        if !during {
+            press(cx, other);
+            assert_eq!(
+                staged_once_settled(&fixture, &app, cx).await,
+                "",
+                "{at}: the second press writes nothing"
+            );
+        }
+        press(cx, other);
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "{at}: the third press writes nothing"
+        );
+        release_key(cx, first);
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "{at}: {first} up writes nothing"
+        );
+        the_next_press_stages(&fixture, &app, cx, first, &at).await;
+    }
+
+    #[gpui::test]
+    async fn space_pressed_twice_while_a_repeated_return_is_refused_starts_no_write(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_key_pressed_again_while_a_refused_one_is_down(cx, "enter", Repeats::X11, false).await;
+    }
+
+    #[gpui::test]
+    async fn space_pressed_twice_while_a_held_return_is_refused_starts_no_write(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_key_pressed_again_while_a_refused_one_is_down(cx, "enter", Repeats::Held, false).await;
+    }
+
+    #[gpui::test]
+    async fn return_pressed_twice_while_a_held_space_is_refused_starts_no_write(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_key_pressed_again_while_a_refused_one_is_down(cx, "space", Repeats::Held, false).await;
+    }
+
+    #[gpui::test]
+    async fn return_pressed_twice_while_a_repeated_space_is_refused_starts_no_write(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_key_pressed_again_while_a_refused_one_is_down(cx, "space", Repeats::X11, false).await;
+    }
+
+    #[gpui::test]
+    async fn space_pressed_during_the_write_and_after_while_a_held_return_is_refused_starts_no_write(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_key_pressed_again_while_a_refused_one_is_down(cx, "enter", Repeats::Held, true).await;
+    }
+
+    #[gpui::test]
+    async fn return_pressed_during_the_write_and_after_while_a_repeated_space_is_refused_starts_no_write(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_key_pressed_again_while_a_refused_one_is_down(cx, "space", Repeats::X11, true).await;
+    }
+
+    /// A Return repeat marked held on the action at rest, its press gone
+    /// down where the view never saw it, then its key-up: the action stages
+    /// the lines, once, as nothing refuses it. A held repeat with no press
+    /// under way begins one, refused only while the partial controls refuse
+    /// a press, so a key held into the view acts as it comes up.
+    #[gpui::test]
+    async fn a_held_return_whose_press_came_elsewhere_stages_once_on_the_action(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, _route) =
+            hold_on_the_action_through_a_failure(cx, "enter", Repeats::X11).await;
+        release_key(cx, "enter");
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "the refused Return writes nothing"
+        );
+        repeat_key(cx, "enter", Repeats::Held, 3);
+        release_key(cx, "enter");
+        let staged = staged_once_settled(&fixture, &app, cx).await;
+        assert!(
+            staged.contains("+added one\n+added two\n") && !staged.contains("twelve"),
+            "the held Return's key-up stages the two lines: {staged}"
+        );
+    }
+
+    /// Return held on the refused action through a failed write, X11's
+    /// repeats arriving as key-downs alone, while the window turns inactive
+    /// and active again, as another client's keyboard grab makes it under
+    /// X11: the repeats after it, and the key-up, start no write. Forgotten
+    /// as the window turned inactive, the next repeat began a fresh press.
+    #[gpui::test]
+    async fn a_return_held_while_the_window_turns_inactive_stays_refused(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, _route) =
+            hold_on_the_action_through_a_failure(cx, "enter", Repeats::X11).await;
+        cx.deactivate_window();
+        crate::tags::tests::draw(cx);
+        assert!(
+            !cx.update(|window, _| window.is_window_active()),
+            "inactive"
+        );
+        cx.update(|window, _| window.activate_window());
+        crate::tags::tests::draw(cx);
+        assert!(
+            cx.update(|window, _| window.is_window_active()),
+            "active again"
+        );
+        repeat_key(cx, "enter", Repeats::X11, 2);
+        release_key(cx, "enter");
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "the key-up writes nothing"
+        );
+        the_next_press_stages(&fixture, &app, cx, "enter", "after the window's return").await;
+    }
+
+    /// Return held on the refused action through a failed write, its
+    /// repeats marked held, its key-up lost outside the window, which turns
+    /// inactive and active again: the next Return, unmarked, is a fresh
+    /// press and stages the lines, rather than repeat the refused press.
+    #[gpui::test]
+    async fn a_press_after_a_held_return_came_up_outside_the_window_acts(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, _route) =
+            hold_on_the_action_through_a_failure(cx, "enter", Repeats::Held).await;
+        cx.deactivate_window();
+        crate::tags::tests::draw(cx);
+        cx.update(|window, _| window.activate_window());
+        crate::tags::tests::draw(cx);
+        the_next_press_stages(&fixture, &app, cx, "enter", "after a key-up lost").await;
+    }
+
+    /// Return held on the refused action through a failed write, X11's
+    /// repeats arriving as key-downs alone, its key-up lost outside the
+    /// window, which turns inactive and active again: the next press, of
+    /// `next`, is swallowed, taken for that Return's repeat or as pressed
+    /// while it is down, and writes nothing; the one after stages the
+    /// lines, so a key-up lost costs one press at most. A Space would
+    /// otherwise inherit the lost Return's refusal at each press, as a
+    /// Space pressed while a refused Return is down does.
+    async fn a_return_lost_outside_the_window_costs_one_press(
+        cx: &mut gpui::TestAppContext,
+        next: &str,
+    ) {
+        let (fixture, app, cx, _route) =
+            hold_on_the_action_through_a_failure(cx, "enter", Repeats::X11).await;
+        cx.deactivate_window();
+        crate::tags::tests::draw(cx);
+        cx.update(|window, _| window.activate_window());
+        crate::tags::tests::draw(cx);
+        press(cx, next);
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "the first {next} after the lost key-up writes nothing"
+        );
+        the_next_press_stages(&fixture, &app, cx, next, "after a key-up lost").await;
+    }
+
+    #[gpui::test]
+    async fn a_return_after_a_repeated_return_came_up_outside_the_window_is_swallowed_once(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_return_lost_outside_the_window_costs_one_press(cx, "enter").await;
+    }
+
+    #[gpui::test]
+    async fn a_space_after_a_repeated_return_came_up_outside_the_window_is_swallowed_once(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_return_lost_outside_the_window_costs_one_press(cx, "space").await;
+    }
+
+    /// Return held on the refused action through a failed write and Space
+    /// pressed with it, X11's repeats arriving as key-downs alone, while the
+    /// window turns inactive and active again, as a keyboard grab makes it;
+    /// then a Space repeat, Space released and pressed once more while
+    /// Return is still down: that press writes nothing, nor does Return's
+    /// key-up, and the next press stages the lines once. The Space repeat
+    /// once ended Return's press, marked as the window turned inactive, and
+    /// that press, begun afresh, wrote a second time.
+    #[gpui::test]
+    async fn a_space_pressed_again_after_the_window_returns_while_a_refused_return_is_held_starts_no_write(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, _route) =
+            hold_on_the_action_through_a_failure(cx, "enter", Repeats::X11).await;
+        cx.simulate_keystrokes("space");
+        repeat_key(cx, "space", Repeats::X11, 2);
+        cx.deactivate_window();
+        crate::tags::tests::draw(cx);
+        cx.update(|window, _| window.activate_window());
+        crate::tags::tests::draw(cx);
+        repeat_key(cx, "space", Repeats::X11, 1);
+        release_key(cx, "space");
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "Space up writes nothing"
+        );
+        press(cx, "space");
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "Space pressed again while Return is down writes nothing"
+        );
+        release_key(cx, "enter");
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "Return up writes nothing"
+        );
+        the_next_press_stages(&fixture, &app, cx, "enter", "after both keys came up").await;
+    }
+
+    /// Return held on the refused action through a failed write, X11's
+    /// repeats arriving as key-downs alone, then focus moved to the file
+    /// list, where its key-up comes, and back to the action: the next
+    /// Return there is a fresh press and stages the lines. Never ended, the
+    /// press took it for a repeat and refused it.
+    #[gpui::test]
+    async fn a_press_after_a_refused_return_came_up_on_another_control_acts(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, route) =
+            hold_on_the_action_through_a_failure(cx, "enter", Repeats::X11).await;
+        let (list, action) = (
+            app.read_with(cx, |app, _| app.file_focus.clone()),
+            route
+                .view
+                .read_with(cx, |view, _| view.apply_focus_handle()),
+        );
+        cx.update(|window, cx| window.focus(&list, cx));
+        crate::tags::tests::draw(cx);
+        release_key(cx, "enter");
+        assert_eq!(
+            staged_once_settled(&fixture, &app, cx).await,
+            "",
+            "the key-up on the list writes nothing"
+        );
+        cx.update(|window, cx| window.focus(&action, cx));
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            route.view.read_with(cx, |view, _| view.selected_lines()),
+            2,
+            "the selection and its bar stay"
+        );
+        the_next_press_stages(&fixture, &app, cx, "enter", "back on the action").await;
+    }
+
+    /// Space pressed in Find's field over the diff while a partial write
+    /// runs, where it types, refused, X11's repeats arriving as key-downs
+    /// alone, then focus moved to the file list mid-hold, where its key-up
+    /// comes, and the write failing: back on the action, the next Return
+    /// stages the lines. Focus leaving Find's field, unlike the text, the
+    /// action and Clear, never ended the press, and that Return inherited
+    /// its refusal. (Return in the field never begins a press: Find's
+    /// Enter action takes it first.)
+    #[gpui::test]
+    async fn a_return_after_a_refused_space_in_find_came_up_on_another_control_acts(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &landing_notes()).await;
+        cx.update(|window, _| window.activate_window());
+        crate::tags::tests::draw(cx);
+        let lock = fixture
+            .path()
+            .join("narrow")
+            .join(".git")
+            .join("index.lock");
+        std::fs::write(&lock, "").unwrap();
+        let text = cx.update(|_, cx| route.view.read(cx).focus_handle(cx));
+        cx.update(|window, cx| window.focus(&text, cx));
+        crate::tags::tests::draw(cx);
+        press(cx, &primary("f"));
+        assert!(
+            cx.update(|window, cx| crate::editor_find::bar_contains_focused(
+                &route.editor,
+                window,
+                cx
+            )),
+            "Find's field has focus"
+        );
+        cx.simulate_keystrokes("space");
+        repeat_key(cx, "space", Repeats::X11, 2);
+        let (list, action) = (
+            app.read_with(cx, |app, _| app.file_focus.clone()),
+            route
+                .view
+                .read_with(cx, |view, _| view.apply_focus_handle()),
+        );
+        cx.update(|window, cx| window.focus(&list, cx));
+        crate::tags::tests::draw(cx);
+        release_key(cx, "space");
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        std::fs::remove_file(&lock).unwrap();
+        assert!(
+            app.read_with(cx, |app, _| app.operation_error.is_some()),
+            "the write failed"
+        );
+        cx.update(|window, cx| window.focus(&action, cx));
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            route.view.read_with(cx, |view, _| view.selected_lines()),
+            2,
+            "the selection and its bar stay"
+        );
+        the_next_press_stages(&fixture, &app, cx, "enter", "back on the action from Find").await;
+    }
+
     /// A partial Stage of every changed line keeps the Diff view through
     /// its write; the file then leaves Unstaged, and the selection follows
     /// it to its other group, Staged (`retained_area`), as any write that

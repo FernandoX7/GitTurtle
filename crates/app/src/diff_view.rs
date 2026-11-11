@@ -97,6 +97,18 @@ pub struct DiffView {
     /// partial controls a write refuses wait for to look it
     /// ([`Self::dimmed`]).
     busy_look: bool,
+    /// The Enter and Space presses going down in this view, and whether the
+    /// partial controls refused each ([`Presses`]), with the number of the
+    /// last key-up that released one, what ends them as focus leaves the
+    /// view's controls ([`Self::focus_moved`]), and what marks them as the
+    /// window turns inactive ([`Presses::leave`]).
+    presses: Presses,
+    key_ups: u64,
+    _focus_moves: [Subscription; 3],
+    /// The control of Find's bar a press found focus on, whose focus moving
+    /// out ends it too ([`Self::watch_find`]).
+    find_focus: Option<(FocusHandle, Subscription)>,
+    _activation: Subscription,
     /// What the live region says of the latest Space toggle, with the
     /// count that names its node afresh for each, so each is announced
     /// ([`Self::render_announcement`]), until the text loses focus: focus
@@ -121,6 +133,102 @@ pub struct DiffView {
     /// ([`Self::share_find_with`]).
     find_partner: Option<(Entity<EditorState>, crate::editor_find::Side)>,
     _subscription: Subscription,
+}
+
+/// The Enter and Space presses in the Diff view, each from its first
+/// key-down to its own key-up, so that one the partial controls refused
+/// stays refused for its whole press ([`DiffView::note_key_down`]). GPUI
+/// clicks the focused control as Enter or Space comes up, whichever of them
+/// went down last at the same focus: a Return or Space held on the bar's
+/// action through a partial write that failed, which kept focus there and
+/// the selection, and released after it, started a second write of those
+/// lines, and so did Return and Space held there together, one released
+/// after the failure, or a Space whose press the window never saw coming
+/// up there. Each key keeps its own press, so a refused one outlasts the
+/// other key's, which inherits its refusal: one record, of the key pressed
+/// last, ended with that other press, and a third press, the other key
+/// pressed again while the refused one was still down, began afresh and
+/// wrote as it came up (FU45-A5's security re-check).
+#[derive(Clone, Copy, Default)]
+struct Presses {
+    /// Enter's press, then Space's ([`key_slot`]).
+    keys: [Option<KeyPress>; 2],
+}
+
+impl Presses {
+    /// Whether a press under way, of either key, was refused: every Enter
+    /// or Space key-up while it lasts makes no click on the partial
+    /// controls.
+    fn refused(&self) -> bool {
+        self.keys.iter().flatten().any(|press| press.refused)
+    }
+
+    /// Whether a refused press has just come up, its key-up's click still
+    /// to come or gone ([`DiffView::note_key_up`]).
+    fn refused_coming_up(&self) -> bool {
+        self.keys
+            .iter()
+            .flatten()
+            .any(|press| press.refused && press.released.is_some())
+    }
+
+    /// Whether any press is under way.
+    fn any(&self) -> bool {
+        self.keys.iter().any(Option::is_some)
+    }
+
+    /// Marks each press under way as the window turns inactive: its key-up
+    /// may come outside the window, never to reach it.
+    fn leave(&mut self) {
+        for press in self.keys.iter_mut().flatten() {
+            press.left = true;
+        }
+    }
+}
+
+/// Where [`Presses`] keeps Space's press, else Enter's.
+fn key_slot(space: bool) -> usize {
+    usize::from(space)
+}
+
+/// An Enter or Space press in the Diff view ([`Presses`]).
+#[derive(Clone, Copy)]
+struct KeyPress {
+    /// Whether a key-down of it came while the partial controls refused a
+    /// press, or while a refused press of the other key was down: every
+    /// Enter or Space key-up while it lasts then makes no click on them,
+    /// and the other key, pressed meanwhile, inherits it.
+    refused: bool,
+    /// Whether its key's repeats came marked held, as macOS and Wayland
+    /// mark them: a later unmarked key-down of that key begins a fresh
+    /// press, whose key-up came where the view never saw it. GPUI's X11
+    /// client marks none, sending each repeat as a key-down alone.
+    held: bool,
+    /// Whether the latest key-down repeated it rather than beginning it.
+    repeat: bool,
+    /// The number of the key-up that released it, until it ends: a key-down
+    /// that comes before then repeats it, as an X11 repeat's release and
+    /// press, or an input method's, arrive together. A press the controls
+    /// refused ends at the next frame, any other at the next idle pass
+    /// ([`DiffView::note_key_up`]).
+    released: Option<u64>,
+    /// Whether the window turned inactive while it was down, so that its
+    /// key-up may have come outside the window ([`Presses::leave`]): the
+    /// next Return or Space here then repeats it or inherits its refusal at
+    /// most, and a press the other key begins, inheriting it, ends it,
+    /// though that key's repeats leave it, so a key-up lost costs one press
+    /// at most.
+    left: bool,
+}
+
+/// Whether `keystroke` is Enter or Space, which GPUI clicks a focused
+/// control with as the key comes up, and which.
+fn activation_key(keystroke: &gpui_kit::Keystroke) -> Option<bool> {
+    match keystroke.key.as_str() {
+        "space" => Some(true),
+        "enter" => Some(false),
+        _ => None,
+    }
 }
 
 impl EventEmitter<DiffViewEvent> for DiffView {}
@@ -261,9 +369,186 @@ impl DiffView {
             return;
         }
         cx.stop_propagation();
-        if !event.is_held {
+        // Once per press: nor a repeat, under X11 a key-down alone, nor a
+        // press the partial controls refused, held on after its write ended
+        // and focus came to the text.
+        if !event.is_held
+            && !self.presses.keys[key_slot(true)].is_some_and(|press| press.refused || press.repeat)
+        {
             self.toggle_at_caret(cx);
         }
+    }
+
+    /// Records an Enter or Space key-down anywhere in this view, before
+    /// anything in it takes the key ([`Presses`]). A key-down repeats its
+    /// key's press under way: marked held, as on macOS and Wayland; alone,
+    /// before its key-up, under X11, while the press has no held repeat; or
+    /// after a key-up it follows at once, as an X11 or input method
+    /// repeat's release and press arrive. It is refused if the press was or
+    /// the controls now refuse. Otherwise its key's press begins, refused
+    /// while the controls refuse one or while a refused press of the other
+    /// key is down, as a key pressed while it is down acts no more than it
+    /// does: one marked held whose press began elsewhere acts if nothing
+    /// refuses it, and an unmarked one after held repeats begins afresh, its
+    /// last press having come up where the view never saw it. The other
+    /// key's press stays as it is, refused through presses of this one
+    /// until its own key-up, unless the window turned inactive while it was
+    /// down ([`KeyPress::left`]) and this key-down begins a press: its
+    /// refusal then passes to that press and it ends. A repeat clears this
+    /// key's own mark and leaves the other key's press as it is, that key
+    /// perhaps still down: with Return and Space held through the window's
+    /// return, a Space repeat once ended Return's press, and a Space
+    /// pressed again while Return was still down wrote. Other keys leave
+    /// the presses as they are.
+    fn note_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(space) = activation_key(&event.keystroke) else {
+            return;
+        };
+        let busy = self.partial_busy;
+        let (own, other) = (key_slot(space), key_slot(!space));
+        let repeated = self.presses.keys[own]
+            .filter(|press| event.is_held || press.released.is_some() || !press.held);
+        let other_press = self.presses.keys[other];
+        self.presses.keys[own] = Some(match repeated {
+            Some(press) => KeyPress {
+                refused: press.refused || busy,
+                held: press.held || event.is_held,
+                repeat: true,
+                released: None,
+                left: false,
+            },
+            None => KeyPress {
+                refused: busy || other_press.is_some_and(|press| press.refused),
+                held: event.is_held,
+                repeat: false,
+                released: None,
+                left: false,
+            },
+        });
+        if repeated.is_none() && other_press.is_some_and(|press| press.left) {
+            self.presses.keys[other] = None;
+        }
+        self.watch_find(window, cx);
+    }
+
+    /// Notes the key-up of the Enter or Space press under way, before the
+    /// control it comes up on takes its click, which a refused press
+    /// refuses ([`Self::refuses_click`]): the press ends at the next idle
+    /// pass, unless its key goes down again first, as an X11 repeat's press
+    /// follows its release. A refused one ends only at the next frame: GPUI's
+    /// X11 client drops a repeat's release when its press comes in the same
+    /// batch of events, but a pair split across two batches reached the view
+    /// as a key-up, an idle pass and a key-down, after which the rest of the
+    /// hold was a fresh press whose key-up wrote; the next batch comes within
+    /// microseconds, a frame some milliseconds later, and a person's next
+    /// press later still. The other key's press stays under way.
+    fn note_key_up(
+        &mut self,
+        event: &gpui_kit::KeyUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(space) = activation_key(&event.keystroke) else {
+            return;
+        };
+        let Some(press) = self.presses.keys[key_slot(space)].as_mut() else {
+            return;
+        };
+        self.key_ups = self.key_ups.wrapping_add(1);
+        let key_up = self.key_ups;
+        press.released = Some(key_up);
+        if press.refused {
+            let view = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = view.update(cx, |this, _| this.end_press(space, key_up));
+            });
+        } else {
+            cx.spawn(async move |this, cx| {
+                let _ = this.update(cx, |this, _| this.end_press(space, key_up));
+            })
+            .detach();
+        }
+    }
+
+    /// Ends the press of Space, else Enter, that `key_up` released, unless
+    /// its key went down again; the other key's press stays.
+    fn end_press(&mut self, space: bool, key_up: u64) {
+        let press = &mut self.presses.keys[key_slot(space)];
+        if press.is_some_and(|press| press.released == Some(key_up)) {
+            *press = None;
+        }
+    }
+
+    /// Ends the presses under way as focus leaves this view's controls for
+    /// another control in its window, which their key-ups then come up on:
+    /// the next press here is a fresh one. Focus moving among the text, the
+    /// bar's action and Clear, and Find's bar keeps them. A window turning
+    /// inactive keeps them, marked ([`Presses::leave`]): GPUI reports focus
+    /// leaving then too, but the window keeps its focus, still in this
+    /// view. Under X11 another client's keyboard grab takes the window's
+    /// focus and gives it back while the key is held, and its next repeat,
+    /// a key-down alone, would begin a press the failed write no longer
+    /// refused, whose key-up wrote. A key-up lost outside the window leaves
+    /// the press for the next one here to repeat or inherit: after held
+    /// repeats it begins afresh; under X11 that press is swallowed, and its
+    /// own key-up ends it.
+    fn focus_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.holds_focus(window, cx)
+            || crate::editor_find::bar_contains_focused(&self.editor, window, cx)
+        {
+            self.watch_find(window, cx);
+        } else {
+            self.presses = Presses::default();
+            self.find_focus = None;
+        }
+    }
+
+    /// Watches the control of Find's bar that holds focus while a press is
+    /// under way, so that focus moving out of the view from it ends the
+    /// press as it does from the text, the action or Clear
+    /// ([`Self::focus_moved`]). The bar comes as Find first opens, with
+    /// controls of its own, so each is watched as a press finds focus on
+    /// it: Space pressed in Find's field during a write, where it types,
+    /// then a click on the file list mid-hold, which took its key-up, left
+    /// the press under way, and the next Return on the action inherited its
+    /// refusal. Return in the field begins none: Find's Enter action takes
+    /// it before any key listener.
+    fn watch_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.presses.any() {
+            return;
+        }
+        let Some(focused) = window.focused(cx) else {
+            return;
+        };
+        if self
+            .find_focus
+            .as_ref()
+            .is_some_and(|(watched, _)| *watched == focused)
+            || !crate::editor_find::bar_contains_focused(&self.editor, window, cx)
+        {
+            return;
+        }
+        let moved = cx.on_focus_out(&focused, window, |this: &mut DiffView, _, window, cx| {
+            this.focus_moved(window, cx)
+        });
+        self.find_focus = Some((focused, moved));
+    }
+
+    /// Whether the key coming up ends or comes during an Enter or Space
+    /// press the partial controls refused: they refuse the click GPUI makes
+    /// of it on the control it comes up on, whichever key goes up, since
+    /// GPUI clicks on either after a key-down of either. A refused press
+    /// stays refused for its whole press, as a held key acts once, though
+    /// the write that refused it has ended by then.
+    fn refuses_key_up(&self) -> bool {
+        self.presses.refused()
+    }
+
+    /// Whether the partial controls refuse `event`, a click on one: while
+    /// suspended, or the click GPUI makes of a key-up during a refused
+    /// press ([`Self::refuses_key_up`]).
+    fn refuses_click(&self, event: &ClickEvent) -> bool {
+        self.partial_busy || (matches!(event, ClickEvent::Keyboard(_)) && self.refuses_key_up())
     }
 
     /// Toggles every changed line the text selection draws, from its first
@@ -676,6 +961,18 @@ pub fn new_numbered(
                 cx.notify();
             }
         });
+        let (apply_focus, clear_focus) = (cx.focus_handle(), cx.focus_handle());
+        let text_focus = gpui_kit::Focusable::focus_handle(editor.read(cx), cx);
+        let focus_moves = [&text_focus, &apply_focus, &clear_focus].map(|focus| {
+            cx.on_focus_out(focus, window, |this: &mut DiffView, _, window, cx| {
+                this.focus_moved(window, cx)
+            })
+        });
+        let activation = cx.observe_window_activation(window, |this: &mut DiffView, window, _| {
+            if !window.is_window_active() {
+                this.presses.leave();
+            }
+        });
         DiffView {
             editor,
             rows,
@@ -690,10 +987,15 @@ pub fn new_numbered(
             writing: false,
             written: BTreeSet::new(),
             busy_look: false,
+            presses: Presses::default(),
+            key_ups: 0,
+            _focus_moves: focus_moves,
+            find_focus: None,
+            _activation: activation,
             announcement: None,
             announcements: 0,
-            apply_focus: cx.focus_handle(),
-            clear_focus: cx.focus_handle(),
+            apply_focus,
+            clear_focus,
             bar_room: Rc::default(),
             viewport,
             pending_scroll: Rc::default(),
@@ -880,20 +1182,23 @@ impl Render for DiffView {
                 // out across the new one (`Window::refresh` is ignored while
                 // a frame draws, and the old form stayed).
                 let (room, shown) = (Rc::clone(&self.bar_room), bar.is_some());
-                el.on_key_down(cx.listener(Self::line_key)).child(
-                    canvas(
-                        move |view, window, _| {
-                            room.foot.set(Some(view.bottom()));
-                            let width = Some(view.size.width);
-                            if room.width.replace(width) != width && shown {
-                                window.request_animation_frame();
-                            }
-                        },
-                        |_, _, _, _| {},
+                el.capture_key_down(cx.listener(Self::note_key_down))
+                    .capture_key_up(cx.listener(Self::note_key_up))
+                    .on_key_down(cx.listener(Self::line_key))
+                    .child(
+                        canvas(
+                            move |view, window, _| {
+                                room.foot.set(Some(view.bottom()));
+                                let width = Some(view.size.width);
+                                if room.width.replace(width) != width && shown {
+                                    window.request_animation_frame();
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
                     )
-                    .absolute()
-                    .size_full(),
-                )
             })
             .child(content)
             .children(
@@ -1069,7 +1374,9 @@ impl DiffView {
                                 ))
                                 .on_click(cx.listener(
                                     move |this, event, _, cx| {
-                                        if this.click_matches_row(event, row, cx) {
+                                        if !this.refuses_click(event)
+                                            && this.click_matches_row(event, row, cx)
+                                        {
                                             this.apply_partial(ids.to_vec(), cx);
                                         }
                                     },
@@ -1137,7 +1444,12 @@ impl DiffView {
                                             crate::shortcuts::SHIFT_CLICK
                                         ))
                                         .on_click(cx.listener(move |this, checked, window, cx| {
-                                            if this.partial_busy {
+                                            // No Tab stop, it takes no key's
+                                            // click; refused as one comes up
+                                            // all the same, while a pointer's
+                                            // click acts.
+                                            if this.partial_busy || this.presses.refused_coming_up()
+                                            {
                                                 return;
                                             }
                                             this.selection.toggle(
@@ -1209,8 +1521,8 @@ impl DiffView {
             refused,
             dimmed,
         )
-        .on_click(cx.listener(|this, _, window, cx| {
-            if this.partial_busy {
+        .on_click(cx.listener(|this, event, window, cx| {
+            if this.refuses_click(event) {
                 return;
             }
             this.return_focus(&this.apply_focus.clone(), window, cx);
@@ -1238,8 +1550,8 @@ impl DiffView {
                     refused,
                     dimmed,
                 )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    if this.partial_busy {
+                .on_click(cx.listener(|this, event, window, cx| {
+                    if this.refuses_click(event) {
                         return;
                     }
                     this.return_focus(&this.clear_focus.clone(), window, cx);
@@ -2475,6 +2787,62 @@ mod tests {
                 "staged: the status bar names Space: {:?}",
                 hints.keys
             );
+        }
+
+        /// Space held in the text under X11, whose client sends each repeat
+        /// as a key-down alone, toggles the caret's line once, as a held
+        /// Space marked held does, and so does a repeat whose release and
+        /// press arrive together: each repeat toggled it again, selecting
+        /// and clearing it, and the live region said each.
+        #[gpui::test]
+        async fn a_space_repeated_under_x11_in_the_text_toggles_once(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = working(cx).await;
+            let shown = Shown::at(&app, cx, SIZES[0]);
+            let first = shown.first();
+            shown.caret_to(cx, first);
+            let space = gpui::Keystroke::parse("space").unwrap();
+            let down = gpui::KeyDownEvent {
+                keystroke: space.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            };
+            for repeat in ["alone", "paired"] {
+                let toggles = shown.view.read_with(cx, |view, _| view.announcements);
+                cx.simulate_event(down.clone());
+                for _ in 0..3 {
+                    if repeat == "paired" {
+                        cx.update(|window, cx| {
+                            let up = gpui::KeyUpEvent {
+                                keystroke: space.clone(),
+                            };
+                            window.dispatch_event(gpui::PlatformInput::KeyUp(up), cx);
+                        });
+                    }
+                    cx.simulate_event(down.clone());
+                }
+                cx.simulate_event(gpui::KeyUpEvent {
+                    keystroke: space.clone(),
+                });
+                crate::tags::tests::draw(cx);
+                assert_eq!(
+                    shown.selected(cx),
+                    [shown.id(first)],
+                    "{repeat}: the line selected once"
+                );
+                assert_eq!(
+                    shown.view.read_with(cx, |view, _| view.announcements),
+                    toggles + 1,
+                    "{repeat}: one toggle said"
+                );
+                shown.press(cx, "space");
+                assert_eq!(
+                    shown.selected(cx),
+                    NONE,
+                    "{repeat}: the next press clears it"
+                );
+            }
         }
 
         /// Shift+Down twice from a changed line extends the text selection
