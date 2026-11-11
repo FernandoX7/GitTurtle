@@ -8012,13 +8012,15 @@ pub(crate) mod tests {
         .await;
     }
 
-    /// Show latest over a re-clone at the tab's path installs the found
-    /// repository's handle; a Refresh after it compares the found repository
-    /// with the one the shown status and remotes were read from, not with
-    /// that handle, and captures it afresh. Compared with the handle, it
-    /// compared the found repository with itself, kept the status read
-    /// before, and Push pushed the found repository's `main` to its own
-    /// remote while Targets named the other's (security probe S2, FU44-A).
+    /// Show latest over a re-clone at the tab's path captures it afresh,
+    /// and a Refresh that follows it shows nothing from before either. A
+    /// sequencing check only: the capture forgot the status's repository
+    /// (`GitTurtle::working_identity`), so this Refresh compares the found
+    /// repository with the window's handle, itself, and runs as a plain
+    /// Refresh, which reads everything again. The comparison with the
+    /// repository the shown status was read from rather than the handle
+    /// (security probe S2, FU44-A) is held by
+    /// `a_refresh_compares_the_status_s_repository_not_the_window_s_handle`.
     #[gpui::test]
     async fn a_refresh_after_show_latest_over_a_re_clone_captures_it_afresh(
         cx: &mut TestAppContext,
