@@ -1603,13 +1603,6 @@ impl GitTurtle {
     }
 }
 
-/// A focus target the form scrolls into view.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Reveal {
-    Row(TokenKind),
-    Warnings,
-}
-
 struct TokenRow {
     kind: TokenKind,
     hex: Entity<InputState>,
@@ -1742,8 +1735,15 @@ pub(super) struct ThemeForm {
     visible: bool,
     error: Option<String>,
     /// The token column (wide layout) or the whole body (stacked): group
-    /// labels and rows are its direct children, so a focused row scrolls into view.
-    scroll: ScrollHandle,
+    /// labels and rows are its direct children. Each row reports its hex
+    /// field and its picker's trigger (`column_row`), so the control holding
+    /// focus scrolls into view, with its ring's room, in the frame that
+    /// first draws the focus, a pointer's focus included, and again in the
+    /// frame after a resize or text-size change that cuts it, as the
+    /// project hub's form does (decided 2026-11-10): revealed only on a
+    /// focus change, a trigger Tab had shown low in the column was left cut
+    /// by a window shrunk under it.
+    column: FocusReveal,
     /// The wide layout's preview-and-warnings column.
     side_scroll: ScrollHandle,
     /// The last render used the two-column layout.
@@ -1756,8 +1756,9 @@ pub(super) struct ThemeForm {
     reset_focus: FocusHandle,
     cancel_focus: FocusHandle,
     save_focus: FocusHandle,
-    /// The focused row or Readability list the last render scrolled into view.
-    revealed: Option<Reveal>,
+    /// The Readability list held focus as the last render drew, so the
+    /// render that first draws it focused scrolls it into view.
+    warnings_revealed: bool,
     /// The window's keyboard ring: a picker's trigger draws its ring only
     /// while it holds focus a key gave it, so a picker opened and closed by
     /// the pointer leaves its trigger focused without one, and Escape, Enter
@@ -1858,7 +1859,7 @@ impl ThemeForm {
             pending: false,
             visible: true,
             error: None,
-            scroll: ScrollHandle::new(),
+            column: FocusReveal::new(Trigger::AnyFocus),
             side_scroll: ScrollHandle::new(),
             wide: false,
             keep_focus: cx.focus_handle(),
@@ -1866,7 +1867,7 @@ impl ThemeForm {
             reset_focus: cx.focus_handle(),
             cancel_focus: cx.focus_handle(),
             save_focus: cx.focus_handle(),
-            revealed: None,
+            warnings_revealed: false,
             focus_ring,
             warnings_focus,
             _subscriptions: subscriptions,
@@ -1972,6 +1973,7 @@ impl ThemeForm {
 
     /// A token row's index among the scroll container's children, which are
     /// the group labels and rows interleaved in `TokenKind::ALL` order.
+    #[cfg(test)]
     fn row_entry(kind: TokenKind) -> usize {
         let mut index = 0;
         for group in TokenGroup::ALL {
@@ -1986,35 +1988,24 @@ impl ThemeForm {
         index
     }
 
-    /// A row whose hex field or picker gains focus, or the Readability list,
-    /// scrolls into view in the draw that shows the focus. A focus change
-    /// refreshes the window, so this render belongs to that draw and the
-    /// target is applied by its prepaint. Focus listeners would be too late:
-    /// GPUI dispatches them after the draw's layout, where a refresh no longer
-    /// produces a frame, so the scroll would wait for the next input. In the
-    /// wide layout the list follows the miniature in the side column; stacked,
-    /// it follows the rows.
-    fn reveal_focused(&mut self, window: &Window, cx: &App) {
-        let focused = if self.warnings_focus.is_focused(window) {
-            Some(Reveal::Warnings)
-        } else {
-            self.rows
-                .iter()
-                .find(|row| {
-                    row.hex.read(cx).focus_handle(cx).is_focused(window)
-                        || row.picker.focus_handle(cx).is_focused(window)
-                })
-                .map(|row| Reveal::Row(row.kind))
-        };
-        if focused == self.revealed {
+    /// The Readability list, once it gains focus, scrolls into view in the
+    /// draw that shows the focus. A focus change refreshes the window, so
+    /// this render belongs to that draw and the target is applied by its
+    /// prepaint. Focus listeners would be too late: GPUI dispatches them
+    /// after the draw's layout, where a refresh no longer produces a frame,
+    /// so the scroll would wait for the next input. In the wide layout the
+    /// list follows the miniature in the side column; stacked, it follows
+    /// the rows. A row's controls are revealed by the column's own reveal
+    /// (`column`).
+    fn reveal_warnings(&mut self, window: &Window) {
+        let focused = self.warnings_focus.is_focused(window);
+        if std::mem::replace(&mut self.warnings_revealed, focused) || !focused {
             return;
         }
-        self.revealed = focused;
-        match focused {
-            Some(Reveal::Row(kind)) => self.scroll.scroll_to_item(Self::row_entry(kind)),
-            Some(Reveal::Warnings) if self.wide => self.side_scroll.scroll_to_item(1),
-            Some(Reveal::Warnings) => self.scroll.scroll_to_item(Self::TOKEN_ENTRIES + 1),
-            None => {}
+        if self.wide {
+            self.side_scroll.scroll_to_item(1);
+        } else {
+            self.column.scroll().scroll_to_item(Self::TOKEN_ENTRIES + 1);
         }
     }
 
@@ -2118,6 +2109,24 @@ impl ThemeForm {
         } else {
             row.view.clone().into_any_element()
         }
+    }
+
+    /// `row` in the token column, reporting its hex field and its picker's
+    /// trigger to the column's reveal (`column`): the wrapper is laid out as
+    /// the row, whose cached view keeps its own prepaint, while the
+    /// wrapper's report runs in every frame the form draws.
+    fn column_row(&self, row: &TokenRow, window: &Window, cx: &App) -> AnyElement {
+        let focus = vec![
+            row.hex.read(cx).focus_handle(cx),
+            row.picker.focus_handle(cx),
+        ];
+        div()
+            .w_full()
+            .h(appearance::ui_size(30.))
+            .flex_shrink_0()
+            .on_children_prepainted(self.column.group(focus, appearance::button_ring_room(cx)))
+            .child(self.row_element(row, window, cx))
+            .into_any_element()
     }
 
     fn can_save(&self) -> bool {
@@ -2824,10 +2833,14 @@ impl Render for ThemeForm {
         let viewport = window.viewport_size();
         let wide = viewport.width >= appearance::ui_size(1060.);
         self.wide = wide;
-        self.reveal_focused(window, cx);
+        // A row's control focus has moved onto, or a resize has cut, comes
+        // into view in this frame.
+        self.column.reveal(window, cx);
+        self.reveal_warnings(window);
         let max_height = Self::max_height(window, cx);
         // Group labels and rows are direct children of the scroll container,
-        // so `ScrollHandle::scroll_to_item` can reveal a focused row.
+        // so `ScrollHandle::scroll_to_item` can reveal the Readability list
+        // after them.
         let mut entries: Vec<AnyElement> = Vec::with_capacity(Self::TOKEN_ENTRIES + 2);
         for (index, group) in TokenGroup::ALL.into_iter().enumerate() {
             entries.push(
@@ -2850,7 +2863,7 @@ impl Render for ThemeForm {
                 self.rows
                     .iter()
                     .filter(|row| row.kind.group() == group)
-                    .map(|row| self.row_element(row, window, cx)),
+                    .map(|row| self.column_row(row, window, cx)),
             );
         }
         let name = self.name.read(cx).value().trim().to_owned();
@@ -2913,6 +2926,9 @@ impl Render for ThemeForm {
                         .flex_col()
                         .child(crate::native_accessibility::clips_children(
                             div()
+                                // Records the focus this frame drew with,
+                                // after every row has reported.
+                                .on_children_prepainted(self.column.observe())
                                 .id("theme-editor-body")
                                 .debug_selector(|| "theme-editor-body".into())
                                 .flex_1()
@@ -2922,13 +2938,13 @@ impl Render for ThemeForm {
                                 // covers the pickers.
                                 .pr(Scrollbar::width())
                                 .overflow_y_scroll()
-                                .track_scroll(&self.scroll)
+                                .track_scroll(self.column.scroll())
                                 .flex()
                                 .flex_col()
                                 .children(entries),
                         ))
                         .child(Self::render_scrollbar(
-                            &self.scroll,
+                            self.column.scroll(),
                             "theme-editor-scrollbar",
                         )),
                 )
@@ -2974,19 +2990,20 @@ impl Render for ThemeForm {
                 .flex_col()
                 .child(crate::native_accessibility::clips_children(
                     div()
+                        .on_children_prepainted(self.column.observe())
                         .id("theme-editor-body")
                         .debug_selector(|| "theme-editor-body".into())
                         .flex_1()
                         .min_h_0()
                         .pr(Scrollbar::width())
                         .overflow_y_scroll()
-                        .track_scroll(&self.scroll)
+                        .track_scroll(self.column.scroll())
                         .flex()
                         .flex_col()
                         .children(entries),
                 ))
                 .child(Self::render_scrollbar(
-                    &self.scroll,
+                    self.column.scroll(),
                     "theme-editor-scrollbar",
                 ))
                 .into_any_element()
@@ -4208,7 +4225,7 @@ pub(crate) mod tests {
         let last = TokenKind::ALL[TokenKind::ALL.len() - 1];
         let last_entry = ThemeForm::row_entry(last);
         assert_eq!(last_entry, ThemeForm::TOKEN_ENTRIES - 1);
-        let scroll = cx.read(|cx| form.read(cx).scroll.clone());
+        let scroll = cx.read(|cx| form.read(cx).column.scroll().clone());
         let side_scroll = cx.read(|cx| form.read(cx).side_scroll.clone());
         assert!(
             !entry_visible(&scroll, last_entry),
@@ -4224,10 +4241,6 @@ pub(crate) mod tests {
                     "tab",
                     |_, _| entry_visible(&scroll, ThemeForm::row_entry(kind)),
                     |_, _| (),
-                );
-                assert_eq!(
-                    cx.read(|cx| form.read(cx).revealed),
-                    Some(Reveal::Row(kind))
                 );
                 assert!(
                     visible,
@@ -4285,6 +4298,75 @@ pub(crate) mod tests {
             visible,
             "the focused Readability list is in view in the side column"
         );
+    }
+
+    /// A row's hex field or picker trigger holding focus stays in view
+    /// through a resize, not only when focus moves onto it (decided
+    /// 2026-11-10): a low row's control, focused and so scrolled into view
+    /// at the column's foot, lies below the fold of a window shrunk under
+    /// it, and the frame after the shrink shows it whole with its ring's
+    /// room, in the wide layout and stacked. The column revealed a row only
+    /// as its control gained focus, so the shrink left it cut until focus
+    /// moved again.
+    #[gpui::test]
+    fn a_resize_keeps_the_focused_rows_control_in_view(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let kind = TokenKind::ALL[TokenKind::ALL.len() - 2];
+        for (width, tall, short) in [(1440., 900., 760.), (1000., 680., 560.)] {
+            for control in ["hex field", "trigger"] {
+                let at = format!("{width} px, {control}");
+                cx.simulate_resize(size(px(width), px(tall)));
+                settle(cx);
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.open_theme_editor(None, window, cx))
+                });
+                settle(cx);
+                let form = form(cx, &app);
+                next_frame(cx);
+                assert_eq!(cx.read(|cx| form.read(cx).wide), width > 1060., "{at}");
+                let selector = if control == "trigger" {
+                    format!("theme-token-picker-{}", kind.key())
+                } else {
+                    format!("theme-token-{}", kind.key())
+                };
+                let whole = |cx: &mut VisualTestContext| {
+                    let column = bounds(cx, "theme-editor-body".into());
+                    let control = bounds(cx, selector.clone());
+                    (
+                        control.top() - ring >= column.top() - px(0.01)
+                            && control.bottom() + ring <= column.bottom() + px(0.01),
+                        control,
+                        column,
+                    )
+                };
+                assert!(!whole(cx).0, "{at}: the row starts below the fold");
+                cx.update(|window, cx| {
+                    let row = form.read(cx).row(kind);
+                    let focus = if control == "trigger" {
+                        row.picker.focus_handle(cx)
+                    } else {
+                        row.hex.read(cx).focus_handle(cx)
+                    };
+                    focus.focus(window, cx);
+                });
+                settle(cx);
+                let (shown, drawn, column) = whole(cx);
+                assert!(shown, "{at}: focus shows {drawn:?} whole in {column:?}");
+                cx.simulate_resize(size(px(width), px(short)));
+                settle(cx);
+                let (shown, drawn, column) = whole(cx);
+                assert!(
+                    shown,
+                    "{at}: after the shrink {drawn:?} is whole with its ring's room in {column:?}"
+                );
+                click(cx, "theme-editor-cancel");
+                assert!(
+                    cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+                    "{at}: Cancel closes the editor"
+                );
+            }
+        }
     }
 
     /// The stops inside the popover `trigger` holds, as GPUI's order meets
@@ -5739,7 +5821,7 @@ pub(crate) mod tests {
 
             // The token column overflows at both sizes and shows an
             // always-visible scrollbar in a reserved track beside the rows.
-            let scroll = cx.read(|cx| form.read(cx).scroll.clone());
+            let scroll = cx.read(|cx| form.read(cx).column.scroll().clone());
             assert!(
                 scroll.max_offset().y > px(0.),
                 "the token column scrolls at {viewport:?}"
@@ -5875,7 +5957,7 @@ pub(crate) mod tests {
                 settle(cx);
                 let form = form(cx, &app);
                 next_frame(cx);
-                let scroll = cx.read(|cx| form.read(cx).scroll.clone());
+                let scroll = cx.read(|cx| form.read(cx).column.scroll().clone());
                 assert!(
                     scroll.max_offset().y > px(0.),
                     "the rows overflow at {text_size} pt in {viewport:?}"
