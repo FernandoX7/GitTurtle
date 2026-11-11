@@ -7,6 +7,7 @@ use gpui_kit::{
     component::{
         WindowExt,
         dialog::Confirm,
+        input::Enter,
         scroll::{Scrollbar, ScrollbarMode},
     },
     prelude::FluentBuilder,
@@ -429,6 +430,8 @@ pub(crate) struct ReflogBrowser {
     /// How many reads the browser has submitted to its reader.
     #[cfg(test)]
     submitted: usize,
+    /// Whether the dialog's Confirm comes from Return in a field.
+    field_return: crate::tags::FieldReturn,
     cancellation: gitturtle_core::HistoryCancellation,
     scope: Entity<InputState>,
     query: Entity<InputState>,
@@ -528,6 +531,7 @@ impl ReflogBrowser {
             repeat: None,
             #[cfg(test)]
             submitted: 0,
+            field_return: Default::default(),
             cancellation: Default::default(),
             scope,
             query,
@@ -844,30 +848,32 @@ impl ReflogBrowser {
     /// first entry the filter matches, in the recovery branch's name it
     /// reviews that branch, as Review recovery branch… does, and in each it
     /// does nothing more, so the Reflog stays open until a review lands;
-    /// anywhere else it is the dialog's own, Done. The dialog confirms once
-    /// per press, as the key goes down, never on a held key's repeats, under
-    /// X11 too, and never for a modified Enter; a press that began elsewhere
-    /// does nothing here. The scope and the filter acted on their own
-    /// `PressEnter`, which a field sends for every Enter key-down, so a held
-    /// Return read the log or the entry's commit again on each repeat, while
-    /// the dialog's Done took the first press too and closed the Reflog, as
-    /// it did, the name typed, from the name.
+    /// anywhere else, and for Done's click, which sends Confirm to the field
+    /// focus stays in, it is the dialog's own, Done
+    /// (`tags::FieldReturn`). The dialog confirms once per press, as the
+    /// key goes down, never on a held key's repeats, under X11 too, and
+    /// never for a modified Enter, so the field takes the press it began
+    /// on, once, with no guard of its own: it asked again whether the press
+    /// repeated and where it began, which the dialog's confirmation had
+    /// settled, while Done's click, with focus in a field, read the log or
+    /// the first match, or reviewed the name, and left the Reflog open. The
+    /// scope and the filter acted on their own `PressEnter`, which a field
+    /// sends for every Enter key-down, so a held Return read the log or the
+    /// entry's commit again on each repeat, while the dialog's Done took the
+    /// first press too and closed the Reflog, as it did, the name typed,
+    /// from the name.
     fn confirm_in_field(&mut self, confirm: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         let scope = self.scope.read(cx).focus_handle(cx);
         let filter = self.query.read(cx).focus_handle(cx);
         let name = self.name.read(cx).focus_handle(cx);
+        let from_field = self.field_return.take();
         let Some(field) = [&scope, &filter, &name]
             .into_iter()
-            .find(|field| !confirm.secondary && field.is_focused(window))
+            .find(|field| from_field && !confirm.secondary && field.is_focused(window))
         else {
             cx.propagate();
             return;
         };
-        if gpui_kit::base::enter_press_is_repeat(window, cx)
-            || !gpui_kit::base::enter_press_began_on(field, window, cx)
-        {
-            return;
-        }
         if *field == scope {
             self.refresh(window, cx);
         } else if *field == name {
@@ -1258,6 +1264,10 @@ impl Render for ReflogBrowser {
                 .children(error_after_review) });
         div()
             // Return in a field is the field's own ([`Self::confirm_in_field`]).
+            .on_action(cx.listener(|this, _: &Enter, _, cx| {
+                this.field_return.note(cx);
+                cx.propagate();
+            }))
             .on_action(cx.listener(Self::confirm_in_field))
             .relative()
             .min_h_0()
@@ -2097,6 +2107,44 @@ mod tests {
         }
         let selected = browser.read_with(cx, |this, _| this.selected.is_some());
         assert!(selected, "the filter's press selects its first match");
+    }
+
+    /// A click on Done with focus in the scope, the filter or the recovery
+    /// branch's name is Done's: the Reflog closes, reading and reviewing
+    /// nothing. Done's click sends the dialog's Confirm to the field focus
+    /// stays in, since a Button takes no focus on a press, and the field
+    /// took it for its own Return: it read the log or the first match, or
+    /// reviewed the name, and left the Reflog open.
+    #[gpui::test]
+    async fn done_clicked_with_focus_in_a_field_closes_the_reflog(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        for which in ["the scope", "the filter", "the name"] {
+            let (_, browser, cx) = opened_browser(cx, &repo).await;
+            if which == "the name" {
+                ReflogBrowser::select_newest(&browser, cx);
+            }
+            let field = browser.read_with(cx, |this, _| match which {
+                "the scope" => this.scope.clone(),
+                "the filter" => this.query.clone(),
+                _ => this.name.clone(),
+            });
+            cx.update(|window, cx| field.read(cx).focus_handle(cx).focus(window, cx));
+            draw(cx);
+            let before = browser.read_with(cx, |this, _| this.submitted);
+            let done = cx.debug_bounds("dialog-ok: Done").expect("Done");
+            cx.simulate_click(done.center(), Modifiers::default());
+            settle_reads(cx, &browser);
+            assert_eq!(
+                browser.read_with(cx, |this, _| this.submitted),
+                before,
+                "{which}: Done reads and reviews nothing"
+            );
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{which}: Done closes the Reflog"
+            );
+        }
     }
 
     /// Return in the recovery branch's name reviews that branch, as Review
