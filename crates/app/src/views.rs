@@ -12543,10 +12543,12 @@ pub(crate) mod tests {
         );
         changes("new review options", &mut work);
         scroll(cx, "1200 × 973 at 18 pt, whitespace hidden", &mut work);
-        // Another file whose row offers both sides' Downloads: of what the
-        // heights follow from, only what the row offers changes, the
-        // window's write, the column and the options as they were, so it
-        // alone measures again, and a frame after it measures nothing.
+        // Another file whose row offers both sides' Downloads. Choosing it
+        // puts the options back at their defaults, as they were for
+        // asset.txt at this width and size, whose heights are still kept;
+        // the window's write and the column as they were, only what the row
+        // offers tells the two apart, so both.txt measures again, and a
+        // frame after it measures nothing.
         let both = app.read_with(cx, |app, _| {
             app.files
                 .iter()
@@ -12560,6 +12562,11 @@ pub(crate) mod tests {
                 .iter()
                 .all(|id| cx.debug_bounds(id).is_some()),
             "both.txt's row offers both sides' Downloads"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.review.options
+                == crate::text_review::Options::default()),
+            "choosing both.txt puts the options back at their defaults"
         );
         changes("a file offering both sides' Downloads", &mut work);
         cx.update(|window, cx| window.simulate_next_frame(cx));
