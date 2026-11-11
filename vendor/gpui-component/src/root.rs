@@ -565,73 +565,80 @@ impl Root {
     }
 
     fn on_action_tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
-        // Check if we're inside a focus trap
-        if let Some(container_focus_handle) = gpui_base::active_focus_trap(window, cx) {
-            // We're in a focus trap - try to focus next, then check if we're still inside
-            let before_focus = window.focused(cx);
-
-            // Try normal focus navigation
-            window.focus_next(cx);
-
-            // Check if we're still in the trap
-            if !container_focus_handle.contains_focused(window, cx) {
-                // We jumped out of the trap - need to cycle back to the beginning
-                // Find the first focusable element in the trap by continuing to focus_next
-                let mut attempts = 0;
-                const MAX_ATTEMPTS: usize = 100; // Prevent infinite loop
-
-                while !container_focus_handle.contains_focused(window, cx)
-                    && attempts < MAX_ATTEMPTS
-                {
-                    window.focus_next(cx);
-                    attempts += 1;
-
-                    // If we cycled back to where we started, restore original focus
-                    if window.focused(cx) == before_focus {
-                        break;
-                    }
-                }
-            }
-            return;
-        }
-
-        // Normal tab navigation
-        window.focus_next(cx);
+        Self::step_focus(true, window, cx);
     }
 
     fn on_action_tab_prev(&mut self, _: &TabPrev, window: &mut Window, cx: &mut Context<Self>) {
-        // Check if we're inside a focus trap
-        if let Some(container_focus_handle) = gpui_base::active_focus_trap(window, cx) {
-            // We're in a focus trap - try to focus previous, then check if we're still inside
-            let before_focus = window.focused(cx);
+        Self::step_focus(false, window, cx);
+    }
 
-            // Try normal focus navigation
-            window.focus_prev(cx);
-
-            // Check if we're still in the trap
-            if !container_focus_handle.contains_focused(window, cx) {
-                // We jumped out of the trap - need to cycle back to the end
-                // Find the last focusable element in the trap by continuing to focus_prev
-                let mut attempts = 0;
-                const MAX_ATTEMPTS: usize = 100; // Prevent infinite loop
-
-                while !container_focus_handle.contains_focused(window, cx)
-                    && attempts < MAX_ATTEMPTS
-                {
-                    window.focus_prev(cx);
-                    attempts += 1;
-
-                    // If we cycled back to where we started, restore original focus
-                    if window.focused(cx) == before_focus {
-                        break;
-                    }
-                }
+    /// Moves focus to the next Tab stop, or with `forward` false the
+    /// previous one, inside the active focus trap if there is one.
+    ///
+    /// GitTurtle patch: a step that would leave the trap moves straight to
+    /// the trap's own first stop (Tab past its last) or last stop
+    /// (Shift-Tab before its first), and a trap with no stop keeps focus
+    /// where it was, so focus never leaves an open dialog and no key reaches
+    /// the page behind it, where it could act. Upstream walked the window on
+    /// from the stop outside the trap and gave up after 100 stops, leaving
+    /// focus on that page with the dialog still open (31 saved themes behind
+    /// GitTurtle's theme editor).
+    fn step_focus(forward: bool, window: &mut Window, cx: &mut App) {
+        let step = |window: &mut Window, cx: &mut App| {
+            if forward {
+                window.focus_next(cx)
+            } else {
+                window.focus_prev(cx)
             }
+        };
+        let Some(trap) = gpui_base::active_focus_trap(window, cx) else {
+            step(window, cx);
+            return;
+        };
+        let before = window.focused(cx);
+        step(window, cx);
+        if trap.contains_focused(window, cx) {
             return;
         }
+        if let Some(target) = Self::trap_end(&trap, forward, window, cx).or(before) {
+            window.focus(&target, cx);
+        }
+    }
 
-        // Normal tab navigation
-        window.focus_prev(cx);
+    /// GitTurtle patch: the first Tab stop inside `trap`, or with `first`
+    /// false its last, in the order `focus_next` visits them. GPUI orders a
+    /// tracked handle ahead of everything its element holds, so stepping on
+    /// from the trap's own handle visits the trap's stops and then one stop
+    /// past them, never the rest of the window. It moves focus as it steps,
+    /// within this handler, before any frame draws or any listener sees it;
+    /// the caller focuses what it returns.
+    fn trap_end(
+        trap: &FocusHandle,
+        first: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<FocusHandle> {
+        // The trap's own handle is its first stop when it is a Tab stop.
+        let mut ends = trap.tab_stop.then(|| (trap.clone(), trap.clone()));
+        window.focus(trap, cx);
+        while !(first && ends.is_some()) {
+            window.focus_next(cx);
+            let Some(focused) = window.focused(cx) else {
+                break;
+            };
+            if !trap.contains_focused(window, cx) {
+                break;
+            }
+            match &mut ends {
+                // Back at its first stop, every stop in the window is the
+                // trap's; at its last, the step moved nothing.
+                Some((head, tail)) if focused == *head || focused == *tail => break,
+                Some((_, tail)) => *tail = focused,
+                None if focused == *trap => break,
+                None => ends = Some((focused.clone(), focused)),
+            }
+        }
+        ends.map(|(head, tail)| if first { head } else { tail })
     }
 
     fn on_action_copy(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<Self>) {
@@ -1528,6 +1535,124 @@ mod tests {
         assert!(cx.debug_bounds(ACT).is_some(), "a fresh Enter opens the menu");
         cx.simulate_keystrokes("escape");
         settle(cx);
+    }
+
+    /// More stops on each side of a focus trap than upstream's walk took.
+    const STOPS_AROUND_THE_TRAP: usize = 150;
+
+    /// A page of [`STOPS_AROUND_THE_TRAP`] Tab stops, a focus trap holding
+    /// `inside`, and as many stops again after it.
+    struct TrapPage {
+        before: Vec<FocusHandle>,
+        trap: FocusHandle,
+        inside: Vec<FocusHandle>,
+        after: Vec<FocusHandle>,
+    }
+
+    impl Render for TrapPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use gpui_base::FocusTrapElement as _;
+            let stop = |handle: &FocusHandle| div().track_focus(handle).size(px(2.));
+            div()
+                .size_full()
+                .children(self.before.iter().map(stop))
+                .child(
+                    div()
+                        .focus_trap("trap", &self.trap)
+                        .children(self.inside.iter().map(stop)),
+                )
+                .children(self.after.iter().map(stop))
+        }
+    }
+
+    fn tab_stops(count: usize, cx: &mut App) -> Vec<FocusHandle> {
+        (0..count)
+            .map(|_| cx.focus_handle().tab_stop(true))
+            .collect()
+    }
+
+    fn trap_page(
+        inside: usize,
+        cx: &mut TestAppContext,
+    ) -> (Entity<TrapPage>, &mut VisualTestContext) {
+        cx.update(crate::init);
+        let slot = Rc::new(std::cell::RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            move |window, cx| {
+                let view = cx.new(|cx| TrapPage {
+                    before: tab_stops(STOPS_AROUND_THE_TRAP, cx),
+                    trap: cx.focus_handle(),
+                    inside: tab_stops(inside, cx),
+                    after: tab_stops(STOPS_AROUND_THE_TRAP, cx),
+                });
+                *slot.borrow_mut() = Some(view.clone());
+                Root::new(view, window, cx).bordered(false)
+            }
+        });
+        settle(cx);
+        let view = slot.borrow().clone().expect("the page");
+        (view, cx)
+    }
+
+    /// GitTurtle patch: Tab and Shift-Tab never take focus out of a focus
+    /// trap, however many stops lie around it: Tab from its last stop moves
+    /// to its first, Shift-Tab from its first to its last, and inside it
+    /// each moves one stop, also from the trap's own handle, which a dialog
+    /// focuses as it opens. Upstream walked the window from the stop outside
+    /// the trap and gave up after 100 stops, leaving focus on the page behind
+    /// an open dialog (31 saved themes behind GitTurtle's theme editor).
+    #[gpui::test]
+    fn tab_wraps_inside_a_focus_trap_past_any_number_of_stops(cx: &mut TestAppContext) {
+        let (view, cx) = trap_page(3, cx);
+        let (trap, inside) = view.read_with(cx, |view, _| (view.trap.clone(), view.inside.clone()));
+        for (key, to) in [("tab", 0), ("shift-tab", 2)] {
+            focus(&trap, cx);
+            assert!(focused(&trap, cx), "the trap holds focus");
+            cx.simulate_keystrokes(key);
+            settle(cx);
+            assert!(
+                focused(&inside[to], cx),
+                "{key} from the trap's own handle reaches its stop {to}"
+            );
+        }
+        focus(&inside[0], cx);
+        let presses = [
+            ("shift-tab", 2),
+            ("shift-tab", 1),
+            ("shift-tab", 0),
+            ("shift-tab", 2),
+            ("tab", 0),
+            ("tab", 1),
+            ("tab", 2),
+            ("tab", 0),
+        ];
+        for (press, (key, to)) in presses.into_iter().enumerate() {
+            cx.simulate_keystrokes(key);
+            settle(cx);
+            assert!(
+                cx.update(|window, cx| trap.contains_focused(window, cx)),
+                "press {press}, {key}, keeps focus in the trap"
+            );
+            assert!(
+                focused(&inside[to], cx),
+                "press {press}, {key}, reaches stop {to}"
+            );
+        }
+    }
+
+    /// GitTurtle patch: a focus trap with no Tab stop of its own keeps focus
+    /// where it was on Tab and Shift-Tab, however many stops lie around it.
+    #[gpui::test]
+    fn tab_in_a_focus_trap_without_stops_moves_nothing(cx: &mut TestAppContext) {
+        let (view, cx) = trap_page(0, cx);
+        let trap = view.read_with(cx, |view, _| view.trap.clone());
+        focus(&trap, cx);
+        for key in ["tab", "shift-tab", "tab"] {
+            cx.simulate_keystrokes(key);
+            settle(cx);
+            assert!(focused(&trap, cx), "{key} leaves focus on the trap");
+        }
     }
 
     #[gpui::test]

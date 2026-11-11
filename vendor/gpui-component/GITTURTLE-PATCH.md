@@ -838,6 +838,36 @@ cursor. `scripts/vendor-crate-test.sh vendor/gpui-component the_enter_that_close
 holds Enter through a menu's dialog, a plain dialog and `close_all_dialogs`.
 Remove it with the base patch's Enter wait.
 
+The focus-trap patch modifies `src/root.rs`. Upstream's Tab and Shift-Tab
+(`Root::on_action_tab`, `Root::on_action_tab_prev`), once a step left the
+active focus trap, walked on through the window stop by stop until focus came
+back inside it, and gave up after 100 stops: with more stops than that behind
+an open dialog, Shift-Tab from its first stop, or Tab from its last, left
+focus on the page behind it while the dialog stayed open, where keys could
+act on that page (31 saved themes behind GitTurtle's theme editor, where
+Shift-Tab from Name focused a Settings Button). Patched, a step that would
+leave the trap moves straight to the trap's own first stop (Tab past its
+last) or last stop (Shift-Tab before its first), and a trap with no stop
+keeps focus where it was (`Root::step_focus`), however many stops lie around
+it. GPUI keeps the window's Tab order private, so `Root::trap_end` finds
+those ends in the order `focus_next` visits them by stepping on from the
+trap's own handle, which GPUI registers as the trap's element paints, ahead
+of everything inside it: it visits at most the trap's stops and the one stop
+past them, never the rest of the window, and moves focus only within the
+handler, before any frame draws or focus listener runs. That takes a trap's
+stops to be consecutive in that order, as paint order keeps them unless a Tab
+index or group sorts a stop elsewhere; a stop of the trap that a stop outside
+it separates from the rest is then not reached by Tab or Shift-Tab from them,
+as upstream's walk reached it only within its 100 stops. A step that stays
+inside the trap, and Tab with no trap active, are unchanged. Tab and
+Shift-Tab stay actions and no key handling changes, so the held-Enter guard,
+focus given into a dialog as it opens and focus given back as it closes are
+as before. The kit's `tab_wraps_inside_a_focus_trap_past_any_number_of_stops`
+and `tab_in_a_focus_trap_without_stops_moves_nothing`
+(`scripts/vendor-crate-test.sh vendor/gpui-component focus_trap`) put 150
+stops on each side of a trap. Remove it when upstream wraps a focus trap
+without walking the window, and those tests pass without it.
+
 The secondary-edge patch modifies `src/theme/mod.rs` and
 `src/button/button.rs`. Upstream draws a bordered secondary Button's edge in
 the shared `border` at rest and sets it from `border` again in its hovered,
