@@ -478,6 +478,7 @@ impl GitTurtle {
                                     this.seed_navigation_folders();
                                     this.rebuild_navigation(cx);
                                     this.refresh_worktree(window, cx);
+                                    this.select_newest_as_an_open_does(window, cx);
                                 }
                             }
                             Output::HistoryPage(result) => {

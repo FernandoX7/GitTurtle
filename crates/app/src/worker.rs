@@ -7772,7 +7772,14 @@ mod image_tests {
         let root = opened.path().to_owned();
         let captured = GitDirectories::of(&opened);
         if captured.inodes.git_dir_birth.is_none() {
-            // This filesystem records none: the inodes are all there is.
+            // This filesystem records none: the inodes are all there is,
+            // which `a_restored_tab_compares_each_directory_s_inode`
+            // compares. Said, so a run here is not read as a pass.
+            eprintln!(
+                "a_restored_tab_compares_each_directory_s_birth_time skipped: \
+                 the filesystem holding {} records no birth time",
+                root.display()
+            );
             return;
         }
         let later =

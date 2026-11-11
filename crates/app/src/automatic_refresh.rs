@@ -688,6 +688,7 @@ impl GitTurtle {
                 self.mode = WorkspaceMode::History;
                 self.sidebar = self.history_sidebar;
             }
+            self.select_newest_as_an_open_does(window, cx);
             if !self.search.read(cx).value().is_empty() {
                 self.history_query_changed(window, cx);
             }

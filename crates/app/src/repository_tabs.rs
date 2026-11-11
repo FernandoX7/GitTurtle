@@ -7601,10 +7601,9 @@ pub(crate) mod tests {
                 std::fs::create_dir_all(base.join(folder)).unwrap();
             }
             let repository = fixture_repository(base.join("x").join("repo"));
-            fixture_git(
-                repository.path(),
-                &["commit", "-q", "--allow-empty", "-m", "Before"],
-            );
+            std::fs::write(repository.path().join("before.txt"), "before\n").unwrap();
+            fixture_git(repository.path(), &["add", "before.txt"]);
+            fixture_git(repository.path(), &["commit", "-q", "-m", "Before"]);
             let root = repository.path().to_owned();
             cx.update(|window, cx| {
                 app.update(cx, |app, cx| {
@@ -7636,6 +7635,8 @@ pub(crate) mod tests {
             &["remote", "add", "origin", bare_a.to_str().unwrap()],
         );
         fixture_git(&root, &["push", "-q", "-u", "origin", "before"]);
+        // A branch in a folder the navigation shows open.
+        fixture_git(&root, &["branch", "old/kept"]);
         std::fs::write(root.join("staged.txt"), "the person's\n").unwrap();
         fixture_git(&root, &["add", "staged.txt"]);
         let third = fixture_repository(if replaced == Replaced::Above {
@@ -7643,10 +7644,12 @@ pub(crate) mod tests {
         } else {
             base.join("third")
         });
-        fixture_git(
-            third.path(),
-            &["commit", "-q", "--allow-empty", "-m", "Third"],
-        );
+        std::fs::write(third.path().join("third.txt"), "third\n").unwrap();
+        fixture_git(third.path(), &["add", "third.txt"]);
+        fixture_git(third.path(), &["commit", "-q", "-m", "Third"]);
+        // Its current branch in a folder, which the found repository's
+        // navigation opens as an Open's does.
+        fixture_git(third.path(), &["switch", "-q", "-c", "team/third"]);
         fixture_git(
             third.path(),
             &["remote", "add", "origin", bare_b.to_str().unwrap()],
@@ -7655,12 +7658,12 @@ pub(crate) mod tests {
         fixture_git(third.path(), &["add", "planted.txt"]);
         let third_git = third.git_dir().to_owned();
         let pushed = tip(&bare_a, "refs/heads/before");
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.refresh(&Refresh, window, cx);
-                app.show_working(window, cx);
-            })
-        });
+        // Settled before Changes opens: opened in the same update, it
+        // cancelled the Refresh's snapshot, and History had no rows from
+        // before for a capture to forget.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
         crate::views::tests::settle(&app, cx).await;
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
@@ -7672,6 +7675,31 @@ pub(crate) mod tests {
             })
         });
         crate::views::tests::settle(&app, cx).await;
+        // History shows the replaced repository: its newest commit selected,
+        // its changed files loaded, and the folder of its branch `old/kept`
+        // open.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let newest = *app.visible.first().expect("a row from before");
+                app.select_commit(newest, window, cx);
+                app.expanded_folders.insert("local:old".into());
+                app.rebuild_navigation(cx);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        let before = app.read_with(cx, |app, _| {
+            let selected = app.selected_commit.expect("a commit selected");
+            assert!(!app.files.is_empty(), "its changed files loaded");
+            assert!(
+                app.expanded_folders.contains("local:old"),
+                "its folder open"
+            );
+            assert!(
+                (app.commits.iter()).all(|commit| commit.subject != "Third"),
+                "the replaced repository's rows"
+            );
+            app.commits[selected].oid.clone()
+        });
         let picker = || crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
         assert_eq!(picker().as_deref(), Some("before"), "read before the mark");
         assert_eq!(
@@ -7722,6 +7750,29 @@ pub(crate) mod tests {
             (app.repository.as_ref()).map(|repo| (repo.git_dir().to_owned(), repo.git_dir_inode()))
         };
         let shown = app.read_with(cx, |app, _| identity(app));
+        assert_eq!(
+            read(
+                &base,
+                &[
+                    "--git-dir",
+                    found_git.to_str().unwrap(),
+                    "cat-file",
+                    "-e",
+                    &format!("{before}^{{commit}}"),
+                ]
+            ),
+            None,
+            "the selected commit is not the found repository's"
+        );
+        if replaced != Replaced::Marked {
+            app.read_with(cx, |app, _| {
+                assert_eq!(
+                    (app.selected_commit).map(|index| app.commits[index].oid.clone()),
+                    Some(before.clone()),
+                    "still selected as the route starts"
+                );
+            });
+        }
 
         let held = app.read_with(cx, |app, _| app.operations.hold());
         route(&app, cx, &root);
@@ -7792,9 +7843,11 @@ pub(crate) mod tests {
                 "Targets' branch"
             );
         });
-        // History lists, selects and retains nothing of the replaced
-        // repository, so its row menu offers no write on one of its
-        // commits, and the navigation's folders are the found one's.
+        // History lists and retains nothing of the replaced repository and
+        // selects as an Open does, the found repository's newest row with
+        // its changed files, so its row menu offers a write on that commit
+        // only, and the navigation's folders are the found one's: its
+        // current branch's open, the replaced one's closed.
         let found_row = |subject: &str| subject == "Third";
         app.read_with(cx, |app, _| {
             let subjects = (app.commits.iter())
@@ -7809,9 +7862,25 @@ pub(crate) mod tests {
                 "no row retained from before"
             );
             assert_eq!(
+                (app.selected_commit).map(|index| app.commits[index].subject.as_str()),
+                Some("Third"),
+                "the found repository's newest row selected"
+            );
+            assert_eq!(
+                (app.files.iter())
+                    .map(|file| file.path().to_owned())
+                    .collect::<Vec<_>>(),
+                [PathBuf::from("third.txt")],
+                "its changed files"
+            );
+            assert_eq!(
                 app.expanded_folders,
-                crate::navigation::current_ancestors(&app.branches),
+                HashSet::from(["local:team".to_owned()]),
                 "the navigation's folders"
+            );
+            assert_eq!(
+                app.expanded_folders,
+                crate::navigation::current_ancestors(&app.branches)
             );
         });
         cx.update(|window, cx| {
@@ -7828,9 +7897,10 @@ pub(crate) mod tests {
             cx.notify();
             offered
         });
-        assert!(
-            offered.as_deref().is_none_or(found_row),
-            "the row menu offers a write on {offered:?}"
+        assert_eq!(
+            offered.as_deref(),
+            Some("Third"),
+            "the row menu offers a write on the found repository's commit only"
         );
         frame(cx);
         let actions = ["fetch", "pull", "push"].map(|id| (id, refuses(cx, id, "History")));
@@ -7857,7 +7927,11 @@ pub(crate) mod tests {
 
         drop(held);
         settle_tab_test(&app, cx).await;
-        assert_eq!(picker().as_deref(), Some("main"), "the branch read since");
+        assert_eq!(
+            picker().as_deref(),
+            Some("team/third"),
+            "the branch read since"
+        );
         app.read_with(cx, |app, cx| {
             let staged = app.header_status().map(|status| {
                 (status.entries.iter())
@@ -7878,16 +7952,20 @@ pub(crate) mod tests {
                 "its own remote"
             );
             assert_eq!(app.remote_name.read(cx).value().as_ref(), "origin");
-            assert_eq!(app.remote_branch.read(cx).value().as_ref(), "main");
+            assert_eq!(app.remote_branch.read(cx).value().as_ref(), "team/third");
             assert_eq!(app.operation_notice, None, "nothing ran");
         });
         frame(cx);
         assert_eq!(
             destination().as_deref(),
-            Some(format!("Push to origin/main · {}", bare_b.display()).as_str()),
+            Some(format!("Push to origin/team/third · {}", bare_b.display()).as_str()),
             "Targets name its own remote"
         );
-        assert_eq!(tip(&bare_b, "refs/heads/main"), None, "Push pushed nothing");
+        assert_eq!(
+            read(&bare_b, &["for-each-ref"]).as_deref(),
+            Some(""),
+            "Push pushed nothing"
+        );
         assert_eq!(tip(&bare_a, "refs/heads/before"), pushed);
         assert_eq!(
             read(

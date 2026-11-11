@@ -1565,6 +1565,26 @@ impl GitTurtle {
         self.forget_history_rows();
     }
 
+    /// Selects History's newest visible row as an Open's snapshot does as
+    /// it lands, where a fresh capture by Show latest or a quiet read
+    /// (`forget_captured_history`) left nothing selected: shown, with its
+    /// changed files read; behind Changes, as the row History opens on.
+    /// Left unselected, History showed the found repository's rows beside
+    /// an empty Files pane.
+    fn select_newest_as_an_open_does(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(newest) = self.visible.first().copied() else {
+            return;
+        };
+        if self.selected_commit.is_some() {
+            return;
+        }
+        match self.mode {
+            WorkspaceMode::History => self.select_commit(newest, window, cx),
+            WorkspaceMode::Working => self.selected_commit = Some(newest),
+            _ => {}
+        }
+    }
+
     /// Opens the navigation's folders that hold the current branch, once
     /// its folder state was forgotten (`forget_repository_state`), as an
     /// Open's snapshot opens them as it lands.
