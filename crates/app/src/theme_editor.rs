@@ -4995,7 +4995,9 @@ pub(crate) mod tests {
     /// save as the store's answer is handled, the store held behind that
     /// answer so the selection's save, which the answer submits, answers
     /// only after `observe`. Then the rest of the input is delivered and the
-    /// store answers.
+    /// store answers. Escape, the first key after the pointer, also draws
+    /// GPUI's frame for the input's turn to keys before the editor takes
+    /// it, which is not the close's ([`escape_reaching_the_editor`]).
     fn close_editor<R>(
         cx: &mut VisualTestContext,
         app: &Entity<GitTurtle>,
@@ -5039,17 +5041,7 @@ pub(crate) mod tests {
                 cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
                 draws
             }
-            Close::Escape => {
-                // From Base, which Tab reaches from Name, so the window is
-                // already taking keys: the first key after the pointer
-                // redraws the window once more after the close.
-                cx.update(|window, cx| name.focus(window, cx));
-                settle(cx);
-                press(cx, "tab");
-                let draws = draw_count(cx, app);
-                cx.simulate_event(down(key("escape")));
-                draws
-            }
+            Close::Escape => escape_reaching_the_editor(cx, app),
             Close::SpaceOnCancel => {
                 cx.simulate_keystrokes("shift-tab shift-tab");
                 settle(cx);
@@ -5118,6 +5110,46 @@ pub(crate) mod tests {
             cx.read(|cx| !app.read(cx).theme_editor.save_pending())
         });
         observed
+    }
+
+    /// Escape's key-down with focus where the editor's open left it, after
+    /// the pointer moved away: the draws as the key reaches the window's
+    /// bindings, which the close's one frame follows. As the first key
+    /// after the pointer, Escape turns GPUI's input to keys, and GPUI
+    /// refreshes a window whose input changes so (`Window::dispatch_event`)
+    /// and draws a dirty window before it dispatches a key
+    /// (`Window::dispatch_key_event`): one frame of the still open editor is
+    /// drawn before the key reaches it. That frame is GPUI's, not the
+    /// close's, and natively it is never presented, since the close dirties
+    /// the window again before the next frame tick draws and presents. A
+    /// Tab to Base first, which turned the input to keys, once stood in for
+    /// this, so the editor's commonest close, Escape from Name after a
+    /// click on its opener, was never checked.
+    fn escape_reaching_the_editor(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> usize {
+        let reached: Rc<std::cell::Cell<Option<(usize, bool)>>> = Rc::default();
+        let before = draw_count(cx, app);
+        let _intercept = cx.update(|_, cx| {
+            let (reached, app) = (reached.clone(), app.clone());
+            cx.intercept_keystrokes(move |event, _, cx| {
+                if event.keystroke.key == "escape" && reached.get().is_none() {
+                    let app = app.read(cx);
+                    reached.set(Some((app.draws.len(), app.theme_editor.form.is_some())));
+                }
+            })
+        });
+        cx.simulate_event(KeyDownEvent {
+            keystroke: Keystroke::parse("escape").expect("a keystroke"),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        let (draws, open) = reached.get().expect("Escape reached the window's bindings");
+        assert!(open, "the editor is open as Escape reaches it");
+        assert_eq!(
+            draws,
+            before + 1,
+            "GPUI drew the input's turn to keys once before Escape reached the editor"
+        );
+        draws
     }
 
     /// Whether the last frame drew the installed Button focus ring around
