@@ -19331,13 +19331,30 @@ mod tests {
         key_up(cx, "enter");
     }
 
-    /// The window at 13 pt and 461 × 490, where Pull requests and Settings share the header's
-    /// second row. Settings stands for the neighbour: the harness draws no tooltip for History
-    /// or Changes at any size, while it draws Settings' after its show delay.
-    fn compact_header(cx: &mut VisualTestContext) {
+    /// The window at 13 pt and 461 × 490, where the header draws its full form wrapped onto two
+    /// rows, Pull requests and Settings sharing the second; its History and Changes are labelled
+    /// buttons, which offer no tooltip.
+    fn wrapped_full_header(cx: &mut VisualTestContext) {
         crate::focus_ring::sweep::interface_size(cx, 13);
         cx.simulate_resize(size(px(461.), px(490.)));
         crate::tags::tests::draw(cx);
+    }
+
+    /// The window at 18 pt and 461 × 490, where the header draws its compact form: History and
+    /// Changes are glyph toggles beside Pull requests, each with its tooltip, its nearest
+    /// neighbours.
+    fn compact_form_header(cx: &mut VisualTestContext) {
+        crate::focus_ring::sweep::interface_size(cx, 18);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        crate::tags::tests::draw(cx);
+        let toggles = ["history-tab", "changes-tab"].map(|toggle| cx.debug_bounds(toggle));
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        assert!(
+            toggles.iter().all(|toggle| toggle.is_some_and(|toggle| {
+                toggle.size.width == toggle.size.height && toggle.top() < button.bottom()
+            })),
+            "the compact form's glyph toggles {toggles:?} share Pull requests' row {button:?}"
+        );
     }
 
     /// The kit tooltip popups the last frame drew besides the ones that say why Pull requests
@@ -19351,16 +19368,17 @@ mod tests {
     }
 
     /// Another control's tooltip keeps its own show delay beside a keyboard press's answer at
-    /// Pull requests and survives the answer's end: at 13 pt in a 461 × 490 window, the pointer
-    /// resting on the button, its tooltip saying why, as
-    /// Return goes down, resting there past the kit's 500 ms show delay while the answer
-    /// stands, then moving on to Settings, its tooltip shows beside the answer only once
-    /// its own delay has passed, and stays while the pointer rests there as the write ends and
-    /// takes the answer away. The button's leaving once hid whatever the kit's overlay held,
-    /// Settings' tooltip with it; an empty tooltip the button offered under the resting pointer
-    /// brought Settings' at once, sliding from Pull requests; and a button that offered no
-    /// tooltip from the answer's first frame kept the hover GPUI last told it of, which the
-    /// answer's end then ended, hiding Settings' tooltip.
+    /// Pull requests and survives the answer's end: at 18 pt in a 461 × 490 window, where the
+    /// header draws its compact form, the pointer resting on the button, its tooltip saying
+    /// why, as Return goes down, resting there past the kit's 500 ms show delay while the
+    /// answer stands, then moving on to Changes, the glyph toggle beside it, its tooltip shows
+    /// beside the answer only once its own delay has passed, and stays while the pointer rests
+    /// there as the write ends and takes the answer away. The button's leaving once hid
+    /// whatever the kit's overlay held, the neighbour's tooltip with it; an empty tooltip the
+    /// button offered under the resting pointer brought the neighbour's at once, sliding from
+    /// Pull requests; and a button that offered no tooltip from the answer's first frame kept
+    /// the hover GPUI last told it of, which the answer's end then ended, hiding the
+    /// neighbour's tooltip.
     #[gpui::test]
     async fn a_neighbours_tooltip_survives_a_keyboard_answer_at_pull_requests(
         cx: &mut TestAppContext,
@@ -19371,12 +19389,12 @@ mod tests {
             appearance::ThemeChoice::Midnight.apply(None, cx);
             cx.set_reduce_motion(true);
         });
-        compact_header(cx);
+        compact_form_header(cx);
         cx.update(|window, cx| window.focus(&opener, cx));
         draw(cx);
-        let (button, settings) = (
+        let (button, changes) = (
             cx.debug_bounds("pull-requests").expect("the button"),
-            cx.debug_bounds("settings").expect("Settings"),
+            cx.debug_bounds("changes-tab").expect("Changes"),
         );
         let tick = |cx: &mut VisualTestContext, by: Duration| {
             cx.executor().advance_clock(by);
@@ -19413,21 +19431,21 @@ mod tests {
             "nothing stands beside the answer: {beside:?}"
         );
 
-        // On to Settings.
-        cx.simulate_mouse_move(settings.center(), None, Modifiers::default());
+        // On to Changes.
+        cx.simulate_mouse_move(changes.center(), None, Modifiers::default());
         draw(cx);
         tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
         assert!(answer_drawn(cx), "the answer stays");
         let beside = neighbour_popups(cx);
         assert!(
             beside.is_empty(),
-            "Settings' tooltip waits its show delay: {beside:?}"
+            "Changes' tooltip waits its show delay: {beside:?}"
         );
         tick(cx, Duration::from_millis(100));
         assert_eq!(
             neighbour_popups(cx).len(),
             1,
-            "then Settings' tooltip shows beside the answer"
+            "then Changes' tooltip shows beside the answer"
         );
 
         // The write ends, and the answer with it.
@@ -19442,7 +19460,7 @@ mod tests {
             assert_eq!(
                 kit_tooltip_popups(cx).len(),
                 1,
-                "{} ms after the write: Settings' tooltip stays",
+                "{} ms after the write: Changes' tooltip stays",
                 step * 100 + 100
             );
         }
@@ -19453,10 +19471,11 @@ mod tests {
     /// the pointer meeting it in the answer's first frame, the one that still offers a tooltip,
     /// and leaving it in the next, which offers none, then the write ending 200 ms after the
     /// pointer met the button, no frame in the next 600 ms draws a popup, the reason or the
-    /// button's idle sentence, and a hover on Settings then waits out the whole show delay; and
+    /// button's idle sentence, and a hover on Changes then waits out the whole show delay; and
     /// in another write, the pointer meeting the button in the answer's first frame and leaving
-    /// it, the show coming due while the answer stands draws nothing, and a hover on Settings
-    /// still waits out the whole delay. The show the pointer asked for was still waiting as the
+    /// it, the show coming due while the answer stands draws nothing, and a hover on History
+    /// still waits out the whole delay. Both are the compact form's glyph toggles beside the
+    /// button, at 18 pt in a 461 × 490 window. The show the pointer asked for was still waiting as the
     /// answer ended, and once its delay was up drew the button's idle tooltip at a button the
     /// pointer had left; built as nothing and kept in the kit's overlay, it let the next hover
     /// elsewhere take its tooltip at once.
@@ -19472,12 +19491,13 @@ mod tests {
         });
         let away = point(px(1.), px(1.));
         cx.simulate_mouse_move(away, None, Modifiers::default());
-        compact_header(cx);
+        compact_form_header(cx);
         cx.update(|window, cx| window.focus(&opener, cx));
         draw(cx);
-        let (button, settings) = (
+        let (button, changes, history) = (
             cx.debug_bounds("pull-requests").expect("the button"),
-            cx.debug_bounds("settings").expect("Settings"),
+            cx.debug_bounds("changes-tab").expect("Changes"),
+            cx.debug_bounds("history-tab").expect("History"),
         );
         let tick = |cx: &mut VisualTestContext, by: Duration| {
             cx.executor().advance_clock(by);
@@ -19515,26 +19535,26 @@ mod tests {
             tick(cx, Duration::from_millis(50));
         }
 
-        // A hover on Settings waits out the show delay.
-        cx.simulate_mouse_move(settings.center(), None, Modifiers::default());
+        // A hover on Changes waits out the show delay.
+        cx.simulate_mouse_move(changes.center(), None, Modifiers::default());
         draw(cx);
         tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
         let popups = kit_tooltip_popups(cx);
         assert!(
             popups.is_empty(),
-            "Settings' tooltip waits its show delay: {popups:?}"
+            "Changes' tooltip waits its show delay: {popups:?}"
         );
         tick(cx, Duration::from_millis(100));
         draw(cx);
         assert_eq!(
             kit_tooltip_popups(cx).len(),
             1,
-            "then Settings' tooltip shows"
+            "then Changes' tooltip shows"
         );
 
         // Another write, the pointer meeting the button in the answer's first frame and leaving,
         // and the show it asked for coming due while the answer stands: built as nothing, it
-        // is hidden at once, so a hover on Settings still waits out the whole show delay.
+        // is hidden at once, so a hover on History still waits out the whole show delay.
         cx.simulate_mouse_move(away, None, Modifiers::default());
         tick(cx, TOOLTIP_DELAY * 2);
         app.update(cx, |app, cx| {
@@ -19548,19 +19568,19 @@ mod tests {
         one_frame(cx);
         tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
         assert_eq!(tooltip_popups(cx).len(), 1, "the answer alone says why");
-        cx.simulate_mouse_move(settings.center(), None, Modifiers::default());
+        cx.simulate_mouse_move(history.center(), None, Modifiers::default());
         draw(cx);
         tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
         let beside = neighbour_popups(cx);
         assert!(
             beside.is_empty(),
-            "Settings' tooltip waits its show delay: {beside:?}"
+            "History's tooltip waits its show delay: {beside:?}"
         );
         tick(cx, Duration::from_millis(100));
         assert_eq!(
             neighbour_popups(cx).len(),
             1,
-            "then Settings' tooltip shows"
+            "then History's tooltip shows"
         );
         app.update(cx, |app, _| app.operation_busy = None);
     }
@@ -19568,9 +19588,9 @@ mod tests {
     /// The empty tooltip the kit's overlay builds for Pull requests beside a keyboard press's
     /// answer never counts as a tooltip shown: Return on the focused button, the pointer meeting
     /// it in the answer's first frame and resting there past the kit's show delay, then moving
-    /// on to Settings, Settings' tooltip waits out its whole show delay and then shows. Counted
-    /// as shown, the empty view let Settings' tooltip appear at once, sliding from Pull
-    /// requests.
+    /// on to History, the compact form's glyph toggle beside it at 18 pt in a 461 × 490 window,
+    /// History's tooltip waits out its whole show delay and then shows. Counted as shown, the
+    /// empty view let the neighbour's tooltip appear at once, sliding from Pull requests.
     #[gpui::test]
     async fn a_neighbour_waits_its_delay_after_a_pointer_rested_on_the_answer(
         cx: &mut TestAppContext,
@@ -19582,12 +19602,12 @@ mod tests {
             cx.set_reduce_motion(true);
         });
         cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
-        compact_header(cx);
+        compact_form_header(cx);
         cx.update(|window, cx| window.focus(&opener, cx));
         draw(cx);
-        let (button, settings) = (
+        let (button, history) = (
             cx.debug_bounds("pull-requests").expect("the button"),
-            cx.debug_bounds("settings").expect("Settings"),
+            cx.debug_bounds("history-tab").expect("History"),
         );
         let tick = |cx: &mut VisualTestContext, by: Duration| {
             cx.executor().advance_clock(by);
@@ -19603,19 +19623,19 @@ mod tests {
             neighbour_popups(cx).is_empty(),
             "nothing stands beside the answer"
         );
-        cx.simulate_mouse_move(settings.center(), None, Modifiers::default());
+        cx.simulate_mouse_move(history.center(), None, Modifiers::default());
         draw(cx);
         tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
         let beside = neighbour_popups(cx);
         assert!(
             beside.is_empty(),
-            "Settings' tooltip waits its show delay: {beside:?}"
+            "History's tooltip waits its show delay: {beside:?}"
         );
         tick(cx, Duration::from_millis(100));
         assert_eq!(
             neighbour_popups(cx).len(),
             1,
-            "then Settings' tooltip shows"
+            "then History's tooltip shows"
         );
         app.update(cx, |app, _| app.operation_busy = None);
     }
@@ -19678,7 +19698,8 @@ mod tests {
     /// pointer's leaving draws, and where the write ends before the window draws again, the
     /// overlay's last build of it draws nothing and hides it; either way no frame in the 600 ms
     /// after the write's end draws a popup, the reason or the button's idle sentence, and a
-    /// hover on Settings then waits out the whole show delay. A tooltip shows only for what
+    /// hover on Changes, then on History, the compact form's glyph toggles beside the button at
+    /// 18 pt in a 461 × 490 window, waits out the whole show delay. A tooltip shows only for what
     /// the pointer rests on: the request left standing would build the button's idle tooltip as
     /// the overlay was built again at the write's end, but for the answer it was asked during.
     #[gpui::test]
@@ -19693,24 +19714,22 @@ mod tests {
         });
         let away = point(px(1.), px(1.));
         cx.simulate_mouse_move(away, None, Modifiers::default());
-        compact_header(cx);
+        compact_form_header(cx);
         cx.update(|window, cx| window.focus(&opener, cx));
         draw(cx);
-        let (button, settings) = (
-            cx.debug_bounds("pull-requests").expect("the button"),
-            cx.debug_bounds("settings").expect("Settings"),
-        );
+        let button = cx.debug_bounds("pull-requests").expect("the button");
         let tick = |cx: &mut VisualTestContext, by: Duration| {
             cx.executor().advance_clock(by);
             cx.run_until_parked();
             one_frame(cx);
         };
-        for frames_after_leaving in [true, false] {
+        for (frames_after_leaving, neighbour) in [(true, "changes-tab"), (false, "history-tab")] {
             let pass = if frames_after_leaving {
                 "frames drawn after the pointer left"
             } else {
                 "no frame drawn after the pointer left"
             };
+            let neighbour = cx.debug_bounds(neighbour).expect("the neighbour");
             meet_in_the_answers_first_frame(cx, button.center());
             draw(cx);
             tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
@@ -19769,20 +19788,20 @@ mod tests {
                 tick(cx, Duration::from_millis(50));
             }
 
-            // A hover on Settings waits out the show delay.
-            cx.simulate_mouse_move(settings.center(), None, Modifiers::default());
+            // A hover on the neighbour waits out the show delay.
+            cx.simulate_mouse_move(neighbour.center(), None, Modifiers::default());
             draw(cx);
             tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
             let popups = kit_tooltip_popups(cx);
             assert!(
                 popups.is_empty(),
-                "{pass}: Settings' tooltip waits its show delay: {popups:?}"
+                "{pass}: the neighbour's tooltip waits its show delay: {popups:?}"
             );
             tick(cx, Duration::from_millis(100));
             assert_eq!(
                 kit_tooltip_popups(cx).len(),
                 1,
-                "{pass}: then Settings' tooltip shows"
+                "{pass}: then the neighbour's tooltip shows"
             );
 
             // The next write.
@@ -19810,13 +19829,42 @@ mod tests {
         ANSWER_SIDE_LAYOUTS.with(|layouts| layouts.replace(0))
     }
 
+    /// The side of Pull requests the reason's popup takes chosen afresh, as a keyboard press's
+    /// answer draws it: with the side remembered forgotten, Return on the focused button draws
+    /// the answer, laid out as the kit lays the pointer's tooltip out, and Escape then takes it
+    /// away again.
+    fn fresh_answer_side(
+        app: &Entity<GitTurtle>,
+        opener: &FocusHandle,
+        cx: &mut VisualTestContext,
+    ) -> gpui_kit::base::Placement {
+        use crate::tags::tests::draw;
+        forget_answer_side(app, cx);
+        cx.update(|window, cx| window.focus(opener, cx));
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        draw(cx);
+        assert!(answer_drawn(cx), "the answer stands");
+        let side = app
+            .read_with(cx, |app, _| app.github_refusal.side.get())
+            .expect("the answer takes a side");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!answer_drawn(cx), "Escape ends the answer");
+        side
+    }
+
     /// The side of Pull requests the reason's popup takes is chosen again only as what it is
     /// chosen from changes: at 13 pt in a 461 × 490 window with a write running, the frame after
     /// the side was forgotten lays the popup out to choose it, and the next 20 frames lay out
     /// none, with no answer kept, where the popup is never drawn, and with one kept; then
-    /// another repository tab, another reason, a larger interface size, another scale and a
-    /// wider window each lay it out again, and the 20 frames after each lay out none. Chosen in
-    /// every frame, each of a write's steady frames laid out a tooltip view never drawn.
+    /// another repository tab, another reason, a larger interface size, another scale, a wider
+    /// window, one repository tab, a 1,480 × 973 window and four repository tabs each lay it
+    /// out again, the side it then remembers, with no answer drawn, is the side a keyboard
+    /// press's answer takes chosen afresh, above the button and below it among them, and the 20
+    /// frames after each lay out none. Chosen in every frame, each of a write's steady frames
+    /// laid out a tooltip view never drawn; a side remembered from inputs that no longer held
+    /// would leave the pointer's tooltip over controls the fresh side keeps clear.
     #[gpui::test]
     async fn the_pull_requests_answer_side_is_chosen_only_as_its_inputs_change(
         cx: &mut TestAppContext,
@@ -19831,7 +19879,7 @@ mod tests {
             )])
         });
         cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
-        compact_header(cx);
+        wrapped_full_header(cx);
         forget_answer_side(&app, cx);
         one_frame(cx);
         assert_eq!(answer_side_layouts(), 1, "the first frame chooses the side");
@@ -19860,7 +19908,7 @@ mod tests {
 
         /// A change of one input to the side, named.
         type Change<'a> = (&'a str, Box<dyn Fn(&mut VisualTestContext) + 'a>);
-        let changes: [Change; 5] = [
+        let changes: [Change; 8] = [
             (
                 "another repository tab",
                 Box::new(|cx| hold_tabs(&app, fixture.path(), 2, cx)),
@@ -19891,13 +19939,41 @@ mod tests {
                 "a wider window",
                 Box::new(|cx| cx.simulate_resize(size(px(520.), px(490.)))),
             ),
+            (
+                "one repository tab",
+                Box::new(|cx| hold_tabs(&app, fixture.path(), 1, cx)),
+            ),
+            (
+                "a 1,480 × 973 window",
+                Box::new(|cx| cx.simulate_resize(size(px(1480.), px(973.)))),
+            ),
+            (
+                "four repository tabs",
+                Box::new(|cx| hold_tabs(&app, fixture.path(), 4, cx)),
+            ),
         ];
+        let mut sides = Vec::new();
         for (at, change) in changes {
             change(cx);
             draw(cx);
             assert!(answer_side_layouts() >= 1, "{at}: lays the popup out again");
+            assert!(!answer_drawn(cx), "{at}: no answer drawn");
+            let remembered = app.read_with(cx, |app, _| app.github_refusal.side.get());
+            let fresh = fresh_answer_side(&app, &opener, cx);
+            assert_eq!(
+                remembered,
+                Some(fresh),
+                "{at}: the side remembered is the side chosen afresh"
+            );
+            sides.push(fresh);
+            answer_side_layouts();
             steady(cx, at);
         }
+        use gpui_kit::base::Placement;
+        assert!(
+            sides.contains(&Placement::Top) && sides.contains(&Placement::Bottom),
+            "the changes take the popup above the button and below it: {sides:?}"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         app.update(cx, |app, _| app.operation_busy = None);
     }
