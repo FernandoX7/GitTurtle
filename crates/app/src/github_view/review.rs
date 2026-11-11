@@ -184,20 +184,21 @@ pub(super) struct ReviewState {
     /// within Compare's text bounds; `None` while preparing and above them.
     presentation: Option<text::PatchPresentation>,
     _palette: Subscription,
-    /// While the Return that began a review comment is down ([`Panel::hold_return`]), a
-    /// keystroke interceptor that keeps every unmodified Enter from the patch and the
-    /// comment's text. The toolkit counts an Enter after another key a fresh press, and under
-    /// X11, which marks no repeat held, the held key's next repeat after a key that took no
-    /// repeat over is one: the comment's text, whose own binding runs ahead of the dialog's
-    /// wait for the key-up, typed it as a new line. It ends as the toolkit's press does: an
-    /// Enter coming up anywhere in the panel ends it once the application next runs a task,
-    /// unless an Enter goes down first, as the press of an X11 repeat whose release ended one
-    /// input batch does in the next ([`Panel::return_came_up`]); the panel's close ends it at
-    /// once. A section change does not: Review draws the same comment and gives it focus, and
-    /// the body that takes the key-up is drawn in every section; ended there, the press let
-    /// the held key's next X11 repeat after another key type a new line in Review. A key-up
-    /// the panel never sees, outside the panel with the panel still open, leaves the next
-    /// Return on the patch or in the comment swallowed until its own key-up, which fails safe.
+    /// While the Return that opened or gave focus to a composer is down
+    /// ([`Panel::hold_return`]), a keystroke interceptor that keeps every unmodified Enter
+    /// from the patch and the panel's composers ([`Panel::composers`]). The toolkit counts an
+    /// Enter after another key a fresh press, and under X11, which marks no repeat held, the
+    /// held key's next repeat after a key that took no repeat over is one: the composer,
+    /// whose own binding runs ahead of the dialog's wait for the key-up, typed it as a new
+    /// line. It ends as the toolkit's press does: an Enter coming up anywhere in the panel
+    /// ends it once the application next runs a task, unless an Enter goes down first, as the
+    /// press of an X11 repeat whose release ended one input batch does in the next
+    /// ([`Panel::return_came_up`]); the panel's close ends it at once. A section change does
+    /// not: Review draws the same comment and gives it focus, and the body that takes the
+    /// key-up is drawn in every section; ended there, the press let the held key's next X11
+    /// repeat after another key type a new line in Review. A key-up the panel never sees,
+    /// outside the panel with the panel still open, leaves the next Return on the patch or in
+    /// a composer swallowed until its own key-up, which fails safe.
     return_press: Option<ReturnPress>,
     pub mode: usize,
     pub file_focus: FocusHandle,
@@ -3140,17 +3141,16 @@ impl Panel {
         self.begin_comment(window, cx);
         self.hold_return(window, cx);
     }
-    /// Holds the Return press that began a comment, on a review line or on a Button that
-    /// opens one, off the comment's text and the patch until it comes up: no Enter of it
+    /// Holds the Return press that opened or gave focus to a composer, on a review line or on
+    /// a Button, off the panel's composers and the patch until it comes up: no Enter of it
     /// reaches anything in the window (`dialog_opened`), and an unmodified Enter that the
-    /// toolkit counts a fresh press after another key reaches neither
-    /// ([`ReviewState::return_press`]).
+    /// toolkit counts a fresh press after another key reaches none of them
+    /// ([`ReviewState::return_press`]). Every composer, not only the one opened, since a
+    /// section change or a click during the hold can give another one focus.
     fn hold_return(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         gpui_kit::base::dialog_opened(window, cx);
-        let held = [
-            self.review.line_focus.clone(),
-            self.review.input.read(cx).focus_handle(cx),
-        ];
+        let [comment, body, reply] = self.composers(cx);
+        let held = [self.review.line_focus.clone(), comment, body, reply];
         let key_downs = std::rc::Rc::new(std::cell::Cell::new(0_u64));
         let seen = key_downs.clone();
         let interceptor = cx.intercept_keystrokes(move |event, window, cx| {
@@ -3169,13 +3169,24 @@ impl Panel {
             key_downs,
         });
     }
-    /// A Button that opens the comment, Comment on selection or Edit, pressed by `event`: an
-    /// Enter, which the Button takes as the key goes down, is held off the comment it opened
-    /// until it comes up, as a review line's is ([`Self::hold_return`]); a click or Space has
-    /// come up already. Each of the held key's repeats, under X11 or marked held, typed a new
-    /// line into the comment the Button gave focus to (decided 2026-11-11: a Return that
-    /// opens a composer never types into it).
-    fn hold_enter_click(
+    /// The panel's composers a Return can open or give focus to: a review comment's text, the
+    /// review body and an open conversation's reply.
+    pub(super) fn composers(&self, cx: &App) -> [FocusHandle; 3] {
+        [
+            self.review.input.read(cx).focus_handle(cx),
+            self.body.read(cx).focus_handle(cx),
+            self.conversations.input.read(cx).focus_handle(cx),
+        ]
+    }
+    /// A Button that opens a composer or gives one focus, pressed by `event`: Comment on
+    /// selection or a collected comment's Edit, which open the comment, a conversation's
+    /// Reply, which opens its reply, or a section tab that gives a composer focus. An Enter,
+    /// which the Button takes as the key goes down, is held off the composers until it comes
+    /// up, as a review line's is ([`Self::hold_return`]); a click or Space has come up
+    /// already. Each of the held key's repeats, under X11 or marked held, typed a new line
+    /// into the composer the Button gave focus to (decided 2026-11-11: a Return that opens or
+    /// focuses a composer never types into it).
+    pub(super) fn hold_enter_click(
         &mut self,
         event: &ClickEvent,
         window: &mut Window,
@@ -3601,7 +3612,18 @@ impl Panel {
                         .debug_selector(move || format!("github-section-{i}"))
                         .toggled(self.review.section == section)
                         .on_click(cx.listener(
-                            move |this, _, window, cx| this.change_section(section, window, cx),
+                            move |this, event, window, cx| {
+                                this.change_section(section, window, cx);
+                                // A tab that gives a composer focus, Review's comment or review
+                                // body or an open conversation's reply, holds its Return off it.
+                                if this
+                                    .composers(cx)
+                                    .iter()
+                                    .any(|composer| composer.is_focused(window))
+                                {
+                                    this.hold_enter_click(event, window, cx);
+                                }
+                            },
                         )),
                     )
                 }),
@@ -7347,6 +7369,169 @@ mod tests {
             enter(cx, None);
             line_draw(cx);
         }
+    }
+
+    /// After the Return that opened or focused an empty composer, `text` reading that
+    /// composer: each of the held key's repeats (`REPEATS`), and under X11 an unpaired release
+    /// with its press, then another key and the next repeat, type nothing there; after the
+    /// key-up a fresh press types its line.
+    fn return_held_off(
+        cx: &mut gpui_kit::VisualTestContext,
+        at: &str,
+        text: impl Fn(&mut gpui_kit::VisualTestContext) -> String,
+    ) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        for (repeat, events) in REPEATS {
+            for down in events {
+                enter(cx, *down);
+            }
+            line_draw(cx);
+            assert_eq!(text(cx), "", "{at}, {repeat}: nothing is typed");
+        }
+        enter(cx, None);
+        enter(cx, Some(false));
+        line_draw(cx);
+        tap(cx, "left");
+        line_draw(cx);
+        enter(cx, Some(false));
+        line_draw(cx);
+        assert_eq!(
+            text(cx),
+            "",
+            "{at}: the X11 repeat after an unpaired release and another key types nothing"
+        );
+        enter(cx, None);
+        line_draw(cx);
+        enter(cx, Some(false));
+        line_draw(cx);
+        assert_eq!(
+            text(cx),
+            "\n",
+            "{at}: a fresh press after the key-up types its line"
+        );
+        enter(cx, None);
+        line_draw(cx);
+    }
+
+    /// Return on the Review tab, which gives focus to the review body, or to the comment open
+    /// on a line, takes the panel to Review and types nothing into that composer while the
+    /// key is held ([`return_held_off`]); after the key-up a fresh press types its line. The
+    /// tab took the press as the key went down, and each of its repeats typed a new line into
+    /// the composer it had given focus to (FU41-B9 fix-pass re-checks, S2; decided
+    /// 2026-11-11: a Return that opens or focuses a composer never types into it).
+    #[gpui::test]
+    async fn a_return_on_the_review_tab_types_nothing_into_its_composer(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::enter;
+        let (_fixture, _app, panel, cx) = review_line_panel(cx);
+        for composer in ["the review body", "the comment"] {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.change_section(Section::Files, window, cx);
+                    if composer == "the comment" {
+                        panel.select_review_line(3, false, window, cx);
+                        panel.begin_comment(window, cx);
+                    }
+                })
+            });
+            line_draw(cx);
+            let tab = panel
+                .read_with(cx, |panel, _| {
+                    panel.review.buttons.kept(("github-section", 2usize))
+                })
+                .expect("the Review tab is drawn");
+            cx.update(|window, cx| tab.focus(window, cx));
+            line_draw(cx);
+            enter(cx, Some(false));
+            line_draw(cx);
+            let text = |cx: &mut gpui_kit::VisualTestContext| {
+                panel.read_with(cx, |panel, cx| {
+                    let input = if composer == "the comment" {
+                        &panel.review.input
+                    } else {
+                        &panel.body
+                    };
+                    input.read(cx).value().to_string()
+                })
+            };
+            let focused = cx.update(|window, cx| {
+                let panel = panel.read(cx);
+                let input = if composer == "the comment" {
+                    &panel.review.input
+                } else {
+                    &panel.body
+                };
+                panel.review.section == Section::Review
+                    && input.read(cx).focus_handle(cx).is_focused(window)
+            });
+            assert!(
+                focused && text(cx).is_empty(),
+                "{composer}: the press shows Review, focus in its empty text"
+            );
+            return_held_off(cx, composer, text);
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel
+                        .body
+                        .update(cx, |body, cx| body.set_value("", window, cx));
+                })
+            });
+        }
+    }
+
+    /// Return on a conversation's Reply opens its reply, focus in the reply's text, and types
+    /// nothing there while the key is held ([`return_held_off`]); after the key-up a fresh
+    /// press types its line. Reply opened the reply as the key went down, and each of its
+    /// repeats typed a new line there (FU41-B9 fix-pass re-checks, S2; decided 2026-11-11: a
+    /// Return that opens or focuses a composer never types into it).
+    #[gpui::test]
+    async fn a_return_on_reply_types_nothing_into_its_reply(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::enter;
+        let (_fixture, _app, panel, cx) = review_line_panel(cx);
+        let identity = model::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.account = Some("offline-reviewer".into());
+                panel.receive_threads(page, None);
+                panel.change_section(Section::Overview, window, cx);
+            })
+        });
+        line_draw(cx);
+        let reply = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept(("github-thread-reply", 0usize))
+            })
+            .expect("Reply is drawn");
+        cx.update(|window, cx| reply.focus(window, cx));
+        line_draw(cx);
+        enter(cx, Some(false));
+        line_draw(cx);
+        let text = |cx: &mut gpui_kit::VisualTestContext| {
+            panel.read_with(cx, |panel, cx| {
+                panel.conversations.input.read(cx).value().to_string()
+            })
+        };
+        let opened = cx.update(|window, cx| {
+            let panel = panel.read(cx);
+            panel.conversations.active.is_some()
+                && panel
+                    .conversations
+                    .input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+        });
+        assert!(
+            opened && text(cx).is_empty(),
+            "the press opens the reply, focus in its empty text"
+        );
+        return_held_off(cx, "Reply", text);
     }
 
     /// 8,000 deletions and 8,000 additions of 520 bytes, just under the 8 MiB response bound:
