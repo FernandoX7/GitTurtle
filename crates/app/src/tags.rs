@@ -4576,6 +4576,85 @@ pub(crate) mod tests {
         );
     }
 
+    /// Return in Tags' filter with Tags' repository no longer shown, as Settings opened over
+    /// it from a menu leaves it, chooses nothing and says why once per press: the window's
+    /// alert says "Return to this repository first" at once, drawn on a fresh node, the
+    /// key's repeats (`REPEATS`), under X11 too, saying nothing more, and a new press after
+    /// the key-up says it again. Tags stays open with its filter and focus in it, and nothing
+    /// opens: no tag is read or inspected, and no write runs whose busy look would show.
+    #[gpui::test]
+    async fn return_in_the_filter_off_its_repository_says_why_once_per_press(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        use crate::copy_feedback::tests::alerted;
+        let fixture = tempfile::tempdir().unwrap();
+        let (app, _, cx) = open_tags_list(cx, fixture.path(), 3).await;
+        let filter = app
+            .read_with(cx, |app, _| app.tag_actions.filter.clone())
+            .expect("the filter");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.show_settings(window, cx));
+            filter.update(cx, |input, cx| input.set_value("v0", window, cx));
+            filter.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        draw(cx);
+        let kept = |cx: &mut VisualTestContext, at: &str| {
+            assert!(
+                cx.debug_bounds("tags-list").is_some(),
+                "{at}: Tags stays open"
+            );
+            cx.update(|window, cx| {
+                let field = filter.read(cx);
+                assert!(
+                    field.focus_handle(cx).is_focused(window),
+                    "{at}: focus stays in the filter"
+                );
+                assert_eq!(field.value().as_ref(), "v0", "{at}: the filter is kept");
+            });
+            assert!(
+                cx.debug_bounds("tag-inspector-title").is_none(),
+                "{at}: no inspector opens"
+            );
+            app.read_with(cx, |app, _| {
+                assert!(
+                    app.tag_actions.task.is_none() && app.operation_busy.is_none(),
+                    "{at}: no tag is read"
+                );
+                assert!(!app.busy_shown(), "{at}: no busy look shows");
+            });
+        };
+        assert_eq!(alerted(cx), None, "nothing is said before the press");
+        let mut said: Option<(ElementId, String)> = None;
+        for press in ["the first press", "a new press after the key-up"] {
+            enter(cx, Some(false));
+            draw(cx);
+            kept(cx, press);
+            let alert = alerted(cx).expect("the refusal is drawn");
+            assert_eq!(alert.1, NOT_SHOWN_REASON, "{press}: it says why");
+            assert!(
+                said.as_ref().is_none_or(|said| said.0 != alert.0),
+                "{press}: said afresh"
+            );
+            for (repeat, events) in REPEATS {
+                for down in events {
+                    enter(cx, *down);
+                }
+                draw(cx);
+                let at = format!("{press}, {repeat}");
+                kept(cx, &at);
+                assert_eq!(
+                    alerted(cx),
+                    Some(alert.clone()),
+                    "{at}: nothing more is said"
+                );
+            }
+            enter(cx, None);
+            draw(cx);
+            said = Some(alert);
+        }
+    }
+
     /// Tags of `tags` rows open at 1000 × 680, and its list.
     async fn open_tags_list<'a>(
         cx: &'a mut TestAppContext,
