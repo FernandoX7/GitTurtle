@@ -7150,8 +7150,9 @@ mod tests {
     /// scale 2, where the two Downloads share a line without their word, a
     /// long failure of After… leaves its words no room for "Failed…", so a
     /// warning icon stands in their place, drawn whole, the whole words in
-    /// its tooltip and in Download After…'s accessible description, said
-    /// nowhere else on screen. At 13 pt in a 1480 × 973 window the words are
+    /// its tooltip, as the line would draw them ("After: …"), and in
+    /// Download After…'s accessible description, said nowhere else on
+    /// screen. At 13 pt in a 1480 × 973 window the words are
     /// drawn, no icon needed, naming the side that failed, as two sides on
     /// one line would not tell which did. The words were drawn as "…".
     #[gpui::test]
@@ -7214,8 +7215,8 @@ mod tests {
              and {after:?}, in place of the words"
         );
         assert!(
-            hover_shows(cx, "lfs-download-failure-icon", words),
-            "its tooltip says the whole words"
+            hover_shows(cx, "lfs-download-failure-icon", &format!("After: {words}")),
+            "its tooltip says the whole words as the line would draw them"
         );
         assert_eq!(
             written::get("download-lfs-side-1")
@@ -7372,6 +7373,105 @@ mod tests {
         );
     }
 
+    /// A failure has its own warning icon, and every tooltip says what is
+    /// drawn (decision, 2026-11-10): with both sides' objects missing and
+    /// After…'s download failed, at 18 pt in QA's 461 × 490 window at scale
+    /// 2, where the two share a line without their word, the icon is
+    /// `icons/warning.svg`, its tooltip the words with the side's name, as
+    /// they would be drawn there, and Download After…'s tooltip names it with
+    /// the failure; at 13 pt in a 1480 × 973 window the words drawn on that
+    /// shared line say the same in theirs; at 18 pt in a 461 × 680 window,
+    /// where the two stack, the words beside Download After… say them
+    /// without the name, as drawn. The icon took the conflict glyph, its
+    /// tooltip left out the side, and the failed Download's still gave the
+    /// sentence.
+    #[gpui::test]
+    async fn a_failure_s_icon_and_tooltips_say_what_is_drawn(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_both();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let initial = cx.update(|window, _| window.scale_factor());
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, _| window.set_scale_factor(2.));
+        let browser = inspecting(&app, cx, &files);
+        choose(&browser, cx, file_index(&files, "both.mmd"));
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.text_mode = 0;
+                    browser.prepare_editor(window, cx);
+                    let body = &browser.body;
+                    body.reveal_next_focus();
+                    body.focus("series-file-preview", cx).focus(window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+        };
+        shown(cx);
+        let after = cx
+            .debug_bounds("download-lfs-side-1")
+            .expect("Download After… is offered");
+        start_download(&app, &browser, cx, after.center());
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        shown(cx);
+        let words = "Git LFS could not reach origin: the remote refused the batch request \
+                     for this object because its credentials have expired";
+        end_download(&app, &browser, cx, Some(words));
+        shown(cx);
+        let failed = format!("Download After… · Failed: {words}");
+        let named = format!("After: {words}");
+        assert_eq!(
+            crate::views::CONTROL_ICONS.with(|icons| {
+                icons
+                    .borrow()
+                    .get(&SharedString::from("lfs-download-failure-icon"))
+                    .cloned()
+            }),
+            Some("icons/warning.svg".into()),
+            "the failure draws its own warning icon"
+        );
+        assert!(
+            hover_shows(cx, "lfs-download-failure-icon", &named),
+            "on the shared line the icon's tooltip names the side"
+        );
+        assert!(
+            hover_shows(cx, "download-lfs-side-1", &failed),
+            "Download After…'s tooltip names it with the failure"
+        );
+        cx.update(|window, _| window.set_scale_factor(initial));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        shown(cx);
+        assert!(
+            hover_shows(cx, "lfs-download-failure", &named)
+                && hover_shows(cx, "download-lfs-side-1", &failed),
+            "at 13 pt the drawn words and Download After… say the same"
+        );
+        cx.simulate_resize(size(px(461.), px(680.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, _| window.set_scale_factor(2.));
+        shown(cx);
+        let [before, after] = ["download-lfs-side-0", "download-lfs-side-1"]
+            .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
+        assert!(
+            after.top() >= before.bottom() - px(0.25),
+            "the two stack: {before:?}, {after:?}"
+        );
+        assert!(
+            hover_shows(cx, "lfs-download-failure", words)
+                && hover_shows(cx, "download-lfs-side-1", &failed),
+            "stacked, the words say themselves as drawn, without the side, and Download \
+             After… names itself with them"
+        );
+        cx.update(|window, _| window.set_scale_factor(initial));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Whether Cancel download was pressed is read from the window's write,
     /// never from the words its progress then reads: with those words
     /// changed, a press still turns the review's Cancel to "Cancelling…",
@@ -7491,8 +7591,10 @@ mod tests {
     /// Cancel download gives way to its icon, its tooltip leads with the
     /// label the icon stands for, as the header's compact Cancel's does:
     /// "Cancel · Cancel download of flow.mmd's Before object", and once
-    /// pressed "Cancelling… · …", so the pressed icon says it is
-    /// cancelling. It said only what it cancels, pressed or not.
+    /// pressed its accessible name alone, "Cancelling download of flow.mmd's
+    /// Before object", which says it is cancelling, once (decision,
+    /// 2026-11-10). It said only what it cancels, pressed or not, and then
+    /// "Cancelling… · Cancelling download of …".
     #[gpui::test]
     async fn the_footer_s_cancel_icon_says_its_label_in_its_tooltip(
         cx: &mut gpui_kit::TestAppContext,
@@ -7550,9 +7652,9 @@ mod tests {
             (
                 Some(name.to_owned()),
                 Some(String::new()),
-                Some(format!("Cancelling… · {name}"))
+                Some(name.to_owned())
             ),
-            "pressed, its name and its tooltip say it is cancelling"
+            "pressed, its name says it is cancelling, and its tooltip is that name alone"
         );
         end_download(&app, &browser, cx, None);
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));

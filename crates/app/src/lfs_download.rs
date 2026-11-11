@@ -603,30 +603,46 @@ fn side_name(quick_source: bool, side: usize) -> &'static str {
     }
 }
 
-/// The warning icon that stands for a failure's `words` where they would
-/// not keep "Failed…" beside the buttons ([`failure_words_fit`]): it never
-/// gives way, the last thing standing in their place, the whole words in
-/// its tooltip and in the failed side's Download's accessible description
+/// A tooltip saying `text`, drawn as the kit draws a text tooltip, its text
+/// drawn as `‹key›/tooltip/‹text›`, so a test reads the one shown under the
+/// pointer (`workspace::waiting_tooltip`).
+fn said_tooltip(
+    key: &'static str,
+    text: SharedString,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    move |window, cx| {
+        let text = text.clone();
+        Tooltip::element(move |_, _| {
+            let probe = text.clone();
+            div()
+                .debug_selector(move || format!("{key}/tooltip/{probe}"))
+                .child(text.clone())
+        })
+        .build(window, cx)
+    }
+}
+
+/// The warning icon, a circle with "!", that stands for a failure's words
+/// where they would not keep "Failed…" beside the buttons
+/// ([`failure_words_fit`]): it never gives way, the last thing standing in
+/// their place, its tooltip saying them whole as they would be drawn there,
+/// `drawn`, the side's name leading where two sides share the line ("After:
+/// …"), and the failed side's Download's accessible description saying them
 /// ("Failed: …"), so assistive technology hears them as before, once, as
-/// the alert that said they landed.
-fn failure_icon(words: SharedString, warning: u32) -> AnyElement {
+/// the alert that said they landed. Its glyph is its own: it once took the
+/// conflict icon, which says a working file is conflicted (DESIGN.md).
+fn failure_icon(drawn: SharedString, warning: u32) -> AnyElement {
+    let path = crate::icon_path("warning");
+    // Only tests read the icon back.
+    crate::views::note_control_icon(&"lfs-download-failure-icon".into(), &path);
     div()
         .id("lfs-download-failure-icon")
         .debug_selector(|| "lfs-download-failure-icon".into())
         .flex_none()
         .flex()
         .items_center()
-        .child(crate::control_icon("file-conflict").text_color(rgb(warning)))
-        .tooltip(move |window, cx| {
-            let text = words.clone();
-            Tooltip::element(move |_, _| {
-                let probe = text.clone();
-                div()
-                    .debug_selector(move || format!("lfs-download-failure-icon/tooltip/{probe}"))
-                    .child(text.clone())
-            })
-            .build(window, cx)
-        })
+        .child(crate::control_icon_at(path).text_color(rgb(warning)))
+        .tooltip(said_tooltip("lfs-download-failure-icon", drawn))
         .into_any_element()
 }
 
@@ -881,19 +897,20 @@ pub(crate) fn download_row(
     let slot = (one_line && share)
         .then(|| row_text_width(DOWNLOAD_EXPLANATION, &EXPLANATION_WIDTH, window));
     let said = if let Some((failed, words)) = failure.clone() {
-        let whole = words.clone();
         let fit = match slot {
             Some(slot) => failure_least(&sides, failed, share, window) <= slot,
             None => failure_words_fit(quick_source, &sides, failed, share, short, column, window),
         };
+        // Two sides on one line: the words say which failed, which nothing
+        // else drawn there tells, and so do the tooltips of what stands for
+        // them, which say what is drawn, whole.
+        let drawn: SharedString = if names_side(&sides, share) {
+            format!("{}: {words}", side_name(quick_source, failed)).into()
+        } else {
+            words
+        };
         let said = if fit {
-            // Two sides on one line: the words say which failed, which
-            // nothing else drawn there tells.
-            let drawn: SharedString = if names_side(&sides, share) {
-                format!("{}: {words}", side_name(quick_source, failed)).into()
-            } else {
-                words
-            };
+            let whole = drawn.clone();
             label("lfs-download-failure", drawn)
                 .debug_selector(|| "lfs-download-failure".into())
                 .flex_shrink(1.)
@@ -902,10 +919,10 @@ pub(crate) fn download_row(
                 .truncate()
                 .text_size(appearance::ui_text(12.))
                 .text_color(rgb(warning))
-                .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
+                .tooltip(said_tooltip("lfs-download-failure", whole))
                 .into_any_element()
         } else {
-            let icon = failure_icon(whole, warning);
+            let icon = failure_icon(drawn, warning);
             match slot {
                 Some(slot) => div().flex_none().w(slot).child(icon).into_any_element(),
                 None => icon,
@@ -975,13 +992,25 @@ pub(crate) fn download_row(
                     _ => button,
                 })
                 // Its whole name stays in its accessible name and
-                // tooltip, beside the sentence where that moved here.
+                // tooltip, beside the sentence where that moved here, or
+                // where its download failed, beside what failed, as its
+                // description says: it went on giving the sentence.
                 .when(short, |button| button.accessibility_label(full))
-                .map(|button| match (short, sentence_moves) {
-                    (true, true) => button.tooltip(format!("{full} · {DOWNLOAD_EXPLANATION}")),
-                    (true, false) => button.tooltip(full),
-                    (false, true) => button.tooltip(DOWNLOAD_EXPLANATION),
-                    (false, false) => button,
+                .map(|button| {
+                    let tooltip: Option<SharedString> = match (&failure, short, sentence_moves) {
+                        (Some((failed, words)), ..) if *failed == side => {
+                            Some(format!("{full} · Failed: {words}").into())
+                        }
+                        (_, true, true) => Some(format!("{full} · {DOWNLOAD_EXPLANATION}").into()),
+                        (_, true, false) => Some(full.into()),
+                        (_, false, true) => Some(DOWNLOAD_EXPLANATION.into()),
+                        (_, false, false) => None,
+                    };
+                    let key = ["download-lfs-side-0", "download-lfs-side-1"][side.min(1)];
+                    match tooltip {
+                        Some(tooltip) => button.tooltip_view(said_tooltip(key, tooltip)),
+                        None => button,
+                    }
                 })
                 // `open_lfs_download` refuses while a write runs.
                 .map(|button| {
@@ -1135,15 +1164,12 @@ pub(crate) fn running_form(
         form => cancel_width(form == CancelForm::Short, window),
     };
     // Its icon alone, its tooltip leads with the label it stands for, as
-    // the header's compact Cancel's does, so pressed it says it is
-    // cancelling.
-    let tooltip: SharedString = if form == CancelForm::Icon {
-        let label = if cancel.cancelling {
-            CANCELLING
-        } else {
-            CANCEL
-        };
-        format!("{label} · {}", cancel.name).into()
+    // the header's compact Cancel's does; pressed, its name already says
+    // it is cancelling ("Cancelling download of …"), so its tooltip is that
+    // name alone, said once (decision, 2026-11-10: "Cancelling… ·
+    // Cancelling download of …" said it twice).
+    let tooltip: SharedString = if form == CancelForm::Icon && !cancel.cancelling {
+        format!("{CANCEL} · {}", cancel.name).into()
     } else {
         cancel.name.clone()
     };
