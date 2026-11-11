@@ -7897,6 +7897,74 @@ mod tests {
         crate::tags::tests::draw(cx);
     }
 
+    /// One caller's start never erases another's outcome (decision,
+    /// 2026-11-10): where the review's download fails in the same update in
+    /// which Compare's download, or another review's, starts, the review
+    /// keeps the failure, its row saying the words beside Download Before…,
+    /// and reads nothing again, through the other download's run and end.
+    /// The start cleared the window's record of how the review's download
+    /// ended before the review read it, so the review took the failure for a
+    /// success, read its file again, its row giving way to the read, and the
+    /// failure was lost.
+    #[gpui::test]
+    async fn another_caller_s_start_keeps_the_review_s_failure(cx: &mut gpui_kit::TestAppContext) {
+        use crate::lfs_download::Asker;
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_before();
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        let words = "Git LFS could not reach origin";
+        for other in [Asker::Compare, Asker::Review(app.entity_id())] {
+            let at = cx
+                .debug_bounds("download-lfs-side-0")
+                .expect("Download Before… is offered")
+                .center();
+            start_download(&app, &browser, cx, at);
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            draw(cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.simulate_lfs_download_end(Some(words), window, cx);
+                    app.simulate_lfs_download(other, window, cx);
+                })
+            });
+            let kept = |at: &str, cx: &mut gpui::VisualTestContext| {
+                browser.read_with(cx, |browser, _| browser.worker.wait_idle());
+                draw(cx);
+                let failure = browser.read_with(cx, |browser, _| {
+                    browser
+                        .lfs_download
+                        .as_ref()
+                        .and_then(|asked| asked.failure.clone())
+                });
+                assert_eq!(
+                    failure.as_deref(),
+                    Some(words),
+                    "{other:?}, {at}: the review keeps its failure"
+                );
+                assert!(
+                    cx.debug_bounds("download-lfs-side-0").is_some()
+                        && cx.debug_bounds("lfs-download-failure").is_some()
+                        && cx.debug_bounds("series-preview-reading").is_none(),
+                    "{other:?}, {at}: the row says it beside Download Before…, and nothing is \
+                     read again"
+                );
+            };
+            kept("as the other starts", cx);
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            kept("as the other runs", cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.simulate_lfs_download_end(None, window, cx)
+                })
+            });
+            cx.run_until_parked();
+            kept("once the other ended", cx);
+        }
+    }
+
     /// A press the window refuses while the review's download runs, as in
     /// its busy delay, where the Download still stands, records nothing, so
     /// the download's end still reads the file again: the press once

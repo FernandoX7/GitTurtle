@@ -1424,7 +1424,12 @@ impl GitTurtle {
     /// review closed meanwhile to hand the download over to
     /// ([`Downloads::left`]). Only the caller that asked reads again: a
     /// download the review asked for once read Compare's unchanged file
-    /// again too.
+    /// again too. Only that caller's last outcome is forgotten: another's
+    /// stays for it to read, so one caller's start never erases another's
+    /// outcome (decision, 2026-11-10: a review's failure that ended in the
+    /// update in which Compare's download started was cleared before the
+    /// review read it, and the review read its file again as after a
+    /// success, the failure lost).
     pub(super) fn lfs_download_begins(
         &mut self,
         target: Option<&LfsDownloadTarget>,
@@ -1435,7 +1440,14 @@ impl GitTurtle {
             .take()
             .unwrap_or(Asker::Compare);
         self.lfs_downloads.running = Some(asker);
-        self.lfs_downloads.ended = None;
+        if self
+            .lfs_downloads
+            .ended
+            .as_ref()
+            .is_some_and(|(by, _)| *by == asker)
+        {
+            self.lfs_downloads.ended = None;
+        }
         let file = self.selected_file.and_then(|index| self.files.get(index))?;
         let object = target.and_then(|target| target.blob_oid.as_ref());
         let shows_object = object.is_some_and(|oid| {
