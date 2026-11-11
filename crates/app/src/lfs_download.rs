@@ -617,20 +617,50 @@ fn said_tooltip(
     }
 }
 
-/// `item`, side `side`'s Download, which notes, where it is drawn, the
-/// glyph its button draws at `path`, for a test: a row measured and not
-/// drawn notes nothing.
-fn noted_glyph(item: Div, side: usize, path: SharedString) -> Div {
+#[cfg(test)]
+thread_local! {
+    /// The glyph each Download last drew where its row was drawn, its
+    /// asset's path and the colour it was painted in, by the row that asks,
+    /// the review's (`true`) or Compare's, and the side ([`noted_glyph`]):
+    /// keyed by the side alone, Compare's row and the review's noted under
+    /// one key, the last drawn winning.
+    static DRAWN_GLYPHS: std::cell::RefCell<
+        std::collections::BTreeMap<(bool, usize), (SharedString, gpui::Hsla)>,
+    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// `button`, side `side`'s Download in a row that `asks` for its own
+/// download or Compare's, which notes, where it is drawn, the glyph it draws
+/// at `path` and the colour that glyph is painted in: `own`, set on the
+/// glyph itself, or else the button's text colour, the kit's disabled one
+/// while the button is dimmed, read as the glyph reads it, for a test. A row
+/// measured and not drawn notes nothing.
+fn noted_glyph(
+    button: Button,
+    (asks, side): (bool, usize),
+    path: SharedString,
+    own: Option<gpui::Hsla>,
+) -> Button {
     #[cfg(test)]
     {
-        use gpui_kit::base::ElementExt as _;
-        let key = ["download-lfs-side-0", "download-lfs-side-1"][side.min(1)];
-        item.on_prepaint(move |_, _, _| crate::views::note_control_icon(&key.into(), &path))
+        button.child(
+            gpui::canvas(
+                move |_, window, _| {
+                    let color = own.unwrap_or_else(|| window.text_style().color);
+                    DRAWN_GLYPHS.with(|drawn| {
+                        drawn.borrow_mut().insert((asks, side), (path, color));
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_0(),
+        )
     }
     #[cfg(not(test))]
     {
-        let _ = (side, path);
-        item
+        let _ = (asks, side, path, own);
+        button
     }
 }
 
@@ -665,12 +695,23 @@ fn buttons_share_line(
         && (!asks || short || row_text_width(FAILED, &FAILED_WIDTH, window) + gap + line <= room)
 }
 
-/// The glyph side `side`'s Download last drew where its row was drawn, its
-/// asset's path ([`noted_glyph`]), for a test.
+/// The glyph side `side`'s Download last drew where its row, the review's
+/// where it `asks` or Compare's, was drawn: its asset's path
+/// ([`noted_glyph`]), for a test.
 #[cfg(test)]
-pub(crate) fn drawn_glyph(side: usize) -> Option<String> {
-    let key = ["download-lfs-side-0", "download-lfs-side-1"][side.min(1)];
-    crate::views::CONTROL_ICONS.with(|icons| icons.borrow().get(key).map(ToString::to_string))
+pub(crate) fn drawn_glyph(asks: bool, side: usize) -> Option<String> {
+    DRAWN_GLYPHS.with(|drawn| {
+        drawn
+            .borrow()
+            .get(&(asks, side))
+            .map(|(path, _)| path.to_string())
+    })
+}
+
+/// The colour [`drawn_glyph`]'s glyph was painted in, for a test.
+#[cfg(test)]
+pub(crate) fn drawn_glyph_color(asks: bool, side: usize) -> Option<gpui::Hsla> {
+    DRAWN_GLYPHS.with(|drawn| drawn.borrow().get(&(asks, side)).map(|(_, color)| *color))
 }
 
 /// `row`, which notes, where it is drawn with its buttons' word given way,
@@ -980,20 +1021,34 @@ pub(crate) fn download_row(
         // pressed tells which side failed, at a glance and in every form
         // (decision, 2026-11-10: at 18 pt in a 461 × 490 window a Before…
         // failure's icon stood after Download After… and read as its).
+        // Dimmed while a write runs, the glyph takes the button's disabled
+        // colour, as its label does, its shape still saying it failed: a
+        // colour set on it outlasts the kit's disabled look, so the dimmed
+        // Download read half enabled (decision, 2026-11-10; DESIGN.md,
+        // disabled controls dim whole).
         let failed = failure.as_ref().is_some_and(|(failed, _)| *failed == side);
         let glyph = crate::icon_path(if failed { "warning" } else { "pull" });
-        noted_glyph(div(), side, glyph.clone())
+        let own = (failed && !dimmed).then(|| gpui::Hsla::from(rgb(warning)));
+        div()
             .debug_selector(move || format!("download-lfs-side-{side}"))
             .flex_none()
             .child(
-                button(
-                    ("download-lfs-side", side),
-                    if short { short_label(full) } else { full },
-                    "pull",
-                    false,
+                noted_glyph(
+                    button(
+                        ("download-lfs-side", side),
+                        if short { short_label(full) } else { full },
+                        "pull",
+                        false,
+                    ),
+                    (asks, side),
+                    glyph.clone(),
+                    own,
                 )
                 .when(failed, |button| {
-                    button.icon(crate::control_icon_at(glyph).text_color(rgb(warning)))
+                    button.icon(
+                        crate::control_icon_at(glyph)
+                            .when_some(own, |icon, own| icon.text_color(own)),
+                    )
                 })
                 .when_some(focus, |button, focus| button.track_focus(&focus))
                 // The side that failed says the failure's words, drawn
@@ -1971,10 +2026,13 @@ mod tests {
     /// A window drawing one Download row offering the objects of `sides`,
     /// `column` wide at its left, saying what it asked for as the review's
     /// row does, in the state `shown`, its buttons' word given way where
-    /// `short`.
+    /// `short`. Its container is `drawn` wide where that is set, as where
+    /// the measurement that decided the row's form disagrees with layout,
+    /// and otherwise `column` wide.
     struct Row {
         sides: Vec<usize>,
         column: Pixels,
+        drawn: Option<Pixels>,
         short: bool,
         shown: Shown,
         focus: [FocusHandle; 2],
@@ -2011,7 +2069,7 @@ mod tests {
             div().size_full().child(
                 div()
                     .debug_selector(|| "lfs-download-row".into())
-                    .w(self.column)
+                    .w(self.drawn.unwrap_or(self.column))
                     .child(download_row(
                         self.sides.iter().map(|&side| target(side)).collect(),
                         false,
@@ -2051,6 +2109,7 @@ mod tests {
         let (row, cx) = cx.add_window_view(|_, cx| Row {
             sides: vec![0, 1],
             column: px(600.),
+            drawn: None,
             short: false,
             shown: Shown::Resting,
             focus: [cx.focus_handle(), cx.focus_handle()],
@@ -2134,9 +2193,12 @@ mod tests {
     async fn the_sentence_measures_one_side_running_at_a_time(cx: &mut TestAppContext) {
         let (row, cx) = row_window(cx);
         for scale in SCALES {
-            at_scale(cx, scale);
+            // A resize sets the test window's scale back to 2, so the scale
+            // follows it: set before it, every pass ran at 2.
             cx.simulate_resize(size(px(1600.), px(400.)));
+            at_scale(cx, scale);
             let (column, sentence, device) = cx.update(|window, _| {
+                assert_eq!(window.scale_factor(), scale, "the row draws at {scale}");
                 let (gap, _) = row_room(Pixels::ZERO, window);
                 let widths = side_widths(false, &[0, 1], false, true, window);
                 let sentence = row_text_width(DOWNLOAD_EXPLANATION, &EXPLANATION_WIDTH, window);
@@ -2189,7 +2251,7 @@ mod tests {
 
     /// The glyphs the two Downloads drew last, their assets' paths.
     fn glyphs() -> [Option<String>; 2] {
-        [0, 1].map(drawn_glyph)
+        [0, 1].map(|side| drawn_glyph(true, side))
     }
 
     const PULL: Option<&str> = Some("icons/pull.svg");
@@ -2306,7 +2368,7 @@ mod tests {
                 show(&row, cx, column, false, Shown::Resting);
                 let id = ["download-lfs-side-0", "download-lfs-side-1"][failed];
                 let rest = cx.debug_bounds(id).unwrap_or_else(|| panic!("{at}: {id}"));
-                assert_eq!(drawn_glyph(failed).as_deref(), PULL, "{at}: at rest");
+                assert_eq!(drawn_glyph(true, failed).as_deref(), PULL, "{at}: at rest");
                 show(&row, cx, column, false, Shown::Failed { side: failed });
                 let now = cx.debug_bounds(id).unwrap_or_else(|| panic!("{at}: {id}"));
                 let edge = cx
@@ -2326,7 +2388,7 @@ mod tests {
                  follows it"
                 );
                 assert_eq!(
-                    drawn_glyph(failed).as_deref(),
+                    drawn_glyph(true, failed).as_deref(),
                     WARNING,
                     "{at}: the failed Download draws the warning glyph"
                 );
@@ -2544,5 +2606,65 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Where the measurement that stood the sentence beside both Downloads
+    /// disagrees with layout, a failure's words in the sentence's place give
+    /// way with their line, so no Download runs past the row: at 13 pt and
+    /// scales 2 and 1.5, a row measured for the narrowest column that holds
+    /// the sentence beside both sides, each in its widest state, and drawn
+    /// three device pixels narrower than the failed line, the words at the
+    /// sentence's width beside both Downloads, takes, keeps Download After…'s
+    /// right edge inside the row's inset whichever side failed. Kept at their
+    /// own width (`flex_none`), the words pushed After… past it.
+    #[gpui::test]
+    async fn a_failure_in_the_sentence_s_place_gives_way_with_its_line(cx: &mut TestAppContext) {
+        let (row, cx) = row_window(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        for scale in SCALES {
+            at_scale(cx, scale);
+            let (column, drawn, inset, device) = cx.update(|window, _| {
+                assert_eq!(window.scale_factor(), scale, "the row draws at {scale}");
+                let (gap, _) = row_room(Pixels::ZERO, window);
+                let widths = side_widths(false, &[0, 1], false, true, window);
+                let sentence = row_text_width(DOWNLOAD_EXPLANATION, &EXPLANATION_WIDTH, window);
+                let line = widths[0]
+                    .iter()
+                    .fold(-gap, |line, &width| line + gap + width);
+                let device = px(1. / scale);
+                (
+                    column_for(sentence + gap + widest_line(&widths, gap), window),
+                    column_for(sentence + gap + line, window) - device * 3.,
+                    window.pixel_snap(window.rem_size() * 0.75),
+                    device,
+                )
+            });
+            row.update(cx, |row, _| row.drawn = Some(drawn));
+            for failed in [0, 1] {
+                let at = format!("scale {scale}, side {failed} failed");
+                show(&row, cx, column, false, Shown::Resting);
+                assert!(
+                    cx.debug_bounds("lfs-preview-download-explanation")
+                        .is_some(),
+                    "{at}: the sentence leads the line at rest"
+                );
+                show(&row, cx, column, false, Shown::Failed { side: failed });
+                let edge = cx
+                    .debug_bounds("lfs-download-row")
+                    .expect("the row")
+                    .right()
+                    - inset;
+                let after = cx
+                    .debug_bounds("download-lfs-side-1")
+                    .expect("Download After…");
+                assert!(
+                    cx.debug_bounds("lfs-download-failure").is_some()
+                        && after.right() <= edge + device / 2.,
+                    "{at}: Download After…, {after:?}, stands inside the row, to {edge:?}, \
+                     beside the words"
+                );
+            }
+        }
+        row.update(cx, |row, _| row.drawn = None);
     }
 }

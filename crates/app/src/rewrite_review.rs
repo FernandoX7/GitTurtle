@@ -7052,7 +7052,7 @@ mod tests {
                 // they keep "Failed…".
                 let sides = downloads(cx).map(|side| side.expect("both Downloads are back"));
                 assert_eq!(
-                    crate::lfs_download::drawn_glyph(side).as_deref(),
+                    crate::lfs_download::drawn_glyph(true, side).as_deref(),
                     Some("icons/warning.svg"),
                     "{at}: the failed Download draws the warning glyph"
                 );
@@ -7227,7 +7227,7 @@ mod tests {
             "the words, without room for \"After: Failed…\", are not drawn"
         );
         assert_eq!(
-            [0, 1].map(crate::lfs_download::drawn_glyph),
+            [0, 1].map(|side| crate::lfs_download::drawn_glyph(true, side)),
             glyphs_with(Some(1)),
             "Download After…'s warning glyph stands for them"
         );
@@ -7351,7 +7351,7 @@ mod tests {
             "at 18 pt the two share a line: {narrow_rest:?}"
         );
         assert_eq!(
-            [0, 1].map(crate::lfs_download::drawn_glyph),
+            [0, 1].map(|side| crate::lfs_download::drawn_glyph(true, side)),
             glyphs_with(None)
         );
         let words = "Git LFS could not reach origin: the remote refused the batch request \
@@ -7372,7 +7372,7 @@ mod tests {
                  {narrow_rest:?}, and the words have no room"
             );
             assert_eq!(
-                [0, 1].map(crate::lfs_download::drawn_glyph),
+                [0, 1].map(|side| crate::lfs_download::drawn_glyph(true, side)),
                 glyphs_with(Some(side)),
                 "side {side} at 18 pt: the failed Download draws the warning glyph"
             );
@@ -7390,7 +7390,7 @@ mod tests {
                  both Downloads, {failed:?}, keep their places at rest, {wide_rest:?}"
             );
             assert_eq!(
-                [0, 1].map(crate::lfs_download::drawn_glyph),
+                [0, 1].map(|side| crate::lfs_download::drawn_glyph(true, side)),
                 glyphs_with(Some(side)),
                 "side {side} at 13 pt: the failed Download draws the warning glyph"
             );
@@ -7412,7 +7412,7 @@ mod tests {
             "the press asks for a download again"
         );
         assert_eq!(
-            [0, 1].map(crate::lfs_download::drawn_glyph),
+            [0, 1].map(|side| crate::lfs_download::drawn_glyph(true, side)),
             glyphs_with(None),
             "once the failure clears, Download Before… draws its pull glyph again"
         );
@@ -7518,7 +7518,7 @@ mod tests {
             "the words have no room on the shared line"
         );
         assert_eq!(
-            [0, 1].map(crate::lfs_download::drawn_glyph),
+            [0, 1].map(|side| crate::lfs_download::drawn_glyph(true, side)),
             glyphs_with(Some(1)),
             "Download After… draws the warning glyph"
         );
@@ -7546,7 +7546,7 @@ mod tests {
             "the two stack: {before:?}, {after:?}"
         );
         assert_eq!(
-            [0, 1].map(crate::lfs_download::drawn_glyph),
+            [0, 1].map(|side| crate::lfs_download::drawn_glyph(true, side)),
             glyphs_with(Some(1)),
             "stacked, Download After… draws the warning glyph"
         );
@@ -7905,15 +7905,34 @@ mod tests {
     /// The start cleared the window's record of how the review's download
     /// ended before the review read it, so the review took the failure for a
     /// success, read its file again, its row giving way to the read, and the
-    /// failure was lost.
+    /// failure was lost. Meanwhile the failed Download's warning glyph
+    /// dims with its button while the other starts and runs, the window's
+    /// busy look carried over from the review's own write, in the kit's
+    /// disabled colour as its label is, and at rest once the other ended is
+    /// the warning colour again (decision, 2026-11-10 night: set on the
+    /// glyph, the warning colour outlasted the button's disabled look, so
+    /// the dimmed Download read half enabled); and the failed Download keeps
+    /// its width at rest, within half a device pixel.
     #[gpui::test]
     async fn another_caller_s_start_keeps_the_review_s_failure(cx: &mut gpui_kit::TestAppContext) {
         use crate::lfs_download::Asker;
         use crate::tags::tests::draw;
         let (_fixture, repo, files) = missing_before();
         let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
         let browser = reviewing_download(&app, cx, &files);
         let words = "Git LFS could not reach origin";
+        let (warning, dimmed, device) = cx.update(|window, cx| {
+            (
+                gpui::Hsla::from(rgb(appearance::labels(cx).warning)),
+                gpui_kit::component::Theme::global(cx).disabled_foreground(),
+                px(1. / window.scale_factor()),
+            )
+        });
+        assert_ne!(warning, dimmed, "the two colours differ");
+        let rest = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("Download Before… is offered");
         for other in [Asker::Compare, Asker::Review(app.entity_id())] {
             let at = cx
                 .debug_bounds("download-lfs-side-0")
@@ -7929,9 +7948,25 @@ mod tests {
                     app.simulate_lfs_download(other, window, cx);
                 })
             });
-            let kept = |at: &str, cx: &mut gpui::VisualTestContext| {
+            let kept = |at: &str, glyph: gpui::Hsla, cx: &mut gpui::VisualTestContext| {
                 browser.read_with(cx, |browser, _| browser.worker.wait_idle());
                 draw(cx);
+                assert_eq!(
+                    (
+                        crate::lfs_download::drawn_glyph(true, 0).as_deref(),
+                        crate::lfs_download::drawn_glyph_color(true, 0),
+                    ),
+                    (Some("icons/warning.svg"), Some(glyph)),
+                    "{other:?}, {at}: Download Before… draws the warning glyph, dimmed with \
+                     it only while it is"
+                );
+                let failed = cx
+                    .debug_bounds("download-lfs-side-0")
+                    .expect("Download Before… is back");
+                assert!(
+                    (failed.size.width - rest.size.width).abs() <= device / 2.,
+                    "{other:?}, {at}: the failed Download, {failed:?}, keeps its width, {rest:?}"
+                );
                 let failure = browser.read_with(cx, |browser, _| {
                     browser
                         .lfs_download
@@ -7951,17 +7986,17 @@ mod tests {
                      read again"
                 );
             };
-            kept("as the other starts", cx);
+            kept("as the other starts", dimmed, cx);
             cx.executor()
                 .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
-            kept("as the other runs", cx);
+            kept("as the other runs", dimmed, cx);
             cx.update(|window, cx| {
                 app.update(cx, |app, cx| {
                     app.simulate_lfs_download_end(None, window, cx)
                 })
             });
             cx.run_until_parked();
-            kept("once the other ended", cx);
+            kept("once the other ended", warning, cx);
         }
     }
 
