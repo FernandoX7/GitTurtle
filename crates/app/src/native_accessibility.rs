@@ -1779,17 +1779,7 @@ impl RenderOnce for AppDropdown {
             .trigger
             .on_prepaint(move |bounds, _, _| painted.set(Some(bounds)))
             .dropdown_menu_with_anchor(corner, move |menu, window, cx| {
-                // A resized window, as a tiling compositor re-tiles it,
-                // closes the menu: its rows were capped for the side the
-                // size it opened in gave it, and a larger or smaller window
-                // could turn it to the other side, over its Button.
-                let viewport = window.viewport_size();
-                cx.observe_window_bounds(window, move |_, window, cx| {
-                    if window.viewport_size() != viewport {
-                        cx.emit(gpui::DismissEvent);
-                    }
-                })
-                .detach();
+                closes_as_its_window_changes(window, cx);
                 let keyboard = window.last_input_was_keyboard();
                 let menu = open(menu, keyboard, window, cx);
                 announces_resting(&cx.entity(), window, cx);
@@ -1822,6 +1812,58 @@ impl RenderOnce for AppDropdown {
             None => dropdown.into_any_element(),
         }
     }
+}
+
+/// Closes the button's menu `cx` builds as its window changes beneath it.
+/// A resized window, as a tiling compositor re-tiles it, closes it: its rows
+/// were capped for the side the size it opened in gave it, and a larger or
+/// smaller window could turn it to the other side, over its Button. Another
+/// repository tab shown, by a switch, a close or a move
+/// ([`close_button_menus`]), closes it too: the menu was built from the tab
+/// that drew it, so a choice made in it once acted on the tab shown after,
+/// a mode menu's changing that tab's mode to one it did not offer.
+fn closes_as_its_window_changes(window: &mut Window, cx: &mut Context<PopupMenu>) {
+    let viewport = window.viewport_size();
+    cx.observe_window_bounds(window, move |_, window, cx| {
+        if window.viewport_size() != viewport {
+            cx.emit(gpui::DismissEvent);
+        }
+    })
+    .detach();
+    let shown = ShownTabs::of(window, cx);
+    cx.observe_global_in::<ShownTabs>(window, move |_, window, cx| {
+        if ShownTabs::of(window, cx) != shown {
+            cx.emit(gpui::DismissEvent);
+        }
+    })
+    .detach();
+}
+
+/// How many times each window has changed the repository tab it shows
+/// beneath its open button menus ([`close_button_menus`]).
+#[derive(Default)]
+struct ShownTabs(std::collections::HashMap<gpui::WindowId, u64>);
+
+impl gpui::Global for ShownTabs {}
+
+impl ShownTabs {
+    fn of(window: &Window, cx: &App) -> u64 {
+        cx.try_global::<Self>()
+            .and_then(|shown| shown.0.get(&window.window_handle().window_id()))
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+/// Closes every button's menu open in `window`, as the repository tab it
+/// shows changes beneath them ([`closes_as_its_window_changes`]). The menus
+/// close as the change's effects are flushed, after the change has put
+/// focus where it goes: a switch or a close gives it to the tab shown, so a
+/// closing menu gives none back, and a move, which leaves it in the menu,
+/// has the menu give it back where it was as the menu opened.
+pub(crate) fn close_button_menus(window: &Window, cx: &mut App) {
+    let id = window.window_handle().window_id();
+    *cx.default_global::<ShownTabs>().0.entry(id).or_default() += 1;
 }
 
 /// An element's right-click menu as the app's menus open ([`open_menu`]),

@@ -2191,6 +2191,9 @@ impl GitTurtle {
         if !self.retain_active_tab(window, cx) {
             return;
         }
+        // A menu open over the tab left was built from it: a choice made in
+        // it once acted on the tab shown now.
+        crate::native_accessibility::close_button_menus(window, cx);
         self.repository_tabs.refusal = None;
         self.repository_tabs.active = Some(index);
         let path = self.repository_tabs.tabs[index].path.clone();
@@ -2244,6 +2247,11 @@ impl GitTurtle {
         let next = (index as i32 + direction)
             .clamp(0, self.repository_tabs.tabs.len().saturating_sub(1) as i32)
             as usize;
+        if next != index {
+            // A move closes them as a switch does, their tab now at another
+            // place in the strip; focus stays in the tab shown.
+            crate::native_accessibility::close_button_menus(window, cx);
+        }
         self.repository_tabs.reorder(index, next);
         self.save_repository_session(window, cx);
         cx.notify();
@@ -2272,6 +2280,8 @@ impl GitTurtle {
             return;
         }
         self.repository_tabs.refusal = None;
+        // As a switch closes them, closing the tab shown or another.
+        crate::native_accessibility::close_button_menus(window, cx);
         // Its cause gone with the closed tab, the page's refusal goes too,
         // as the strip's just did.
         self.hub.update(cx, |hub, cx| {

@@ -3922,9 +3922,9 @@ impl GitTurtle {
                                         move |_, window, cx| {
                                             let _ = owner.update(cx, |this, cx| {
                                                 if this.page == AppPage::Repository {
-                                                    // Noted in this tab's
+                                                    // Noted in this
                                                     // inspection, not one
-                                                    // Ctrl+Tab showed since.
+                                                    // shown since.
                                                     let held = note.as_ref().is_some_and(|note| {
                                                         this.mode_menu_note_holds(note)
                                                     });

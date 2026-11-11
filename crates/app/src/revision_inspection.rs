@@ -102,13 +102,14 @@ struct Inspection {
 }
 
 /// The inspection a press that opened the collapsed modes' menu found focus
-/// in the text pane of ([`GitTurtle::take_mode_menu_note`]): its repository
-/// tab and the file it inspects, so the menu's choice acts on that focus
-/// only where it lands on the same inspection
-/// ([`GitTurtle::mode_menu_note_holds`]).
+/// in the text pane of ([`GitTurtle::take_mode_menu_note`]): the file it
+/// inspects, so the menu's choice acts on that focus only where it lands on
+/// the same inspection ([`GitTurtle::mode_menu_note_holds`]). Another tab
+/// shown closes the menu (`native_accessibility::close_button_menus`), so a
+/// choice never lands in another tab: the tab's place in the strip, once
+/// noted here too, named another tab once the tab before it closed.
 #[derive(Clone, PartialEq)]
 pub(super) struct ModeMenuNote {
-    tab: Option<usize>,
     file: PathBuf,
 }
 enum Target {
@@ -680,8 +681,7 @@ impl GitTurtle {
     }
 
     /// Whether the menu's choice lands on the inspection `note` was taken
-    /// in, so it acts on the focus noted there: Ctrl+Tab from an open menu
-    /// shows another tab, whose focus a choice made then once moved.
+    /// in, so it acts on the focus noted there.
     pub(super) fn mode_menu_note_holds(&self, note: &ModeMenuNote) -> bool {
         self.mode_menu_note().as_ref() == Some(note)
     }
@@ -692,7 +692,6 @@ impl GitTurtle {
             return None;
         };
         Some(ModeMenuNote {
-            tab: self.repository_tabs.active,
             file: entry.path.clone(),
         })
     }
@@ -3830,6 +3829,264 @@ mod tests {
         assert_pane_rings(cx, &source, "the frame after it");
         if let Some(later) = later {
             assert_eq!(later, Vec::<String>::new(), "and not again");
+        }
+    }
+
+    /// The open "Comparison mode" menu's items, as Rendered checked lists them.
+    const MODE_MENU_ITEMS: [&str; 3] = [
+        "menu-item: Source · MenuItemCheckBox False",
+        "menu-item: Diagrams · MenuItemCheckBox False",
+        "menu-item: Rendered · MenuItemCheckBox True",
+    ];
+
+    /// Whether any item of the "Comparison mode" menu opened over Rendered
+    /// is drawn.
+    fn mode_menu_drawn(cx: &mut gpui::VisualTestContext) -> bool {
+        MODE_MENU_ITEMS
+            .iter()
+            .any(|item| cx.debug_bounds(item).is_some())
+    }
+
+    /// Two tabs at 18 pt in a 461 × 490 window, the first shown: Quick
+    /// source of `README.md`, with a diagram, in Rendered, its modes
+    /// collapsed into the "Comparison mode" menu, and in a second
+    /// repository's tab Quick source of `plain.md`, Markdown with a diagram
+    /// too, in Source, its modes collapsed into its own menu at the same
+    /// place. The caller sets the text size back.
+    async fn mode_menu_over_two_tabs(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut gpui::VisualTestContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = rendered_landing(cx, 1).await;
+        let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+        std::fs::write(
+            other.path().join("plain.md"),
+            "# Plain\n\n```mermaid\nflowchart LR; C-->D\n```\n",
+        )
+        .unwrap();
+        crate::tags::tests::git(other.path(), &["add", "plain.md"]);
+        crate::tags::tests::git(other.path(), &["commit", "--quiet", "-m", "Plain"]);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(other.path().to_owned(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        draw(cx);
+        // The first Quick Open's Return comes up, as a person's does: a
+        // dialog opened while it is down takes no Return until it does.
+        let enter = gpui::Keystroke::parse("enter").unwrap();
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: enter.clone(),
+        });
+        quick_open(&app, cx, "plain");
+        cx.simulate_keystrokes("enter");
+        cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        settle(&app, cx).await;
+        draw(cx);
+        if app.read_with(cx, |app, _| app.text_mode != TextMode::After) {
+            click_mode(cx, "Source");
+            draw(cx);
+        }
+        assert!(
+            app.read_with(cx, |app, _| app.is_quick_source()
+                && app.text_mode == TextMode::After
+                && app.repository_tabs.active == Some(1)),
+            "the second tab shows plain.md in Source"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        (fixture, app, cx)
+    }
+
+    /// What the window shows after the shown tab changed under an open
+    /// "Comparison mode" menu: whether any of its items is drawn, the shown
+    /// tab, its mode, what holds focus, the name Quick source's pane wrote,
+    /// and the modes' Button's name where it is drawn.
+    type AfterMenu = (
+        bool,
+        Option<usize>,
+        TextMode,
+        Option<FocusHandle>,
+        Option<String>,
+        Option<SharedString>,
+    );
+
+    /// Draws the frames after the tab change, choosing Diagrams from the
+    /// menu wherever its items are still drawn, as a person would, and reads
+    /// what the window then shows ([`AfterMenu`]).
+    async fn after_menu(app: &Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) -> AfterMenu {
+        use crate::views::tests::{draw, settle};
+        draw(cx);
+        let drawn = mode_menu_drawn(cx);
+        if let Some(item) = cx.debug_bounds(MODE_MENU_ITEMS[1]) {
+            cx.simulate_click(item.center(), gpui::Modifiers::none());
+        }
+        settle(app, cx).await;
+        draw(cx);
+        (
+            drawn,
+            app.read_with(cx, |app, _| app.repository_tabs.active),
+            app.read_with(cx, |app, _| app.text_mode),
+            cx.update(|window, cx| window.focused(cx)),
+            written_pane_name(),
+            cx.debug_bounds("text-mode-menu").and_then(|_| {
+                crate::views::COMPACT_LABELS
+                    .with(|names| names.borrow().get("text-mode-menu").cloned())
+            }),
+        )
+    }
+
+    /// Opens the collapsed "Comparison mode" menu by a click and returns
+    /// whether its items are drawn.
+    fn open_mode_menu(cx: &mut gpui::VisualTestContext) -> bool {
+        let Some(menu) = cx.debug_bounds("text-mode-menu") else {
+            return false;
+        };
+        cx.simulate_click(menu.center(), gpui::Modifiers::none());
+        crate::views::tests::draw(cx);
+        mode_menu_drawn(cx)
+    }
+
+    /// The "Comparison mode" menu belongs to the tab that drew it: opened
+    /// from the first tab's pane, at 18 pt in a 461 × 490 window, Ctrl+Tab
+    /// closes it as the second tab shows, which keeps its mode, takes focus
+    /// where Ctrl+Tab from that pane with no menu open puts it, and says
+    /// nothing of the first tab. The menu stayed open over the second tab,
+    /// built from the first, and Diagrams chosen from it changed the second
+    /// tab's mode (one that tab did not offer where it drew no diagrams).
+    #[gpui::test]
+    async fn quick_source_mode_menu_closes_as_ctrl_tab_shows_another_tab(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx) = mode_menu_over_two_tabs(cx).await;
+        let source = app.read_with(cx, |app, _| app.source_focus.clone());
+        // Read first, the text size restored before any assertion.
+        let on_pane = cx.update(|window, _| source.is_focused(window));
+        // Where Ctrl+Tab from the pane puts focus with no menu open.
+        cx.simulate_keystrokes("ctrl-tab");
+        settle(&app, cx).await;
+        draw(cx);
+        let unmenued = (
+            app.read_with(cx, |app, _| app.text_mode),
+            cx.update(|window, cx| window.focused(cx)),
+        );
+        cx.simulate_keystrokes("ctrl-tab");
+        settle(&app, cx).await;
+        draw(cx);
+        let back = cx.update(|window, _| source.is_focused(window));
+        let opened = open_mode_menu(cx);
+        cx.simulate_keystrokes("ctrl-tab");
+        // A key that follows the pointer draws the window before it acts,
+        // the first tab with its menu open: what is said after the change
+        // is what the frames after it write.
+        crate::native_accessibility::written::forget();
+        let seen = after_menu(&app, cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(on_pane && back, "the first tab's pane holds focus");
+        assert!(opened, "a click opens the menu");
+        assert!(unmenued.0 == TextMode::After, "the second tab shows Source");
+        let (drawn, active, mode, focus, named, label) = seen;
+        assert!(!drawn, "the menu closes as the second tab shows");
+        assert_eq!(active, Some(1), "Ctrl+Tab shows the second tab");
+        assert!(mode == unmenued.0, "which keeps its mode");
+        assert!(
+            focus.is_some() && focus == unmenued.1,
+            "and takes focus where Ctrl+Tab with no menu open puts it"
+        );
+        assert_eq!(named, None, "nothing is said of the first tab's pane");
+        if let Some(label) = label {
+            assert_eq!(label.as_ref(), "Comparison mode: Source", "nor its mode");
+        }
+    }
+
+    /// Ctrl+W from the first tab's open "Comparison mode" menu closes the
+    /// menu with its tab: the second tab shows with its mode, focus on the
+    /// text it shows. The menu stayed open over the tab shown next, and a
+    /// choice made in it changed that tab's mode.
+    #[gpui::test]
+    async fn quick_source_mode_menu_closes_with_its_tab(cx: &mut gpui::TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx) = mode_menu_over_two_tabs(cx).await;
+        let source = app.read_with(cx, |app, _| app.source_focus.clone());
+        // Read first, the text size restored before any assertion.
+        let on_pane = cx.update(|window, _| source.is_focused(window));
+        let opened = open_mode_menu(cx);
+        // The menu's own frames drawn, so what follows is the change's.
+        draw(cx);
+        crate::native_accessibility::written::forget();
+        cx.dispatch_action(CloseRepositoryTab);
+        let seen = after_menu(&app, cx).await;
+        let tabs = app.read_with(cx, |app, _| app.repository_tabs.tabs.len());
+        let text = quick_source_text(&app, cx);
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(on_pane, "the first tab's pane holds focus");
+        assert!(opened, "a click opens the menu");
+        let (drawn, active, mode, focus, named, label) = seen;
+        assert!(!drawn, "the menu closes with its tab");
+        assert!(tabs == 1 && active == Some(0), "the second tab shows");
+        assert!(mode == TextMode::After, "in Source, its mode");
+        assert!(
+            focus.is_some() && focus == text,
+            "focus is on the text the tab shows"
+        );
+        assert_eq!(named, None, "nothing is said of the closed tab's pane");
+        if let Some(label) = label {
+            assert_eq!(label.as_ref(), "Comparison mode: Source", "nor its mode");
+        }
+    }
+
+    /// The palette's Move repository tab right, run while the first tab's
+    /// "Comparison mode" menu is open, closes the menu as the tab moves: the
+    /// tab keeps its mode, and focus goes back to the pane the menu was
+    /// opened from. The menu stayed open over the moved tab.
+    #[gpui::test]
+    async fn quick_source_mode_menu_closes_as_its_tab_moves(cx: &mut gpui::TestAppContext) {
+        let (_fixture, app, cx) = mode_menu_over_two_tabs(cx).await;
+        let source = app.read_with(cx, |app, _| app.source_focus.clone());
+        // Read first, the text size restored before any assertion.
+        let on_pane = cx.update(|window, _| source.is_focused(window));
+        let opened = open_mode_menu(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+        crate::views::tests::draw(cx);
+        cx.simulate_input("Move repository tab right");
+        crate::views::tests::draw(cx);
+        crate::native_accessibility::written::forget();
+        cx.simulate_keystrokes("enter");
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        let seen = after_menu(&app, cx).await;
+        let first = app.read_with(cx, |app, _| {
+            app.repository_tabs.tabs.first().map(|tab| tab.path.clone())
+        });
+        let path = app.read_with(cx, |app, _| app.path.clone());
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(on_pane, "the first tab's pane holds focus");
+        assert!(opened, "a click opens the menu");
+        let (drawn, active, mode, focus, _, label) = seen;
+        assert!(!drawn, "the menu closes as its tab moves");
+        assert!(
+            active == Some(1) && first.is_some() && first != path,
+            "the tab moves right, and stays shown"
+        );
+        assert!(mode == TextMode::Markdown, "in Rendered, its mode");
+        assert!(
+            focus == Some(source),
+            "focus goes back to the pane the menu was opened from"
+        );
+        if let Some(label) = label {
+            assert_eq!(label.as_ref(), "Comparison mode: Rendered");
         }
     }
 
