@@ -4265,6 +4265,8 @@ struct DownloadHeightsKey {
     line: LineKey,
     scale: u32,
     column: u32,
+    /// Its Quick source, which the row's labels need, `review` already
+    /// tells apart here: the region draws the options exactly outside it.
     row: crate::lfs_download::CompareRow,
     /// The options and whether the review is unavailable, which choose its
     /// labels and caption.
@@ -12314,12 +12316,21 @@ pub(crate) mod tests {
     }
 
     /// Beside a Download row, Compare measures the heights its region lays
-    /// the row, its form without the buttons' word and the review options
-    /// out at only where what they follow from changes
-    /// (`GitTurtle::download_heights`): each frame of a scroll builds the
-    /// row once, in the form it draws, and lays nothing out to measure, and
-    /// a new width, a new text size, a download that starts and new review
-    /// options each measure them again in the frame that draws them.
+    /// the row, its form without the buttons' word, the review options and
+    /// a working file's reason out at only where what they follow from
+    /// changes (`GitTurtle::download_heights`): each frame of a scroll
+    /// builds the row once, in the form it draws, and lays nothing out to
+    /// measure, and each step measures them again in the frame that draws
+    /// it, and nothing in the frame after. Each part of `DownloadHeightsKey`
+    /// has a step that changes it alone: a new width, the `column`; a new
+    /// device scale, `scale`; a new interface font at the same size,
+    /// `line`; a download that starts, the `row`'s write; new review
+    /// options, `review`; another file's row, the `row`'s Downloads; a
+    /// failing side's line above the row, the `row`'s line; and a working
+    /// file's reason beneath its text, `reason`. A new text size changes
+    /// the `line` and the `column` together. The `row`'s Quick source never
+    /// changes alone in the region, where `review` is drawn exactly where
+    /// it is not Quick source.
     /// Measured in every frame, the region built the row four times and
     /// laid three elements out to measure them, which cost each Compare
     /// frame 142–177 µs of the UI thread's time in a release build
@@ -12328,8 +12339,7 @@ pub(crate) mod tests {
     async fn a_download_row_s_region_measures_only_when_what_it_follows_from_changes(
         cx: &mut TestAppContext,
     ) {
-        use crate::in_frame::{MEASURES, probe};
-        use crate::lfs_download::ROWS_BUILT;
+        use crate::in_frame::probe;
         // A GPUI test's seeds share the thread and the heights it keeps.
         forget_download_heights();
         let pointer = format!(
@@ -12348,12 +12358,22 @@ pub(crate) mod tests {
             )
         };
         let (both_before, both_after) = (both('c'), both('d'));
+        // A file whose Before side's object is missing and whose After
+        // side's object is there, until the test damages it.
+        let half_before = both('e');
+        let half_body = b"the half that is here\n";
+        let half_after = lfs_pointer(half_body);
+        // A tracked pointer whose object is missing, which the working tree
+        // changes.
+        let tracked = both('f');
         let input = file_commits(&[
             (
                 "before",
                 &[
                     ("asset.txt", pointer.as_bytes()),
                     ("both.txt", both_before.as_bytes()),
+                    ("half.txt", half_before.as_bytes()),
+                    ("work.txt", tracked.as_bytes()),
                 ],
             ),
             (
@@ -12361,10 +12381,15 @@ pub(crate) mod tests {
                 &[
                     ("asset.txt", text.as_bytes()),
                     ("both.txt", both_after.as_bytes()),
+                    ("half.txt", half_after.as_bytes()),
                 ],
             ),
         ]);
         let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        let root = app.read_with(cx, |app, _| {
+            app.repository.clone().unwrap().path().to_path_buf()
+        });
+        let half_object = store_lfs_object(&root, half_body);
         cx.update(|_, cx| cx.set_reduce_motion(true));
         hold_quiet_reads_for_test(&app, cx);
         cx.simulate_resize(size(px(1480.), px(973.)));
@@ -12386,19 +12411,7 @@ pub(crate) mod tests {
             "asset.txt's Before side, a pointer whose object is not local, offers Download"
         );
         probe::watch();
-        // The Download rows built, the elements laid out to measure them
-        // and the frames that drew the row's region since the last call.
-        let mut counted = (ROWS_BUILT.get(), MEASURES.get());
-        let mut work = move || {
-            let now = (ROWS_BUILT.get(), MEASURES.get());
-            let drawn = probe::take()
-                .iter()
-                .filter(|frame| frame.region == "compare-download-region")
-                .count();
-            let done = (now.0 - counted.0, now.1 - counted.1, drawn);
-            counted = now;
-            done
-        };
+        let mut work = region_work();
         let editor = app.read_with(cx, |app, _| {
             app.patch_editor.clone().expect("Diff's editor")
         });
@@ -12455,10 +12468,55 @@ pub(crate) mod tests {
         draw(cx);
         changes("a new width", &mut work);
         scroll(cx, "1200 × 973 at 13 pt", &mut work);
+        // A new device scale alone, at 13 pt, where the column stands on
+        // whole pixels at either scale: the test window's is 2, so the step
+        // takes it to 1 and back.
+        let column = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("compare-toolbar")
+                .expect("Compare's toolbar")
+                .size
+                .width
+        };
+        let wide = column(cx);
+        assert_eq!(
+            cx.update(|window, _| window.scale_factor()),
+            2.,
+            "the test window's scale"
+        );
+        cx.update(|window, _| window.set_scale_factor(1.));
+        assert_eq!(cx.update(|window, _| window.scale_factor()), 1.);
+        draw(cx);
+        assert_eq!(column(cx), wide, "the column keeps its width at scale 1");
+        changes("a new device scale", &mut work);
+        scroll(cx, "1200 × 973 at 13 pt, scale 1", &mut work);
+        cx.update(|window, _| window.set_scale_factor(2.));
+        draw(cx);
+        work();
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         draw(cx);
         changes("a new text size", &mut work);
         scroll(cx, "1200 × 973 at 18 pt", &mut work);
+        // A new interface font at the same size alone: a new text size
+        // changes the column too, its rail `ui_size(44)`.
+        let wide = column(cx);
+        let font = cx.update(|_, cx| gpui_kit::component::Theme::global(cx).font_family.clone());
+        let set_font = |font: SharedString, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                gpui_kit::component::Theme::global_mut(cx).font_family = font;
+                window.refresh();
+            });
+            draw(cx);
+        };
+        set_font("Desktop Sans".into(), cx);
+        assert_eq!(
+            column(cx),
+            wide,
+            "the column keeps its width in the new font"
+        );
+        changes("a new interface font", &mut work);
+        scroll(cx, "1200 × 973 at 18 pt, Desktop Sans", &mut work);
+        set_font(font, cx);
+        work();
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.simulate_lfs_download(crate::lfs_download::Asker::Compare, window, cx);
@@ -12511,8 +12569,290 @@ pub(crate) mod tests {
             0,
             "a frame after both.txt's row is drawn measures nothing"
         );
+        // A line above the row: half.txt offers Before's Download with no
+        // line above it, After's object being there, until, opened again
+        // after a Refresh, it finds After's object damaged and the failing
+        // side's line stands above the row, which then drops its own top
+        // padding
+        // (`lfs_download::download_row`). Of what the heights follow from,
+        // only that changes: the row offers the same Download and the
+        // options are the defaults either way. Kept without it, the row
+        // measured 0.5 rem too tall beneath the line.
+        let select_path = |path: &str, cx: &mut VisualTestContext| {
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+                    .unwrap_or_else(|| panic!("the commit changes {path}"))
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+        };
+        select_path("half.txt", cx);
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.lfs_download_offered()
+                && app.lfs_failure_sentence().is_none()),
+            "half.txt's Before side offers its Download, with no line above it"
+        );
+        let [unlined, _] = DOWNLOAD_ROWS.get().expect("the region measured its rows");
+        work();
+        std::fs::write(&half_object, b"not the object it names\n").unwrap();
+        // History's Refresh goes back to History, half.txt still selected,
+        // which opens again in Compare.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle(&app, cx).await;
+        select_path("half.txt", cx);
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.lfs_download_offered()
+                && app.lfs_failure_sentence().is_some()
+                && app.review.options == crate::text_review::Options::default()),
+            "after the Refresh, half.txt's damaged After side says so above the row, which \
+             still offers Before's Download, the options their defaults"
+        );
+        changes("a line above the row", &mut work);
+        let [lined, _] = DOWNLOAD_ROWS.get().expect("the region measured its rows");
+        assert!(
+            lined < unlined,
+            "beneath the line, the row, without its top padding, measures {lined:?}, \
+             shorter than {unlined:?}"
+        );
+        cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            work().1,
+            0,
+            "a frame after the line is drawn measures nothing"
+        );
+        // A working file's reason: Working Changes shows work.txt, a
+        // tracked pointer whose object is missing, changed in the working
+        // tree to text, so its row offers Before's Download; its lines can
+        // be staged one by one, so no reason stands beneath it. A Refresh
+        // after the working tree's file becomes a pointer whose object is
+        // there shows that object's text, whose lines cannot be, and the
+        // reason why stands beneath it. Of what the heights follow from,
+        // only the reason changes: the row offers the same Download, beneath
+        // no line, and the options are the defaults either way.
+        let reason = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| match app.content.as_deref() {
+                Some(Content::Text {
+                    partial_unavailable,
+                    ..
+                }) => partial_unavailable.clone(),
+                _ => None,
+            })
+        };
+        let text: String = (0..400)
+            .map(|line| format!("working line {line}\n"))
+            .collect();
+        show_working_change(&app, cx, &[("work.txt", text.as_bytes())]).await;
+        assert!(
+            app.read_with(cx, |app, _| app.lfs_download_offered()
+                && app.lfs_failure_sentence().is_none())
+                && reason(cx).is_none(),
+            "work.txt's Before side offers its Download and its lines can be staged one by one"
+        );
+        work();
+        let working_body = b"the working object\n";
+        store_lfs_object(&root, working_body);
+        std::fs::write(root.join("work.txt"), lfs_pointer(working_body)).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.lfs_download_offered()
+                && app.lfs_failure_sentence().is_none())
+                && reason(cx).is_some_and(|reason| reason.contains("verified LFS object")),
+            "after the Refresh, work.txt shows its working object's text, and why its lines \
+             cannot be staged one by one, beside the same Download"
+        );
+        changes("a working file's reason", &mut work);
+        cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            work().1,
+            0,
+            "a frame after the reason is drawn measures nothing"
+        );
         probe::stop();
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// What Compare's Download row's region did since the last call: the
+    /// rows it built, the elements laid out to measure them and the frames
+    /// that drew the region, while `in_frame::probe` watches.
+    fn region_work() -> impl FnMut() -> (usize, usize, usize) {
+        use crate::in_frame::{MEASURES, probe};
+        use crate::lfs_download::ROWS_BUILT;
+        let mut counted = (ROWS_BUILT.get(), MEASURES.get());
+        move || {
+            let now = (ROWS_BUILT.get(), MEASURES.get());
+            let drawn = probe::take()
+                .iter()
+                .filter(|frame| frame.region == "compare-download-region")
+                .count();
+            let done = (now.0 - counted.0, now.1 - counted.1, drawn);
+            counted = now;
+            done
+        }
+    }
+
+    /// A Git LFS pointer to `body`.
+    fn lfs_pointer(body: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{:x}\nsize {}\n",
+            Sha256::digest(body),
+            body.len()
+        )
+    }
+
+    /// Puts `body` in the local Git LFS store of the repository at `root`,
+    /// where its pointer ([`lfs_pointer`]) finds it, returning where.
+    fn store_lfs_object(root: &std::path::Path, body: &[u8]) -> std::path::PathBuf {
+        use sha2::{Digest, Sha256};
+        let oid = format!("{:x}", Sha256::digest(body));
+        let directory = root
+            .join(".git/lfs/objects")
+            .join(&oid[..2])
+            .join(&oid[2..4]);
+        std::fs::create_dir_all(&directory).unwrap();
+        let object = directory.join(oid);
+        std::fs::write(&object, body).unwrap();
+        object
+    }
+
+    /// Shows Working Changes for the History window `app`, its working tree
+    /// checked out at HEAD and each of `edits` written over its tracked
+    /// file, and its first unstaged change in Diff.
+    async fn show_working_change(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        edits: &[(&str, &[u8])],
+    ) {
+        let root = app.read_with(cx, |app, _| {
+            app.repository.clone().unwrap().path().to_path_buf()
+        });
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        for (path, bytes) in edits {
+            std::fs::write(root.join(path), bytes).unwrap();
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(app, cx).await;
+        crate::path_filter::filters_land(app, cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.text_mode = TextMode::Unified;
+                app.select_working(0, gitturtle_core::ChangeArea::Unstaged, window, cx);
+            })
+        });
+        settle(app, cx).await;
+    }
+
+    /// Beside a Download row, Split takes the height of the reason a
+    /// working file's lines cannot be staged one by one from the row's
+    /// region, which keeps it (`GitTurtle::download_heights`): in Working
+    /// Changes, with review options active, so the reviewed text gives a
+    /// reason, on a working change to a tracked Git LFS pointer whose object
+    /// is missing, each frame of a wheel over Split's text measures nothing.
+    /// Split's room laid the reason out to measure it in every frame it drew
+    /// before, one element for each notch.
+    #[gpui::test]
+    async fn split_beside_a_download_row_takes_its_reason_s_height_from_the_region(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::in_frame::probe;
+        // A GPUI test's seeds share the thread and the heights it keeps.
+        forget_download_heights();
+        let tracked = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "7".repeat(64)
+        );
+        let input = file_commits(&[("tracked", &[("work.txt", tracked.as_bytes())])]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        let text: String = (0..400)
+            .map(|line| format!("working line {line}\n"))
+            .collect();
+        show_working_change(&app, cx, &[("work.txt", text.as_bytes())]).await;
+        let options = crate::text_review::Options {
+            hide_whitespace: true,
+            ..Default::default()
+        };
+        cx.update(|window, cx| app.update(cx, |app, cx| app.set_text_review(options, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.text_mode = TextMode::Split;
+                app.ensure_editor(window, cx);
+                cx.notify();
+            })
+        });
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| {
+                app.review.options == options
+                    && app.lfs_download_offered()
+                    && matches!(
+                        app.content.as_deref(),
+                        Some(Content::Text {
+                            partial_unavailable: Some(_),
+                            ..
+                        })
+                    )
+            }),
+            "the reviewed working text offers Before's Download and says why its lines \
+             cannot be staged one by one"
+        );
+        probe::watch();
+        draw(cx);
+        let region = probe::take()
+            .iter()
+            .rfind(|frame| frame.region == "compare-download-region")
+            .map(|frame| frame.bounds)
+            .expect("the row's region is drawn");
+        let text = cx
+            .debug_bounds("split-text-1")
+            .expect("Split's After side is drawn");
+        assert!(
+            region.contains(&text.center()),
+            "Split, {text:?}, is drawn in the row's region, {region:?}"
+        );
+        let split = app.read_with(cx, |app, _| app.split_view.clone().expect("Split's view"));
+        let offset = |cx: &mut VisualTestContext| {
+            split.read_with(cx, |split, cx| {
+                split.editors()[1].read(cx).scroll_offset().y
+            })
+        };
+        let mut work = region_work();
+        for notch in 0..4 {
+            cx.update(|window, cx| window.simulate_next_frame(cx));
+            cx.run_until_parked();
+            work();
+            let before = offset(cx);
+            cx.update(|window, cx| {
+                window.dispatch_event(
+                    gpui_kit::PlatformInput::ScrollWheel(gpui_kit::ScrollWheelEvent {
+                        position: text.center(),
+                        delta: gpui_kit::ScrollDelta::Lines(point(0., -3.)),
+                        modifiers: gpui_kit::Modifiers::default(),
+                        touch_phase: gpui_kit::TouchPhase::Moved,
+                    }),
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            let (rows, measures, drawn) = work();
+            assert_ne!(offset(cx), before, "notch {notch} scrolls Split's text");
+            assert_eq!(
+                (rows, measures, drawn),
+                (1, 0, 1),
+                "notch {notch}'s frame builds the row once and measures nothing, the reason \
+                 among it"
+            );
+        }
+        probe::stop();
     }
 
     const DOWNLOAD_SENTENCE: &str = "lfs-preview-download-explanation";
