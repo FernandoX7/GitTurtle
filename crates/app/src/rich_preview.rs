@@ -840,6 +840,7 @@ pub(super) fn render_comparison<T: 'static>(
         .min_w_0()
         .flex()
         .flex_col()
+        .key_context(SIDES_CONTEXT)
         .child(div().flex().min_w_0().children(headers))
         .child(crate::system_preview::header_ends(
             "rich-sides",
@@ -862,6 +863,25 @@ fn decoded_source(excerpt: impl Into<SharedString>, cx: &App) -> Div {
         .code_font(cx)
         .text_size(appearance::code_text())
         .child(excerpt.into())
+}
+
+/// The key context [`render_comparison`] draws its own sides in, a PDF's or
+/// a model's aside, found on the focused element's path by
+/// [`holds_focus`].
+const SIDES_CONTEXT: &str = "GitTurtleRichSides";
+
+/// Whether focus is on a control [`render_comparison`] drew in its own sides
+/// in the last frame, as Diagrams draws a diagram's Previous and Next, its
+/// open control and Copy source: each keeps a focus of its own, so Quick
+/// source's text pane, which counts focus drawn inside it as its own as its
+/// mode changes (`GitTurtle::quick_source_text_pane_is_focused`), asks
+/// this. Uncounted, Source chosen from Next diagram left focus on a button
+/// no frame drew.
+pub(super) fn holds_focus(window: &Window) -> bool {
+    window
+        .context_stack()
+        .iter()
+        .any(|context| context.contains(SIDES_CONTEXT))
 }
 
 impl GitTurtle {

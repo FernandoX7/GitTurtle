@@ -336,6 +336,18 @@ pub fn panel_height(editor: &Entity<EditorState>, cx: &App) -> Pixels {
     })
 }
 
+/// Whether the open Find bar of `editor` holds the window's focus, on its
+/// field or one of its controls. The bar is drawn beside the text it
+/// searches, not inside it, so the text's own focus never contains it: a
+/// view that counts focus on the text as its own, as Quick source's text
+/// pane does as its mode changes, asks this too.
+pub fn bar_contains_focused(editor: &Entity<EditorState>, window: &Window, cx: &App) -> bool {
+    panel(editor, cx).is_some_and(|bar| {
+        let bar = bar.read(cx);
+        bar.open && bar.focus.contains_focused(window, cx)
+    })
+}
+
 /// A source editor retaining the native editor's styling and focus behavior.
 #[derive(IntoElement)]
 pub struct Editor {

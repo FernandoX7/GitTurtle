@@ -571,22 +571,31 @@ impl GitTurtle {
                 .is_some_and(|active| active.pane_holds_focus)
     }
 
-    /// Whether focus is in Quick source's text pane now: on the pane, or on
-    /// anything drawn inside it, while it holds the waiting focus
-    /// ([`Self::quick_source_holds_pane`]); on the text it shows; or on the
-    /// rendered Markdown's own stop, drawn with no pane around it once focus
-    /// has left the pane. A change of mode moves focus found there to what
-    /// the new mode shows ([`Self::keep_quick_source_pane_focus`]).
+    /// Whether focus is in Quick source's text pane now, on any stop drawn
+    /// there: on the pane, or on anything drawn inside it, while it holds
+    /// the waiting focus ([`Self::quick_source_holds_pane`]); on the text it
+    /// shows or its open Find bar, drawn beside the text
+    /// ([`crate::editor_find::bar_contains_focused`]); on the rendered
+    /// Markdown's own stop; or on a control of the Diagrams view, as Next
+    /// diagram ([`crate::rich_preview::holds_focus`]); each of the last two
+    /// drawn with no pane around it once focus has left the pane. A change
+    /// of mode moves focus found there to what the new mode shows
+    /// ([`Self::keep_quick_source_pane_focus`]); Find's field and the
+    /// diagrams' buttons were left out, so focus stayed on a control the
+    /// new mode no longer draws.
     pub(super) fn quick_source_text_pane_is_focused(&self, window: &Window, cx: &App) -> bool {
         if !self.is_quick_source() {
             return false;
         }
         let pane = self.quick_source_holds_pane() && self.source_focus.contains_focused(window, cx);
         let text = match self.shown_text() {
-            Some(views::ShownText::Editor(editor)) => editor
-                .read(cx)
-                .focus_handle(cx)
-                .contains_focused(window, cx),
+            Some(views::ShownText::Editor(editor)) => {
+                editor
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx)
+                    || crate::editor_find::bar_contains_focused(editor, window, cx)
+            }
             _ => false,
         };
         let rendered = self.text_mode == TextMode::Markdown
@@ -594,7 +603,9 @@ impl GitTurtle {
                 .markdown_view
                 .as_ref()
                 .is_some_and(|view| view.read(cx).focus_handle().contains_focused(window, cx));
-        pane || text || rendered
+        let diagrams =
+            self.text_mode == TextMode::Diagrams && crate::rich_preview::holds_focus(window);
+        pane || text || rendered || diagrams
     }
 
     /// After a change of comparison mode, focus that was in Quick source's
@@ -3219,12 +3230,12 @@ mod tests {
         }
     }
 
-    /// Quick source of `README.md`, committed with a Mermaid diagram where
-    /// `diagram`, landed in Rendered with focus on the pane, named by the
+    /// Quick source of `README.md`, committed with `diagrams` Mermaid
+    /// diagrams, landed in Rendered with focus on the pane, named by the
     /// rendered view it draws and ringed on its edge, as a landing gives it.
     async fn rendered_landing(
         cx: &mut gpui::TestAppContext,
-        diagram: bool,
+        diagrams: usize,
     ) -> (
         tempfile::TempDir,
         Entity<GitTurtle>,
@@ -3234,7 +3245,7 @@ mod tests {
         let (fixture, app, cx) = quick_open_window(cx).await;
         let path = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         let mut markdown = String::from("# Notes\n\nSome text\n");
-        if diagram {
+        for _ in 0..diagrams {
             markdown.push_str("\n```mermaid\nflowchart LR; A-->B\n```\n");
         }
         std::fs::write(path.join("README.md"), markdown).unwrap();
@@ -3296,7 +3307,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         use crate::views::tests::draw;
-        let (_fixture, app, cx) = rendered_landing(cx, false).await;
+        let (_fixture, app, cx) = rendered_landing(cx, 0).await;
         let ring = cx.debug_bounds("compare-text-ring");
         click_mode(cx, "Source");
         let text = quick_source_text(&app, cx).expect("Source shows the text");
@@ -3321,7 +3332,7 @@ mod tests {
     #[gpui::test]
     async fn quick_source_mode_changes_keep_focus_in_the_text_pane(cx: &mut gpui::TestAppContext) {
         use crate::views::tests::draw;
-        let (_fixture, app, cx) = rendered_landing(cx, true).await;
+        let (_fixture, app, cx) = rendered_landing(cx, 1).await;
         let source = app.read_with(cx, |app, _| app.source_focus.clone());
         click_mode(cx, "Source");
         let text = quick_source_text(&app, cx).expect("Source shows the text");
@@ -3388,6 +3399,101 @@ mod tests {
         assert_pane_rings(cx, &text, "Source from the rendered view's bare stop");
     }
 
+    /// With the Source text's Find bar open and its field focused, Rendered
+    /// or Diagrams gives focus to the pane, named by the view it draws and
+    /// ringed on its edge from the click's first frame, as from the text.
+    /// The bar is drawn beside the text it searches, not inside it, so
+    /// focus stayed on a field the new mode no longer draws.
+    #[gpui::test]
+    async fn quick_source_mode_changes_from_the_find_bar_keep_focus_in_the_text_pane(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx) = rendered_landing(cx, 1).await;
+        let source = app.read_with(cx, |app, _| app.source_focus.clone());
+        for (mode, name) in [
+            ("Rendered", "Rendered Markdown"),
+            ("Diagrams", "Mermaid diagrams"),
+        ] {
+            click_mode(cx, "Source");
+            let text = quick_source_text(&app, cx).expect("Source shows the text");
+            assert!(cx.update(|window, _| text.is_focused(window)));
+            // Find, as the platform's Find key opens it from the text.
+            cx.dispatch_action(gpui_kit::component::input::Search);
+            draw(cx);
+            assert!(
+                cx.debug_bounds("file-find-bar").is_some(),
+                "{mode}: Find opens over the text"
+            );
+            let field = cx.update(|window, cx| window.focused(cx));
+            assert!(
+                field.is_some() && field != Some(text.clone()) && field != Some(source.clone()),
+                "{mode}: Find's field holds focus"
+            );
+            crate::native_accessibility::written::forget();
+            click_mode(cx, mode);
+            assert_eq!(
+                written_pane_name().as_deref(),
+                Some(name),
+                "{mode} from Find's field: the pane is named by its view"
+            );
+            assert_pane_rings(cx, &source, &format!("{mode} from Find's field"));
+            draw(cx);
+            assert_pane_rings(cx, &source, &format!("{mode} from Find's field, later"));
+        }
+    }
+
+    /// With focus on a control the Diagrams view draws in the pane, Copy
+    /// source, its last stop, or Next diagram above it, reached by Shift+Tab
+    /// from the information while the pane holds no focus, Source gives
+    /// focus to the text, ringed on the pane's edge from the click's first
+    /// frame. Only the rendered Markdown's stop was counted, so focus stayed
+    /// on a button the new mode no longer draws.
+    #[gpui::test]
+    async fn quick_source_source_from_a_diagrams_control_focuses_its_text(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx) = rendered_landing(cx, 2).await;
+        let source = app.read_with(cx, |app, _| app.source_focus.clone());
+        for (presses, control) in [(1, "Copy source"), (2, "Next diagram")] {
+            click_mode(cx, "Source");
+            // A click on the information, below its controls.
+            let inspector = cx
+                .debug_bounds("revision-inspector")
+                .expect("the information is drawn");
+            cx.simulate_click(
+                gpui::point(inspector.center().x, inspector.bottom() - px(8.)),
+                gpui::Modifiers::none(),
+            );
+            draw(cx);
+            assert!(cx.update(|window, _| source.is_focused(window)));
+            click_mode(cx, "Diagrams");
+            assert!(
+                cx.debug_bounds("quick-source-pane").is_none(),
+                "{control}: the pane holds no focus"
+            );
+            // Each stop on the way is a control of the view's own.
+            let mut reached = Vec::new();
+            for _ in 0..presses {
+                cx.simulate_keystrokes("shift-tab");
+                draw(cx);
+                let on = cx.update(|window, cx| window.focused(cx));
+                assert!(
+                    on.is_some()
+                        && on != Some(source.clone())
+                        && !reached.contains(&on)
+                        && cx.update(|window, _| crate::rich_preview::holds_focus(window)),
+                    "{control}: Shift+Tab reaches a control of the Diagrams view's own"
+                );
+                reached.push(on);
+            }
+            click_mode(cx, "Source");
+            let text = quick_source_text(&app, cx).expect("Source shows the text");
+            assert_pane_rings(cx, &text, &format!("Source from {control}"));
+        }
+    }
+
     /// What a mode chosen from the collapsed menu left: the mode, whether
     /// the pane's handle holds focus, and whether the pane holding it is
     /// drawn, whether the text holds focus, and the text pane's ring, the
@@ -3441,7 +3547,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         use crate::views::tests::draw;
-        let (_fixture, app, cx) = rendered_landing(cx, true).await;
+        let (_fixture, app, cx) = rendered_landing(cx, 1).await;
         cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
         cx.simulate_resize(size(px(461.), px(490.)));
         draw(cx);
