@@ -3138,8 +3138,8 @@ impl Panel {
         self.begin_comment(window, cx);
         self.hold_return(window, cx);
     }
-    /// Holds the Return press that began a comment on a review line off the comment's text
-    /// and the patch until it comes up: no Enter of it
+    /// Holds the Return press that began a comment, on a review line or on a Button that
+    /// opens one, off the comment's text and the patch until it comes up: no Enter of it
     /// reaches anything in the window (`dialog_opened`), and an unmodified Enter that the
     /// toolkit counts a fresh press after another key reaches neither
     /// ([`ReviewState::return_press`]).
@@ -3166,6 +3166,28 @@ impl Panel {
             _interceptor: interceptor,
             key_downs,
         });
+    }
+    /// A Button that opens the comment, Comment on selection or Edit, pressed by `event`: an
+    /// Enter, which the Button takes as the key goes down, is held off the comment it opened
+    /// until it comes up, as a review line's is ([`Self::hold_return`]); a click or Space has
+    /// come up already. Each of the held key's repeats, under X11 or marked held, typed a new
+    /// line into the comment the Button gave focus to (decided 2026-11-11: a Return that
+    /// opens a composer never types into it).
+    fn hold_enter_click(
+        &mut self,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(
+            event,
+            ClickEvent::Keyboard(gpui_kit::KeyboardClickEvent {
+                button: gpui_kit::KeyboardButton::Enter,
+                ..
+            })
+        ) {
+            self.hold_return(window, cx);
+        }
     }
     /// An Enter came up in the panel: the press [`Self::hold_return`] holds ends once the
     /// application next runs a task, as the toolkit's own record of it does, unless an Enter
@@ -4048,7 +4070,10 @@ impl Panel {
                                             || file.unavailable.is_some(),
                                     )
                                     .on_click(cx.listener(
-                                        |this, _, window, cx| this.begin_comment(window, cx),
+                                        |this, event, window, cx| {
+                                            this.begin_comment(window, cx);
+                                            this.hold_enter_click(event, window, cx);
+                                        },
                                     )),
                                 ),
                         )
@@ -4354,7 +4379,7 @@ impl Panel {
             .child(clipped(crate::native_accessibility::clips_children(div().id("github-collected-comments").debug_selector(||"github-collected-comments".into()).flex_shrink_0().max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.review.comments.iter().enumerate().map(|(index,comment)|div().flex_shrink_0().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label(("github-draft-position",index),model::position_label(comment)).font_weight(FontWeight::SEMIBOLD))
                 .child(label(("github-draft-body",index),comment.body.clone()))
-                .child(div().flex().gap_2().child(self.button(("github-edit-inline",index),"Edit","",false, cx).disabled(self.pending||self.review.composing.is_some()).on_click(cx.listener(move|this,_,window,cx|this.edit_comment(index,window,cx))))
+                .child(div().flex().gap_2().child(self.button(("github-edit-inline",index),"Edit","",false, cx).disabled(self.pending||self.review.composing.is_some()).on_click(cx.listener(move|this,event,window,cx|{this.edit_comment(index,window,cx);this.hold_enter_click(event,window,cx);})))
                     .child(self.button(("github-remove-inline",index),"Remove","",false, cx).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);}})))))))))
             .child(self.render_comment_composer(cx)).into_any_element()
     }
@@ -7176,6 +7201,85 @@ mod tests {
                 });
                 line_draw(cx);
             }
+        }
+    }
+
+    /// Return on a focused Button that opens a comment, Comment on selection or Edit, opens
+    /// it once and types nothing into it while the key is held, through X11 repeats, a
+    /// release and its press, and repeats marked held (`REPEATS`); after the key-up a fresh
+    /// press in the comment types its line. The Button opened the comment as the key went
+    /// down, and each repeat typed a new line into the comment it gave focus to (decided
+    /// 2026-11-11: a Return that opens a composer never types into it).
+    #[gpui::test]
+    async fn a_return_on_a_comment_opener_types_nothing_into_its_comment(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        let (_fixture, _app, panel, cx) = review_line_panel(cx);
+        focus_line(&panel, Some(3), cx);
+        for (opener, id, opened) in [
+            (
+                "Comment on selection",
+                ElementId::from("github-inline-start"),
+                "",
+            ),
+            (
+                "Edit",
+                ElementId::from(("github-edit-inline", 0usize)),
+                "Looks right",
+            ),
+        ] {
+            if opener == "Edit" {
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel
+                            .review
+                            .input
+                            .update(cx, |input, cx| input.set_value(opened, window, cx));
+                        panel.add_comment(window, cx);
+                        panel.change_section(Section::Review, window, cx);
+                    })
+                });
+                line_draw(cx);
+                assert!(
+                    panel.read_with(cx, |panel, _| panel.review.composing.is_none()
+                        && panel.review.comments.len() == 1),
+                    "the comment is added to the review"
+                );
+            }
+            let button = panel
+                .read_with(cx, |panel, _| panel.review.buttons.kept(id))
+                .unwrap_or_else(|| panic!("{opener} is drawn"));
+            cx.update(|window, cx| button.focus(window, cx));
+            line_draw(cx);
+            enter(cx, Some(false));
+            line_draw(cx);
+            let (refusals, composing, text) = line_seen(&panel, cx);
+            assert!(
+                composing && text == opened && composer_focused(&panel, cx),
+                "{opener}: the press opens the comment, focus in its text"
+            );
+            for (repeat, events) in REPEATS {
+                for down in events {
+                    enter(cx, *down);
+                }
+                line_draw(cx);
+                assert_eq!(
+                    line_seen(&panel, cx),
+                    (refusals, true, opened.to_string()),
+                    "{opener}, {repeat}: nothing is typed"
+                );
+            }
+            enter(cx, None);
+            line_draw(cx);
+            enter(cx, Some(false));
+            line_draw(cx);
+            // Typed at the caret, which a comment opened by Edit puts at its start.
+            let text = line_seen(&panel, cx).2;
+            assert!(
+                text.matches('\n').count() == 1 && text.replace('\n', "") == opened,
+                "{opener}: a fresh press after the key-up types its line: {text:?}"
+            );
+            enter(cx, None);
+            line_draw(cx);
         }
     }
 
