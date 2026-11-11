@@ -613,6 +613,11 @@ pub(super) fn render_comparison<T: 'static>(
                 ),
             ] {
                 let side = Arc::clone(side);
+                let accessible = SharedString::from(format!("{label}: {name}"));
+                // Tests find each control by the name it gives assistive
+                // technology, to read which one a key focused: a selector
+                // built only in a test build, as `format_caption`'s.
+                let named = accessible.clone();
                 header = header.child(
                     button(
                         (
@@ -631,7 +636,8 @@ pub(super) fn render_comparison<T: 'static>(
                         },
                         false,
                     )
-                    .accessibility_label(format!("{label}: {name}"))
+                    .accessibility_label(accessible)
+                    .debug_selector(move || format!("rich-control: {named}"))
                     .tooltip(name)
                     .disabled(disabled)
                     .on_click(cx.listener(move |_, _, window, cx| {

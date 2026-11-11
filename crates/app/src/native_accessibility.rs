@@ -571,6 +571,10 @@ impl KeyboardMenu {
         let opened = row.anchor();
         let cap = opened.cap(room);
         let menu = PopupMenu::build(window, cx, |menu, window, cx| {
+            // Closed through `dismissed` as another tab shows, as it is by
+            // Escape. Its blur closed it as a switch or a close focused the
+            // tab shown, but a move leaves focus in it.
+            closes_as_its_tab_changes(window, cx);
             Self::finish(build(menu), focus.clone(), cap, window, cx)
         });
         announces_resting(&menu, window, cx);
@@ -1819,12 +1823,10 @@ impl RenderOnce for AppDropdown {
 /// A resized window, as a tiling compositor re-tiles it, closes it: its rows
 /// were capped for the side the size it opened in gave it, and a larger or
 /// smaller window could turn it to the other side, over what it opened
-/// from. A change in the repository tab shown closes it too
-/// ([`close_button_menus`]): another tab shown, by a switch, a close or a
-/// move, or the shown tab's mark landing. A menu belongs to the state that
-/// drew it (decided 2026-11-11): a choice made in one left open once acted
-/// on the tab shown after, a mode menu's changing that tab's mode to one it
-/// did not offer.
+/// from, or leave a row's menu beside a row that moved. A change in the
+/// repository tab shown closes it too ([`closes_as_its_tab_changes`]):
+/// another tab shown, or the shown tab's mark landing. A menu belongs to
+/// the state that drew it (decided 2026-11-11).
 fn closes_as_its_window_changes(window: &mut Window, cx: &mut Context<PopupMenu>) {
     let viewport = window.viewport_size();
     cx.observe_window_bounds(window, move |_, window, cx| {
@@ -1833,18 +1835,46 @@ fn closes_as_its_window_changes(window: &mut Window, cx: &mut Context<PopupMenu>
         }
     })
     .detach();
+    closes_as_its_tab_changes(window, cx);
+}
+
+/// Closes the menu `cx` builds, a button's, a right-click's or a keyboard's,
+/// as the repository tab its window shows changes or that tab closes, by a
+/// switch, a close, a move or a new tab opened ([`close_tab_menus`]): the
+/// menu was built from the tab that drew it, so a choice made in it once
+/// acted on the tab shown after, a mode menu's changing that tab's mode to
+/// one it did not offer, and a History row's right-click menu, open over
+/// the same commit in another clone's tab, acted on the first clone.
+fn closes_as_its_tab_changes(window: &mut Window, cx: &mut Context<PopupMenu>) {
     let shown = ShownTabs::of(window, cx);
     cx.observe_global_in::<ShownTabs>(window, move |_, window, cx| {
         if ShownTabs::of(window, cx) != shown {
+            #[cfg(test)]
+            TAB_DISMISSALS.with(|closed| closed.set(closed.get() + 1));
             cx.emit(gpui::DismissEvent);
         }
     })
     .detach();
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many menus a tab change has dismissed ([`tab_dismissals`]).
+    static TAB_DISMISSALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many open menus a change of the shown tab has dismissed so far on
+/// this thread ([`closes_as_its_tab_changes`]): a menu whose element the
+/// next frame no longer draws goes with it undismissed, as a mode menu does
+/// when Projects shows, so whether the change itself closed it is read here.
+#[cfg(test)]
+pub(crate) fn tab_dismissals() -> usize {
+    TAB_DISMISSALS.with(std::cell::Cell::get)
+}
+
 /// How many times each window has changed the repository tab it shows, or
 /// what that tab shows as its mark landed, beneath its open menus
-/// ([`close_button_menus`]).
+/// ([`close_tab_menus`]).
 #[derive(Default)]
 struct ShownTabs(std::collections::HashMap<gpui::WindowId, u64>);
 
@@ -1859,16 +1889,20 @@ impl ShownTabs {
     }
 }
 
-/// Closes every button's and right-click menu open in `window`, as the
-/// repository tab it shows, or what that tab shows as its mark lands,
-/// changes beneath them ([`closes_as_its_window_changes`]): one window-wide
-/// close whatever the cause. The menus close as the change's effects are
-/// flushed, after the change has put focus where it goes: a switch or a
-/// close gives it to the tab shown, and a mark to its way back
+/// Closes every menu open in `window`, a button's, a right-click's or a
+/// keyboard's, as the repository tab it shows, or what that tab shows as its
+/// mark lands, changes beneath them or that tab closes
+/// ([`closes_as_its_tab_changes`]): one window-wide close whatever the
+/// cause; a tab closed while another is shown calls nothing, and its menus
+/// stay. The menus close as the change's effects are flushed, after the
+/// change has put focus where it goes: a switch, a close or a new tab gives
+/// it to the tab or page shown, where the same change with no menu open puts
+/// it, a new tab's History list among them, and a mark to its way back
 /// (`GitTurtle::close_menus_for_the_mark`), so a closing menu gives none
 /// back; a move, which leaves it in the menu, has the menu give it back
-/// where it was as the menu opened.
-pub(crate) fn close_button_menus(window: &Window, cx: &mut App) {
+/// where it was as the menu opened, the pane, list or Button it was opened
+/// from.
+pub(crate) fn close_tab_menus(window: &Window, cx: &mut App) {
     let id = window.window_handle().window_id();
     *cx.default_global::<ShownTabs>().0.entry(id).or_default() += 1;
 }
@@ -1929,7 +1963,10 @@ impl<E: InteractiveElement + ParentElement + IntoElement + 'static> AppContextMe
 /// holds about four rows or the whole menu, its items capped at that room;
 /// otherwise wholly above the row, its edge clear of it, capped at the
 /// larger room. A resized window closes it, as it closes a button's menu,
-/// since the row it was placed beside may have moved. The open menu is kept
+/// since the row it was placed beside may have moved, and so does another
+/// repository tab shown ([`closes_as_its_tab_changes`]): kept by its row's
+/// ID, as a History commit's, it stayed open over the same commit's row in
+/// another clone's tab, built from the first. The open menu is kept
 /// by the row's element ID, so it stays with what that ID names: a row keyed
 /// by its path keeps its menu while rows come or go around it, the menu
 /// drawn beside the row where it now lies ([`Pressed`]), and the menu goes
@@ -2504,11 +2541,12 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                         }
                     })
                     .detach();
-                // However it closes, by Escape, an item, a press outside or a
-                // resize, focus the menu still holds returns where it was
-                // before it opened: a resize's dismissal, which skips the
-                // menu's own Cancel, left focus on the menu no frame draws,
-                // so the list's keys stopped reaching it. So does focus that
+                // However it closes, by Escape, an item, a press outside, a
+                // resize or a tab change, focus the menu still holds returns
+                // where it was before it opened: a resize's dismissal, which
+                // skips the menu's own Cancel, left focus on the menu no
+                // frame draws, so the list's keys stopped reaching it. So
+                // does focus that
                 // a press outside gave to what holds that place, the
                 // window's root, which a press on the status bar or a
                 // heading focuses: nothing showed focus there and the list's

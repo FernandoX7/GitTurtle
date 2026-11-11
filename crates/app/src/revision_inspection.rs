@@ -102,14 +102,17 @@ struct Inspection {
 }
 
 /// The inspection a press that opened the collapsed modes' menu found focus
-/// in the text pane of ([`GitTurtle::take_mode_menu_note`]): the file it
-/// inspects, so the menu's choice acts on that focus only where it lands on
-/// the same inspection ([`GitTurtle::mode_menu_note_holds`]). Another tab
-/// shown closes the menu (`native_accessibility::close_button_menus`), so a
-/// choice never lands in another tab: the tab's place in the strip, once
-/// noted here too, named another tab once the tab before it closed.
+/// in the text pane of ([`GitTurtle::take_mode_menu_note`]): its repository
+/// tab, by the tab's path, and the file it inspects, so the menu's choice
+/// acts on that focus only where it lands on the same inspection
+/// ([`GitTurtle::mode_menu_note_holds`]). Another tab shown closes the menu
+/// (`native_accessibility::close_tab_menus`), so a choice should never land
+/// in another tab; were one to, the same path in another repository, as its
+/// README.md, would not pass. The tab's place in the strip, once noted here,
+/// named another tab once the tab before it closed; its path does not move.
 #[derive(Clone, PartialEq)]
 pub(super) struct ModeMenuNote {
+    tab: Option<PathBuf>,
     file: PathBuf,
 }
 enum Target {
@@ -691,7 +694,11 @@ impl GitTurtle {
         let Target::File { entry, .. } = &self.revision_inspection.active.as_deref()?.target else {
             return None;
         };
+        let tab = (self.repository_tabs.active)
+            .and_then(|index| self.repository_tabs.tabs.get(index))
+            .map(|tab| tab.path.clone());
         Some(ModeMenuNote {
+            tab,
             file: entry.path.clone(),
         })
     }
@@ -3518,10 +3525,70 @@ mod tests {
                 );
                 reached.push(on);
             }
+            // Copy source draws no page control; Next diagram is one.
+            let named =
+                (presses == 2).then(|| format!("{}: {control}", crate::system_preview::ONE_SIDE));
+            assert_eq!(
+                ringed_page_control(cx),
+                named,
+                "{control}: the stop reached is that control, by its name"
+            );
             click_mode(cx, "Source");
             let text = quick_source_text(&app, cx).expect("Source shows the text");
             assert_pane_rings(cx, &text, &format!("Source from {control}"));
         }
+    }
+
+    /// The name assistive technology reads for the Diagrams view's page
+    /// control, Previous or Next diagram, that the last frame drew the
+    /// installed Button focus ring around, if any: the ring a focused kit
+    /// Button draws, the only place a test can see which one holds focus.
+    fn ringed_page_control(cx: &mut gpui::VisualTestContext) -> Option<String> {
+        let (ring, color, scale) = cx.update(|window, cx| {
+            let theme = gpui_kit::component::Theme::global(cx);
+            let ring = theme.button_focus_ring;
+            (ring, theme.ring.alpha(ring.opacity), window.scale_factor())
+        });
+        let rings: Vec<Bounds<Pixels>> = cx.update(|window, _| {
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    quad.background.is_transparent()
+                        && quad.border_color == color
+                        && quad.border_widths.top.as_f32() == ring.width.as_f32() * scale
+                })
+                .map(|quad| {
+                    let b = quad.bounds;
+                    Bounds::from_corners(
+                        gpui::point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                        gpui::point(
+                            px(b.right().as_f32() / scale),
+                            px(b.bottom().as_f32() / scale),
+                        ),
+                    )
+                })
+                .collect()
+        });
+        ["Previous diagram", "Next diagram"]
+            .into_iter()
+            .map(|name| format!("{}: {name}", crate::system_preview::ONE_SIDE))
+            .find(|name| {
+                cx.debug_bounds(format!("rich-control: {name}").leak())
+                    .is_some_and(|control| {
+                        let around = control.dilate(ring.gap + ring.width);
+                        rings.iter().any(|ring| {
+                            [
+                                (ring.left(), around.left()),
+                                (ring.top(), around.top()),
+                                (ring.right(), around.right()),
+                                (ring.bottom(), around.bottom()),
+                            ]
+                            .into_iter()
+                            .all(|(a, b)| (a - b).abs() < px(0.51))
+                        })
+                    })
+            })
     }
 
     /// What a mode chosen from the collapsed menu left: the mode, whether
@@ -4010,10 +4077,10 @@ mod tests {
         }
     }
 
-    /// Ctrl+W from the first tab's open "Comparison mode" menu closes the
-    /// menu with its tab: the second tab shows with its mode, focus on the
-    /// text it shows. The menu stayed open over the tab shown next, and a
-    /// choice made in it changed that tab's mode.
+    /// Ctrl+W, pressed in the first tab's open "Comparison mode" menu,
+    /// closes the menu with its tab: the second tab shows with its mode,
+    /// focus on the text it shows. The menu stayed open over the tab shown
+    /// next, and a choice made in it changed that tab's mode.
     #[gpui::test]
     async fn quick_source_mode_menu_closes_with_its_tab(cx: &mut gpui::TestAppContext) {
         use crate::views::tests::draw;
@@ -4022,10 +4089,12 @@ mod tests {
         // Read first, the text size restored before any assertion.
         let on_pane = cx.update(|window, _| source.is_focused(window));
         let opened = open_mode_menu(cx);
-        // The menu's own frames drawn, so what follows is the change's.
         draw(cx);
+        cx.simulate_keystrokes(&primary_key("w"));
+        // A key that follows the pointer draws the window before it acts,
+        // the first tab with its menu open: what is said after the close is
+        // what the frames after it write.
         crate::native_accessibility::written::forget();
-        cx.dispatch_action(CloseRepositoryTab);
         let seen = after_menu(&app, cx).await;
         let tabs = app.read_with(cx, |app, _| app.repository_tabs.tabs.len());
         let text = quick_source_text(&app, cx);
@@ -4046,10 +4115,11 @@ mod tests {
         }
     }
 
-    /// The palette's Move repository tab right, run while the first tab's
-    /// "Comparison mode" menu is open, closes the menu as the tab moves: the
-    /// tab keeps its mode, and focus goes back to the pane the menu was
-    /// opened from. The menu stayed open over the moved tab.
+    /// The palette's Move repository tab right, run from the palette its
+    /// shortcut opened while the first tab's "Comparison mode" menu held
+    /// focus, closes the menu as the tab moves: the tab keeps its mode, and
+    /// focus goes back to the pane the menu was opened from, which says its
+    /// name. The menu stayed open over the moved tab.
     #[gpui::test]
     async fn quick_source_mode_menu_closes_as_its_tab_moves(cx: &mut gpui::TestAppContext) {
         let (_fixture, app, cx) = mode_menu_over_two_tabs(cx).await;
@@ -4057,8 +4127,12 @@ mod tests {
         // Read first, the text size restored before any assertion.
         let on_pane = cx.update(|window, _| source.is_focused(window));
         let opened = open_mode_menu(cx);
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+        let menu_held = cx.update(|window, cx| {
+            window.focused(cx).is_some() && !source.contains_focused(window, cx)
+        });
+        cx.simulate_keystrokes(&primary_key("shift-p"));
         crate::views::tests::draw(cx);
+        let palette = cx.update(|window, cx| window.has_active_dialog(cx));
         cx.simulate_input("Move repository tab right");
         crate::views::tests::draw(cx);
         crate::native_accessibility::written::forget();
@@ -4073,8 +4147,12 @@ mod tests {
         let path = app.read_with(cx, |app, _| app.path.clone());
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
         assert!(on_pane, "the first tab's pane holds focus");
-        assert!(opened, "a click opens the menu");
-        let (drawn, active, mode, focus, _, label) = seen;
+        assert!(
+            opened && menu_held,
+            "a click opens the menu, which holds focus"
+        );
+        assert!(palette, "the palette's shortcut opens it over the menu");
+        let (drawn, active, mode, focus, named, label) = seen;
         assert!(!drawn, "the menu closes as its tab moves");
         assert!(
             active == Some(1) && first.is_some() && first != path,
@@ -4085,9 +4163,92 @@ mod tests {
             focus == Some(source),
             "focus goes back to the pane the menu was opened from"
         );
+        assert_eq!(
+            named.as_deref(),
+            Some("Rendered Markdown"),
+            "which says its name"
+        );
         if let Some(label) = label {
             assert_eq!(label.as_ref(), "Comparison mode: Rendered");
         }
+    }
+
+    /// `keys` with the platform's primary modifier, Command on a Mac and
+    /// Control elsewhere, as the app binds a `primary-` shortcut.
+    fn primary_key(keys: &str) -> String {
+        crate::shortcuts::resolve_key(&format!("primary-{keys}"), cfg!(target_os = "macos"))
+    }
+
+    /// A tab closed while the first tab's "Comparison mode" menu is open
+    /// before it, the second, not shown, leaves the menu open and holding
+    /// focus over the tab it was built from, which a choice from it still
+    /// acts on: Diagrams chosen then shows that tab's diagrams. Every close
+    /// once closed the shown tab's menus too.
+    #[gpui::test]
+    async fn quick_source_mode_menu_stays_open_as_a_tab_behind_closes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx) = mode_menu_over_two_tabs(cx).await;
+        let opened = open_mode_menu(cx);
+        let held = cx.update(|window, cx| window.focused(cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.close_repository_tab(1, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        let drawn = mode_menu_drawn(cx);
+        let still = cx.update(|window, cx| window.focused(cx));
+        let tabs = app.read_with(cx, |app, _| {
+            (app.repository_tabs.tabs.len(), app.repository_tabs.active)
+        });
+        let seen = after_menu(&app, cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(opened, "a click opens the menu");
+        assert_eq!(tabs, (1, Some(0)), "the tab behind closes, the first shown");
+        assert!(drawn, "the menu stays open");
+        assert!(held.is_some() && still == held, "and holds focus");
+        let (_, _, mode, _, _, _) = seen;
+        assert!(
+            mode == TextMode::Diagrams,
+            "a choice from it acts on its tab"
+        );
+    }
+
+    /// Ctrl+W, pressed in the "Comparison mode" menu of the only tab,
+    /// closes the menu with the tab: the close itself dismisses it, Projects
+    /// shows, no menu drawn, and its selected action tab takes focus, as
+    /// closing the last tab gives it. Projects draws no repository page, so
+    /// the menu would go with its Button's frame even were the close not to
+    /// dismiss it: the test reads the dismissal itself.
+    #[gpui::test]
+    async fn quick_source_mode_menu_closes_with_the_last_tab(cx: &mut gpui::TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx) = rendered_landing(cx, 1).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let opened = open_mode_menu(cx);
+        draw(cx);
+        let dismissed = crate::native_accessibility::tab_dismissals();
+        cx.simulate_keystrokes(&primary_key("w"));
+        settle(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        let closed = crate::native_accessibility::tab_dismissals() > dismissed;
+        let drawn = mode_menu_drawn(cx);
+        let page = app.read_with(cx, |app, _| {
+            (
+                app.repository_tabs.tabs.len(),
+                app.page == AppPage::Projects,
+            )
+        });
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        let focused = cx.update(|window, cx| hub.read(cx).selected_mode_focused(window));
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(opened, "a click opens the menu");
+        assert_eq!(page, (0, true), "the tab closes, and Projects shows");
+        assert!(closed, "the close dismisses the menu");
+        assert!(!drawn, "which is drawn no more");
+        assert!(focused, "Projects' selected action tab takes focus");
     }
 
     /// Text that landed while Settings showed, its tab then left from

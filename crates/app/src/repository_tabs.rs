@@ -1824,6 +1824,10 @@ impl GitTurtle {
         if !self.retain_active_tab(window, cx) {
             return true;
         }
+        // A new tab shows in its place, as a switch shows another: the menus
+        // open over the tab left were built from it (an Open… panel that
+        // does not block the window leaves them open while it asks).
+        crate::native_accessibility::close_tab_menus(window, cx);
         self.repository_tabs.refusal = None;
         let index = self.repository_tabs.tabs.len();
         // The folder the person chose: its open may land on the work tree
@@ -1954,8 +1958,8 @@ impl GitTurtle {
     /// Closes every menu open on the shown tab as its mark lands
     /// ([`Self::tab_opening_failed`]), as a resize closes them: the
     /// navigation's, the commit list's and the file list's row menus and
-    /// every button's and right-click menu
-    /// (`native_accessibility::close_button_menus`). A menu belongs to the
+    /// every button's and right-click menu, through the close a tab change
+    /// uses (`native_accessibility::close_tab_menus`). A menu belongs to the
     /// state that drew it (decided 2026-11-11): a branch's menu open as the
     /// mark landed was hidden, never closed, so focus stayed on a menu no
     /// frame drew, Escape doing nothing, and the menu came back, still
@@ -1985,7 +1989,7 @@ impl GitTurtle {
         ];
         let closed = rows.iter().any(Option::is_some);
         drop(rows);
-        crate::native_accessibility::close_button_menus(window, cx);
+        crate::native_accessibility::close_tab_menus(window, cx);
         if held || (closed && window.focused(cx).is_none()) {
             window.focus(&self.mark_way_back, cx);
         }
@@ -2252,7 +2256,7 @@ impl GitTurtle {
         }
         // A menu open over the tab left was built from it: a choice made in
         // it once acted on the tab shown now.
-        crate::native_accessibility::close_button_menus(window, cx);
+        crate::native_accessibility::close_tab_menus(window, cx);
         self.repository_tabs.refusal = None;
         self.repository_tabs.active = Some(index);
         let path = self.repository_tabs.tabs[index].path.clone();
@@ -2309,7 +2313,7 @@ impl GitTurtle {
         if next != index {
             // A move closes them as a switch does, their tab now at another
             // place in the strip; focus stays in the tab shown.
-            crate::native_accessibility::close_button_menus(window, cx);
+            crate::native_accessibility::close_tab_menus(window, cx);
         }
         self.repository_tabs.reorder(index, next);
         self.save_repository_session(window, cx);
@@ -2339,15 +2343,19 @@ impl GitTurtle {
             return;
         }
         self.repository_tabs.refusal = None;
-        // As a switch closes them, closing the tab shown or another.
-        crate::native_accessibility::close_button_menus(window, cx);
+        let active = self.repository_tabs.active == Some(index);
+        if active {
+            // Its menus go with it, as a switch closes them, the last tab's
+            // too, as Projects shows. A tab closed behind the one shown
+            // leaves the shown tab's menus open: they act on it still.
+            crate::native_accessibility::close_tab_menus(window, cx);
+        }
         // Its cause gone with the closed tab, the page's refusal goes too,
         // as the strip's just did.
         self.hub.update(cx, |hub, cx| {
             hub.clear_error_matching(TAB_LIMIT_REFUSAL, cx);
             hub.clear_error_matching(RETAINED_ALLOWANCE_REFUSAL, cx);
         });
-        let active = self.repository_tabs.active == Some(index);
         if active {
             // The closed tab's read is dropped, and what it was preparing:
             // as a tab switch drops it when another tab is shown, and as
@@ -7440,6 +7448,476 @@ pub(crate) mod tests {
             })
         });
         settle_tab_test(app, cx).await;
+    }
+
+    /// History's single commit and a clone of its repository at `twin`,
+    /// which lists the same commit, so each History row has the same ID in
+    /// either tab, as two clones of one project's have.
+    fn clone_of_history(fixture: &tempfile::TempDir, twin: &str) -> PathBuf {
+        crate::tags::tests::git(fixture.path(), &["clone", "--quiet", "narrow", twin]);
+        fixture.path().join(twin)
+    }
+
+    /// Whether the History commit's right-click menu is drawn, by its
+    /// Cherry-pick item, offered or refused.
+    fn commit_menu_drawn(cx: &mut VisualTestContext) -> bool {
+        ["MenuItem", "MenuItem disabled"].iter().any(|role| {
+            cx.debug_bounds(format!("menu-item: Cherry-pick this commit… · {role}").leak())
+                .is_some()
+        })
+    }
+
+    /// Opens the right-click menu of History's first row, focused, and
+    /// draws it; returns whether it is drawn.
+    fn right_click_first_commit(cx: &mut VisualTestContext) -> bool {
+        let row = cx
+            .debug_bounds("history-row-0")
+            .expect("History's first row");
+        let pointer = point(row.left() + px(16.), row.center().y);
+        cx.simulate_mouse_move(pointer, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(
+            pointer,
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            pointer,
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        cx.executor().run_until_parked();
+        crate::views::tests::draw(cx);
+        crate::views::tests::draw(cx);
+        commit_menu_drawn(cx)
+    }
+
+    /// Whether an open right-click menu holds focus, so a key pressed now
+    /// is pressed from inside it rather than from the list beneath it.
+    fn right_click_menu_holds_focus(cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| crate::native_accessibility::pointer_menu_return(window, cx))
+            .is_some()
+    }
+
+    /// What the window shows once the shown tab changed: whether the
+    /// commit's menu is drawn, whether a right-click menu holds focus, the
+    /// shown tab and what holds focus.
+    async fn after_tab_change(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> (bool, bool, Option<usize>, Option<FocusHandle>) {
+        settle_tab_test(app, cx).await;
+        crate::views::tests::draw(cx);
+        crate::views::tests::draw(cx);
+        (
+            commit_menu_drawn(cx),
+            cx.update(|window, cx| crate::native_accessibility::pointer_menu_return(window, cx))
+                .is_some(),
+            app.read_with(cx, |app, _| app.repository_tabs.active),
+            cx.update(|window, cx| window.focused(cx)),
+        )
+    }
+
+    /// Binds the app's keys as its launch does, the menus' own before the
+    /// shortcuts, so a keystroke reaches what it reaches in the app: a test
+    /// window binds none, and a shortcut pressed in it matches nothing.
+    fn bind_app_keys(cx: &mut VisualTestContext) {
+        cx.update(|_, cx| {
+            crate::native_accessibility::bind_keys(cx);
+            crate::shortcuts::bind_keys(cx);
+        });
+    }
+
+    /// History in the first of two tabs, the second a clone of its
+    /// repository listing the same commit, with the app's keys bound and the
+    /// first commit selected by a click, which focuses the list.
+    async fn clones_in_two_tabs(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        bind_app_keys(cx);
+        let twin = clone_of_history(&fixture, "twin");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(twin, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        crate::views::tests::draw(cx);
+        let row = cx
+            .debug_bounds("history-row-0")
+            .expect("History's first row");
+        cx.simulate_click(row.center(), gpui::Modifiers::default());
+        crate::views::tests::draw(cx);
+        (fixture, app, cx)
+    }
+
+    /// The live regions the frames drawn since [`written::forget`] announce,
+    /// by element ID: what assistive technology says of its own as the
+    /// shown tab changes, beside the name of what takes focus.
+    ///
+    /// [`written::forget`]: crate::native_accessibility::written::forget
+    fn announced_since_forget() -> Vec<String> {
+        crate::native_accessibility::written::announced_from("")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// The name assistive technology reads for what holds focus, History's
+    /// list or the navigator, as the last frame drawn wrote it; `None` where
+    /// neither holds it.
+    fn focused_name(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<String> {
+        let (list, navigator) =
+            app.read_with(cx, |app, _| (app.focus.clone(), app.nav_focus.clone()));
+        let id = cx.update(|window, _| {
+            if list.is_focused(window) {
+                Some("history-pane")
+            } else if navigator.is_focused(window) {
+                Some("repository-navigation")
+            } else {
+                None
+            }
+        })?;
+        let written = crate::native_accessibility::written::get(id)?;
+        written.node.label().map(str::to_owned)
+    }
+
+    /// A new tab opened while a History commit's right-click menu is open,
+    /// as Open…'s folder panel, which does not block the window, lets a
+    /// person choose one, closes the menu as the tab changes: the new tab, a
+    /// clone listing the same commit, draws no menu built from the tab left
+    /// and takes focus where a new tab opened from the navigator with no
+    /// menu open puts it, on its History list, which says its name, and
+    /// nothing is announced. The row is right-clicked while the navigator
+    /// holds focus, so the closed menu, which gives focus back where it was
+    /// as it opened, would put it on the navigator: the list holds it
+    /// because the new tab gave it there. The menu stayed open over the new
+    /// tab's row; then, gone only with the frame that took its row away, it
+    /// was not closed by the change.
+    #[gpui::test]
+    async fn a_commit_s_right_click_menu_closes_as_a_new_tab_opens(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let (first, second) = (
+            clone_of_history(&fixture, "first"),
+            clone_of_history(&fixture, "second"),
+        );
+        let row = cx
+            .debug_bounds("history-row-0")
+            .expect("History's first row");
+        cx.simulate_click(row.center(), gpui::Modifiers::default());
+        crate::views::tests::draw(cx);
+        let (list, navigator) =
+            app.read_with(cx, |app, _| (app.focus.clone(), app.nav_focus.clone()));
+        cx.update(|window, cx| navigator.focus(window, cx));
+        crate::views::tests::draw(cx);
+        // Where a new tab opened from the navigator with no menu open puts
+        // focus.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_repository_tab(first, window, cx))
+        });
+        let (_, _, _, unmenued) = after_tab_change(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| navigator.focus(window, cx));
+        crate::views::tests::draw(cx);
+        let on_navigator = cx.update(|window, _| navigator.is_focused(window));
+        let opened = right_click_first_commit(cx);
+        let gives_back =
+            cx.update(|window, cx| crate::native_accessibility::pointer_menu_return(window, cx));
+        let dismissed = crate::native_accessibility::tab_dismissals();
+        crate::native_accessibility::written::forget();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_repository_tab(second, window, cx))
+        });
+        let (drawn, held, active, focus) = after_tab_change(&app, cx).await;
+        let named = focused_name(&app, cx);
+        let said = announced_since_forget();
+        assert!(on_navigator, "the navigator holds focus");
+        assert!(opened, "a right-click opens the commit's menu");
+        assert!(
+            gives_back == Some(Some(navigator.clone())),
+            "which holds focus, to give it back to the navigator as it closes"
+        );
+        assert_eq!(active, Some(2), "the new tab shows");
+        assert!(!drawn, "the menu closes as the new tab shows");
+        assert!(
+            crate::native_accessibility::tab_dismissals() > dismissed,
+            "closed by the tab change itself"
+        );
+        assert!(!held, "and holds no focus");
+        assert!(
+            focus.is_some() && focus == unmenued && focus == Some(list),
+            "the new tab takes focus where it does with no menu open, on its list"
+        );
+        assert!(
+            focus != Some(navigator),
+            "the closed menu gives none back to the navigator it was opened from"
+        );
+        assert_eq!(
+            named.as_deref(),
+            Some("Commit history"),
+            "which says its name"
+        );
+        assert_eq!(said, Vec::<String>::new(), "nothing is announced");
+    }
+
+    /// Whether the branch picker's menu is drawn, by its Manage another
+    /// branch… item, offered or refused.
+    fn picker_menu_drawn(cx: &mut VisualTestContext) -> bool {
+        ["MenuItem", "MenuItem disabled"].iter().any(|role| {
+            cx.debug_bounds(format!("menu-item: Manage another branch… · {role}").leak())
+                .is_some()
+        })
+    }
+
+    /// The branch picker's menu belongs to the tab that drew it: left open
+    /// as a new tab opens, as Open…'s folder panel, which does not block the
+    /// window, lets a person choose one, it closes as the new tab shows,
+    /// which takes focus where a new tab opened from the navigator with no
+    /// menu open puts it, on its History list: the closed menu gives none
+    /// back to the navigator that held focus as it opened, and nothing is
+    /// announced. Built from the tab left, the menu stayed open over the new
+    /// tab's picker, the same Button in its header, where its choices did
+    /// nothing, as they act only on the repository they were built for.
+    #[gpui::test]
+    async fn the_branch_picker_s_menu_closes_as_a_new_tab_opens(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let (first, second) = (
+            clone_of_history(&fixture, "first"),
+            clone_of_history(&fixture, "second"),
+        );
+        let (list, navigator) =
+            app.read_with(cx, |app, _| (app.focus.clone(), app.nav_focus.clone()));
+        cx.update(|window, cx| navigator.focus(window, cx));
+        crate::views::tests::draw(cx);
+        // Where a new tab opened from the navigator with no menu open puts
+        // focus.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_repository_tab(first, window, cx))
+        });
+        let (_, _, _, unmenued) = after_tab_change(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| navigator.focus(window, cx));
+        crate::views::tests::draw(cx);
+        let on_navigator = cx.update(|window, _| navigator.is_focused(window));
+        let picker = cx
+            .debug_bounds("current-branch")
+            .expect("the branch picker");
+        cx.simulate_click(picker.center(), gpui::Modifiers::default());
+        crate::views::tests::draw(cx);
+        crate::views::tests::draw(cx);
+        let opened = picker_menu_drawn(cx);
+        let dismissed = crate::native_accessibility::tab_dismissals();
+        crate::native_accessibility::written::forget();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_repository_tab(second, window, cx))
+        });
+        let (_, _, active, focus) = after_tab_change(&app, cx).await;
+        let drawn = picker_menu_drawn(cx);
+        let said = announced_since_forget();
+        assert!(on_navigator, "the navigator holds focus");
+        assert!(opened, "a click opens the picker's menu");
+        assert_eq!(active, Some(2), "the new tab shows");
+        assert!(!drawn, "the menu closes as the new tab shows");
+        assert!(
+            crate::native_accessibility::tab_dismissals() > dismissed,
+            "closed by the tab change itself"
+        );
+        assert!(
+            focus.is_some() && focus == unmenued && focus == Some(list),
+            "the new tab takes focus where it does with no menu open, on its list"
+        );
+        assert_eq!(said, Vec::<String>::new(), "nothing is announced");
+    }
+
+    /// Opens History's commit menu from the keyboard, Shift+F10 on the
+    /// list's selected row, and draws it; returns whether it is open, drawn
+    /// and holding focus.
+    fn open_commit_menu_by_key(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> bool {
+        cx.simulate_keystrokes("shift-f10");
+        crate::views::tests::draw(cx);
+        crate::views::tests::draw(cx);
+        let list = app.read_with(cx, |app, _| app.focus.clone());
+        let held = cx.update(|window, cx| window.focused(cx).is_some() && !list.is_focused(window));
+        app.read_with(cx, |app, _| app.commit_menu.is_some()) && held && commit_menu_drawn(cx)
+    }
+
+    /// History's commit menu opened by Shift+F10 belongs to the tab that
+    /// drew it: the palette's Move repository tab right, run from the
+    /// palette its shortcut opened while the menu held focus, closes it as
+    /// the tab moves, and focus goes back to the list it was opened from,
+    /// which a move leaves shown, with nothing announced. Its blur closed it
+    /// on a switch or a close, which focus the tab shown, but a move left it
+    /// open over the moved tab, holding focus.
+    #[gpui::test]
+    async fn a_commit_s_keyboard_menu_closes_as_its_tab_moves(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = clones_in_two_tabs(cx).await;
+        let list = app.read_with(cx, |app, _| app.focus.clone());
+        let opened = open_commit_menu_by_key(&app, cx);
+        let palette = crate::shortcuts::resolve_key("primary-shift-p", cfg!(target_os = "macos"));
+        cx.simulate_keystrokes(&palette);
+        crate::views::tests::draw(cx);
+        let asked = cx.update(|window, cx| window.has_active_dialog(cx));
+        cx.simulate_input("Move repository tab right");
+        crate::views::tests::draw(cx);
+        crate::native_accessibility::written::forget();
+        cx.simulate_keystrokes("enter");
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        let (drawn, _, active, focus) = after_tab_change(&app, cx).await;
+        let open = app.read_with(cx, |app, _| app.commit_menu.is_some());
+        let moved = app.read_with(cx, |app, _| {
+            app.repository_tabs
+                .tabs
+                .first()
+                .map(|tab| tab.path.ends_with("twin"))
+        });
+        let said = announced_since_forget();
+        assert!(
+            opened,
+            "Shift+F10 opens the commit's menu, which holds focus"
+        );
+        assert!(asked, "the palette's shortcut opens it over the menu");
+        assert!(
+            active == Some(1) && moved == Some(true),
+            "the tab moves right, and stays shown"
+        );
+        assert!(!open && !drawn, "the menu closes as its tab moves");
+        assert!(
+            focus == Some(list),
+            "focus goes back to the list it was opened from"
+        );
+        assert_eq!(said, Vec::<String>::new(), "nothing is announced");
+    }
+
+    /// History's commit menu opened by Shift+F10 closes as another tab
+    /// shows, Ctrl+Tab pressed while the menu holds focus, by the app's
+    /// bound keys: the other clone's tab shows, focus where Ctrl+Tab from
+    /// the list with no menu open puts it, on that tab's list, nothing of
+    /// the menu drawn, and nothing announced. The tab change itself
+    /// dismisses it, as it dismisses every menu, beside its blur as the tab
+    /// shown takes focus and its row, which no longer holds its commit once
+    /// another repository shows, neither of which a move brings.
+    #[gpui::test]
+    async fn a_commit_s_keyboard_menu_closes_as_another_tab_shows(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = clones_in_two_tabs(cx).await;
+        // Where Ctrl+Tab from the list with no menu open puts focus.
+        cx.simulate_keystrokes("ctrl-tab");
+        let (_, _, _, unmenued) = after_tab_change(&app, cx).await;
+        cx.simulate_keystrokes("ctrl-tab");
+        settle_tab_test(&app, cx).await;
+        crate::views::tests::draw(cx);
+        let opened = open_commit_menu_by_key(&app, cx);
+        let dismissed = crate::native_accessibility::tab_dismissals();
+        crate::native_accessibility::written::forget();
+        cx.simulate_keystrokes("ctrl-tab");
+        let (drawn, _, active, focus) = after_tab_change(&app, cx).await;
+        let open = app.read_with(cx, |app, _| app.commit_menu.is_some());
+        let said = announced_since_forget();
+        assert!(
+            opened,
+            "Shift+F10 opens the commit's menu, which holds focus"
+        );
+        assert_eq!(active, Some(1), "Ctrl+Tab shows the second tab");
+        assert!(!open && !drawn, "the menu closes as that tab shows");
+        assert!(
+            crate::native_accessibility::tab_dismissals() > dismissed,
+            "closed by the tab change itself"
+        );
+        assert!(
+            focus.is_some() && focus == unmenued,
+            "focus is where a switch with no menu open puts it"
+        );
+        assert_eq!(said, Vec::<String>::new(), "nothing is announced");
+    }
+
+    /// A History commit's right-click menu belongs to the tab that drew it,
+    /// and the tab shortcuts act from inside it as they do from the list:
+    /// Ctrl+Tab, and Ctrl+Shift+Tab, pressed while the menu holds focus,
+    /// show the other clone's tab, which lists the same commit, and close
+    /// the menu, focus where the same key with no menu open puts it, on that
+    /// tab's list, nothing of the first tab's menu drawn or holding focus,
+    /// and nothing announced. Kept by its row's ID, the menu stayed open
+    /// over the second tab's row, built from the first tab, and took focus
+    /// back from the tab shown.
+    #[gpui::test]
+    async fn a_commit_s_right_click_menu_closes_as_ctrl_tab_shows_another_tab(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = clones_in_two_tabs(cx).await;
+        for key in ["ctrl-tab", "ctrl-shift-tab"] {
+            // Where the key from the list with no menu open puts focus.
+            cx.simulate_keystrokes(key);
+            let (_, _, _, unmenued) = after_tab_change(&app, cx).await;
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            crate::views::tests::draw(cx);
+            let opened = right_click_first_commit(cx);
+            let menu_held = right_click_menu_holds_focus(cx);
+            crate::native_accessibility::written::forget();
+            cx.simulate_keystrokes(key);
+            let (drawn, held, active, focus) = after_tab_change(&app, cx).await;
+            let said = announced_since_forget();
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            crate::views::tests::draw(cx);
+            assert!(
+                opened && menu_held,
+                "{key}: a right-click opens the commit's menu, which holds focus as the key is \
+                 pressed"
+            );
+            assert_eq!(active, Some(1), "{key} shows the second tab");
+            assert!(!drawn, "{key}: the menu closes as the second tab shows");
+            assert!(!held, "{key}: and holds no focus");
+            assert!(
+                focus.is_some() && focus == unmenued,
+                "{key}: focus is where the key with no menu open puts it"
+            );
+            assert_eq!(said, Vec::<String>::new(), "{key}: nothing is announced");
+        }
+    }
+
+    /// Ctrl+W, pressed with a History commit's right-click menu open and
+    /// holding focus, closes the menu with its tab, as from the list: the
+    /// other clone's tab shows, its first row the same commit, focus where a
+    /// switch to it puts it, on its list, nothing of the menu drawn, and
+    /// nothing announced. The menu stayed open over that row.
+    #[gpui::test]
+    async fn a_commit_s_right_click_menu_closes_with_its_tab(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = clones_in_two_tabs(cx).await;
+        // Where a switch from the list with no menu open puts focus.
+        cx.simulate_keystrokes("ctrl-tab");
+        let (_, _, _, unmenued) = after_tab_change(&app, cx).await;
+        cx.simulate_keystrokes("ctrl-tab");
+        settle_tab_test(&app, cx).await;
+        crate::views::tests::draw(cx);
+        let opened = right_click_first_commit(cx);
+        let menu_held = right_click_menu_holds_focus(cx);
+        let close = crate::shortcuts::resolve_key("primary-w", cfg!(target_os = "macos"));
+        crate::native_accessibility::written::forget();
+        cx.simulate_keystrokes(&close);
+        let (drawn, held, active, focus) = after_tab_change(&app, cx).await;
+        let tabs = app.read_with(cx, |app, _| app.repository_tabs.tabs.len());
+        let said = announced_since_forget();
+        assert!(
+            opened && menu_held,
+            "a right-click opens the commit's menu, which holds focus as the key is pressed"
+        );
+        assert!(
+            tabs == 1 && active == Some(0),
+            "Ctrl+W closes the first tab"
+        );
+        assert!(!drawn, "the menu closes with its tab");
+        assert!(!held, "and holds no focus");
+        assert!(
+            focus.is_some() && focus == unmenued,
+            "focus is where a switch to the tab shown puts it"
+        );
+        assert_eq!(said, Vec::<String>::new(), "nothing is announced");
     }
 
     /// An explicit Open of a marked tab's folder from another tab reads it
