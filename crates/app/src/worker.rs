@@ -1264,16 +1264,22 @@ pub struct GitDirectories {
 /// The inodes of a tab's [`GitDirectories`], each with its birth time where
 /// the filesystem records one ([`GitRepository::git_dir_birth`]), which
 /// tells a directory from one created after it was deleted that took its
-/// inode number. `None` where a session saved none, as every older session
-/// (one saved before birth times were kept has its inodes alone), and where
-/// the platform or filesystem has none: there is then nothing to compare,
-/// or the inode alone.
+/// inode number, and with its device, which tells the same inode number on
+/// another filesystem ([`GitRepository::git_dir_device`]). `None` where a
+/// session saved none, as every older session (one saved before birth
+/// times were kept has its inodes alone), and where the platform or
+/// filesystem has none: there is then nothing to compare, or the inode
+/// alone. A session never saves a device, which can change across boots and
+/// rollbacks (decided 2026-11-08), so only a comparison within the run has
+/// one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DirectoryInodes {
     pub git_dir: Option<u64>,
     pub common: Option<u64>,
     pub git_dir_birth: Option<Duration>,
     pub common_birth: Option<Duration>,
+    pub git_dir_device: Option<u64>,
+    pub common_device: Option<u64>,
 }
 
 impl GitDirectories {
@@ -1286,34 +1292,56 @@ impl GitDirectories {
                 common: repository.common_dir_inode(),
                 git_dir_birth: repository.git_dir_birth(),
                 common_birth: repository.common_dir_birth(),
+                git_dir_device: repository.git_dir_device(),
+                common_device: repository.common_dir_device(),
             },
             restored: false,
         }
     }
 
     /// The directory of `repository` that differs from these, by its path
-    /// or, for a restored tab, by the inode it saved or, where both the
-    /// session and the filesystem have one, the birth time, the Git
-    /// directory before the common one; `None` where both match. Reads what
-    /// the repository's open captured, so it touches no filesystem.
+    /// or, for a restored tab, by the inode it saved or, where both these
+    /// and the open have one, the birth time or the device (which a
+    /// session never saves), the Git directory before the common one;
+    /// `None` where both match. Reads what the repository's open captured,
+    /// so it touches no filesystem.
     fn mismatch(&self, repository: &GitRepository) -> Option<PathBuf> {
         let differs = |saved: Option<u64>, found: Option<u64>| {
             self.restored && saved.is_some_and(|saved| found != Some(saved))
         };
-        let born_apart = |saved: Option<Duration>, found: Option<Duration>| {
-            self.restored
+        fn apart<T: PartialEq>(restored: bool, saved: Option<T>, found: Option<T>) -> bool {
+            restored
                 && saved
                     .zip(found)
                     .is_some_and(|(saved, found)| saved != found)
-        };
+        }
+        let restored = self.restored;
         if repository.git_dir() != self.git_dir
             || differs(self.inodes.git_dir, repository.git_dir_inode())
-            || born_apart(self.inodes.git_dir_birth, repository.git_dir_birth())
+            || apart(
+                restored,
+                self.inodes.git_dir_birth,
+                repository.git_dir_birth(),
+            )
+            || apart(
+                restored,
+                self.inodes.git_dir_device,
+                repository.git_dir_device(),
+            )
         {
             Some(repository.git_dir().to_owned())
         } else if repository.common_dir() != self.common
             || differs(self.inodes.common, repository.common_dir_inode())
-            || born_apart(self.inodes.common_birth, repository.common_dir_birth())
+            || apart(
+                restored,
+                self.inodes.common_birth,
+                repository.common_dir_birth(),
+            )
+            || apart(
+                restored,
+                self.inodes.common_device,
+                repository.common_dir_device(),
+            )
         {
             Some(repository.common_dir().to_owned())
         } else {
@@ -7667,7 +7695,8 @@ mod image_tests {
     /// Each saved inode is compared on its own, the Git directory's before
     /// the common directory's, and the retained repository answers only
     /// where they match: named with a different one, the reopen asks Git
-    /// and fails as gone, naming that directory.
+    /// and fails as gone, naming that directory. So does a device that
+    /// differs, which only a comparison within the run has.
     #[cfg(unix)]
     #[test]
     fn a_restored_tab_compares_each_directory_s_inode() {
@@ -7693,7 +7722,21 @@ mod image_tests {
             restored: true,
             ..captured.clone()
         };
-        for (named, found) in [(&git_dir, &captured.git_dir), (&common, &captured.common)] {
+        // A device only a comparison within the run has, never a session:
+        // the same inode number on another filesystem.
+        let device = GitDirectories {
+            inodes: DirectoryInodes {
+                git_dir_device: inode(captured.inodes.git_dir_device),
+                ..captured.inodes
+            },
+            restored: true,
+            ..captured.clone()
+        };
+        for (named, found) in [
+            (&git_dir, &captured.git_dir),
+            (&common, &captured.common),
+            (&device, &captured.git_dir),
+        ] {
             let gone = session
                 .open(&root, Some(&root), Some(named))
                 .unwrap_err()

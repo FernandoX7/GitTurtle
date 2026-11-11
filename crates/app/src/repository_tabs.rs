@@ -668,6 +668,9 @@ impl State {
                                 common: directories.common_inode,
                                 git_dir_birth: directories.git_dir_birth,
                                 common_birth: directories.common_birth,
+                                // Never saved (decided 2026-11-08).
+                                git_dir_device: None,
+                                common_device: None,
                             },
                             restored: true,
                         }),
@@ -1647,27 +1650,31 @@ impl GitTurtle {
 /// linked back. Either way, where both opens read a directory's birth time
 /// (`GitRepository::git_dir_birth`), it must match too: ext4 and XFS can
 /// give a directory created after a delete the inode number of the one
-/// deleted. Where either read none, the inode alone tells, so a birth time
-/// unknown on both sides never makes two directories the same where an
-/// inode is unknown too. A found open in the running session holds the
-/// directory's birth time as it is now: the worker drops its retained
-/// repository once the birth time changes (`worker::RepositoryIdentity`).
+/// deleted, and so must the device where both read one, which tells the
+/// same inode number on another filesystem, btrfs subvolume or snapshot, as
+/// a folder above re-pointed there can find. Where either read none, the
+/// inode alone tells, so a birth time or device unknown on both sides never
+/// makes two directories the same where an inode is unknown too. A found
+/// open in the running session holds the directory's birth time as it is
+/// now: the worker drops its retained repository once the birth time
+/// changes (`worker::RepositoryIdentity`).
 /// Reads what the opens captured, so it touches no filesystem.
 fn same_git_directories(shown: &worker::GitDirectories, found: &worker::GitDirectories) -> bool {
+    fn same<T: PartialEq>(shown: Option<T>, found: Option<T>) -> bool {
+        shown.zip(found).is_none_or(|(a, b)| a == b)
+    }
     let (shown_inodes, found_inodes) = (shown.inodes, found.inodes);
-    let born_together =
-        |shown: Option<std::time::Duration>, found| shown.zip(found).is_none_or(|(a, b)| a == b);
-    let births = born_together(shown_inodes.git_dir_birth, found_inodes.git_dir_birth)
-        && born_together(shown_inodes.common_birth, found_inodes.common_birth);
+    let alike = same(shown_inodes.git_dir_birth, found_inodes.git_dir_birth)
+        && same(shown_inodes.common_birth, found_inodes.common_birth)
+        && same(shown_inodes.git_dir_device, found_inodes.git_dir_device)
+        && same(shown_inodes.common_device, found_inodes.common_device);
     if shown.git_dir == found.git_dir && shown.common == found.common {
-        let same =
-            |shown: Option<u64>, found: Option<u64>| shown.zip(found).is_none_or(|(a, b)| a == b);
-        births
+        alike
             && same(shown_inodes.git_dir, found_inodes.git_dir)
             && same(shown_inodes.common, found_inodes.common)
     } else {
         let known = |shown: Option<u64>, found: Option<u64>| shown.is_some() && shown == found;
-        births
+        alike
             && known(shown_inodes.git_dir, found_inodes.git_dir)
             && known(shown_inodes.common, found_inodes.common)
     }
@@ -5996,11 +6003,12 @@ pub(crate) mod tests {
 
     /// Each Git directory's identity, as the window compares a capture
     /// with the repository its status was read from: its inode and, where
-    /// both opens read one, its birth time, so an inode number taken again
-    /// after a delete is another repository and a filesystem that records
-    /// no birth time compares the inode alone. At other paths only these
-    /// tell, so both opens must have read the inodes: equal birth times
-    /// without them are not the same repository.
+    /// both opens read one, its birth time and its device, so an inode
+    /// number taken again after a delete, or the same number on another
+    /// filesystem, is another repository, and a filesystem that records no
+    /// birth time compares the inode alone. At other paths only these tell,
+    /// so both opens must have read the inodes: equal birth times without
+    /// them are not the same repository.
     #[test]
     fn a_git_directory_s_identity_is_its_inode_and_birth_time() {
         let directories = |at: &str, inode: Option<u64>, birth: Option<u64>| {
@@ -6013,9 +6021,17 @@ pub(crate) mod tests {
                     common: inode,
                     git_dir_birth: birth,
                     common_birth: birth,
+                    git_dir_device: Some(1),
+                    common_device: Some(1),
                 },
                 restored: false,
             }
+        };
+        let on_device = |at: &str, device: Option<u64>| {
+            let mut directories = directories(at, Some(7), Some(100));
+            directories.inodes.git_dir_device = device;
+            directories.inodes.common_device = device;
+            directories
         };
         let shown = directories("/x/repo", Some(7), Some(100));
         for (found, same, what) in [
@@ -6069,6 +6085,21 @@ pub(crate) mod tests {
                 false,
                 "elsewhere, nothing read here",
             ),
+            (
+                on_device("/x/repo", Some(2)),
+                false,
+                "the same inode on another filesystem",
+            ),
+            (
+                on_device("/y/repo", Some(2)),
+                false,
+                "elsewhere, the same inode on another filesystem",
+            ),
+            (
+                on_device("/y/repo", None),
+                true,
+                "elsewhere, no device read",
+            ),
         ] {
             assert_eq!(same_git_directories(&shown, &found), same, "{what}");
         }
@@ -6090,6 +6121,12 @@ pub(crate) mod tests {
         assert!(
             !same_git_directories(&shown, &common_later),
             "the common directory's inode taken again"
+        );
+        let mut common_elsewhere = shown.clone();
+        common_elsewhere.inodes.common_device = Some(2);
+        assert!(
+            !same_git_directories(&shown, &common_elsewhere),
+            "the common directory's inode on another filesystem"
         );
         assert!(
             !same_git_directories(
@@ -8069,6 +8106,222 @@ pub(crate) mod tests {
             assert!(app.status_task.is_none(), "the status read landed");
             assert_eq!(app.working_identity.as_ref(), Some(&found_directories));
         });
+    }
+
+    /// Two bare remotes and the window's repository pushed to the first; a
+    /// third repository with a commit of its own and the second as its
+    /// `origin`, to be moved to the tab's `.git` as a re-clone at the path
+    /// leaves it ([`ReClone::in_place`]).
+    struct ReClone {
+        base: PathBuf,
+        root: PathBuf,
+        bare_a: PathBuf,
+        bare_b: PathBuf,
+        pushed: Option<String>,
+        third_git: PathBuf,
+    }
+
+    impl ReClone {
+        fn prepare(base: &Path, root: &Path) -> Self {
+            use crate::views::tests::{fixture_git, fixture_repository};
+            let (bare_a, bare_b) = (base.join("a.git"), base.join("b.git"));
+            for bare in [&bare_a, &bare_b] {
+                fixture_git(
+                    base,
+                    &["init", "--bare", "-b", "main", bare.to_str().unwrap()],
+                );
+            }
+            fixture_git(root, &["remote", "add", "origin", bare_a.to_str().unwrap()]);
+            fixture_git(root, &["push", "-q", "-u", "origin", "main"]);
+            let third = fixture_repository(base.join("third"));
+            fixture_git(
+                third.path(),
+                &["commit", "-q", "--allow-empty", "-m", "Third"],
+            );
+            fixture_git(
+                third.path(),
+                &["remote", "add", "origin", bare_b.to_str().unwrap()],
+            );
+            let clone = Self {
+                base: base.to_owned(),
+                root: root.to_owned(),
+                pushed: None,
+                third_git: third.git_dir().to_owned(),
+                bare_a,
+                bare_b,
+            };
+            Self {
+                pushed: clone.tip(&clone.bare_a, "refs/heads/main"),
+                ..clone
+            }
+        }
+
+        fn tip(&self, git_dir: &Path, reference: &str) -> Option<String> {
+            let output = crate::views::tests::fixture_git_output(
+                &self.base,
+                &[
+                    "--git-dir",
+                    git_dir.to_str().unwrap(),
+                    "rev-parse",
+                    "--verify",
+                    "-q",
+                    reference,
+                ],
+            );
+            (output.status.success())
+                .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        }
+
+        /// The third repository's Git directory moved to the tab's `.git`,
+        /// the replaced one aside.
+        fn in_place(&self) {
+            std::fs::rename(self.root.join(".git"), self.base.join("before-git-away")).unwrap();
+            std::fs::rename(&self.third_git, self.root.join(".git")).unwrap();
+        }
+
+        /// Neither remote took a push: the first holds what the tab pushed
+        /// before, the second nothing.
+        fn assert_remotes_untouched(&self) {
+            assert_eq!(
+                self.tip(&self.bare_b, "refs/heads/main"),
+                None,
+                "Push pushed nothing"
+            );
+            assert_eq!(self.tip(&self.bare_a, "refs/heads/main"), self.pushed);
+        }
+
+        /// The write refused before Git started, in a marked tab's words:
+        /// at the tab's root Git now finds the repository at its `.git`.
+        fn assert_refused(&self, app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+            let error = app.read_with(cx, |app, _| {
+                (app.operation_error.as_ref()).map(|error| error.banner().to_string())
+            });
+            let words = format!(
+                "Git now finds the repository at {}",
+                self.root.join(".git").display()
+            );
+            assert!(
+                error.as_deref().is_some_and(
+                    |error| error.contains(&words) && error.contains("Git was not started")
+                ),
+                "refused: {error:?}"
+            );
+        }
+    }
+
+    /// A Push from a warm tab whose path was cloned again while another tab
+    /// was shown, pressed before any read has seen the re-clone (the tab's
+    /// rescan held), is refused before Git starts: the handle's Git
+    /// directory is another directory now, by its inode, so neither remote
+    /// takes anything. It once pushed the found repository's `main` to its
+    /// own remote while Targets named the replaced one's (security probe
+    /// C2b, FU44-C).
+    #[gpui::test]
+    async fn a_push_from_a_warm_tab_cloned_again_in_place_is_refused(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let clone = ReClone::prepare(fixture.path(), &root);
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        open_another_tab(&app, cx, &fixture.path().join("other")).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        clone.in_place();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        // What the switch asked for lands before Push is drawn: the shown
+        // tab's watch is set up on the operation thread, which neither the
+        // reader's idle wait nor a park waits for, and its reply landing
+        // between the press and the release would draw the bar again.
+        for _ in 0..8 {
+            app.read_with(cx, |app, _| app.operations.drain());
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            if app.read_with(cx, |app, _| app.automatic.replies_landed()) {
+                break;
+            }
+        }
+        app.update(cx, |app, cx| {
+            assert!(app.automatic.replies_landed(), "the switch's reads landed");
+            assert_eq!(
+                app.path.as_deref(),
+                Some(root.as_path()),
+                "the warm tab shown"
+            );
+            app.git_actions_open = true;
+            cx.notify();
+        });
+        crate::views::tests::draw(cx);
+        let push = cx.debug_bounds("push").expect("Push drawn");
+        assert_eq!(
+            crate::workspace::refusals::get("push")
+                .map(|refusal| (refusal.announced, refusal.dimmed)),
+            Some((false, false)),
+            "offered, as no read has seen the re-clone"
+        );
+        // Held across the click: refused before Git starts, the write
+        // answers within microseconds, and its reply, landing in the
+        // click's own park, once ended the busy spell before it was read.
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.simulate_click(push.center(), gpui::Modifiers::default());
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_some()),
+            "Push submitted"
+        );
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        clone.assert_refused(&app, cx);
+        clone.assert_remotes_untouched();
+    }
+
+    /// A write submitted before its repository was cloned again in place,
+    /// and run once a Refresh that found the re-clone has landed, is refused
+    /// before Git starts: it carries the handle of the replaced repository,
+    /// whose Git directory is another directory now, so no branch is made
+    /// in either repository. The branch was once created and checked out in
+    /// the found repository (security probe C3, FU44-C).
+    #[gpui::test]
+    async fn a_write_run_after_a_re_clone_in_place_is_refused(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let clone = ReClone::prepare(fixture.path(), &root);
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::CreateBranch {
+                        name: "made-after".into(),
+                        start_point: None,
+                    },
+                    "Creating branch…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_some()),
+            "submitted"
+        );
+        clone.in_place();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        for _ in 0..6 {
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        clone.assert_refused(&app, cx);
+        for git_dir in [root.join(".git"), clone.base.join("before-git-away")] {
+            assert_eq!(
+                clone.tip(&git_dir, "refs/heads/made-after"),
+                None,
+                "no branch made in {}",
+                git_dir.display()
+            );
+        }
     }
 
     /// Show latest that finds a re-clone at the tab's path installs it in

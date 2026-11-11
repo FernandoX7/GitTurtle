@@ -1288,7 +1288,9 @@ fn confined_commands_keep_every_layout_git_discovers_from_the_root() {
 /// repository's gitfile, or the root turned into a link to another
 /// repository, is another repository, and a write refuses before Git
 /// starts, leaving that repository's index alone. A clone made again at
-/// the same path is the same root and `.git` path, and keeps working.
+/// the same path is the same root and `.git` path but another Git
+/// directory: the handle captured before it refuses before Git starts, and
+/// a handle opened after it writes.
 #[cfg(unix)]
 #[test]
 fn a_swapped_git_entry_or_a_linked_root_is_another_repository() {
@@ -1354,7 +1356,17 @@ fn a_swapped_git_entry_or_a_linked_root_is_another_repository() {
     );
     assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
     f.write("file.txt", "after the clone\n");
-    repo.execute(&WriteCommand::StageAll).unwrap();
+    // The path finds a Git directory of the same name, but another
+    // directory by its inode, so the handle captured before the clone
+    // refuses before Git starts and the index is left alone.
+    let error = repo.execute(&WriteCommand::StageAll).unwrap_err();
+    assert!(
+        error.to_string().contains("The repository changed")
+            && error.to_string().contains("Git was not started"),
+        "{error:#}"
+    );
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "");
+    f.repo().execute(&WriteCommand::StageAll).unwrap();
     assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "file.txt");
 }
 

@@ -289,6 +289,10 @@ impl std::fmt::Display for WorkTreeOutside {
 
 impl std::error::Error for WorkTreeOutside {}
 
+/// What a test makes a directory's stat read ([`DIRECTORY_READ`]).
+#[cfg(test)]
+type DirectoryChange = fn(DirectoryIdentity) -> DirectoryIdentity;
+
 #[cfg(test)]
 thread_local! {
     /// Runs in [`GitRepository::open`] between the capture and Git's
@@ -298,6 +302,11 @@ thread_local! {
     /// Runs in [`GitRepository::verify_at_path`] as it is about to ask Git
     /// on this thread: a test moves a link back under the check.
     static VERIFY_CHECKPOINT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Changes what a stat of the directory at the path reads on this
+    /// thread ([`DirectoryIdentity::read`]): a test gives a Git directory
+    /// another device or birth time than its open captured.
+    static DIRECTORY_READ: std::cell::RefCell<Option<(PathBuf, DirectoryChange)>> =
         const { std::cell::RefCell::new(None) };
     /// Runs in [`resolve_git_entry`] as it is about to open a gitfile, on
     /// this thread: a test swaps a FIFO in for it.
@@ -350,16 +359,15 @@ struct Identity {
     /// Its common directory (a linked worktree's main Git directory, whose
     /// refs and objects it uses), canonical; `git_dir` itself otherwise.
     common: PathBuf,
-    /// The inode of `git_dir` at capture, where the platform has one
-    /// ([`GitRepository::git_dir_inode`]).
-    git_dir_inode: Option<u64>,
-    /// When `git_dir` was created, where the filesystem records it
-    /// ([`GitRepository::git_dir_birth`]).
-    git_dir_birth: Option<Duration>,
-    /// The inode of `common` at capture ([`GitRepository::common_dir_inode`]).
-    common_inode: Option<u64>,
-    /// When `common` was created ([`GitRepository::common_dir_birth`]).
-    common_birth: Option<Duration>,
+    /// `git_dir`'s inode, device and birth time at capture
+    /// ([`GitRepository::git_dir_inode`], [`GitRepository::git_dir_device`],
+    /// [`GitRepository::git_dir_birth`]), which every write compares with
+    /// the directory at that path now ([`Identity::replaced`]).
+    git_dir_identity: DirectoryIdentity,
+    /// `common`'s ([`GitRepository::common_dir_inode`],
+    /// [`GitRepository::common_dir_device`],
+    /// [`GitRepository::common_dir_birth`]).
+    common_identity: DirectoryIdentity,
     /// The folder holding the `.git` entry (a directory or a gitfile) that
     /// leads Git from the root to `git_dir`: the root itself, or a folder
     /// above it whose repository sets `core.worktree` to a folder inside.
@@ -509,11 +517,11 @@ impl Identity {
         if common != git_dir {
             configs.push(common.join("config"));
         }
-        let (git_dir_inode, git_dir_birth) = directory_identity(&git_dir);
-        let (common_inode, common_birth) = if common == git_dir {
-            (git_dir_inode, git_dir_birth)
+        let git_dir_identity = DirectoryIdentity::read(&git_dir).unwrap_or_default();
+        let common_identity = if common == git_dir {
+            git_dir_identity
         } else {
-            directory_identity(&common)
+            DirectoryIdentity::read(&common).unwrap_or_default()
         };
         // The stored paths after the stamps, as every check takes them: a
         // file edited after the stamps is a changed stamp at the next check.
@@ -523,10 +531,8 @@ impl Identity {
             root,
             git_dir,
             common,
-            git_dir_inode,
-            git_dir_birth,
-            common_inode,
-            common_birth,
+            git_dir_identity,
+            common_identity,
             holder,
             ceiling,
             confined,
@@ -570,6 +576,31 @@ impl Identity {
         Ok(stored)
     }
 
+    /// The Git directory, or else the common directory, that is another
+    /// directory now than the one the open captured at its path: its inode,
+    /// device or birth time differs where both reads have one
+    /// ([`DirectoryIdentity::is`]), as a repository cloned again in place
+    /// leaves it, whose root, `.git` entry and paths are the captured ones.
+    /// One stat each, one for a repository whose common directory is its
+    /// Git directory; a stat opens no file, so it never waits on a FIFO. A
+    /// directory whose metadata cannot be read is an error, which refuses
+    /// the write ([`GitRepository::ensure_found_at_path`]).
+    fn replaced(&self) -> Result<Option<&Path>> {
+        let directories = [
+            (&self.git_dir, &self.git_dir_identity),
+            (&self.common, &self.common_identity),
+        ];
+        let count = if self.common == self.git_dir { 1 } else { 2 };
+        for (path, captured) in &directories[..count] {
+            let now = DirectoryIdentity::read(path)
+                .map_err(|error| CouldNotCheck::unless_absent(path, error))?;
+            if !captured.is(&now) {
+                return Ok(Some(path.as_path()));
+            }
+        }
+        Ok(None)
+    }
+
     fn config_stamps(&self) -> Vec<Option<FileStamp>> {
         self.configs
             .iter()
@@ -597,26 +628,58 @@ impl Identity {
     }
 }
 
-/// `directory`'s inode, where the platform has one, and its birth time
-/// since the Unix epoch, where the filesystem records one
-/// (`Metadata::created`: `statx` on Linux, `st_birthtime` on macOS), each
-/// where it can be read. An inode number can be taken again by a directory
-/// created after another was deleted (ext4 and XFS reuse them), which its
-/// birth time tells apart.
-fn directory_identity(directory: &Path) -> (Option<u64>, Option<Duration>) {
-    let Ok(metadata) = std::fs::metadata(directory) else {
-        return (None, None);
-    };
-    #[cfg(unix)]
-    let inode = {
-        use std::os::unix::fs::MetadataExt;
-        Some(metadata.ino())
-    };
-    #[cfg(not(unix))]
-    let inode = None;
-    let birth = (metadata.created().ok())
-        .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok());
-    (inode, birth)
+/// A directory's identity as one stat reads it: its inode and device, where
+/// the platform has them, and its birth time since the Unix epoch, where
+/// the filesystem records one (`Metadata::created`: `statx` on Linux,
+/// `st_birthtime` on macOS). An inode number can be taken again by a
+/// directory created after another was deleted (ext4 and XFS reuse them),
+/// which its birth time tells apart, and the same number on another
+/// filesystem, or another btrfs subvolume or snapshot, is another
+/// directory, which its device tells. Each is `None` where it cannot be
+/// read: an open whose stat failed captured none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DirectoryIdentity {
+    inode: Option<u64>,
+    device: Option<u64>,
+    birth: Option<Duration>,
+}
+
+impl DirectoryIdentity {
+    fn read(directory: &Path) -> std::io::Result<Self> {
+        let metadata = std::fs::metadata(directory)?;
+        #[cfg(unix)]
+        let (inode, device) = {
+            use std::os::unix::fs::MetadataExt;
+            (Some(metadata.ino()), Some(metadata.dev()))
+        };
+        #[cfg(not(unix))]
+        let (inode, device) = (None, None);
+        let birth = (metadata.created().ok())
+            .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok());
+        let identity = Self {
+            inode,
+            device,
+            birth,
+        };
+        #[cfg(test)]
+        let identity = DIRECTORY_READ.with_borrow(|read| {
+            (read.as_ref())
+                .filter(|(path, _)| path == directory)
+                .map_or(identity, |(_, change)| change(identity))
+        });
+        Ok(identity)
+    }
+
+    /// Whether `now` is still this directory: its inode, device and birth
+    /// time each the same where both reads have one.
+    fn is(&self, now: &Self) -> bool {
+        fn same<T: PartialEq>(captured: Option<T>, now: Option<T>) -> bool {
+            captured
+                .zip(now)
+                .is_none_or(|(captured, now)| captured == now)
+        }
+        same(self.inode, now.inode) && same(self.device, now.device) && same(self.birth, now.birth)
+    }
 }
 
 /// A linked worktree's common Git directory, from its `commondir` file
@@ -1217,13 +1280,28 @@ impl GitRepository {
     /// the platform has one: read once by the open, so asking starts no
     /// filesystem access, and a session can save it beside the path.
     pub fn git_dir_inode(&self) -> Option<u64> {
-        self.identity.git_dir_inode
+        self.identity.git_dir_identity.inode
     }
 
     /// The inode of [`Self::common_dir`] when the repository was opened
     /// ([`Self::git_dir_inode`]).
     pub fn common_dir_inode(&self) -> Option<u64> {
-        self.identity.common_inode
+        self.identity.common_identity.inode
+    }
+
+    /// The device of [`Self::git_dir`] when the repository was opened, where
+    /// the platform has one, read by the same stat as
+    /// [`Self::git_dir_inode`]: the same inode number on another filesystem
+    /// is another directory. It can change across boots and rollbacks, so a
+    /// session never saves it.
+    pub fn git_dir_device(&self) -> Option<u64> {
+        self.identity.git_dir_identity.device
+    }
+
+    /// The device of [`Self::common_dir`] when the repository was opened
+    /// ([`Self::git_dir_device`]).
+    pub fn common_dir_device(&self) -> Option<u64> {
+        self.identity.common_identity.device
     }
 
     /// When [`Self::git_dir`] was created, since the Unix epoch, where the
@@ -1233,12 +1311,12 @@ impl GitRepository {
     /// inode number. `None` where the filesystem gives none; the inode is
     /// then all a comparison has.
     pub fn git_dir_birth(&self) -> Option<Duration> {
-        self.identity.git_dir_birth
+        self.identity.git_dir_identity.birth
     }
 
     /// When [`Self::common_dir`] was created ([`Self::git_dir_birth`]).
     pub fn common_dir_birth(&self) -> Option<Duration> {
-        self.identity.common_birth
+        self.identity.common_identity.birth
     }
 
     /// Where this repository's commands run: at its root, confined to it.
@@ -1408,9 +1486,24 @@ impl GitRepository {
 
     /// Refuses, before Git starts, a write whose repository is no longer
     /// the one at its path ([`Self::verify_at_path`]): run there, it would
-    /// act on the repository enclosing that path, or fail part way.
+    /// act on the repository enclosing that path, or fail part way. The
+    /// paths the same, it also refuses one whose Git or common directory is
+    /// another directory than the open captured, by its inode, device or
+    /// birth time ([`Identity::replaced`]), naming it as a marked tab does:
+    /// a repository cloned again in place keeps every path, so until a
+    /// read had seen it, a write through the handle of the one replaced
+    /// went to it (security re-check R1, FU44-C). Writes only: reads keep
+    /// [`Self::verify_at_path`], and a window captures a re-clone afresh
+    /// at its next read.
     fn ensure_found_at_path(&self) -> Result<()> {
-        match self.verify_at_path()? {
+        let found = match self.verify_at_path()? {
+            FoundAtPath::Same => (self.identity.replaced()?)
+                .map_or(FoundAtPath::Same, |replaced| {
+                    FoundAtPath::Other(replaced.to_owned())
+                }),
+            found => found,
+        };
+        match found {
             FoundAtPath::Same => Ok(()),
             // Its own `.git` gone, or its work tree redirected elsewhere.
             FoundAtPath::Other(other) => bail!(
@@ -3798,6 +3891,114 @@ mod tests {
         assert!(refused.contains("Git was not started"), "{refused}");
         let reopened = GitRepository::open(&inside).unwrap_err();
         assert_eq!(reopened.to_string(), outside_message(&inside, &second));
+    }
+
+    /// A write is refused before Git starts where the handle's Git or
+    /// common directory is another directory now at its path: by its inode,
+    /// as a repository cloned again in place leaves it, every path and the
+    /// `.git` entry the captured ones; by its device, the same inode number
+    /// on another filesystem; and by its birth time, an inode number taken
+    /// again or an overlayfs copy-up. The refusal names that directory as a
+    /// marked tab does, and nothing is written; an open of the re-clone
+    /// writes. The paths alone were checked, so a write through the replaced
+    /// repository's handle went to the re-clone (security re-check R1,
+    /// FU44-C).
+    #[cfg(unix)]
+    #[test]
+    fn a_write_is_refused_where_its_git_directory_is_another_one_now() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let root = base.join("repository");
+        std::fs::create_dir(&root).unwrap();
+        git(&root, &["init", "--quiet"]);
+        git(&root, &["commit", "--quiet", "--allow-empty", "-m", "base"]);
+        let branch = |name: &str| WriteCommand::CreateBranch {
+            name: name.into(),
+            start_point: None,
+        };
+        let refused = |repository: &GitRepository, named: &Path| {
+            let error = format!("{:#}", repository.execute(&branch("refused")).unwrap_err());
+            let words = format!(
+                "The repository changed: at {} Git now finds the repository at {}. Git was not started.",
+                repository.path().display(),
+                named.display()
+            );
+            assert!(error.contains(&words), "{error}");
+        };
+        let made = |git_dir: &Path| git_dir.join("refs/heads/refused").exists();
+
+        // Another device: the Git directory's stat reads another one.
+        let opened = GitRepository::open(&root).unwrap();
+        let git_dir = opened.git_dir().to_owned();
+        DIRECTORY_READ.with_borrow_mut(|read| {
+            *read = Some((git_dir.clone(), |identity| DirectoryIdentity {
+                device: identity.device.map(|device| device + 1),
+                ..identity
+            }))
+        });
+        refused(&opened, &git_dir);
+        DIRECTORY_READ.with_borrow_mut(|read| *read = None);
+        assert!(!made(&git_dir));
+        assert!(
+            opened
+                .verify_at_path()
+                .is_ok_and(|found| found == FoundAtPath::Same)
+        );
+
+        // Another birth time of a linked worktree's common directory, read
+        // at its open as one time and at the write as another.
+        let linked = base.join("linked");
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "linked",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let born = |at: u64| -> fn(DirectoryIdentity) -> DirectoryIdentity {
+            match at {
+                1 => |identity| DirectoryIdentity {
+                    birth: Some(Duration::from_secs(1)),
+                    ..identity
+                },
+                _ => |identity| DirectoryIdentity {
+                    birth: Some(Duration::from_secs(2)),
+                    ..identity
+                },
+            }
+        };
+        DIRECTORY_READ.with_borrow_mut(|read| *read = Some((git_dir.clone(), born(1))));
+        let worktree = GitRepository::open(&linked).unwrap();
+        assert_eq!(worktree.common_dir(), git_dir);
+        assert_eq!(worktree.common_dir_birth(), Some(Duration::from_secs(1)));
+        DIRECTORY_READ.with_borrow_mut(|read| *read = Some((git_dir.clone(), born(2))));
+        refused(&worktree, &git_dir);
+        DIRECTORY_READ.with_borrow_mut(|read| *read = None);
+        assert!(!made(&git_dir));
+
+        // Another inode: a repository cloned again in place.
+        let opened = GitRepository::open(&root).unwrap();
+        let other = base.join("other");
+        std::fs::create_dir(&other).unwrap();
+        git(&other, &["init", "--quiet"]);
+        git(
+            &other,
+            &["commit", "--quiet", "--allow-empty", "-m", "other"],
+        );
+        std::fs::rename(root.join(".git"), base.join("replaced-git")).unwrap();
+        std::fs::rename(other.join(".git"), root.join(".git")).unwrap();
+        assert_eq!(opened.verify_at_path().unwrap(), FoundAtPath::Same);
+        refused(&opened, &git_dir);
+        assert!(!made(&git_dir) && !made(&base.join("replaced-git")));
+        GitRepository::open(&root)
+            .unwrap()
+            .execute(&branch("refused"))
+            .unwrap();
+        assert!(made(&git_dir), "an open of the re-clone writes");
     }
 
     /// The confinement appends to the person's own ceilings, never
