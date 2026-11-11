@@ -9204,8 +9204,19 @@ impl OperationFailure {
     /// core's words open a report's first line, so no line of Git's first
     /// output ever starts one, and a banner that searched the report for a
     /// marker lost what `git fetch nope` says went wrong.
+    ///
+    /// A write core refused before it started Git is our own sentence,
+    /// holding no output of Git's, and its line is drawn whole
+    /// (`gitturtle_core::write_refused`): cut at 220 characters, the
+    /// refusal of a repository in macOS's temporary folder lost "Git was
+    /// not started" and the path Git now finds.
     pub(crate) fn of(error: &anyhow::Error) -> Self {
-        Self::summarized(format!("{error:#}"), gitturtle_core::failure_summary(error))
+        let report = format!("{error:#}");
+        if gitturtle_core::write_refused(error) {
+            let banner = first_line_with_text(&report).to_owned().into();
+            return Self { report, banner };
+        }
+        Self::summarized(report, gitturtle_core::failure_summary(error))
     }
 
     /// `error`, a read's failure named by `what`: "`what`: …", in its report
@@ -9233,11 +9244,19 @@ impl OperationFailure {
 /// At most 220 characters of `text`'s first line with text; `text` as it
 /// stands when no line of it has any.
 fn banner_line(text: &str) -> SharedString {
-    let line = text
-        .lines()
+    first_line_with_text(text)
+        .chars()
+        .take(220)
+        .collect::<String>()
+        .into()
+}
+
+/// `text`'s first line with text; `text` as it stands when no line of it
+/// has any.
+fn first_line_with_text(text: &str) -> &str {
+    text.lines()
         .find(|line| !line.trim().is_empty())
-        .unwrap_or(text);
-    line.chars().take(220).collect::<String>().into()
+        .unwrap_or(text)
 }
 
 impl From<String> for OperationFailure {
@@ -43630,6 +43649,42 @@ pub(crate) mod tests {
             assert_eq!(failure.banner().as_ref(), line, "{case}");
             assert_eq!(&*failure, report, "{case}: its report whole");
         }
+    }
+
+    /// A write core refused before it started Git draws its line whole,
+    /// however long the repository's paths make it: a repository cloned
+    /// again in place at a 120-character folder, its refusal run as the
+    /// operation executor runs a write. Cut at 220 characters, as a line
+    /// of Git's is, it lost "Git was not started" and the path Git now
+    /// finds wherever the two paths ran past 66 characters each, as in
+    /// macOS's temporary folder (hosted run 42964793991).
+    #[test]
+    fn a_write_refused_before_git_draws_its_line_whole() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("r".repeat(120));
+        let repository = fixture_repository(&root);
+        let third = fixture_repository(fixture.path().join("third"));
+        std::fs::rename(root.join(".git"), fixture.path().join("before-git-away")).unwrap();
+        std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+        let error = gitturtle_core::run_controlled(Default::default(), || {
+            repository.execute(&gitturtle_core::WriteCommand::CreateBranch {
+                name: "made-after".into(),
+                start_point: None,
+            })
+        })
+        .expect_err("refused");
+        let failure = super::OperationFailure::of(&error);
+        let words = format!(
+            "at {} Git now finds the repository at {}. Git was not started.",
+            repository.path().display(),
+            repository.git_dir().display()
+        );
+        assert!(
+            failure.banner().len() > 220 && failure.banner().ends_with(&words),
+            "the whole line: {}",
+            failure.banner()
+        );
+        assert_eq!(&*failure, format!("{error:#}"), "its report whole");
     }
 
     /// The banner draws the line a real failure's core typed for it, and the

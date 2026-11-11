@@ -1503,19 +1503,20 @@ impl GitRepository {
                 }),
             found => found,
         };
-        match found {
-            FoundAtPath::Same => Ok(()),
+        let refusal = match found {
+            FoundAtPath::Same => return Ok(()),
             // Its own `.git` gone, or its work tree redirected elsewhere.
-            FoundAtPath::Other(other) => bail!(
+            FoundAtPath::Other(other) => format!(
                 "The repository changed: at {} Git now finds the repository at {}. Git was not started.",
                 self.path.display(),
                 other.display()
             ),
-            FoundAtPath::None => bail!(
+            FoundAtPath::None => format!(
                 "The repository at {} is gone: Git finds no repository there. Git was not started.",
                 self.path.display()
             ),
-        }
+        };
+        Err(WriteRefused(refusal).into())
     }
 
     /// A failed command's error, worded as the repository gone where Git
@@ -2692,6 +2693,32 @@ impl std::fmt::Display for GitFailure {
 
 impl std::error::Error for GitFailure {}
 
+/// A write core refused before it started Git
+/// ([`GitRepository::ensure_found_at_path`]): core's own sentence, which
+/// names the repository's paths, and nothing Git wrote. Its line is drawn
+/// whole ([`write_refused`]): cut at a line of Git's length, the refusal
+/// lost "Git was not started" and the found path wherever its two paths ran
+/// past 66 characters each, as every repository in macOS's per-user
+/// temporary folder does (hosted run 42964793991, 2026-11-11).
+#[derive(Debug)]
+pub struct WriteRefused(String);
+
+impl std::fmt::Display for WriteRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for WriteRefused {}
+
+/// Whether `error` is a write core refused before starting Git
+/// ([`WriteRefused`]), with any words of ours added around it: its report
+/// holds no output of Git's, so a banner draws its line whole, where a
+/// failure Git answered has its line cut to bound what Git can write.
+pub fn write_refused(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<WriteRefused>())
+}
+
 /// The line `error` carries for a compact banner, or `None` where it carries
 /// none and the report's first non-empty line stands instead. Words of ours
 /// added around the failure lead it, as they lead the report: "The repository
@@ -2716,9 +2743,10 @@ pub fn failure_summary(error: &anyhow::Error) -> Option<String> {
 }
 
 /// `error` as the same failure with its whole report and its line each read
-/// through `redact`: the type a caller tells it apart by ([`NotARepository`])
-/// and the line the banner draws ([`GitFailure`]) outlive a redaction of the
-/// report, which flattened to text left no write a line to show. Both go
+/// through `redact`: the type a caller tells it apart by ([`NotARepository`]),
+/// a refusal before Git started ([`WriteRefused`]) and the line the banner
+/// draws ([`GitFailure`]) outlive a redaction of the report, which flattened
+/// to text left no write a line to show. Both go
 /// through `redact`, so the line shows nothing the report hides, a secret
 /// only `redact` knows included; a line carries the words of ours that lead
 /// it, so a marker among them cuts it as it cuts the report's first line.
@@ -2730,6 +2758,8 @@ pub(crate) fn redacted_failure(
     let summary = failure_summary(error).map(|line| redact(&line));
     if error.chain().any(|cause| cause.is::<NotARepository>()) {
         NotARepository(report, summary).into()
+    } else if write_refused(error) {
+        WriteRefused(report).into()
     } else if let Some(summary) = summary {
         GitFailure { report, summary }.into()
     } else {

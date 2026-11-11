@@ -1916,6 +1916,27 @@ mod tests {
         assert_eq!(crate::failure_summary(&untyped), None);
     }
 
+    /// A write refused before Git started stays a refusal through
+    /// `run_controlled`, its report redacted, so the app can draw its line
+    /// whole: flattened to text, its line was cut as an answer of Git's is.
+    #[cfg(unix)]
+    #[test]
+    fn a_controlled_write_refused_before_git_stays_refused() {
+        let error = run_controlled(answered("answered-s3cret"), || -> Result<()> {
+            Err(crate::WriteRefused(
+                "The repository at /tmp/answered-s3cret is gone: Git finds no repository there. Git was not started.".into(),
+            )
+            .into())
+        })
+        .expect_err("the write is refused");
+        assert!(crate::write_refused(&error), "{error:#}");
+        assert_eq!(
+            format!("{error:#}"),
+            "The repository at /tmp/[redacted] is gone: Git finds no repository there. Git was not started."
+        );
+        assert_eq!(crate::failure_summary(&error), None);
+    }
+
     /// Git's words for a folder with no repository stay typed through
     /// `run_controlled`, the failure's line as hidden as any other's.
     #[cfg(unix)]
