@@ -74,11 +74,6 @@ pub struct ProjectHub {
     pending_mode: Option<ProjectMode>,
     busy: bool,
     picker_pending: bool,
-    /// Whether the Enter press last going down in the recent search may
-    /// open its first project, noted by its key-down
-    /// ([`Self::search_key_down`]) for the `PressEnter` it brings, which
-    /// tells neither.
-    search_enter_opens: bool,
     can_go_back: bool,
     error: Option<String>,
     /// Errors the feedback line has been given, which gives each its own
@@ -156,7 +151,6 @@ impl ProjectHub {
             pending_mode: None,
             busy: false,
             picker_pending: false,
-            search_enter_opens: false,
             can_go_back: false,
             error: None,
             errors_shown: 0,
@@ -176,24 +170,13 @@ impl ProjectHub {
         this.subscriptions.push(cx.subscribe_in(
             &search,
             window,
-            |this, _, event, _, cx| match event {
-                InputEvent::Change => this.filter_recent(cx),
-                // The key-down notes whether this Enter may open
-                // (`search_key_down`), which every Enter the field reports
-                // takes: Shift and the secondary modifier make another, which
-                // opens nothing. Taken by the plain one alone, a modified
-                // press left it set for one the field reported with no
-                // key-down.
-                InputEvent::PressEnter { secondary, shift } => {
-                    if std::mem::take(&mut this.search_enter_opens)
-                        && !secondary
-                        && !shift
-                        && let Some(path) = this.filtered.first().cloned()
-                    {
-                        this.emit_operation(ProjectEvent::Open(path), cx);
-                    }
+            // Return opens from the hub's key-down listener
+            // ([`Self::submit_on_enter`]), never on the field's own
+            // `PressEnter`, which carries no held mark.
+            |this, _, event, _, cx| {
+                if let InputEvent::Change = event {
+                    this.filter_recent(cx);
                 }
-                _ => {}
             },
         ));
         this.subscriptions.push(
@@ -550,39 +533,17 @@ impl ProjectHub {
         cx.notify();
     }
 
-    /// Notes whether the Enter going down in the recent search may open the
-    /// first project it lists, which the field's `PressEnter` does once its
-    /// key-down has run: only a press that began in the field, never a held
-    /// key's repeats (marked held on macOS and Wayland), nor an Enter that
-    /// began on another control and moved focus here, as under X11 its
-    /// repeats arrive as fresh presses (`enter_press_began_on`), nor one
-    /// that goes down while an input method composes there, which commits
-    /// the composition, nor a modified one. A held Enter at launch, on the
-    /// page's first stop, opened it; acted on as a raw key-down, a modified
-    /// Enter opened it too, and so did an Enter committing a composition;
-    /// noted for a modified press, the plain Enter the field reported next
-    /// opened it with no key-down of its own.
-    fn search_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// Opens the first project the recent search lists, as Return there
+    /// asks ([`Self::submit_on_enter`]), unless an input method composes in
+    /// the search: the Enter going down then commits the composition.
+    fn open_first_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use gpui::EntityInputHandler as _;
-        self.search_enter_opens = false;
-        let focus = self.search.read(cx).focus_handle(cx);
-        if event.keystroke.key != "enter"
-            || event.keystroke.modifiers.modified()
-            || event.is_held
-            || !focus.is_focused(window)
-            || !gpui_kit::base::enter_press_began_on(&focus, window, cx)
-        {
-            return;
-        }
         let composing = self.search.update(cx, |search, cx| {
             search.marked_text_range(window, cx).is_some()
         });
-        self.search_enter_opens = !composing;
+        if !composing && let Some(path) = self.filtered.first().cloned() {
+            self.emit_operation(ProjectEvent::Open(path), cx);
+        }
     }
 
     fn emit_operation(&mut self, event: ProjectEvent, cx: &mut Context<Self>) {
@@ -665,26 +626,31 @@ impl ProjectHub {
         validate_destination(&parent, self.name.read(cx).value().as_ref())
     }
 
-    /// Return in a Clone or Create field submits the form once per press, on
-    /// the conditions a dialog's default action keeps (the toolkit's
-    /// `dialog.rs`) for a plain Enter, plus Shift-Enter, which the dialog
-    /// refuses: going down, not marked
-    /// held, not repeating the press the toolkit recorded
+    /// Return in the recent search opens the first project it lists
+    /// ([`Self::open_first_match`]), and in a Clone or Create field submits
+    /// the form, once per press, on the conditions a dialog's default action
+    /// keeps (the toolkit's `dialog.rs`) for a plain Enter, plus Shift-Enter
+    /// in the forms, which the dialog refuses: going down, not marked held,
+    /// not repeating the press the toolkit recorded
     /// (`enter_press_is_repeat`), in the field focused as that press began
-    /// (`enter_press_began_on`). The form's key-down listener asks, after
-    /// the field's own Enter has let the key go on. A held key's Enter
-    /// key-downs repeat on every platform, and under X11 each arrives as a
-    /// fresh press, so a held Return after a clone that failed at once began
-    /// another clone, a network action, on each repeat. The fields submitted
-    /// on their own `PressEnter`, which carries no held mark, so a press the
-    /// window never saw (a Return that confirmed the native folder picker,
-    /// whose answer focuses the folder name, or one an input method took to
-    /// commit a composition) made its first held repeat look like a fresh
-    /// press, and it began one clone or create (decided 2026-11-10). The
-    /// secondary Enter (Command-Enter on macOS, Control-Enter elsewhere)
-    /// submits nothing: on macOS it records no press, since Cocoa sends no
-    /// key-up for a key pressed with Command held, so its repeats could not
-    /// be told from presses. Neither does an Alt- or Fn-Enter.
+    /// (`enter_press_began_on`). The search takes a plain Enter alone, as it
+    /// always has. The hub's key-down listeners, on the recent list and on
+    /// the form, ask, after the field's own Enter has let the key go on. A
+    /// held key's Enter key-downs repeat on every platform, and under X11
+    /// each arrives as a fresh press, so a held Return after a clone that
+    /// failed at once began another clone, a network action, on each
+    /// repeat, and in the search, with a recent project whose open failed at
+    /// once, another open (decided 2026-11-10: the search asked only where
+    /// the press began, and opened on the field's `PressEnter`). The fields
+    /// submitted on their own `PressEnter`, which carries no held mark, so a
+    /// press the window never saw (a Return that confirmed the native folder
+    /// picker, whose answer focuses the folder name, or one an input method
+    /// took to commit a composition) made its first held repeat look like a
+    /// fresh press, and it began one clone or create (decided 2026-11-10).
+    /// The secondary Enter (Command-Enter on macOS, Control-Enter elsewhere)
+    /// submits and opens nothing: on macOS it records no press, since Cocoa
+    /// sends no key-up for a key pressed with Command held, so its repeats
+    /// could not be told from presses. Neither does an Alt- or Fn-Enter.
     fn submit_on_enter(
         &mut self,
         event: &KeyDownEvent,
@@ -701,19 +667,30 @@ impl ProjectHub {
         {
             return;
         }
-        let Some(field) = [&self.source, &self.parent, &self.name, &self.branch]
-            .into_iter()
-            .map(|field| field.read(cx).focus_handle(cx))
-            .find(|field| field.is_focused(window))
-        else {
+        let search = self.search.read(cx).focus_handle(cx);
+        let Some(field) = [
+            &self.search,
+            &self.source,
+            &self.parent,
+            &self.name,
+            &self.branch,
+        ]
+        .into_iter()
+        .map(|field| field.read(cx).focus_handle(cx))
+        .find(|field| field.is_focused(window)) else {
             return;
         };
-        if gpui_kit::base::enter_press_is_repeat(window, cx)
+        if (field == search && modifiers.shift)
+            || gpui_kit::base::enter_press_is_repeat(window, cx)
             || !gpui_kit::base::enter_press_began_on(&field, window, cx)
         {
             return;
         }
-        self.submit(cx);
+        if field == search {
+            self.open_first_match(window, cx);
+        } else {
+            self.submit(cx);
+        }
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -898,7 +875,9 @@ impl ProjectHub {
         let padding = crate::appearance::ui_size(6.5);
         div()
             .debug_selector(|| "project-hub-recent".into())
-            .on_key_down(cx.listener(Self::search_key_down))
+            // Return in the search opens from here, once per press
+            // ([`Self::submit_on_enter`]).
+            .on_key_down(cx.listener(Self::submit_on_enter))
             .flex_1()
             .min_w_0()
             .h_full()
@@ -3419,8 +3398,8 @@ mod tests {
     type Field = fn(&ProjectHub) -> &Entity<InputState>;
 
     /// A hub with the Clone and Create fields filled, whose owner answers
-    /// each clone or create as the hub asks for it, with a failure, as a
-    /// clone whose remote refuses at once does, so the hub is ready again
+    /// each open, clone or create as the hub asks for it, with a failure, as
+    /// a clone whose remote refuses at once does, so the hub is ready again
     /// before the next key event.
     struct FailingHub {
         hub: Entity<ProjectHub>,
@@ -3435,12 +3414,20 @@ mod tests {
         const BRANCH: Field = |hub| &hub.branch;
 
         fn new(cx: &mut TestAppContext) -> (Self, &mut VisualTestContext) {
+            Self::with_recent(cx, vec![])
+        }
+
+        /// [`Self::new`], listing `recent` projects.
+        fn with_recent(
+            cx: &mut TestAppContext,
+            recent: Vec<PathBuf>,
+        ) -> (Self, &mut VisualTestContext) {
             cx.update(gpui_kit::init);
             let captured = Rc::new(RefCell::new(None));
             let observed = captured.clone();
             let (_, cx) = cx.add_window_view(move |window, cx| {
                 let hub =
-                    cx.new(|cx| ProjectHub::new(vec![], HashMap::new(), "main".into(), window, cx));
+                    cx.new(|cx| ProjectHub::new(recent, HashMap::new(), "main".into(), window, cx));
                 *captured.borrow_mut() = Some(hub.clone());
                 gpui_kit::component::Root::new(hub, window, cx)
             });
@@ -3452,7 +3439,9 @@ mod tests {
                 cx.subscribe(&hub, move |hub, event: &ProjectEvent, cx| {
                     if matches!(
                         event,
-                        ProjectEvent::Clone { .. } | ProjectEvent::Create { .. }
+                        ProjectEvent::Open(_)
+                            | ProjectEvent::Clone { .. }
+                            | ProjectEvent::Create { .. }
                     ) {
                         attempts.set(attempts.get() + 1);
                         hub.update(cx, |hub, cx| {
@@ -3473,7 +3462,7 @@ mod tests {
             (this, cx)
         }
 
-        /// The clones or creates asked for, and the refusals said.
+        /// The opens, clones or creates asked for, and the refusals said.
         fn seen(&self, cx: &mut VisualTestContext) -> (usize, usize) {
             let refusals = self.hub.read_with(cx, |hub, _| hub.errors_shown);
             (self.attempts.get(), refusals)
@@ -3707,6 +3696,48 @@ mod tests {
         assert_eq!(hub.seen(cx), (1, 2), "a fresh press asks once");
         enter(cx, None);
         crate::tags::tests::draw(cx);
+    }
+
+    /// A held Return in the recent search asks to open its first project
+    /// once per press, under X11 too: with every open failing at once, as
+    /// one of a folder that is no longer a repository does, Enter goes down
+    /// and the open fails, then the key's repeats (`REPEATS`) ask for no
+    /// other open and say nothing more, focus staying in the search; after
+    /// the key-up a new press asks again. The search opened on the field's
+    /// own `PressEnter` for any Enter that began in it, guarded only by the
+    /// busy state the failure had cleared, so each X11 repeat after the
+    /// failure began another open and said its failure again.
+    #[gpui::test]
+    fn a_held_return_in_the_search_asks_for_one_open(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::REPEATS;
+        let recent = vec![PathBuf::from("/srv/projects/demo")];
+        let (hub, cx) = FailingHub::with_recent(cx, recent);
+        let search: Field = |hub| &hub.search;
+        hub.focus(cx, ProjectMode::Open, search);
+        for press in ["the first press", "a new press after the key-up"] {
+            let before = hub.seen(cx);
+            let after = (before.0 + 1, before.1 + 1);
+            enter(cx, Some(false));
+            crate::tags::tests::draw(cx);
+            assert_eq!(hub.seen(cx), after, "{press}: one open, its failure said");
+            for (repeat, events) in REPEATS {
+                for down in events {
+                    enter(cx, *down);
+                }
+                crate::tags::tests::draw(cx);
+                assert_eq!(
+                    hub.seen(cx),
+                    after,
+                    "{press}, {repeat}: nothing more is asked or said"
+                );
+                assert!(
+                    hub.focused(cx, search),
+                    "{press}, {repeat}: focus stays in the search"
+                );
+            }
+            enter(cx, None);
+            crate::tags::tests::draw(cx);
+        }
     }
 }
 
