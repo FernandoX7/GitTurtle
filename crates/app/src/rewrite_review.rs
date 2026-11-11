@@ -458,6 +458,10 @@ struct ReviewDownload {
     /// review showed another file or commit waits for the person to come
     /// back to its file, where the row says it.
     seen: std::cell::Cell<bool>,
+    /// The widest its line on the dialog's footer says, measured once for
+    /// its object, whose room the line keeps
+    /// (`lfs_download::footer_progress_room`).
+    footer_widest: crate::lfs_download::FooterWidest,
 }
 
 impl ReviewDownload {
@@ -863,10 +867,12 @@ impl SeriesBrowser {
     /// the scrolling body, at 18 pt in a 461 × 490 window, the line scrolled
     /// away with it, overflowed a body the series list's rows do not count,
     /// and moved the content by about 50 px as it came and went (decision,
-    /// 2026-11-10). Its text takes all the line leaves beside Cancel, which
-    /// stands at the line's end, so neither a press nor a progress update
-    /// moves it (`lfs_download::ProgressRoom::Line`); the text gives way
-    /// first, then Cancel's word, then its label for its icon
+    /// 2026-11-10). Its text keeps a room as the row's does, the narrower
+    /// of the widest the line says, measured once for the download's
+    /// object, and what the line leaves beside Cancel, which stands right
+    /// after it, so neither a press nor a progress update moves Cancel
+    /// (`lfs_download::footer_progress_room`); the text gives way first,
+    /// then Cancel's word, then its label for its icon
     /// (`lfs_download::line_cancel_form`). Cancel tracks
     /// the row's handle, so focus on it stays as it moves between the two.
     fn footer_line(
@@ -946,6 +952,14 @@ impl SeriesBrowser {
         );
         let running = asked.cancel(owner);
         let object = asked.object();
+        let form = crate::lfs_download::line_cancel_form(LINE_LEAST, width, window);
+        let room = crate::lfs_download::footer_progress_room(
+            || format!("{name} · {}", crate::authentication::CANCELLING_PROGRESS),
+            &asked.footer_widest,
+            width,
+            form,
+            window,
+        );
         let line = div()
             .id("series-download-line")
             .role(Role::Group)
@@ -961,7 +975,7 @@ impl SeriesBrowser {
                 .items_center()
                 .child(crate::lfs_download::running_form(
                     progress,
-                    crate::lfs_download::ProgressRoom::Line,
+                    room,
                     (
                         &self.download_cancel,
                         std::rc::Rc::new(move |window, cx| {
@@ -969,7 +983,7 @@ impl SeriesBrowser {
                         }),
                     ),
                     running,
-                    crate::lfs_download::line_cancel_form(LINE_LEAST, width, window),
+                    form,
                     window,
                     cx,
                 ))
@@ -2038,6 +2052,7 @@ impl SeriesBrowser {
                             started: false,
                             failure: None,
                             seen: Default::default(),
+                            footer_widest: Default::default(),
                         });
                     });
                 },
@@ -7663,6 +7678,191 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The footer's progress keeps a room of its own as the row's does
+    /// (decision, 2026-11-10): the narrower of what its line leaves beside
+    /// Cancel download and the widest it says, "Downloading both.mmd's
+    /// Before object · Cancelling… Inspect the result before retrying.",
+    /// measured once for the download's object. At 13 pt in a 1480 × 973
+    /// window the room is that wide, Cancel stands a gap after it and keeps
+    /// its bounds through a long Git LFS progress before any press, the
+    /// press and "Cancelling…", nothing measured again; the text's tooltip
+    /// shows over its words, never over the blank room after shorter words
+    /// or the footer past Cancel; a text size changed while it runs
+    /// measures them again, once. At 18 pt in 600 × 490 and 461 × 490
+    /// windows, as before, the room takes what the line leaves and Cancel
+    /// stands at its end. Taking all the line left, the text drew Cancel at
+    /// the line's end, far from its words in the wide window, so it read as
+    /// a pair with Back to repository, and the text's tooltip showed over
+    /// the blank footer between them.
+    #[gpui::test]
+    async fn the_footer_s_progress_keeps_its_room_with_cancel_beside_it(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::lfs_download::FOOTER_MEASURES;
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_both_with(&["notes.txt"]);
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let initial = cx.update(|window, _| window.scale_factor());
+        let browser = inspecting(&app, cx, &files);
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| {
+                    browser.text_mode = 0;
+                    browser.prepare_editor(window, cx);
+                    let body = &browser.body;
+                    body.reveal_next_focus();
+                    body.focus("series-file-preview", cx).focus(window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+        };
+        let name = "Downloading both.mmd's Before object";
+        let widest = format!("{name} · {}", crate::authentication::CANCELLING_PROGRESS);
+        // The widest words as layout places them, the line's gap and a
+        // device pixel.
+        let measure = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| {
+                (
+                    crate::views::laid_out_text_width(
+                        crate::views::line_widths(&[(&widest, appearance::ui_text(12.))], window),
+                        window,
+                    ),
+                    window.pixel_snap(window.rem_size() * 0.5),
+                    px(1. / window.scale_factor()),
+                )
+            })
+        };
+        let long = "Receiving objects: 50% (1/2), 1.20 MiB | 3.40 MiB/s, and a long report \
+                    from Git LFS that runs well past the room the line keeps for it";
+        let said = format!("{name} · {long}");
+        for (width, height, text, scale) in [
+            (1480., 973., 13, initial),
+            (600., 490., 18, 2.),
+            (461., 490., 18, 2.),
+        ] {
+            let at = format!("{width} × {height} at {text} pt");
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.update(|window, _| window.set_scale_factor(scale));
+            choose(&browser, cx, file_index(&files, "both.mmd"));
+            shown(cx);
+            let before = cx
+                .debug_bounds("download-lfs-side-0")
+                .expect("Download Before… is offered");
+            start_download(&app, &browser, cx, before.center());
+            choose(&browser, cx, file_index(&files, "notes.txt"));
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            shown(cx);
+            let (reserved, gap, device) = measure(cx);
+            let [line, room, progress, rest] = [
+                "series-download-status",
+                "lfs-download-progress-room",
+                "lfs-download-progress",
+                "cancel-lfs-download",
+            ]
+            .map(|id| {
+                cx.debug_bounds(id)
+                    .unwrap_or_else(|| panic!("{at}: the footer draws {id}"))
+            });
+            let wide = width > 1000.;
+            if wide {
+                assert!(
+                    (room.size.width - reserved).abs() <= device / 2.
+                        && (rest.left() - (room.right() + gap)).abs() <= device / 2.
+                        && rest.right() < line.right() - device,
+                    "{at}: the progress's room, {room:?}, keeps {reserved:?}, and Cancel, \
+                     {rest:?}, stands a gap after it, short of the line's end, {line:?}"
+                );
+                // The words before any press, the name alone, are shorter
+                // than the room: the text, and its tooltip, take them only,
+                // and neither the blank room after them nor the footer past
+                // Cancel shows it.
+                let between = point((progress.right() + rest.left()) / 2., line.center().y);
+                let past = point((rest.right() + line.right()) / 2., line.center().y);
+                assert!(
+                    progress.right() < between.x - px(4.) && line.right() - rest.right() >= px(4.),
+                    "{at}: the text, {progress:?}, leaves the room, {room:?}, blank before \
+                     Cancel, {rest:?}, and the line, {line:?}, has room past Cancel"
+                );
+                let shows = [between, past].map(|at| tooltip_at(cx, at, name));
+                assert_eq!(
+                    (hover_shows(cx, "lfs-download-progress", name), shows),
+                    (true, [false, false]),
+                    "{at}: the text's tooltip says its words over them alone, none over the \
+                     blank room after them, {between:?}, or past Cancel, {past:?}"
+                );
+            } else {
+                assert!(
+                    (rest.right() - line.right()).abs() <= device / 2.
+                        && (room.left() - line.left()).abs() <= device / 2.
+                        && (rest.left() - (room.right() + gap)).abs() <= device / 2.
+                        && room.size.width < reserved,
+                    "{at}: the progress's room, {room:?}, takes what the line, {line:?}, \
+                     leaves beside Cancel, {rest:?}, at its end"
+                );
+            }
+            FOOTER_MEASURES.set(0);
+            crate::authentication::PROGRESS_WORDS.set(Some(long));
+            shown(cx);
+            let updated = cx.debug_bounds("cancel-lfs-download");
+            // A long progress fills the room, its tooltip saying it whole.
+            let tooltip = hover_shows(cx, "lfs-download-progress", &said);
+            crate::authentication::PROGRESS_WORDS.set(None);
+            assert_eq!(
+                updated,
+                Some(rest),
+                "{at}: a long progress before any press moves nothing"
+            );
+            assert!(tooltip, "{at}: the text's tooltip says its words");
+            cx.simulate_click(rest.center(), Modifiers::none());
+            shown(cx);
+            // Its tooltip is its name in every form once pressed.
+            let pressed = crate::views::CONTROL_TOOLTIPS
+                .with(|tooltips| tooltips.borrow().get("cancel-lfs-download").cloned());
+            assert!(
+                app.read_with(cx, |app, _| app.operation_cancelling())
+                    && pressed.as_deref()
+                        == Some("Cancelling download of both.mmd's Before object"),
+                "{at}: the press cancels the write: {pressed:?}"
+            );
+            assert_eq!(
+                cx.debug_bounds("cancel-lfs-download"),
+                Some(rest),
+                "{at}: the press and \"Cancelling…\" move nothing"
+            );
+            assert_eq!(
+                FOOTER_MEASURES.get(),
+                0,
+                "{at}: the line's widest words are measured once for its object"
+            );
+            if wide {
+                // A text size changed while it runs: the words are measured
+                // again, once, and the room follows them; a smaller size, so
+                // they stay whole.
+                cx.update(|window, cx| appearance::apply_text_sizes(12, 12, window, cx));
+                shown(cx);
+                shown(cx);
+                let (reserved, _, device) = measure(cx);
+                let room = cx
+                    .debug_bounds("lfs-download-progress-room")
+                    .expect("the progress's room");
+                assert!(
+                    FOOTER_MEASURES.get() == 1 && (room.size.width - reserved).abs() <= device / 2.,
+                    "{at}: at 12 pt the words are measured again, once ({}), and the \
+                     progress's room, {room:?}, keeps {reserved:?}",
+                    FOOTER_MEASURES.get()
+                );
+            }
+            end_download(&app, &browser, cx, Some("Cancelled"));
+        }
+        cx.update(|window, _| window.set_scale_factor(initial));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Whether Cancel download was pressed is read from the window's write,
     /// never from the words its progress then reads: with those words
     /// changed, a press still turns the review's Cancel to "Cancelling…",
@@ -9160,6 +9360,25 @@ mod tests {
                 "{name}: the copy control names what it copies"
             );
         }
+    }
+
+    /// Whether the pointer resting at `at` shows the progress's tooltip
+    /// saying `text`; the pointer then leaves the window until it has gone.
+    fn tooltip_at(cx: &mut gpui::VisualTestContext, at: Point<Pixels>, text: &str) -> bool {
+        use crate::tags::tests::draw;
+        const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+        cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_move(at, None, Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        draw(cx);
+        let shown = cx
+            .debug_bounds(format!("lfs-download-progress/tooltip/{text}").leak())
+            .is_some();
+        cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        draw(cx);
+        shown
     }
 
     /// Whether the pointer resting on action `id` shows the tooltip `text`,

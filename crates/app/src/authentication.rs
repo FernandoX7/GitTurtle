@@ -28,8 +28,11 @@ pub(crate) const CANCEL_NAME: &str = "Cancel the running Git operation";
 /// What Cancel's tooltip says it stops while a Git operation runs.
 pub(crate) const CANCEL_TOOLTIP: &str = "Stop Git and its child processes. Local or remote changes may already have applied; inspect before retrying.";
 
-/// What the running write's progress reads once its Cancel was pressed.
-const CANCELLING_PROGRESS: &str = "Cancelling… Inspect the result before retrying.";
+/// What the running write's progress reads once its Cancel was pressed: the
+/// longest it says of its own, which the review's footer keeps whole beside
+/// its Cancel download where its line holds it
+/// (`lfs_download::footer_progress_room`).
+pub(crate) const CANCELLING_PROGRESS: &str = "Cancelling… Inspect the result before retrying.";
 
 #[cfg(test)]
 thread_local! {
@@ -38,6 +41,10 @@ thread_local! {
     /// read from the write's state ([`GitTurtle::operation_cancelling`]),
     /// never from these words.
     pub(crate) static CANCELLING_WORDS: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+    /// What Git reports before any press, in place of the control's
+    /// progress, for a test of a long report: the tests run no Git.
+    pub(crate) static PROGRESS_WORDS: std::cell::Cell<Option<&'static str>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -168,6 +175,10 @@ impl GitTurtle {
         } else if self.authentication.prompt_open {
             Some("Waiting for your authentication response…".into())
         } else {
+            #[cfg(test)]
+            if let Some(words) = PROGRESS_WORDS.get() {
+                return Some(words.into());
+            }
             control.progress()
         }
     }

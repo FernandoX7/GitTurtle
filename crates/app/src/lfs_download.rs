@@ -999,7 +999,7 @@ pub(crate) fn download_row(
             // with the Downloads'.
             return running_form(
                 progress.clone(),
-                ProgressRoom::Reserved(progressing),
+                progressing,
                 (&asked.cancel, asked.on_cancel.clone()),
                 cancel.clone(),
                 if short {
@@ -1191,20 +1191,70 @@ pub(crate) fn line_cancel_form(least: &'static str, room: Pixels, window: &Windo
     }
 }
 
-/// The room a running download's progress text takes beside its Cancel
-/// download ([`running_form`]), fixed whatever the progress says, so
-/// neither a press nor a progress update moves Cancel or what follows it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ProgressRoom {
-    /// The Download row's: "Download object" whole wherever every side's
-    /// running form beside the others' Downloads holds it on its line, as
-    /// it does wherever the buttons keep their word, and otherwise, the
-    /// buttons' word given way, its ellipsis, which the row's lines were
-    /// decided from there ([`progress_room`]).
-    Reserved(Pixels),
-    /// The dialog footer's line's: all the line leaves beside Cancel, which
-    /// stands at the line's end.
-    Line,
+/// The widest a review's download says on its dialog's footer, shaped in
+/// the interface font, with the font and sizes it was shaped in
+/// ([`footer_progress_room`]): the review keeps one with each download it
+/// asks for, whose object, and so whose words, never changes, so they are
+/// measured once for the object, and again only where the font or sizes
+/// change.
+pub(crate) type FooterWidest = std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>>;
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`footer_progress_room`] measured its words, for a
+    /// test that a frame measures nothing.
+    pub(crate) static FOOTER_MEASURES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// The room a review's download's progress keeps on its dialog's footer,
+/// on a line `slot` wide beside Back to repository, its Cancel download in
+/// its `form` after it ([`running_form`]): the narrower of the widest its
+/// line says (`widest`, "Downloading flow.mmd's Before object · Cancelling…
+/// Inspect the result before retrying."), shaped once for the object and
+/// kept in `measured`, and all the line leaves beside Cancel. So in a wide
+/// window the text is whole in every state, Cancel standing right after
+/// it, and in a narrow one the text takes what the line leaves, Cancel at
+/// its end; fixed whatever the progress says, so neither a press nor a
+/// progress update moves Cancel, as in the row ([`progress_room`]). Taking
+/// all the line left, the text stood Cancel at the line's end, at 13 pt in a
+/// 1480 × 973 window about 340 px from its words, where the two read as a
+/// pair of dialog buttons with Back to repository and the text's tooltip
+/// showed over the blank footer between them (decision, 2026-11-10).
+pub(crate) fn footer_progress_room(
+    widest: impl FnOnce() -> String,
+    measured: &FooterWidest,
+    slot: Pixels,
+    form: CancelForm,
+    window: &Window,
+) -> Pixels {
+    let key = crate::views::LineKey::current(window);
+    let shaped = {
+        let mut measured = measured.borrow_mut();
+        match &*measured {
+            Some((kept, shaped)) if *kept == key => *shaped,
+            _ => {
+                #[cfg(test)]
+                FOOTER_MEASURES.set(FOOTER_MEASURES.get() + 1);
+                let widest = widest();
+                let shaped =
+                    crate::views::line_widths(&[(&widest, appearance::ui_text(12.))], window);
+                *measured = Some((key, shaped));
+                shaped
+            }
+        }
+    };
+    let (gap, _) = row_room(px(0.), window);
+    let cancel = match form {
+        // The shared 28 px control's square.
+        CancelForm::Icon => window.pixel_snap(appearance::ui_size(28.)),
+        form => cancel_width(form == CancelForm::Short, window),
+    };
+    // Rounded as layout places it at the display's scale, which may change
+    // while the words stay shaped as they were.
+    crate::views::laid_out_text_width(shaped, window)
+        .min(slot - gap - cancel)
+        .max(Pixels::ZERO)
 }
 
 /// The room the Download row keeps for a running download's progress
@@ -1259,9 +1309,10 @@ fn progress_room(
 /// rewritten-series review draws them for the download it asked for: in its
 /// Download row where the pressed Download stood, and on its dialog's footer
 /// while it shows another file or commit. The progress, the window's
-/// progress text, takes the `room` its line keeps for it and no more,
-/// ending in an ellipsis where it is longer, whole in its tooltip and its
-/// accessible name; then, in its `form`, Cancel download's word gives way,
+/// progress text, keeps the `room` its line reserves for it and takes no
+/// more, ending in an ellipsis where it is longer, whole in its tooltip and
+/// its accessible name, the text and its tooltip only as wide as its words
+/// within the room; then, in its `form`, Cancel download's word gives way,
 /// as the Downloads' does beside it, so it reads "Cancel", its accessible
 /// name and tooltip saying what it cancels, and on the footer its label for
 /// its icon. Once pressed it reads "Cancelling…" and is no longer
@@ -1276,7 +1327,7 @@ fn progress_room(
 /// Cancel, and After… beside a running Before…, right).
 pub(crate) fn running_form(
     progress: SharedString,
-    room: ProgressRoom,
+    room: Pixels,
     (focus, on_cancel): (&FocusHandle, OnCancel),
     cancel: RunningCancel,
     form: CancelForm,
@@ -1291,12 +1342,7 @@ pub(crate) fn running_form(
         .live_region(gpui::accesskit::Live::Off, false)
         .tooltip(said_tooltip("lfs-download-progress", progress.clone()))
         .min_w_0()
-        // It gives way first where its line has less room than it keeps.
         .flex_shrink(1.)
-        .map(|text| match room {
-            ProgressRoom::Reserved(width) => text.w(width),
-            ProgressRoom::Line => text.flex_1(),
-        })
         .truncate()
         .text_size(appearance::ui_text(12.))
         .text_color(rgb(palette(cx).accent))
@@ -1304,6 +1350,18 @@ pub(crate) fn running_form(
     // Tests assemble the window's tree from what they record.
     #[cfg(test)]
     crate::native_accessibility::written::built(&text);
+    // The room is kept around the text, which takes its words and no more,
+    // so its tooltip covers only them: as wide as the room, it showed over
+    // the blank room past shorter words, between them and Cancel.
+    let text = div()
+        .debug_selector(|| "lfs-download-progress-room".into())
+        .min_w_0()
+        // It gives way first where its line has less room than it keeps.
+        .flex_shrink(1.)
+        .w(room)
+        .flex()
+        .items_center()
+        .child(text);
     let label = match (cancel.cancelling, form) {
         (_, CancelForm::Icon) => "",
         (true, _) => CANCELLING,
@@ -1326,7 +1384,6 @@ pub(crate) fn running_form(
     };
     let drawn = div()
         .flex_shrink(1.)
-        .when(room == ProgressRoom::Line, |drawn| drawn.flex_1())
         .min_w_0()
         .flex()
         .items_center()
