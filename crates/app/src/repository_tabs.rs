@@ -501,14 +501,28 @@ pub struct State {
     /// The explicit Open of a marked tab's folder under way, which reads it
     /// afresh ([`GitTurtle::open_repository_tab`]).
     recapture: Option<Recapture>,
-    /// Whether keyboard focus was in a menu as the shown tab's latest Open
-    /// began, before its return to History took focus to the list
-    /// ([`GitTurtle::note_menu_focus`]): where that read marks the tab, the
-    /// focus goes to the mark's way back
-    /// ([`GitTurtle::close_menus_for_the_mark`]).
-    menu_held: bool,
+    /// What held keyboard focus as the shown tab's latest Open began,
+    /// before its return to History took focus to the list
+    /// ([`GitTurtle::note_open_focus`]): where that read marks the tab or
+    /// leaves it marked, a menu's focus goes to the mark's way back
+    /// ([`GitTurtle::close_menus_for_the_mark`]), and so does the way back's
+    /// own ([`GitTurtle::return_to_the_way_back`]).
+    open_focus: OpenFocus,
     #[cfg(test)]
     save_path: Option<PathBuf>,
+}
+/// What held keyboard focus as an Open of the shown tab began
+/// ([`State::open_focus`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum OpenFocus {
+    /// Something else, or nothing.
+    #[default]
+    Elsewhere,
+    /// A menu open on the tab.
+    Menu,
+    /// The mark's way back (`GitTurtle::mark_way_back`): the navigation's
+    /// Refresh under its line or the rail's Open repository.
+    WayBack,
 }
 /// An explicit Open of a marked tab's folder (Open…, the projects list, a
 /// library group): its read names no root or Git directory, so it may find
@@ -1947,13 +1961,40 @@ impl GitTurtle {
         }
         false
     }
-    /// Notes, as an Open of the shown tab begins, whether keyboard focus is
-    /// in a menu ([`State::menu_held`]): the Open returns to History, which
-    /// takes focus to the list before its read can mark the tab, so a menu
-    /// open on the tab as the watcher's quiet read found its repository
-    /// gone no longer held focus as the mark landed.
-    pub(super) fn note_menu_focus(&mut self, window: &Window) {
-        self.repository_tabs.menu_held = crate::native_accessibility::focus_in_menu(window);
+    /// Notes, as an Open of the shown tab begins, what holds keyboard focus
+    /// ([`State::open_focus`]), a menu or the mark's way back: the Open
+    /// returns to History, which takes focus to the list before its read can
+    /// mark the tab, so a menu open on the tab as the watcher's quiet read
+    /// found its repository gone no longer held focus as the mark landed,
+    /// and a Refresh pressed under the mark's line left focus on the list
+    /// the tab draws empty as its read left the tab marked.
+    pub(super) fn note_open_focus(&mut self, window: &Window) {
+        self.repository_tabs.open_focus = if crate::native_accessibility::focus_in_menu(window) {
+            OpenFocus::Menu
+        } else if self.mark_way_back.is_focused(window) {
+            OpenFocus::WayBack
+        } else {
+            OpenFocus::Elsewhere
+        };
+    }
+    /// Gives focus back to the mark's way back where it held focus as the
+    /// shown tab's latest Open began and that Open's read leaves the tab
+    /// marked ([`State::open_focus`]): its Refresh pressed on a tab that
+    /// stays unavailable, or Refresh asked for there or on the rail's Open
+    /// repository. Open's return to History took focus to the list, which a
+    /// marked tab draws empty, so Enter again did nothing (decided
+    /// 2026-11-11: whole focus, feedback in place). Only while focus is
+    /// still on the list that return gave it: focus the person moved during
+    /// a slow read stays where they took it.
+    pub(super) fn return_to_the_way_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.repository_tabs.open_focus) == OpenFocus::WayBack
+            && self.page == AppPage::Repository
+            && self.shown_tab_unavailable()
+            && self.focus.is_focused(window)
+        {
+            window.focus(&self.mark_way_back, cx);
+            cx.notify();
+        }
     }
     /// Closes every menu open on the shown tab as its mark lands
     /// ([`Self::tab_opening_failed`]), as a resize closes them: the
@@ -1979,7 +2020,7 @@ impl GitTurtle {
         // Focus a menu held as the read that marks the tab began, which
         // Open's return to History took to the list, or holds now in the
         // frame last drawn, read before any menu closes.
-        let held = std::mem::take(&mut self.repository_tabs.menu_held)
+        let held = self.repository_tabs.open_focus == OpenFocus::Menu
             || crate::native_accessibility::focus_in_menu(window);
         self.file_menu_row = None;
         let rows = [
@@ -5887,6 +5928,107 @@ pub(crate) mod tests {
             "unmarked"
         );
         assert!(!drawn(cx), "no menu comes back");
+    }
+
+    /// Refresh pressed under "Branches unavailable" on a tab its read leaves
+    /// marked gives focus back to that Refresh, whether Return presses it,
+    /// held with its repeats marked held and, as X11 sends them, fresh, the
+    /// pointer while it holds focus or the Refresh shortcut there, and so
+    /// does the Refresh shortcut on the rail's Open repository, the way back
+    /// where the rail stands in the navigation's place
+    /// (`GitTurtle::return_to_the_way_back`). Open's return to History took
+    /// focus to the list the marked tab draws empty, where Return again did
+    /// nothing.
+    #[gpui::test]
+    async fn a_refresh_that_leaves_the_tab_marked_gives_focus_back_to_the_way_back(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        draw(cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("moved-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        let (way_back, list) =
+            app.read_with(cx, |app, _| (app.mark_way_back.clone(), app.focus.clone()));
+        let refresh_keys = crate::shortcuts::resolve_key("primary-r", cfg!(target_os = "macos"));
+        // GPUI presses a focused Button as Return comes up.
+        let enter = |cx: &mut VisualTestContext, is_held: bool| {
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                is_held,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        };
+        let release = |cx: &mut VisualTestContext| {
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+            });
+        };
+        for (route, way) in [
+            ("Return", "navigation-refresh"),
+            ("a held Return", "navigation-refresh"),
+            ("the pointer", "navigation-refresh"),
+            ("the shortcut", "navigation-refresh"),
+            ("the shortcut", "rail-open"),
+        ] {
+            if way == "rail-open" {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_sidebar(window, cx)));
+                draw(cx);
+            }
+            assert!(cx.debug_bounds(way).is_some(), "{route} on {way}: drawn");
+            cx.update(|window, cx| window.focus(&way_back, cx));
+            draw(cx);
+            let before = app.read_with(cx, |app, _| app.generation);
+            match route {
+                "Return" => {
+                    enter(cx, false);
+                    release(cx);
+                }
+                "a held Return" => {
+                    enter(cx, false);
+                    enter(cx, true);
+                    enter(cx, true);
+                    enter(cx, false);
+                    enter(cx, false);
+                    release(cx);
+                }
+                "the pointer" => {
+                    let bounds = cx.debug_bounds(way).expect(way);
+                    cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+                }
+                _ => cx.simulate_keystrokes(&refresh_keys),
+            }
+            settle(&app, cx).await;
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.generation) > before,
+                "{route} on {way}: the repository is read again"
+            );
+            assert!(
+                app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+                "{route} on {way}: still marked"
+            );
+            assert!(
+                cx.update(|window, _| way_back.is_focused(window)),
+                "{route} on {way}: focus is back on the way back"
+            );
+            assert!(
+                !cx.update(|window, _| list.is_focused(window)),
+                "{route} on {way}: not on the empty list"
+            );
+        }
     }
 
     /// An explicit Open of a marked tab's folder whose snapshot names a

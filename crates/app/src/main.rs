@@ -626,7 +626,9 @@ struct GitTurtle {
     /// The shown tab's way back from its mark, Refresh or Open…, where the
     /// page draws it: the navigation's Refresh on History, the rail's Open
     /// repository where the rail stands in its place. Focus goes there from
-    /// a menu the mark closes (`GitTurtle::close_menus_for_the_mark`).
+    /// a menu the mark closes (`GitTurtle::close_menus_for_the_mark`), and
+    /// back there as a Refresh it held leaves the tab marked
+    /// (`GitTurtle::return_to_the_way_back`).
     mark_way_back: FocusHandle,
     nav_mode: NavMode,
     expanded_folders: HashSet<String>,
@@ -1385,10 +1387,11 @@ impl GitTurtle {
                         // on the hub as well, a review past its limit met
                         // the person who closed the tab as Projects' alert.
                         let opening_failed = opening.is_some();
-                        if opening_failed
-                            && this.tab_opening_failed(gitturtle_core::could_not_check(&error))
-                        {
-                            this.close_menus_for_the_mark(window, cx);
+                        if opening_failed {
+                            if this.tab_opening_failed(gitturtle_core::could_not_check(&error)) {
+                                this.close_menus_for_the_mark(window, cx);
+                            }
+                            this.return_to_the_way_back(window, cx);
                         }
                         this.status = "Read could not complete".into();
                         this.hub.update(cx, |hub, cx| {
@@ -1432,7 +1435,7 @@ impl GitTurtle {
             return;
         }
         // Before the return to History below takes focus to the list.
-        self.note_menu_focus(window);
+        self.note_open_focus(window);
         // A repository opened again in place, as History's Refresh opens
         // it, drops what it was preparing, and waits for its read as a
         // switch that drops it does, or holds the wait for a preparation a
