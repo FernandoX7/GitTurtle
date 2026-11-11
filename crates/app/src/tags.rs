@@ -5,11 +5,13 @@ use gitturtle_core::{RemoteConfig, Tag, TagCommand, TagDetails, TagList, WriteCo
 use gpui_kit::{
     component::{
         WindowExt,
-        dialog::DialogFooter,
+        dialog::{Confirm, DialogFooter},
+        input::Enter,
         scroll::{Scrollbar, ScrollbarHandle, ScrollbarMode},
     },
     prelude::FluentBuilder,
 };
+use std::{cell::Cell, rc::Rc};
 
 pub(crate) const PREPARING: &str = "Reading tags…";
 /// The gap the kit's dialog leaves between its body and its footer, its
@@ -324,6 +326,40 @@ pub(crate) fn error_tooltip(report: &str) -> SharedString {
         shown.push('…');
     }
     shown.into()
+}
+
+/// Why a dialog's action on its repository is refused once that repository
+/// is no longer the one shown (`GitTurtle::dialog_refusal`).
+pub(crate) const NOT_SHOWN_REASON: &str = "Return to this repository first";
+
+/// Whether the kit's `Confirm` reaching a dialog's field comes from Return
+/// in that field, for a dialog whose field acts on Return of its own: the
+/// dialog sends it for a fresh press there, after the field's own `Enter`
+/// has let the key go on, and Done's click sends it too
+/// ([`dialog_footer`]), to whatever holds focus, a field included, since a
+/// Button takes no focus on a press. The view notes the field's `Enter` as
+/// it passes ([`Self::note`]) and acts on `Confirm` only where it took that
+/// note ([`Self::take`]); any other `Confirm` is the dialog's own. Taken as
+/// the field's, Done clicked with focus in the Reflog's filter read the
+/// first entry the filter matched and left the Reflog open.
+#[derive(Clone, Default)]
+pub(crate) struct FieldReturn(Rc<Cell<bool>>);
+
+impl FieldReturn {
+    /// Notes a field's `Enter`, which the key going down sends: the note
+    /// stands until that key's dispatch ends, so it never answers a later
+    /// click, nor a press the dialog does not confirm.
+    pub(crate) fn note(&self, cx: &mut App) {
+        self.0.set(true);
+        let noted = self.0.clone();
+        cx.defer(move |_| noted.set(false));
+    }
+
+    /// Whether the `Confirm` being dispatched comes from the Enter noted,
+    /// which it takes.
+    pub(crate) fn take(&self) -> bool {
+        self.0.replace(false)
+    }
 }
 
 /// A dialog's own footer, the kit's OK and optional Cancel built on the app's
@@ -1115,6 +1151,8 @@ struct TagBrowser {
     query: Entity<InputState>,
     /// The list's scroll, which reveals the row Tab moves onto.
     rows: FocusReveal,
+    /// Whether the dialog's Confirm comes from Return in the filter.
+    field_return: FieldReturn,
     _subscription: Subscription,
 }
 impl TagBrowser {
@@ -1128,12 +1166,9 @@ impl TagBrowser {
     ) -> Self {
         let query = cx
             .new(|cx| InputState::new(window, cx).placeholder("Filter tags by name or object ID"));
-        let subscription = cx.subscribe_in(&query, window, |this, _, event, window, cx| {
-            if let InputEvent::PressEnter { .. } = event
-                && let Some(tag) = this.matches(cx).first()
-            {
-                this.activate((*tag).clone(), window, cx);
-            }
+        // Return in the filter is the dialog's Confirm, routed here
+        // ([`Self::confirm_in_field`]), never the field's own `PressEnter`.
+        let subscription = cx.subscribe_in(&query, window, |_, _, _: &InputEvent, _, cx| {
             cx.notify();
         });
         Self {
@@ -1143,8 +1178,55 @@ impl TagBrowser {
             committed,
             query,
             rows: FocusReveal::new(Trigger::Keyboard),
+            field_return: FieldReturn::default(),
             _subscription: subscription,
         }
+    }
+    /// Return in the filter, delivered as the dialog's Confirm action:
+    /// it inspects the first tag the filter matches, as that tag's row
+    /// does, once per press, as the key goes down, never on a held key's
+    /// repeats, under X11 too, and never for a modified Enter, as the dialog
+    /// confirms. With no match it does nothing, and refused, as the rows
+    /// are while a write runs or Tags' repository is no longer shown
+    /// ([`Self::activate`]), it says why ([`Self::refuse_choice`]): either
+    /// way Tags stays open with its filter. Anywhere else, and for Done's
+    /// click, it is the dialog's own, Done ([`FieldReturn`]). The filter
+    /// acted on its own `PressEnter` while the dialog's Done took the same
+    /// press: with a write running the choice was refused silently and Tags
+    /// closed, the filter lost, and with no match Return closed Tags.
+    fn confirm_in_field(&mut self, confirm: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        let filter = self.query.read(cx).focus_handle(cx);
+        if !self.field_return.take() || confirm.secondary || !filter.is_focused(window) {
+            cx.propagate();
+            return;
+        }
+        let Some(tag) = self.matches(cx).first().map(|tag| (*tag).clone()) else {
+            return;
+        };
+        if !self.activate(tag, window, cx) {
+            self.refuse_choice(window, cx);
+        }
+    }
+    /// Says why Return in the filter chose nothing, where Tags' rows only
+    /// stand unavailable: a write's busy look shows at once, as a refused
+    /// press shows it (`GitTurtle::show_busy_look`), dimming the rows and
+    /// Create tag…, and the window's alert says the reason at once, again
+    /// for each press (`copy_feedback::alert`).
+    fn refuse_choice(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let reason = self
+            .owner
+            .update(cx, |owner, cx| {
+                if owner.path.as_deref() != self.path.as_deref()
+                    || owner.page != AppPage::Repository
+                {
+                    NOT_SHOWN_REASON
+                } else {
+                    owner.show_busy_look(cx);
+                    owner.busy_reason()
+                }
+            })
+            .unwrap_or(NOT_SHOWN_REASON);
+        crate::copy_feedback::alert(window, cx, reason);
     }
     fn matches(&self, cx: &App) -> Vec<&Tag> {
         let query = self.query.read(cx).value().trim().to_lowercase();
@@ -1165,13 +1247,19 @@ impl TagBrowser {
     /// the Repository page is no longer shown. It once checked only the
     /// repository and the write, so a press off the Repository page closed
     /// Tags for a read that then refused.
-    fn activate(&self, tag: Tag, window: &mut Window, cx: &mut Context<Self>) {
-        let _ = self.owner.update(cx, |this, cx| {
-            if !this.dialog_refusal(self.path.as_deref()).0 {
-                window.close_dialog(cx);
-                this.inspect_tag(tag, window, cx);
-            }
-        });
+    ///
+    /// Whether it inspects the tag.
+    fn activate(&self, tag: Tag, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.owner
+            .update(cx, |this, cx| {
+                let refused = this.dialog_refusal(self.path.as_deref()).0;
+                if !refused {
+                    window.close_dialog(cx);
+                    this.inspect_tag(tag, window, cx);
+                }
+                !refused
+            })
+            .unwrap_or(false)
     }
 }
 /// A Tags row's ID, and focus key: its tag's name, which no other local tag
@@ -1230,6 +1318,12 @@ impl Render for TagBrowser {
             crate::workspace::dialog_refusal(&self.owner, self.path.as_deref(), cx);
         let committed = self.committed;
         div().flex().flex_col().gap_3().py(room)
+            // Return in the filter is its own ([`Self::confirm_in_field`]).
+            .on_action(cx.listener(|this, _: &Enter, _, cx| {
+                this.field_return.note(cx);
+                cx.propagate();
+            }))
+            .on_action(cx.listener(Self::confirm_in_field))
             // Painted after the field, the canvas fits its placeholder in
             // whole words, where at 18 pt in a half tile it was cut mid-glyph.
             .child(div().flex().gap_2().child(div().relative().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true)).child(crate::workspace::placeholder_fit(self.query.clone(), &FILTER_FIT, FILTER_PLACEHOLDERS, FIELD_TEXT))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).when(!committed, |create| create.accessibility_label(NO_COMMIT_NAME).tooltip(NO_COMMIT_REASON)).map(|create| crate::workspace::refusing(create, || "create-tag".into(), refused || !committed, dimmed || !committed)).on_click(cx.listener(|this, _, window, cx| {
@@ -1238,7 +1332,7 @@ impl Render for TagBrowser {
             .when(!self.list.tags.is_empty(), |element| element.child(static_text("tag-list-summary", summary(self.list.tags.len())).ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tags-list").debug_selector(|| "tags-list".into()).max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap_1().children(matches.iter().zip(rows).enumerate().map(|(index, (tag, focus))| {
                 let tag = (*tag).clone(); let label = format!("{} · {} · {}", tag.name, if tag.annotated { "Annotated" } else { "Lightweight" }, short_oid(&tag.target_oid));
-                Button::new(tag_row_id(&tag)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).pl(TEXT_INSET).child(row_text(format!("tag-row-text-{index}"), label.clone())).accessibility_label(label).map(|row| crate::workspace::refusing(row, || format!("tag-row-{index}"), refused, dimmed)).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
+                Button::new(tag_row_id(&tag)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).pl(TEXT_INSET).child(row_text(format!("tag-row-text-{index}"), label.clone())).accessibility_label(label).map(|row| crate::workspace::refusing(row, || format!("tag-row-{index}"), refused, dimmed)).on_click(cx.listener(move |this, _, window, cx| { this.activate(tag.clone(), window, cx); }))
             })).when(matches.is_empty(), |element| element.child(div().py_3().ml(TEXT_INSET).child(EmptyState::new("tag-list-empty", if !self.committed { NO_COMMIT_LINE } else if self.list.tags.is_empty() { "No local tags yet · Create tag… names a commit" } else { "No tags match this filter" }).block(cx)))), "tags-scrollbar"))
             .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
@@ -3782,6 +3876,139 @@ pub(crate) mod tests {
         (0..count)
             .map(|index| &*format!("{name}-{index}").leak())
             .collect()
+    }
+
+    /// Return in Tags' filter inspects the first tag it matches once per
+    /// press, under X11 too, and otherwise keeps Tags open with its filter
+    /// and focus in it: while a write runs a press is refused, shows the
+    /// busy look and says why at once in the window's alert, the key's
+    /// repeats (`REPEATS`) saying nothing more, and a new press after the
+    /// key-up says it again; with no match a press does nothing; once the
+    /// write has ended a press inspects the first match. A click on Done
+    /// with focus in the filter is Done's: Tags closes and nothing is
+    /// inspected. The filter acted on its own `PressEnter` while the
+    /// dialog's Done took the same press, so a refused choice closed Tags
+    /// silently, the filter lost, and Return with no match closed it.
+    #[gpui::test]
+    async fn return_in_the_filter_chooses_once_per_press_and_keeps_tags_open(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        use crate::copy_feedback::tests::alerted;
+        let fixture = tempfile::tempdir().unwrap();
+        let (app, _, cx) = open_tags_list(cx, fixture.path(), 3).await;
+        let filter = app
+            .read_with(cx, |app, _| app.tag_actions.filter.clone())
+            .expect("the filter");
+        let open = |cx: &mut VisualTestContext| cx.debug_bounds("tags-list").is_some();
+        let kept = |cx: &mut VisualTestContext, at: &str, text: &str| {
+            assert!(open(cx), "{at}: Tags stays open");
+            cx.update(|window, cx| {
+                let field = filter.read(cx);
+                assert!(
+                    field.focus_handle(cx).is_focused(window),
+                    "{at}: focus stays in the filter"
+                );
+                assert_eq!(field.value().as_ref(), text, "{at}: the filter is kept");
+            });
+            assert!(
+                app.read_with(cx, |app, _| app.tag_actions.task.is_none()),
+                "{at}: no tag is inspected"
+            );
+        };
+        let busy = |cx: &mut VisualTestContext, busy: bool| {
+            app.update(cx, |app, cx| {
+                app.operation_busy = busy.then_some("Testing");
+                cx.notify();
+            });
+            draw(cx);
+        };
+        let filter_by = |cx: &mut VisualTestContext, text: &'static str| {
+            cx.update(|window, cx| {
+                filter.update(cx, |input, cx| input.set_value(text, window, cx));
+                filter.read(cx).focus_handle(cx).focus(window, cx);
+            });
+            draw(cx);
+        };
+        filter_by(cx, "");
+        busy(cx, true);
+        let mut said: Option<(ElementId, String)> = None;
+        for press in ["the first press", "a new press after the key-up"] {
+            enter(cx, Some(false));
+            draw(cx);
+            kept(cx, press, "");
+            let alert = alerted(cx).expect("the refusal is said");
+            assert_eq!(
+                alert.1,
+                crate::workspace::BUSY_REASON,
+                "{press}: it says why"
+            );
+            assert!(
+                said.as_ref().is_none_or(|said| said.0 != alert.0),
+                "{press}: said afresh"
+            );
+            assert!(
+                app.read_with(cx, |app, _| app.busy_shown()),
+                "{press}: the busy look shows at once"
+            );
+            for (repeat, events) in REPEATS {
+                for down in events {
+                    enter(cx, *down);
+                }
+                draw(cx);
+                let at = format!("{press}, {repeat}");
+                kept(cx, &at, "");
+                assert_eq!(
+                    alerted(cx),
+                    Some(alert.clone()),
+                    "{at}: nothing more is said"
+                );
+            }
+            enter(cx, None);
+            draw(cx);
+            said = Some(alert);
+        }
+        filter_by(cx, "no-such-tag");
+        enter(cx, Some(false));
+        draw(cx);
+        kept(cx, "no match", "no-such-tag");
+        assert_eq!(alerted(cx), said, "no match: nothing is said");
+        enter(cx, None);
+        draw(cx);
+
+        filter_by(cx, "");
+        busy(cx, false);
+        enter(cx, Some(false));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            Some(PREPARING),
+            "after the write, a press inspects the first match"
+        );
+        read_lands(&app, cx).await;
+        enter(cx, None);
+        draw(cx);
+        assert!(!open(cx), "Tags gives way to the tag it inspects");
+
+        // Done's click, with focus in the filter, is Done's.
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        read_lands(&app, cx).await;
+        draw(cx);
+        let filter = app
+            .read_with(cx, |app, _| app.tag_actions.filter.clone())
+            .expect("the filter");
+        cx.update(|window, cx| filter.read(cx).focus_handle(cx).focus(window, cx));
+        draw(cx);
+        let done = cx.debug_bounds("dialog-ok: Done").expect("Done");
+        cx.simulate_click(done.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(!open(cx), "Done closes Tags");
+        assert!(
+            app.read_with(cx, |app, _| app.tag_actions.task.is_none()
+                && app.operation_busy.is_none()),
+            "Done inspects nothing"
+        );
     }
 
     /// Tags of `tags` rows open at 1000 × 680, and its list.
