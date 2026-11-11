@@ -7260,9 +7260,11 @@ mod tests {
             Some(format!("Failed: {words}")),
             "Download After…'s accessible description says them"
         );
+        // The test platform sets scale 2 on every resize: the scale after it.
+        cx.simulate_resize(size(px(1480.), px(973.)));
         cx.update(|window, _| window.set_scale_factor(1.));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
-        cx.simulate_resize(size(px(1480.), px(973.)));
+        assert_eq!(cx.update(|window, _| window.scale_factor()), 1.);
         shown(cx);
         let failure = cx
             .debug_bounds("lfs-download-failure")

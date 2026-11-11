@@ -630,17 +630,27 @@ thread_local! {
 }
 
 /// `button`, side `side`'s Download in a row that `asks` for its own
-/// download or Compare's, which notes, where it is drawn, the glyph it draws
-/// at `path` and the colour that glyph is painted in: `own`, set on the
-/// glyph itself, or else the button's text colour, the kit's disabled one
-/// while the button is dimmed, read as the glyph reads it, for a test. A row
-/// measured and not drawn notes nothing.
+/// download or Compare's, drawing the glyph at `path`: where `failed`, in
+/// place of its pull glyph, in `own` where set, or else the button's text
+/// colour, the kit's disabled one while the button is dimmed. The glyph's
+/// colour is set here and nowhere else, and the Download notes, where it is
+/// drawn, the glyph and the colour it is painted in, resolved as the icon
+/// resolves it, for a test: a colour set on the icon beside the note once
+/// drew the warning colour on a dimmed Download while the note said the
+/// disabled one. A row measured and not drawn notes nothing.
 fn noted_glyph(
     button: Button,
     (asks, side): (bool, usize),
-    path: SharedString,
+    (path, failed): (SharedString, bool),
     own: Option<gpui::Hsla>,
 ) -> Button {
+    let button = if failed {
+        button.icon(
+            crate::control_icon_at(path.clone()).when_some(own, |icon, own| icon.text_color(own)),
+        )
+    } else {
+        button
+    };
     #[cfg(test)]
     {
         button.child(
@@ -1041,15 +1051,9 @@ pub(crate) fn download_row(
                         false,
                     ),
                     (asks, side),
-                    glyph.clone(),
+                    (glyph, failed),
                     own,
                 )
-                .when(failed, |button| {
-                    button.icon(
-                        crate::control_icon_at(glyph)
-                            .when_some(own, |icon, own| icon.text_color(own)),
-                    )
-                })
                 .when_some(focus, |button, focus| button.track_focus(&focus))
                 // The side that failed says the failure's words, drawn
                 // beside it where they have room, where the others say the
@@ -2157,6 +2161,11 @@ mod tests {
     /// Draws the window at display scale `scale`.
     fn at_scale(cx: &mut VisualTestContext, scale: f32) {
         cx.update(|window, _| window.set_scale_factor(scale));
+        assert_eq!(
+            cx.update(|window, _| window.scale_factor()),
+            scale,
+            "the row draws at {scale}"
+        );
     }
 
     /// A window drawing the row at 18 pt and scale 2, as QA's 461 × 490
@@ -2440,9 +2449,10 @@ mod tests {
                 assert!(
                     (now.left() - rest.left()).abs() <= device / 2.
                         && (now.top() - rest.top()).abs() <= device / 2.
+                        && (now.size.width - rest.size.width).abs() <= device / 2.
                         && cx.debug_bounds("lfs-download-failure").is_none(),
-                    "{at}: the failed Download, {now:?}, keeps its place, {rest:?}, and nothing \
-                 follows it"
+                    "{at}: the failed Download, {now:?}, keeps its place and width, {rest:?}, \
+                     and nothing follows it"
                 );
                 assert_eq!(
                     drawn_glyph(true, failed).as_deref(),
