@@ -4140,8 +4140,16 @@ impl GitTurtle {
                     Some(view) => {
                         let room = crate::in_frame::in_frame(move |bounds, window, cx| {
                             split_room(
-                                view, edge, reason, muted, footer, split_rows, false, bounds,
-                                window, cx,
+                                view,
+                                edge,
+                                (reason, None),
+                                muted,
+                                footer,
+                                split_rows,
+                                false,
+                                bounds,
+                                window,
+                                cx,
                             )
                         })
                         .named("compare-split-room");
@@ -4383,7 +4391,7 @@ impl DownloadRegion {
                             split_room(
                                 view,
                                 edge,
-                                reason,
+                                (reason, Some(reason_height)),
                                 muted,
                                 footer,
                                 Some(1.),
@@ -4543,12 +4551,15 @@ thread_local! {
 /// under the status bar, beneath the line, and beside two stacked Download
 /// buttons it left the text no whole row, both at 18 pt in a 461 × 490
 /// window. Where `given_way`, the footer has given way already, as a
-/// Download row's region decides it ([`DownloadRegion`]).
+/// Download row's region decides it ([`DownloadRegion`]), which passes the
+/// `reason`'s height it keeps, `reason_height`, measured only where what it
+/// follows from changes ([`GitTurtle::download_heights`]); without it the
+/// reason is measured in the frame it is drawn.
 #[allow(clippy::too_many_arguments)]
 fn split_room(
     view: Entity<crate::split_diff::SplitView>,
     edge: Option<AnyElement>,
-    reason: Option<SharedString>,
+    (reason, reason_height): (Option<SharedString>, Option<Pixels>),
     muted: u32,
     footer: Option<CompareFooter>,
     rows: Option<f32>,
@@ -4566,8 +4577,10 @@ fn split_room(
     SPLIT_FIND_BAR.set(bar);
     let device_pixel = px(1. / window.scale_factor());
     let footer_height = window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT));
-    let reason_height = reason.clone().map_or(px(0.), |reason| {
-        crate::in_frame::measured_height(partial_reason(reason, muted), width, window, cx)
+    let reason_height = reason_height.unwrap_or_else(|| {
+        reason.clone().map_or(px(0.), |reason| {
+            crate::in_frame::measured_height(partial_reason(reason, muted), width, window, cx)
+        })
     });
     // What stands above the text, the rows the footer leaves it and how much
     // beyond them it needs: with the bar, a device pixel short of the rows,
