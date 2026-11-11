@@ -103,6 +103,16 @@ impl Icon {
         &self.path
     }
 
+    /// The colour set on this icon with `text_color`, or `None` where none
+    /// is set and it draws in the text colour it inherits.
+    ///
+    /// GitTurtle patch: upstream keeps it private. An application's tests
+    /// read the colour of the icon it hands a Button, which the test
+    /// platform paints into no sprite they can read.
+    pub fn own_color(&self) -> Option<Hsla> {
+        self.text_color
+    }
+
     /// Create a new view for the icon
     pub fn view(self, cx: &mut App) -> Entity<Icon> {
         cx.new(|_| self)

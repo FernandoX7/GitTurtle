@@ -494,6 +494,23 @@ reads Review tag's node through `Button::base` (both through
 base element or the test platform builds an accessibility tree, and those
 tests read the nodes without them.
 
+The icon-colour patch modifies `src/icon.rs`. `Icon::own_color` returns the
+colour set on an icon with `text_color`, or `None` where none is set and the
+icon draws in the text colour it inherits, so an application's tests can read
+the colour of the icon it hands a Button: the test platform keeps an SVG's
+painted sprite in a scene they cannot read (`Window::painted_quads` returns
+quads only) and renders no image without a headless renderer. Nothing drawn
+changes. The consumer is tests only: `lfs_download::noted_glyph` notes the
+colour of the glyph it hands each Git LFS Download, and
+`rewrite_review::tests::another_caller_s_start_keeps_the_review_s_failure`
+fails where that Download, dimmed while a write runs, draws its warning glyph
+in the warning colour (noted from the colour the caller meant rather than the
+icon's, a glyph drawn in another colour passed). It is public and ungated,
+as `Button::base` and `popover_ring` are: this crate has no `test-support`
+feature, and `gpui-kit`'s reaches only `gpui`. Remove it when upstream exposes
+an icon's colour or the test platform exposes painted sprites, and that test
+reads the drawn colour without it.
+
 The diff-roles patch modifies `src/highlighter/registry.rs`,
 `src/highlighter/wasm_stub.rs` and `src/highlighter/languages.rs`, and adds
 `src/highlighter/languages/diff/highlights.scm`. Upstream builds the diff
