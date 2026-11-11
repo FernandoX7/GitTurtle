@@ -557,8 +557,11 @@ async fn every_item_the_profile_menu_refuses_says_why(cx: &mut TestAppContext) {
 /// built again as the mark lands, and Apply prepares no review: the
 /// repository the tab shows is the one read before the mark, whose
 /// configuration Apply's review named and whose write Git core then
-/// refused (security probe Q3, FU39-A). New profile… and Manage profiles…,
-/// which write no repository, stay offered.
+/// refused (security probe Q3, FU39-A). Manage profiles… says the mark
+/// too, as the palette's Manage Git profiles… does, and no route opens the
+/// manager, whose Apply… names that repository (decided 2026-11-11: an
+/// entry is offered only where it can act); New profile…, which writes no
+/// repository, stays offered.
 #[gpui::test]
 async fn a_marked_tab_s_saved_profiles_say_the_mark(cx: &mut TestAppContext) {
     let (_fixture, app, cx) = history_window(cx).await;
@@ -574,11 +577,20 @@ async fn a_marked_tab_s_saved_profiles_say_the_mark(cx: &mut TestAppContext) {
         [
             "Work · qa@work.example, repository unavailable",
             "Personal · qa@home.example, repository unavailable",
+            "Manage profiles…, repository unavailable",
         ],
-        "built again as the mark lands, each says it beside it"
+        "built again as the mark lands, each says it beside it, and Manage \
+         profiles… too, as the palette's Manage Git profiles… does"
     );
     cx.simulate_keystrokes("escape");
     draw(cx);
+    // Whatever route asks for it, the manager does not open.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_profiles(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "the manager opens on no route"
+    );
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
             crate::profiles::apply_profile(app, window, cx)

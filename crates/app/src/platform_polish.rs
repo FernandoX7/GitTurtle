@@ -373,16 +373,20 @@ impl Render for PrimaryMenu {
 /// as the busy spell, by the label it runs under, whether Projects is
 /// refused (`GitTurtle::projects_refusal`), which a wait for a dropped
 /// review's read never refuses, since Projects ends it, whether the
-/// repository's page is shown, and whether a write runs or the reload after
-/// it has yet to land (`GitTurtle::write_unsettled`). Each is a read of a
-/// field or two; Browse Stashes… is offered or refused for the palette's
-/// reason, which reads exactly these, and waits for the write they name
-/// ([`StashesItem`]). The Linux Main Menu, open, reads its rows again only
-/// as these change (`PrimaryMenu::toggle`): the palette's reason for each of
-/// its commands reads nothing else (`CommandId::reason`), and the label the
-/// write runs under decides its busy reason. A command added to that menu
-/// whose reason reads more, as File History reads the selection, needs
-/// that read here too, or the open menu would not follow it.
+/// repository's page is shown, whether a write runs or the reload after
+/// it has yet to land (`GitTurtle::write_unsettled`), and whether the shown
+/// tab is marked (`GitTurtle::shown_tab_unavailable`), which refuses Browse
+/// Stashes… as the palette refuses it: without it, a mark that landed or
+/// cleared built no menu, and View ▸ Browse Stashes… stayed as it was.
+/// Each is a read of a field or two; Browse Stashes… is offered or refused
+/// for the palette's reason, which reads exactly these, and waits for the
+/// write they name ([`StashesItem`]). The Linux Main Menu, open, reads its
+/// rows again only as these change (`PrimaryMenu::toggle`): the palette's
+/// reason for each of its commands reads nothing else
+/// (`CommandId::reason`), and the label the write runs under decides its
+/// busy reason. A command added to that menu whose reason reads more, as
+/// File History reads the selection, needs that read here too, or the open
+/// menu would not follow it.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(super) struct MenuState {
     repository: bool,
@@ -390,6 +394,7 @@ pub(super) struct MenuState {
     projects_refused: bool,
     workspace: bool,
     unsettled: bool,
+    unavailable: bool,
 }
 
 /// Browse Stashes… in the menu bar's View menu as the menus are built, as
@@ -577,6 +582,7 @@ impl GitTurtle {
             projects_refused: self.projects_refusal().0,
             workspace: self.page == AppPage::Repository,
             unsettled: self.write_unsettled(),
+            unavailable: self.shown_tab_unavailable(),
         }
     }
 
@@ -1710,6 +1716,48 @@ mod menu_bar_tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The menu bar's Browse Stashes… is refused as the shown tab's mark
+    /// lands, for the palette's "Repository unavailable", and offered again
+    /// as the mark clears: what the menus are built from ([`MenuState`])
+    /// carries the mark. Without it a mark that landed built no menu, so
+    /// View ▸ Browse Stashes… stayed offered on a marked tab, and a mark
+    /// that cleared left it refused. A mark goes on and off here as it does
+    /// without a read, so nothing else the menus read changes with it.
+    #[gpui::test]
+    async fn the_menu_bar_follows_the_shown_tab_s_mark(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let refused = |cx: &mut VisualTestContext| {
+            view_menu(cx)
+                .into_iter()
+                .find(|(name, _)| name.starts_with("Browse Stashes…"))
+                .expect("the View menu offers Browse Stashes…")
+                .1
+        };
+        let mark = |cx: &mut VisualTestContext, error: Option<&str>| {
+            app.update(cx, |app, cx| {
+                let index = app.repository_tabs.active.expect("a tab");
+                app.repository_tabs.tabs[index].error = error.map(str::to_owned);
+                cx.notify();
+            });
+            crate::tags::tests::draw(cx);
+        };
+        crate::tags::tests::draw(cx);
+        assert!(!refused(cx), "offered at rest");
+        mark(cx, Some("Repository unavailable"));
+        assert_eq!(
+            cx.update(|window, cx| {
+                app.read(cx)
+                    .menu_command_reason(CommandId::Stashes, window, cx)
+            }),
+            Some(crate::branch_actions::UNAVAILABLE_REASON),
+            "the palette's reason"
+        );
+        assert!(refused(cx), "refused as the mark lands");
+        mark(cx, None);
+        assert!(!refused(cx), "offered again as it clears");
     }
 
     /// The menu bar's View menu offers Browse Stashes… right after Compare

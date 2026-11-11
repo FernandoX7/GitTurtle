@@ -298,7 +298,16 @@ impl GitTurtle {
                 own @ Some(Refusal::Own(_)) => own,
                 read => saving.or(read),
             },
-            MenuGroup::Manage => saving,
+            // Refused on a marked tab, as the palette's Manage Git
+            // profiles… is: the manager's Apply… names the repository read
+            // before the mark (decided 2026-11-11: an entry is offered only
+            // where it can act, as the palette's other repository entries
+            // are there). It was offered, the manager opening with Apply…
+            // refused in the mark's words.
+            MenuGroup::Manage => saving.or_else(|| {
+                (self.repository.is_some() && self.shown_tab_unavailable())
+                    .then_some(Refusal::Own(REPOSITORY_UNAVAILABLE))
+            }),
         }
     }
 
@@ -666,7 +675,12 @@ impl GitTurtle {
             .into_any_element()
     }
     pub(super) fn open_profiles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.operation_busy.is_some() || self.profiles.saving {
+        // Every route refuses it on a marked tab, as its menu item and the
+        // palette's command do (`profile_menu_reason`).
+        if self.operation_busy.is_some()
+            || self.profiles.saving
+            || (self.page != AppPage::Projects && self.shown_tab_unavailable())
+        {
             return;
         }
         let owner = cx.entity().downgrade();

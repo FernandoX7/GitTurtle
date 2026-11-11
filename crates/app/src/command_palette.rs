@@ -427,7 +427,11 @@ impl CommandId {
         // read before the mark, which the tab can no longer open, so what
         // these open reads it or writes to it. They opened dialogs whose
         // reads named the replaced repository and whose every write Git core
-        // then refused (security re-check of FU39-A, probe Q3).
+        // then refused (security re-check of FU39-A, probe Q3). Recovery
+        // drafts stay offered: they are the app's own data, read and kept in
+        // its data directory, which the mark says nothing of (decided
+        // 2026-11-11: an entry is offered only where it can act, and there
+        // it can).
         if context.unavailable
             && matches!(
                 self,
@@ -437,7 +441,6 @@ impl CommandId {
                     | Self::Reflog
                     | Self::RewriteReview
                     | Self::Profiles
-                    | Self::RecoveryDrafts
             )
         {
             return Some(crate::branch_actions::UNAVAILABLE_REASON);
@@ -479,6 +482,17 @@ impl CommandId {
         // repository the tab can no longer open.
         if self == Self::Rebase && context.unavailable {
             return Some(crate::branch_actions::UNAVAILABLE_REASON);
+        }
+        // Until the working status is read, which says whether an operation
+        // is in progress, it waits for the read, as the picker's menu offers
+        // no Edit local commits until then, and where none is read and none
+        // is being read it says so, as Branch does: it was offered while the
+        // status was read or after a read that failed (decided 2026-11-11).
+        if self == Self::Rebase && context.reading {
+            return Some(crate::workspace::READING_WORKING_TREE);
+        }
+        if self == Self::Rebase && context.not_read {
+            return Some(crate::workspace::NOT_READ_REASON);
         }
         if self == Self::FileHistory && (context.working || context.file_history || !context.file) {
             return Some("Select a history file or open a tracked file first");
@@ -1840,6 +1854,52 @@ mod tests {
             Some(crate::workspace::BUSY_REASON)
         );
     }
+    /// "Review an interactive rebase…" is offered only where it can act:
+    /// while the working status, which says whether an operation is in
+    /// progress, is being read it says the read, and where none is read and
+    /// none is being read it says so, as Branch does, the mark's words
+    /// before either; it was offered in both. On a marked tab, "Manage Git
+    /// profiles…" says the mark, as the other repository entries do, while
+    /// the recovery drafts, the app's own data, stay offered (decided
+    /// 2026-11-11).
+    #[test]
+    fn entries_are_offered_only_where_they_can_act() {
+        let mut context = Availability {
+            repository: true,
+            workspace: true,
+            ..Availability::default()
+        };
+        assert_eq!(CommandId::Rebase.reason(&context), None, "at rest");
+        context.reading = true;
+        assert_eq!(
+            CommandId::Rebase.reason(&context),
+            Some(crate::workspace::READING_WORKING_TREE),
+            "while the status is read"
+        );
+        context.reading = false;
+        context.not_read = true;
+        assert_eq!(
+            CommandId::Rebase.reason(&context),
+            Some(crate::workspace::NOT_READ_REASON),
+            "with none read and none being read"
+        );
+        context.unavailable = true;
+        assert_eq!(
+            CommandId::Rebase.reason(&context),
+            Some(crate::branch_actions::UNAVAILABLE_REASON),
+            "the mark's words first"
+        );
+        assert_eq!(
+            CommandId::Profiles.reason(&context),
+            Some(crate::branch_actions::UNAVAILABLE_REASON),
+            "Manage Git profiles… on a marked tab"
+        );
+        assert_eq!(
+            CommandId::RecoveryDrafts.reason(&context),
+            None,
+            "the recovery drafts on a marked tab"
+        );
+    }
     #[test]
     fn selection_is_bounded_and_enter_or_cancel_can_only_claim_once() {
         let mut selection = Selection::default();
@@ -1943,7 +2003,6 @@ mod render_tests {
             CommandId::Reflog,
             CommandId::RewriteReview,
             CommandId::Profiles,
-            CommandId::RecoveryDrafts,
         ];
         for id in refused {
             assert_eq!(
@@ -1952,7 +2011,14 @@ mod render_tests {
                 "{id:?}"
             );
         }
-        for id in [CommandId::History, CommandId::Changes, CommandId::Refresh] {
+        // The recovery drafts are the app's own data, which the mark says
+        // nothing of.
+        for id in [
+            CommandId::History,
+            CommandId::Changes,
+            CommandId::Refresh,
+            CommandId::RecoveryDrafts,
+        ] {
             assert_eq!(reason(cx, id), None, "{id:?} stays offered");
         }
         let path = app.read_with(cx, |app, _| app.path.clone());
@@ -1966,6 +2032,16 @@ mod render_tests {
                 "{id:?} opens nothing"
             );
         }
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.run_menu_command(CommandId::RecoveryDrafts, &path, window, cx)
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the recovery drafts open"
+        );
     }
 
     /// Where the tab is marked, Changes shows "Changes unavailable", as
