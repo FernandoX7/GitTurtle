@@ -192,10 +192,12 @@ pub(super) struct ReviewState {
     /// wait for the key-up, typed it as a new line. It ends as the toolkit's press does: an
     /// Enter coming up anywhere in the panel ends it once the application next runs a task,
     /// unless an Enter goes down first, as the press of an X11 repeat whose release ended one
-    /// input batch does in the next ([`Panel::return_came_up`]); a section change or the
-    /// panel's close ends it at once. A key-up the panel never sees, outside the panel with
-    /// the panel still open, leaves the next Return on the patch or in the comment swallowed
-    /// until its own key-up, which fails safe.
+    /// input batch does in the next ([`Panel::return_came_up`]); the panel's close ends it at
+    /// once. A section change does not: Review draws the same comment and gives it focus, and
+    /// the body that takes the key-up is drawn in every section; ended there, the press let
+    /// the held key's next X11 repeat after another key type a new line in Review. A key-up
+    /// the panel never sees, outside the panel with the panel still open, leaves the next
+    /// Return on the patch or in the comment swallowed until its own key-up, which fails safe.
     return_press: Option<ReturnPress>,
     pub mode: usize,
     pub file_focus: FocusHandle,
@@ -3260,9 +3262,6 @@ impl Panel {
         self.save_draft(window, cx);
         self.review.section = section;
         self.confirm = None;
-        // The comment's text is drawn in Review too: a press held in one section ends as the
-        // panel moves to another ([`ReviewState::return_press`]).
-        self.forget_return();
         self.focus_visible_section(window, cx);
         cx.notify();
     }
@@ -7201,6 +7200,73 @@ mod tests {
                 });
                 line_draw(cx);
             }
+        }
+    }
+
+    /// The Return that began a comment, on a line or on Comment on selection, stays held off
+    /// it as the panel moves to Review during the hold, where the same comment is drawn and
+    /// takes focus: under X11 the held key's next repeat after another key types nothing
+    /// there, and after the key-up a fresh press types its line. Ended at once by the section
+    /// change, the press let that repeat type a new line (FU41-B9 fix-pass re-checks, S1).
+    #[gpui::test]
+    async fn a_return_held_into_review_types_nothing_into_its_comment(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::enter;
+        let (_fixture, _app, panel, cx) = review_line_panel(cx);
+        for opener in ["a line", "Comment on selection"] {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.discard_composer(window, cx);
+                    panel.change_section(Section::Files, window, cx);
+                })
+            });
+            line_draw(cx);
+            focus_line(&panel, Some(3), cx);
+            if opener == "Comment on selection" {
+                let button = panel
+                    .read_with(cx, |panel, _| {
+                        panel.review.buttons.kept("github-inline-start")
+                    })
+                    .expect("Comment on selection is drawn");
+                cx.update(|window, cx| button.focus(window, cx));
+                line_draw(cx);
+            }
+            enter(cx, Some(false));
+            line_draw(cx);
+            let (refusals, composing, text) = line_seen(&panel, cx);
+            assert!(
+                composing && text.is_empty() && composer_focused(&panel, cx),
+                "{opener}: the press opens the comment, focus in its text"
+            );
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.change_section(Section::Review, window, cx)
+                })
+            });
+            line_draw(cx);
+            assert!(
+                composer_focused(&panel, cx),
+                "{opener}: Review gives the comment focus"
+            );
+            tap(cx, "left");
+            line_draw(cx);
+            enter(cx, Some(false));
+            line_draw(cx);
+            assert_eq!(
+                line_seen(&panel, cx),
+                (refusals, true, String::new()),
+                "{opener}: the X11 repeat after another key types nothing"
+            );
+            enter(cx, None);
+            line_draw(cx);
+            enter(cx, Some(false));
+            line_draw(cx);
+            assert_eq!(
+                line_seen(&panel, cx),
+                (refusals, true, "\n".to_string()),
+                "{opener}: a fresh press after the key-up types its line"
+            );
+            enter(cx, None);
+            line_draw(cx);
         }
     }
 
