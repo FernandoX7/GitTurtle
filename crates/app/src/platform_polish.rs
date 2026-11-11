@@ -224,7 +224,15 @@ impl PrimaryMenu {
         );
         let menu = PopupMenu::build(window, cx, {
             let (build, rows) = (build.clone(), rows.clone());
-            move |menu, window, cx| build(menu, &rows, window, cx)
+            move |menu, window, cx| {
+                // Opened for the tab shown, it closes as another tab shows
+                // or that tab closes, as every menu does, focus left where
+                // the change puts it: left open as a new tab opened, its
+                // items did nothing, each checked against the repository it
+                // opened for (`run_menu_command`).
+                native_accessibility::closes_as_its_tab_changes(window, cx);
+                build(menu, &rows, window, cx)
+            }
         });
         // A write that starts or ends while the menu is open, or the reload
         // after it landing, builds its rows again in place, as the Actions
@@ -1413,6 +1421,99 @@ mod main_menu_tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The Main Menu belongs to the repository tab shown as it opened, as
+    /// every menu belongs to its tab: a new tab opened while it is open, as
+    /// Open…'s folder panel, which does not block the window, lets a person
+    /// choose one, closes it, and the new tab takes focus where a new tab
+    /// opened from the navigator with no menu open puts it, on its History
+    /// list, which says its name, with nothing announced. The menu is opened
+    /// while the navigator holds focus, which a closing menu would give back
+    /// there: the list holds it because the new tab gave it there. The menu
+    /// stayed open over the new tab, where its items did nothing: each acts
+    /// only on the repository it opened for (`GitTurtle::run_menu_command`).
+    #[gpui::test]
+    async fn the_main_menu_closes_as_a_new_tab_opens(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, history_window, settle};
+        let (fixture, app, cx) = history_window(cx).await;
+        for twin in ["first", "second"] {
+            crate::tags::tests::git(fixture.path(), &["clone", "--quiet", "narrow", twin]);
+        }
+        let quick = label(CommandId::QuickOpen);
+        let drawn = |cx: &mut VisualTestContext| {
+            ["MenuItem", "MenuItem disabled"].iter().any(|role| {
+                cx.debug_bounds(format!("menu-item: {quick} · {role}").leak())
+                    .is_some()
+            })
+        };
+        let (list, navigator) =
+            app.read_with(cx, |app, _| (app.focus.clone(), app.nav_focus.clone()));
+        cx.update(|window, cx| navigator.focus(window, cx));
+        draw(cx);
+        let open_tab = |name: &str, cx: &mut VisualTestContext| {
+            let path = fixture.path().join(name);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.open_repository_tab(path, window, cx))
+            });
+        };
+        // Where a new tab opened from the navigator with no menu open puts
+        // focus.
+        open_tab("first", cx);
+        settle(&app, cx).await;
+        draw(cx);
+        let unmenued = cx.update(|window, cx| window.focused(cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| navigator.focus(window, cx));
+        draw(cx);
+        let on_navigator = cx.update(|window, _| navigator.is_focused(window));
+        open(cx);
+        let opened = drawn(cx);
+        let gives_back =
+            app.read_with(cx, |app, cx| app.primary_menu.read(cx).return_focus.clone());
+        let dismissed = crate::native_accessibility::tab_dismissals();
+        crate::native_accessibility::written::forget();
+        open_tab("second", cx);
+        settle(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        let shown = app.read_with(cx, |app, _| app.repository_tabs.active);
+        let menu = app.read_with(cx, |app, cx| app.primary_menu.read(cx).menu.is_some());
+        let closed = !drawn(cx);
+        let focus = cx.update(|window, cx| window.focused(cx));
+        let named = crate::native_accessibility::written::get("history-pane")
+            .and_then(|written| written.node.label().map(str::to_owned));
+        let said: Vec<_> = crate::native_accessibility::written::announced_from("")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(on_navigator, "the navigator holds focus");
+        assert!(opened, "a click opens the Main Menu");
+        assert!(
+            gives_back == Some(navigator.clone()),
+            "which would give focus back to the navigator"
+        );
+        assert_eq!(shown, Some(2), "the new tab shows");
+        assert!(!menu && closed, "the Main Menu closes as the new tab shows");
+        assert!(
+            crate::native_accessibility::tab_dismissals() > dismissed,
+            "closed by the tab change itself"
+        );
+        assert!(
+            focus.is_some() && focus == unmenued && focus == Some(list),
+            "the new tab takes focus where it does with no menu open, on its list"
+        );
+        assert!(
+            focus != Some(navigator),
+            "the closed menu gives none back to the navigator it was opened from"
+        );
+        assert_eq!(
+            named.as_deref(),
+            Some("Commit history"),
+            "which says its name"
+        );
+        assert_eq!(said, Vec::<String>::new(), "nothing is announced");
     }
 
     /// The Main Menu, open as a write runs, builds its rows again as the

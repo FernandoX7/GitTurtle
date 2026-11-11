@@ -1844,8 +1844,9 @@ fn closes_as_its_window_changes(window: &mut Window, cx: &mut Context<PopupMenu>
 /// menu was built from the tab that drew it, so a choice made in it once
 /// acted on the tab shown after, a mode menu's changing that tab's mode to
 /// one it did not offer, and a History row's right-click menu, open over
-/// the same commit in another clone's tab, acted on the first clone.
-fn closes_as_its_tab_changes(window: &mut Window, cx: &mut Context<PopupMenu>) {
+/// the same commit in another clone's tab, acted on the first clone. The
+/// Linux Main Menu, opened for the tab shown, closes the same way.
+pub(crate) fn closes_as_its_tab_changes(window: &mut Window, cx: &mut Context<PopupMenu>) {
     let shown = ShownTabs::of(window, cx);
     cx.observe_global_in::<ShownTabs>(window, move |_, window, cx| {
         if ShownTabs::of(window, cx) != shown {
