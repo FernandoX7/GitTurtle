@@ -1377,6 +1377,33 @@ mod tests {
         assert_eq!(confirms.get(), 2, "a fresh press confirms again");
     }
 
+    /// GitTurtle patch: `init` run again in the same application, as the
+    /// app's tests run it for each app they build, records each Enter
+    /// key-down once: a fresh press is no repeat of itself and confirms the
+    /// dialog once. A second interceptor saw the key-down again after the
+    /// first had recorded it and took it for a repeat, so nothing that asks
+    /// [`enter_press_is_repeat`] acted on any press.
+    #[gpui::test]
+    fn init_again_records_each_enter_once(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = pair(cx);
+        cx.update(|_, cx| crate::init(cx));
+        let (b, b_open, confirms) = view.read_with(cx, |pair, _| {
+            (pair.b.clone(), pair.b_open.clone(), pair.confirms.clone())
+        });
+        b_open.set(true);
+        cx.update(|window, cx| {
+            window.focus(&b, cx);
+            window.draw(cx).clear(cx);
+        });
+        enter(cx, Some(false));
+        assert!(
+            !cx.update(|window, cx| enter_press_is_repeat(window, cx)),
+            "the press is no repeat of itself"
+        );
+        assert_eq!(confirms.get(), 1, "the press confirms the dialog once");
+        enter(cx, None);
+    }
+
     /// GitTurtle patch: a dialog an Enter press opened takes no Enter until
     /// that press comes up, even a key-down not marked held, as each repeat
     /// arrives under X11; then a fresh Enter confirms it.

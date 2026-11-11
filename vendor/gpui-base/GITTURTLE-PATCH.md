@@ -1323,7 +1323,10 @@ and a test that builds a second app in one test context registered a
 second interceptor: it saw each Enter key-down again after the first had
 recorded it, took it for a repeat, and so the dialog's default action, a
 Button and every application handler that asks `enter_press_is_repeat`
-acted on no press in that context. The application's regression is
+acted on no press in that context. The kit's own test is
+`dialog::tests::init_again_records_each_enter_once` (`init` run twice in
+one application: one Enter key-down is no repeat of itself and confirms
+the dialog once); the application's regression is
 `rewrite_review::tests::the_actions_stand_still_from_open_to_settled`,
 whose second app's command palette opened nothing once the palette's
 field no longer acted on its own Enter. Remove it with the rest of this
