@@ -1301,10 +1301,12 @@ impl GitDirectories {
 
     /// The directory of `repository` that differs from these, by its path
     /// or, for a restored tab, by the inode it saved or, where both these
-    /// and the open have one, the birth time or the device (which a
-    /// session never saves), the Git directory before the common one;
-    /// `None` where both match. Reads what the repository's open captured,
-    /// so it touches no filesystem.
+    /// and the open have one, the birth time, the Git directory before the
+    /// common one; `None` where both match. A session never saves the
+    /// device, so a restored tab has none to compare: in a run only
+    /// `repository_tabs::same_git_directories` and `RepositoryIdentity`
+    /// compare it. Reads what the repository's open captured, so it
+    /// touches no filesystem.
     fn mismatch(&self, repository: &GitRepository) -> Option<PathBuf> {
         let differs = |saved: Option<u64>, found: Option<u64>| {
             self.restored && saved.is_some_and(|saved| found != Some(saved))
@@ -1323,11 +1325,6 @@ impl GitDirectories {
                 self.inodes.git_dir_birth,
                 repository.git_dir_birth(),
             )
-            || apart(
-                restored,
-                self.inodes.git_dir_device,
-                repository.git_dir_device(),
-            )
         {
             Some(repository.git_dir().to_owned())
         } else if repository.common_dir() != self.common
@@ -1336,11 +1333,6 @@ impl GitDirectories {
                 restored,
                 self.inodes.common_birth,
                 repository.common_dir_birth(),
-            )
-            || apart(
-                restored,
-                self.inodes.common_device,
-                repository.common_dir_device(),
             )
         {
             Some(repository.common_dir().to_owned())
@@ -7695,8 +7687,7 @@ mod image_tests {
     /// Each saved inode is compared on its own, the Git directory's before
     /// the common directory's, and the retained repository answers only
     /// where they match: named with a different one, the reopen asks Git
-    /// and fails as gone, naming that directory. So does a device that
-    /// differs, which only a comparison within the run has.
+    /// and fails as gone, naming that directory.
     #[cfg(unix)]
     #[test]
     fn a_restored_tab_compares_each_directory_s_inode() {
@@ -7722,21 +7713,7 @@ mod image_tests {
             restored: true,
             ..captured.clone()
         };
-        // A device only a comparison within the run has, never a session:
-        // the same inode number on another filesystem.
-        let device = GitDirectories {
-            inodes: DirectoryInodes {
-                git_dir_device: inode(captured.inodes.git_dir_device),
-                ..captured.inodes
-            },
-            restored: true,
-            ..captured.clone()
-        };
-        for (named, found) in [
-            (&git_dir, &captured.git_dir),
-            (&common, &captured.common),
-            (&device, &captured.git_dir),
-        ] {
+        for (named, found) in [(&git_dir, &captured.git_dir), (&common, &captured.common)] {
             let gone = session
                 .open(&root, Some(&root), Some(named))
                 .unwrap_err()
