@@ -116,6 +116,12 @@ impl Buttons {
             .retain(|_, (focus, handed)| std::mem::take(handed) || focus.is_focused(window));
     }
 }
+/// The press record a Return that began a review comment keeps ([`ReviewState::return_press`]).
+pub(super) struct ReturnPress {
+    _interceptor: Subscription,
+    /// The Enter key-downs the interceptor has seen, in any window.
+    key_downs: std::rc::Rc<std::cell::Cell<u64>>,
+}
 pub(super) struct ReviewState {
     pub section: Section,
     pub body_scroll: ScrollHandle,
@@ -178,6 +184,19 @@ pub(super) struct ReviewState {
     /// within Compare's text bounds; `None` while preparing and above them.
     presentation: Option<text::PatchPresentation>,
     _palette: Subscription,
+    /// While the Return that began a review comment is down ([`Panel::hold_return`]), a
+    /// keystroke interceptor that keeps every unmodified Enter from the patch and the
+    /// comment's text. The toolkit counts an Enter after another key a fresh press, and under
+    /// X11, which marks no repeat held, the held key's next repeat after a key that took no
+    /// repeat over is one: the comment's text, whose own binding runs ahead of the dialog's
+    /// wait for the key-up, typed it as a new line. It ends as the toolkit's press does: an
+    /// Enter coming up anywhere in the panel ends it once the application next runs a task,
+    /// unless an Enter goes down first, as the press of an X11 repeat whose release ended one
+    /// input batch does in the next ([`Panel::return_came_up`]); a section change or the
+    /// panel's close ends it at once. A key-up the panel never sees, outside the panel with
+    /// the panel still open, leaves the next Return on the patch or in the comment swallowed
+    /// until its own key-up, which fails safe.
+    return_press: Option<ReturnPress>,
     pub mode: usize,
     pub file_focus: FocusHandle,
     pub line_focus: FocusHandle,
@@ -286,6 +305,7 @@ impl ReviewState {
             _palette: cx.observe_global::<crate::appearance::Palette>(|panel, cx| {
                 panel.review.refresh_theme(cx)
             }),
+            return_press: None,
             mode: 0,
             file_focus: cx.focus_handle().tab_stop(true),
             line_focus: cx.focus_handle().tab_stop(true),
@@ -3092,9 +3112,11 @@ impl Panel {
     /// counts every later key-down of it a repeat, and no binding runs ahead of this listener
     /// to move focus, so a key-down that is no repeat began on the patch.
     ///
-    /// The press gives focus to the comment's text, which takes none of its repeats until the
-    /// key comes up, as a dialog an Enter opened takes none (`dialog_opened`): each typed a
-    /// new line there.
+    /// The press gives focus to the comment's text, which takes no Enter until the key comes
+    /// up: none of its repeats, as a dialog an Enter opened takes none (`dialog_opened`), each
+    /// of which typed a new line there, nor, under X11, a repeat after another key, which the
+    /// toolkit counts a fresh press ([`ReviewState::return_press`]); a refused press's patch
+    /// takes none either.
     fn comment_on_return(
         &mut self,
         event: &gpui_kit::KeyDownEvent,
@@ -3114,7 +3136,68 @@ impl Panel {
             return;
         }
         self.begin_comment(window, cx);
+        self.hold_return(window, cx);
+    }
+    /// Holds the Return press that began a comment on a review line off the comment's text
+    /// and the patch until it comes up: no Enter of it
+    /// reaches anything in the window (`dialog_opened`), and an unmodified Enter that the
+    /// toolkit counts a fresh press after another key reaches neither
+    /// ([`ReviewState::return_press`]).
+    fn hold_return(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         gpui_kit::base::dialog_opened(window, cx);
+        let held = [
+            self.review.line_focus.clone(),
+            self.review.input.read(cx).focus_handle(cx),
+        ];
+        let key_downs = std::rc::Rc::new(std::cell::Cell::new(0_u64));
+        let seen = key_downs.clone();
+        let interceptor = cx.intercept_keystrokes(move |event, window, cx| {
+            let keystroke = &event.keystroke;
+            if keystroke.key != "enter" {
+                return;
+            }
+            seen.set(seen.get().wrapping_add(1));
+            if !keystroke.modifiers.modified() && held.iter().any(|focus| focus.is_focused(window))
+            {
+                cx.stop_propagation();
+            }
+        });
+        self.review.return_press = Some(ReturnPress {
+            _interceptor: interceptor,
+            key_downs,
+        });
+    }
+    /// An Enter came up in the panel: the press [`Self::hold_return`] holds ends once the
+    /// application next runs a task, as the toolkit's own record of it does, unless an Enter
+    /// goes down before that: an X11 repeat's release that ends one input batch, its press
+    /// arriving in the next, leaves the key down.
+    pub(super) fn return_came_up(
+        &mut self,
+        event: &gpui_kit::KeyUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key != "enter" {
+            return;
+        }
+        let Some(press) = &self.review.return_press else {
+            return;
+        };
+        let (key_downs, seen) = (press.key_downs.clone(), press.key_downs.get());
+        cx.spawn(async move |panel, cx| {
+            panel.update(cx, |panel, _| {
+                if panel.review.return_press.as_ref().is_some_and(|press| {
+                    std::rc::Rc::ptr_eq(&press.key_downs, &key_downs) && key_downs.get() == seen
+                }) {
+                    panel.review.return_press = None;
+                }
+            })
+        })
+        .detach();
+    }
+    /// Ends the press [`Self::hold_return`] holds at once, as the panel closes.
+    pub(super) fn forget_return(&mut self) {
+        self.review.return_press = None;
     }
 
     pub(super) fn captured(&self, cx: &App) -> Option<CapturedPull> {
@@ -3155,6 +3238,9 @@ impl Panel {
         self.save_draft(window, cx);
         self.review.section = section;
         self.confirm = None;
+        // The comment's text is drawn in Review too: a press held in one section ends as the
+        // panel moves to another ([`ReviewState::return_press`]).
+        self.forget_return();
         self.focus_visible_section(window, cx);
         cx.notify();
     }
@@ -6874,6 +6960,223 @@ mod tests {
         }
         enter(cx, None);
         line_draw(cx);
+    }
+
+    /// Under X11, which marks no repeat held, another key going down while the Return that
+    /// began a comment is still down leaves that press's later repeats out of the comment's
+    /// text, as a dialog an Enter opened takes none until the key comes up
+    /// (`dialog_opened`); after the key-up a fresh press types its line there. The toolkit
+    /// counts an Enter after another key as a fresh press, so the comment's text, whose own
+    /// Enter binding runs before the dialog's wait for the key-up, took the next repeat and
+    /// typed a line (FU41-B7 code re-check, N4).
+    #[gpui::test]
+    async fn another_key_during_the_return_that_began_a_comment_types_no_line(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::enter;
+        let (_fixture, _app, panel, cx) = review_line_panel(cx);
+        focus_line(&panel, Some(3), cx);
+        enter(cx, Some(false));
+        line_draw(cx);
+        let (refusals, composing, text) = line_seen(&panel, cx);
+        assert!(
+            composing && text.is_empty() && composer_focused(&panel, cx),
+            "the press begins its comment, focus in its text"
+        );
+        tap(cx, "left");
+        line_draw(cx);
+        for repeat in 0..2 {
+            enter(cx, Some(false));
+            line_draw(cx);
+            assert_eq!(
+                line_seen(&panel, cx),
+                (refusals, true, String::new()),
+                "X11 repeat {repeat} after another key: nothing is typed"
+            );
+        }
+        // A modified Enter is the comment's own: after another key, which the toolkit's
+        // record ends, Shift-Return types its line, though a Shift held into the repeats
+        // is the held key's own and types none.
+        key(cx, "shift-enter", Some(false));
+        line_draw(cx);
+        assert_eq!(
+            line_seen(&panel, cx),
+            (refusals, true, String::new()),
+            "a repeat with Shift held types nothing"
+        );
+        tap(cx, "left");
+        key(cx, "shift-enter", Some(false));
+        line_draw(cx);
+        assert_eq!(
+            line_seen(&panel, cx),
+            (refusals, true, "\n".to_string()),
+            "Shift-Return after another key types its line"
+        );
+        key(cx, "shift-enter", None);
+        line_draw(cx);
+        enter(cx, Some(false));
+        line_draw(cx);
+        assert_eq!(
+            line_seen(&panel, cx),
+            (refusals, true, "\n\n".to_string()),
+            "a fresh press after the key-up types its line"
+        );
+        enter(cx, None);
+        line_draw(cx);
+    }
+
+    /// One key event as the platform delivers it, with no idle pass after it: `stroke` going
+    /// down, marked held or not, or with `None` its key-up.
+    fn key(cx: &mut gpui_kit::VisualTestContext, stroke: &str, down: Option<bool>) {
+        let keystroke = gpui::Keystroke::parse(stroke).expect("a keystroke");
+        let input = match down {
+            Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke,
+                is_held,
+                prefer_character_input: false,
+            }),
+            None => gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+        };
+        cx.update(|window, cx| window.dispatch_event(input, cx));
+    }
+    /// `stroke` going down and coming up.
+    fn tap(cx: &mut gpui_kit::VisualTestContext, stroke: &str) {
+        key(cx, stroke, Some(false));
+        key(cx, stroke, None);
+    }
+    /// Gives the comment's text focus.
+    fn focus_composer(panel: &Entity<Panel>, cx: &mut gpui_kit::VisualTestContext) {
+        cx.update(|window, cx| {
+            panel
+                .read(cx)
+                .review
+                .input
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx)
+        });
+        line_draw(cx);
+    }
+
+    /// Under X11 an unpaired release mid-hold, a repeat's release that ends one input batch
+    /// whose press arrives in the next before the application runs a task, leaves the Return
+    /// that began a comment down, as the toolkit's record of it stays: after another key the
+    /// held key's next repeat types nothing into the comment, and after the key-up a fresh
+    /// press types its line. Ended at once by any Enter key-up, the press let that repeat
+    /// type a new line (FU41-B9 code re-check, should-fix 1).
+    #[gpui::test]
+    async fn an_unpaired_release_mid_hold_keeps_the_return_off_the_comment(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::enter;
+        let (_fixture, _app, panel, cx) = review_line_panel(cx);
+        focus_line(&panel, Some(3), cx);
+        enter(cx, Some(false));
+        line_draw(cx);
+        let (refusals, composing, text) = line_seen(&panel, cx);
+        assert!(
+            composing && text.is_empty() && composer_focused(&panel, cx),
+            "the press begins its comment, focus in its text"
+        );
+        enter(cx, None);
+        enter(cx, Some(false));
+        line_draw(cx);
+        tap(cx, "left");
+        line_draw(cx);
+        enter(cx, Some(false));
+        line_draw(cx);
+        assert_eq!(
+            line_seen(&panel, cx),
+            (refusals, true, String::new()),
+            "the repeat after another key types nothing"
+        );
+        enter(cx, None);
+        line_draw(cx);
+        enter(cx, Some(false));
+        line_draw(cx);
+        assert_eq!(
+            line_seen(&panel, cx),
+            (refusals, true, "\n".to_string()),
+            "a fresh press after the key-up types its line"
+        );
+        enter(cx, None);
+        line_draw(cx);
+    }
+
+    /// The Return that began a comment ends wherever its key comes up, so the next fresh
+    /// Return in the comment types its line: on a control elsewhere in the panel, the Pull
+    /// requests toggle above Files; in Review, which draws the same comment, reached with the
+    /// pointer during the hold; and outside the panel, closed during the hold by Back to
+    /// repository or by Escape, then opened again. Cleared only by a key-up inside Files, the
+    /// press swallowed each of those Returns (FU41-B9 re-checks: code should-fix 2, security
+    /// L1).
+    #[gpui::test]
+    async fn the_return_that_began_a_comment_ends_wherever_its_key_comes_up(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::enter;
+        let (_fixture, app, panel, cx) = review_line_panel(cx);
+        let mut typed = String::new();
+        for case in [
+            "elsewhere in the panel",
+            "in Review",
+            "Back to repository",
+            "Escape",
+        ] {
+            focus_line(&panel, Some(3), cx);
+            enter(cx, Some(false));
+            line_draw(cx);
+            assert!(
+                composer_focused(&panel, cx),
+                "{case}: the press gives the comment focus"
+            );
+            match case {
+                "elsewhere in the panel" => {
+                    let toggle = panel
+                        .read_with(cx, |panel, _| panel.review.buttons.kept("github-back-list"))
+                        .expect("Pull requests is drawn");
+                    cx.update(|window, cx| toggle.focus(window, cx));
+                }
+                "in Review" => cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.change_section(Section::Review, window, cx)
+                    })
+                }),
+                "Back to repository" => crate::copy_feedback::tests::click(cx, "github-close"),
+                _ => tap(cx, "escape"),
+            }
+            line_draw(cx);
+            enter(cx, None);
+            line_draw(cx);
+            if matches!(case, "Back to repository" | "Escape") {
+                assert!(
+                    !cx.update(|window, cx| window.has_active_dialog(cx)),
+                    "{case}: the panel closes"
+                );
+                cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+                cx.executor().run_until_parked();
+                line_draw(cx);
+            }
+            focus_composer(&panel, cx);
+            enter(cx, Some(false));
+            line_draw(cx);
+            typed.push('\n');
+            assert_eq!(
+                line_seen(&panel, cx).2,
+                typed,
+                "{case}: the next fresh Return types its line"
+            );
+            enter(cx, None);
+            line_draw(cx);
+            if case == "in Review" {
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.change_section(Section::Files, window, cx)
+                    })
+                });
+                line_draw(cx);
+            }
+        }
     }
 
     /// 8,000 deletions and 8,000 additions of 520 bytes, just under the 8 MiB response bound:

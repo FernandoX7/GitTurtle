@@ -3153,6 +3153,8 @@ impl Panel {
         }
         // A press the closing panel took ends with it, so a reopened list is drawn at rest.
         self.pressed.set(None);
+        // And a Return held off a review comment, whose key-up lands outside the panel.
+        self.forget_return();
         self.hold_closing_focus(window, cx);
         self.save_draft(window, cx);
         self.closed = true;
@@ -3700,6 +3702,9 @@ impl Render for Panel {
                         cx,
                     );
                 }))
+                // An Enter coming up anywhere in the body ends a Return held off a review
+                // comment ([`Panel::return_came_up`]).
+                .capture_key_up(cx.listener(Self::return_came_up))
                 .key_context(review::BODY)
                 .id("github-panel")
                 .debug_selector(|| "github-panel".into())
@@ -3722,6 +3727,9 @@ impl Render for Panel {
             // leaves; in the frame the line moves back among the content, the empty element
             // that moves the body's scroll stands here instead.
             Some(top_line) => div()
+                // The top line's controls too; a key-up in the body reaches both listeners,
+                // whose ends are one.
+                .capture_key_up(cx.listener(Self::return_came_up))
                 .min_w_0()
                 .max_h(body_max_height(window))
                 .flex()
