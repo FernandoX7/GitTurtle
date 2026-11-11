@@ -7048,19 +7048,22 @@ mod tests {
                 }
                 end_download(&app, &browser, cx, Some(words));
                 shown(cx);
-                // Its words, or where they would not keep "Failed…" the
-                // warning icon that stands for them.
-                let failure = cx
-                    .debug_bounds("lfs-download-failure")
-                    .or_else(|| cx.debug_bounds("lfs-download-failure-icon"))
-                    .expect("the failure is said in the row");
+                // The failed Download's warning glyph, and its words where
+                // they keep "Failed…".
                 let sides = downloads(cx).map(|side| side.expect("both Downloads are back"));
-                assert!(
-                    failure.size.width > Pixels::ZERO
-                        && sides.iter().all(|side| apart(failure, *side))
-                        && (!shares || one_line(&[failure, sides[0], sides[1]])),
-                    "{at}: the failure's words, {failure:?}, stand beside {sides:?}"
+                assert_eq!(
+                    crate::lfs_download::drawn_glyph(side).as_deref(),
+                    Some("icons/warning.svg"),
+                    "{at}: the failed Download draws the warning glyph"
                 );
+                if let Some(failure) = cx.debug_bounds("lfs-download-failure") {
+                    assert!(
+                        failure.size.width > Pixels::ZERO
+                            && sides.iter().all(|side| apart(failure, *side))
+                            && (!shares || one_line(&[failure, sides[0], sides[1]])),
+                        "{at}: the failure's words, {failure:?}, stand beside {sides:?}"
+                    );
+                }
                 let ended = comparison(&format!("{at}, failed"), cx);
                 assert!(
                     (ended.top() - body.top()).abs() <= device / 2.
@@ -7159,16 +7162,28 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The glyphs both sides' Downloads draw where only side `failed`'s
+    /// failure stands: its warning glyph, the other's pull glyph.
+    fn glyphs_with(failed: Option<usize>) -> [Option<String>; 2] {
+        [0, 1].map(|side| {
+            Some(if Some(side) == failed {
+                "icons/warning.svg".to_owned()
+            } else {
+                "icons/pull.svg".to_owned()
+            })
+        })
+    }
+
     /// A failure never shrinks to a bare ellipsis (decision, 2026-11-10):
     /// with both sides' objects missing at 18 pt in QA's 461 × 490 window at
     /// scale 2, where the two Downloads share a line without their word, a
-    /// long failure of After… leaves its words no room for "Failed…", so a
-    /// warning icon stands in their place, drawn whole, the whole words in
-    /// its tooltip, as the line would draw them ("After: …"), and in
-    /// Download After…'s accessible description, said nowhere else on
-    /// screen. At 13 pt in a 1480 × 973 window the words are
-    /// drawn, no icon needed, naming the side that failed, as two sides on
-    /// one line would not tell which did. The words were drawn as "…".
+    /// long failure of After… leaves its words no room for "After:
+    /// Failed…", so nothing is drawn for them: Download After…'s warning
+    /// glyph, in place of its pull glyph, is the last thing standing, the
+    /// whole words in its tooltip and accessible description, said nowhere
+    /// else on screen. At 13 pt in a 1480 × 973 window the words are drawn,
+    /// naming the side that failed, as two sides on one line would not tell
+    /// which did. The words were drawn as "…".
     #[gpui::test]
     async fn a_failure_never_shrinks_to_a_bare_ellipsis(cx: &mut gpui_kit::TestAppContext) {
         use crate::native_accessibility::written;
@@ -7207,30 +7222,22 @@ mod tests {
                      for this object because its credentials have expired";
         end_download(&app, &browser, cx, Some(words));
         shown(cx);
-        let device = cx.update(|window, _| px(1. / window.scale_factor()));
-        let icon = cx
-            .debug_bounds("lfs-download-failure-icon")
-            .expect("a warning icon stands for the words");
-        let whole = cx.update(|window, _| window.pixel_snap(appearance::ui_size(16.)));
-        let [before, after] = ["download-lfs-side-0", "download-lfs-side-1"]
-            .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
-        let preview = cx
-            .debug_bounds("series-file-preview")
-            .expect("the preview's box");
         assert!(
-            cx.debug_bounds("lfs-download-failure").is_none()
-                && icon.size.width >= whole - device / 2.
-                && icon.left() >= preview.left() - device / 2.
-                && [before, after]
-                    .iter()
-                    .all(|side| icon.right() <= side.left() + device / 2.
-                        || icon.left() >= side.right() - device / 2.),
-            "the icon, {icon:?}, is drawn whole, {whole:?}, in the row beside {before:?} \
-             and {after:?}, in place of the words"
+            cx.debug_bounds("lfs-download-failure").is_none(),
+            "the words, without room for \"After: Failed…\", are not drawn"
+        );
+        assert_eq!(
+            [0, 1].map(crate::lfs_download::drawn_glyph),
+            glyphs_with(Some(1)),
+            "Download After…'s warning glyph stands for them"
         );
         assert!(
-            hover_shows(cx, "lfs-download-failure-icon", &format!("After: {words}")),
-            "its tooltip says the whole words as the line would draw them"
+            hover_shows(
+                cx,
+                "download-lfs-side-1",
+                &format!("Download After… · Failed: {words}")
+            ),
+            "its tooltip says the whole words"
         );
         assert_eq!(
             written::get("download-lfs-side-1")
@@ -7258,10 +7265,9 @@ mod tests {
         });
         assert!(
             (failure.size.width - slot).abs() <= device / 2.
-                && failure.size.width >= least - device / 2.
-                && cx.debug_bounds("lfs-download-failure-icon").is_none(),
+                && failure.size.width >= least - device / 2.,
             "at 13 pt in a 1480 × 973 window the words, {failure:?}, stand in the sentence's \
-             place, {slot:?} wide, at least {least:?}, and need no icon"
+             place, {slot:?} wide, at least {least:?}"
         );
         assert_eq!(
             written::get("lfs-download-failure")
@@ -7271,17 +7277,22 @@ mod tests {
         );
     }
 
-    /// A failure never moves a Download (decision, 2026-11-10): with both
-    /// sides' objects missing, at 13 pt in a 1480 × 973 window, where the
-    /// sentence leads the Downloads' line at rest, a long failure of After…
-    /// takes the sentence's place at its width, and at 18 pt in QA's
-    /// 461 × 490 window at scale 2, where the two share a line without their
-    /// word, its warning icon follows Download After…; either way both
-    /// Downloads keep the places they had at rest. Put before them, the icon
-    /// moved both right by its width and the gap, and at 13 pt the long
-    /// words pushed them to the row's end.
+    /// A failure never moves a Download, and the failed side's own Download
+    /// says which side failed (decisions, 2026-11-10): with both sides'
+    /// objects missing, at 18 pt in QA's 461 × 490 window at scale 2, where
+    /// the two share a line without their word and a long failure's words
+    /// have no room, and at 13 pt in a 1480 × 973 window, where the sentence
+    /// leads the line at rest and the words take its place at its width, a
+    /// failure of After… and then one of Before… leave both Downloads where
+    /// they stood at rest, the failed side's Download drawing the warning
+    /// glyph in place of its pull glyph, the other its pull glyph; once the
+    /// failure clears, as the person presses Download Before… again, its
+    /// glyph is the pull glyph again. Put before them, the failure's icon
+    /// moved both right by its width and the gap, at 13 pt the long words
+    /// pushed them to the row's end, and then, after them, a Before…
+    /// failure's icon stood after Download After… and read as After…'s.
     #[gpui::test]
-    async fn a_failure_moves_neither_download(cx: &mut gpui_kit::TestAppContext) {
+    async fn a_failure_moves_neither_download_and_marks_its_own(cx: &mut gpui_kit::TestAppContext) {
         use crate::tags::tests::draw;
         let (_fixture, repo, files) = missing_both();
         let (app, cx) = crate::tags::tests::window(cx, &repo);
@@ -7314,50 +7325,99 @@ mod tests {
                     .zip(now)
                     .all(|(rest, now)| (rest.left() - now.left()).abs() <= device / 2.)
             };
+        let narrow = |cx: &mut gpui::VisualTestContext| {
+            cx.simulate_resize(size(px(461.), px(490.)));
+            cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+            cx.update(|window, _| window.set_scale_factor(2.));
+        };
+        let wide = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.set_scale_factor(initial));
+            cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+            cx.simulate_resize(size(px(1480.), px(973.)));
+        };
         shown(cx);
         assert!(
             cx.debug_bounds("lfs-preview-download-explanation")
                 .is_some(),
             "at 13 pt in a 1480 × 973 window the sentence leads the line"
         );
-        let wide = downloads(cx);
-        cx.simulate_resize(size(px(461.), px(490.)));
-        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
-        cx.update(|window, _| window.set_scale_factor(2.));
+        let wide_rest = downloads(cx);
+        narrow(cx);
         shown(cx);
-        let narrow = downloads(cx);
-        start_download(&app, &browser, cx, narrow[1].center());
-        cx.executor()
-            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
-        shown(cx);
+        let narrow_rest = downloads(cx);
+        assert!(
+            (narrow_rest[0].center().y - narrow_rest[1].center().y).abs()
+                <= cx.update(|window, _| px(1. / window.scale_factor())),
+            "at 18 pt the two share a line: {narrow_rest:?}"
+        );
+        assert_eq!(
+            [0, 1].map(crate::lfs_download::drawn_glyph),
+            glyphs_with(None)
+        );
         let words = "Git LFS could not reach origin: the remote refused the batch request \
                      for this object because its credentials have expired";
-        end_download(&app, &browser, cx, Some(words));
+        for side in [1, 0] {
+            start_download(&app, &browser, cx, narrow_rest[side].center());
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            shown(cx);
+            end_download(&app, &browser, cx, Some(words));
+            shown(cx);
+            let device = cx.update(|window, _| px(1. / window.scale_factor()));
+            let failed = downloads(cx);
+            assert!(
+                kept(&narrow_rest, &failed, device)
+                    && cx.debug_bounds("lfs-download-failure").is_none(),
+                "side {side} at 18 pt: both Downloads, {failed:?}, keep their places at rest, \
+                 {narrow_rest:?}, and the words have no room"
+            );
+            assert_eq!(
+                [0, 1].map(crate::lfs_download::drawn_glyph),
+                glyphs_with(Some(side)),
+                "side {side} at 18 pt: the failed Download draws the warning glyph"
+            );
+            wide(cx);
+            shown(cx);
+            let device = cx.update(|window, _| px(1. / window.scale_factor()));
+            let failure = cx
+                .debug_bounds("lfs-download-failure")
+                .expect("the words are drawn");
+            let failed = downloads(cx);
+            assert!(
+                kept(&wide_rest, &failed, device)
+                    && failure.right() <= failed[0].left() + device / 2.,
+                "side {side} at 13 pt: the words, {failure:?}, take the sentence's place, and \
+                 both Downloads, {failed:?}, keep their places at rest, {wide_rest:?}"
+            );
+            assert_eq!(
+                [0, 1].map(crate::lfs_download::drawn_glyph),
+                glyphs_with(Some(side)),
+                "side {side} at 13 pt: the failed Download draws the warning glyph"
+            );
+            narrow(cx);
+            shown(cx);
+        }
+        // Pressed again, Download Before… opens its form: the failure clears
+        // and the row rests.
+        cx.simulate_click(narrow_rest[0].center(), Modifiers::none());
+        draw(cx);
         shown(cx);
-        let device = cx.update(|window, _| px(1. / window.scale_factor()));
-        let icon = cx
-            .debug_bounds("lfs-download-failure-icon")
-            .expect("a warning icon stands for the words");
-        let failed = downloads(cx);
         assert!(
-            kept(&narrow, &failed, device) && icon.left() >= failed[1].right() - device / 2.,
-            "at 18 pt the icon, {icon:?}, follows Download After…, and both Downloads, \
-             {failed:?}, keep their places at rest, {narrow:?}"
+            browser.read_with(cx, |browser, _| {
+                browser
+                    .lfs_download
+                    .as_ref()
+                    .is_some_and(|asked| asked.failure.is_none())
+            }),
+            "the press asks for a download again"
         );
-        cx.update(|window, _| window.set_scale_factor(initial));
-        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
-        cx.simulate_resize(size(px(1480.), px(973.)));
-        shown(cx);
-        let device = cx.update(|window, _| px(1. / window.scale_factor()));
-        let failure = cx
-            .debug_bounds("lfs-download-failure")
-            .expect("the words are drawn");
-        let failed = downloads(cx);
-        assert!(
-            kept(&wide, &failed, device) && failure.right() <= failed[0].left() + device / 2.,
-            "at 13 pt the words, {failure:?}, take the sentence's place, and both Downloads, \
-             {failed:?}, keep their places at rest, {wide:?}"
+        assert_eq!(
+            [0, 1].map(crate::lfs_download::drawn_glyph),
+            glyphs_with(None),
+            "once the failure clears, Download Before… draws its pull glyph again"
         );
+        cx.update(|window, cx| window.close_dialog(cx));
+        wide(cx);
     }
 
     /// A lone missing side's failure takes the sentence's place too
@@ -7400,20 +7460,21 @@ mod tests {
         );
     }
 
-    /// A failure has its own warning icon, and every tooltip says what is
-    /// drawn (decision, 2026-11-10): with both sides' objects missing and
-    /// After…'s download failed, at 18 pt in QA's 461 × 490 window at scale
-    /// 2, where the two share a line without their word, the icon is
-    /// `icons/warning.svg`, its tooltip the words with the side's name, as
-    /// they would be drawn there, and Download After…'s tooltip names it with
-    /// the failure; at 13 pt in a 1480 × 973 window the words drawn on that
-    /// shared line say the same in theirs; at 18 pt in a 461 × 680 window,
-    /// where the two stack, the words beside Download After… say them
-    /// without the name, as drawn. The icon took the conflict glyph, its
-    /// tooltip left out the side, and the failed Download's still gave the
-    /// sentence.
+    /// A failure's mark is the failed Download's own glyph, and every
+    /// tooltip says what is drawn (decisions, 2026-11-10): with both sides'
+    /// objects missing and After…'s download failed, at 18 pt in QA's
+    /// 461 × 490 window at scale 2, where the two share a line without their
+    /// word and the words have no room, Download After… draws
+    /// `icons/warning.svg` in place of its pull glyph and its tooltip names it
+    /// with the failure's whole words; at 13 pt in a 1480 × 973 window the
+    /// words drawn on that shared line say themselves with the side's name in
+    /// theirs; at 18 pt in a 461 × 680 window, where the two stack, the words
+    /// beside Download After… say themselves without the name, as drawn, and
+    /// Download After…'s tooltip still names it with them. A warning icon of
+    /// its own once stood after the Downloads, read as the last one's, and
+    /// the failed Download's tooltip still gave the sentence.
     #[gpui::test]
-    async fn a_failure_s_icon_and_tooltips_say_what_is_drawn(cx: &mut gpui_kit::TestAppContext) {
+    async fn a_failure_s_glyph_and_tooltips_say_what_is_drawn(cx: &mut gpui_kit::TestAppContext) {
         use crate::tags::tests::draw;
         let (_fixture, repo, files) = missing_both();
         let (app, cx) = crate::tags::tests::window(cx, &repo);
@@ -7452,23 +7513,18 @@ mod tests {
         shown(cx);
         let failed = format!("Download After… · Failed: {words}");
         let named = format!("After: {words}");
-        assert_eq!(
-            crate::views::CONTROL_ICONS.with(|icons| {
-                icons
-                    .borrow()
-                    .get(&SharedString::from("lfs-download-failure-icon"))
-                    .cloned()
-            }),
-            Some("icons/warning.svg".into()),
-            "the failure draws its own warning icon"
-        );
         assert!(
-            hover_shows(cx, "lfs-download-failure-icon", &named),
-            "on the shared line the icon's tooltip names the side"
+            cx.debug_bounds("lfs-download-failure").is_none(),
+            "the words have no room on the shared line"
+        );
+        assert_eq!(
+            [0, 1].map(crate::lfs_download::drawn_glyph),
+            glyphs_with(Some(1)),
+            "Download After… draws the warning glyph"
         );
         assert!(
             hover_shows(cx, "download-lfs-side-1", &failed),
-            "Download After…'s tooltip names it with the failure"
+            "on the shared line Download After…'s tooltip names it with the failure"
         );
         cx.update(|window, _| window.set_scale_factor(initial));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
@@ -7488,6 +7544,11 @@ mod tests {
         assert!(
             after.top() >= before.bottom() - px(0.25),
             "the two stack: {before:?}, {after:?}"
+        );
+        assert_eq!(
+            [0, 1].map(crate::lfs_download::drawn_glyph),
+            glyphs_with(Some(1)),
+            "stacked, Download After… draws the warning glyph"
         );
         assert!(
             hover_shows(cx, "lfs-download-failure", words)
@@ -9000,10 +9061,13 @@ mod tests {
 
     /// Whether the pointer resting on action `id` shows the tooltip `text`,
     /// as the window draws it under the pointer; the pointer then leaves the
-    /// window until the tooltip has gone.
+    /// window until the tooltip has gone. It leaves first, so an action it
+    /// rests on already, as after a press, is entered again.
     fn hover_shows(cx: &mut gpui::VisualTestContext, id: &'static str, text: &str) -> bool {
         use crate::tags::tests::draw;
         const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+        cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+        draw(cx);
         let action = cx.debug_bounds(id).expect("the action is drawn");
         cx.simulate_mouse_move(action.center(), None, Modifiers::default());
         cx.executor().advance_clock(SHOW_DELAY);
