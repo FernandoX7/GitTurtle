@@ -132,6 +132,23 @@ announced unavailable alone, dimmed, and neither, to the nodes they write.
 Remove this part with the base's when upstream Button separates its
 accessibility state from its disabled styling.
 
+The accessibility-disabled patch also modifies `src/checkbox.rs`.
+`Checkbox::accessibility_disabled` passes its flag to the base Checkbox's
+matching setter (see [the base patch](../gpui-base/GITTURTLE-PATCH.md)), which
+reports the node disabled while the Checkbox keeps its enabled look, focus and
+click handler. The Diff view's line checkboxes refuse a press in their handler
+from the press of a partial Stage or Unstage and dim only once the window looks
+busy, 200 ms in (`DiffView::render_partial_controls`): without the flag an
+assistive technology heard them enabled through the delay, and the base
+Checkbox reported no unavailable state even once they dimmed. Checkboxes that do
+not set it are unchanged in look and input; every consumer is listed in the
+base patch. `checkbox::tests::facade_accessibility_disabled_keeps_its_input`
+clicks one, and `cargo test --locked -p gitturtle
+a_line_checkbox_is_announced_unavailable_before_it_dims` reads the node the Diff
+view's line checkbox writes during the delay, its look and, on Linux, its AT-SPI
+state. Remove this part with the base's when upstream Checkbox separates its
+accessibility state from its disabled styling.
+
 The disabled-focus patch also modifies `src/button/button.rs`. gpui-base's
 Button tracks its focus handle only while it is enabled (`gpui-base`
 `src/button.rs`, `.when(!disabled && self.focusable, …)`), so a Button that

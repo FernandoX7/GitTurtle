@@ -1407,16 +1407,6 @@ impl DiffView {
                     let cell = div();
                     #[cfg(test)]
                     let cell = cell.child(painted_rows::cell(Some(row)));
-                    // Refused at once by its handler, it looks it, and so
-                    // is announced it, only with the bar's controls
-                    // ([`Self::dimmed`]): the kit's Checkbox reports no
-                    // unavailable state apart from its look.
-                    #[cfg(test)]
-                    crate::workspace::refusals::record(
-                        format!("partial-line-{row}"),
-                        dimmed,
-                        dimmed,
-                    );
                     elements.push(
                         cell.debug_selector(move || format!("partial-line-{row}"))
                             .absolute()
@@ -1429,20 +1419,7 @@ impl DiffView {
                             .justify_center()
                             .child(
                                 div().relative().flex().children(mark).child(
-                                    Checkbox::new(("partial-line", id))
-                                        .tab_stop(false)
-                                        .small()
-                                        .checked(self.selection.ids.contains(&id))
-                                        .disabled(dimmed)
-                                        .accessibility_label(format!(
-                                            "Select {} line {line} to {}",
-                                            if *added { "added" } else { "removed" },
-                                            action.to_lowercase()
-                                        ))
-                                        .tooltip(format!(
-                                            "Select this changed line. {} selects a range.",
-                                            crate::shortcuts::SHIFT_CLICK
-                                        ))
+                                    self.line_checkbox(row, id, *added, *line, refused, dimmed)
                                         .on_click(cx.listener(move |this, checked, window, cx| {
                                             // No Tab stop, it takes no key's
                                             // click; refused as one comes up
@@ -1482,6 +1459,58 @@ impl DiffView {
                 .children(elements)
                 .into_any_element(),
         ]
+    }
+
+    /// The checkbox of the changed line `id`, `line` on its side, `added`
+    /// or removed, on `row`, without its click: while `refused` its handler
+    /// refuses a press at once and it is announced unavailable at once, as
+    /// the bar's controls and Stage hunk are (`workspace::refusing`), and it
+    /// looks it only where `dimmed`, once the window looks busy
+    /// ([`Self::dimmed`]). The kit's Checkbox reported no unavailable state
+    /// apart from its look, so it was announced available through the delay.
+    fn line_checkbox(
+        &self,
+        row: usize,
+        id: usize,
+        added: bool,
+        line: usize,
+        refused: bool,
+        dimmed: bool,
+    ) -> Checkbox {
+        #[cfg(test)]
+        crate::workspace::refusals::record(
+            format!("partial-line-{row}"),
+            refused || dimmed,
+            dimmed,
+        );
+        #[cfg(not(test))]
+        let _ = row;
+        Checkbox::new(("partial-line", id))
+            .tab_stop(false)
+            .small()
+            .checked(self.selection.ids.contains(&id))
+            .disabled(dimmed)
+            .accessibility_disabled(refused || dimmed)
+            .accessibility_label(format!(
+                "Select {} line {line} to {}",
+                if added { "added" } else { "removed" },
+                self.action().to_lowercase()
+            ))
+            .tooltip(format!(
+                "Select this changed line. {} selects a range.",
+                crate::shortcuts::SHIFT_CLICK
+            ))
+    }
+
+    /// The checkbox on `row`, as the view builds it now, for a test.
+    #[cfg(test)]
+    pub(crate) fn line_checkbox_at(&self, row: usize) -> Option<Checkbox> {
+        match self.partial.as_ref()?.rows.get(row)? {
+            PartialRow::Change { id, added, line } => {
+                Some(self.line_checkbox(row, *id, *added, *line, self.partial_busy, self.dimmed()))
+            }
+            _ => None,
+        }
     }
 
     fn click_matches_row(&self, event: &ClickEvent, row: usize, cx: &App) -> bool {

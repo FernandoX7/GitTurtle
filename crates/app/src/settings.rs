@@ -1398,11 +1398,8 @@ impl GitTurtle {
                     .gap_3()
                     .min_h(crate::appearance::ui_size(32.))
                     .child(
-                        Checkbox::new(("history-column", index))
+                        column_checkbox(index, id, setting.visible)
                             .when_some(column.as_ref(), |checkbox, focus| checkbox.track_focus(focus))
-                            .label(id.label())
-                            .checked(setting.visible)
-                            .disabled(id == ColumnId::Subject)
                             .on_click(cx.listener(move |this, checked: &bool, window, cx| {
                                 if this.settings.columns.get(id).visible != *checked {
                                     this.settings.columns.set_visible(id, *checked);
@@ -1420,7 +1417,7 @@ impl GitTurtle {
                             .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
                             .child(if id == ColumnId::Subject {
-                                "Always shown".to_owned()
+                                ALWAYS_SHOWN.to_owned()
                             } else {
                                 format!("{:.0} px", setting.width)
                             }),
@@ -4857,6 +4854,25 @@ const PROJECT_PANE: &str = "Show the project list";
 /// (`project_pane::HELD_BACK_DESCRIPTION`).
 const PROJECT_PANE_DESCRIPTION: &str =
     "Keep a pane on the far left to jump between known projects and sort them into groups.";
+
+/// Why History's Subject column cannot be hidden, as the pill beside its
+/// checkbox says.
+const ALWAYS_SHOWN: &str = "Always shown";
+
+/// The checkbox that shows History's column `id`, the `index`th, checked
+/// while `visible`, without its focus or click. Subject's is unavailable,
+/// since the column is always shown, and says so as its description, as the
+/// pill beside it does: announced unavailable, it gave no reason, the pill
+/// being text of its own after it.
+fn column_checkbox(index: usize, id: ColumnId, visible: bool) -> Checkbox {
+    Checkbox::new(("history-column", index))
+        .label(id.label())
+        .checked(visible)
+        .disabled(id == ColumnId::Subject)
+        .when(id == ColumnId::Subject, |checkbox| {
+            checkbox.aria_description(ALWAYS_SHOWN)
+        })
+}
 
 /// A Settings switch whose row is the control: its `title` and
 /// `description` are drawn before its track (the kit's `Switch::leading`),
@@ -9388,6 +9404,57 @@ mod picker_tests {
 mod columns_popover_tests {
     use super::*;
     use core::prelude::v1::test;
+
+    /// The node `checkbox`, a kit Checkbox, writes for assistive technology
+    /// as a window draws it.
+    fn checkbox_node(
+        cx: &mut gpui::VisualTestContext,
+        checkbox: impl Fn() -> Checkbox + 'static,
+    ) -> gpui::accesskit::Node {
+        crate::views::tests::view_node(cx, move |window, cx| {
+            use gpui::Element as _;
+            fn of_type<'a, E: gpui::Element>(
+                _witness: &E,
+                element: &'a mut gpui::AnyElement,
+            ) -> Option<&'a mut E> {
+                element.downcast_mut()
+            }
+            let mut outer = gpui::RenderOnce::render(checkbox(), window, cx).into_element();
+            let (_, mut layout) = outer.request_layout(None, None, window, cx);
+            let mut base = (&mut layout as &mut dyn std::any::Any)
+                .downcast_mut::<Option<gpui::AnyElement>>()
+                .and_then(Option::take)
+                .expect("the kit's Checkbox renders a base Checkbox");
+            let witness =
+                gpui::RenderOnce::render(gpui_kit::base::Checkbox::new("witness"), window, cx)
+                    .into_element();
+            let element = of_type(&witness, &mut base).expect("the base element writes the node");
+            let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+            element.write_a11y_info(&mut node);
+            node
+        })
+    }
+
+    /// History's Subject column checkbox, which cannot hide the column, is
+    /// announced unavailable with its reason, "Always shown", as the pill
+    /// beside it draws it; the other columns' checkboxes are available and
+    /// describe nothing. Announced unavailable, it gave no reason: the pill
+    /// is text of its own after it.
+    #[gpui::test]
+    async fn the_subject_column_checkbox_says_why_it_is_unavailable(cx: &mut TestAppContext) {
+        let (_fixture, _app, cx) = crate::views::tests::history_window(cx).await;
+        for (index, id) in ColumnId::ALL.into_iter().enumerate() {
+            let node = checkbox_node(cx, move || column_checkbox(index, id, true));
+            assert_eq!(node.label(), Some(id.label()), "{id:?}");
+            if id == ColumnId::Subject {
+                assert!(node.is_disabled(), "Subject is announced unavailable");
+                assert_eq!(node.description(), Some(ALWAYS_SHOWN), "with its reason");
+            } else {
+                assert!(!node.is_disabled(), "{id:?} is available");
+                assert_eq!(node.description(), None, "{id:?}");
+            }
+        }
+    }
 
     /// History's Columns panel lays its graph lane spacing out as it did
     /// before Settings centred its rows' controls on their titles' first

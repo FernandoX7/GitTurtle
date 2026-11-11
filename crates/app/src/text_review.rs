@@ -4240,7 +4240,7 @@ mod tests {
 
     /// A partial write that lands within the window's busy-look delay dims
     /// nothing, as DESIGN.md has every write: the bar's action, Clear, the
-    /// line checkboxes and Stage hunk refuse a press at once, the buttons
+    /// line checkboxes and Stage hunk refuse a press at once and are
     /// announced unavailable at once, but they look it only once the window
     /// looks busy, 200 ms into the write. Presses 100 ms in, a hunk's Stage,
     /// a line's checkbox, Space and the action from the keyboard, do
@@ -4271,13 +4271,8 @@ mod tests {
         crate::tags::tests::draw(cx);
         assert_eq!(
             partial_refusals(hunk, twelve),
-            [
-                Some((true, false)),
-                Some((true, false)),
-                Some((true, false)),
-                Some((false, false)),
-            ],
-            "the press: refused, the buttons announced so, nothing dimmed"
+            [Some((true, false)); 4],
+            "the press: refused and announced so, nothing dimmed"
         );
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(100));
@@ -4302,12 +4297,7 @@ mod tests {
         route.assert_kept(&app, cx, "Staging selected changes…", "100 ms in");
         assert_eq!(
             partial_refusals(hunk, twelve),
-            [
-                Some((true, false)),
-                Some((true, false)),
-                Some((true, false)),
-                Some((false, false)),
-            ],
+            [Some((true, false)); 4],
             "100 ms in: refused, nothing dimmed"
         );
         // The frame the window asks for as it looks busy.
@@ -4328,6 +4318,158 @@ mod tests {
                 && !staged.contains("tail"),
             "one write staged the two lines alone: {staged}"
         );
+    }
+
+    /// The node the line checkbox on `row` writes, as `view` builds it now:
+    /// the kit's Checkbox laid out to its base element, whose node it is,
+    /// as `editor_find`'s tests read Match case's.
+    fn line_node(
+        view: &gpui::Entity<crate::diff_view::DiffView>,
+        row: usize,
+        cx: &mut gpui::VisualTestContext,
+    ) -> gpui::accesskit::Node {
+        let view = view.clone();
+        crate::views::tests::view_node(cx, move |window, cx| {
+            use gpui::{Element as _, RenderOnce as _};
+            fn of_type<'a, E: gpui::Element>(
+                _witness: &E,
+                element: &'a mut gpui::AnyElement,
+            ) -> Option<&'a mut E> {
+                element.downcast_mut()
+            }
+            let checkbox = view
+                .read(cx)
+                .line_checkbox_at(row)
+                .expect("a changed line's checkbox");
+            let mut outer = checkbox.render(window, cx).into_element();
+            let (_, mut layout) = outer.request_layout(None, None, window, cx);
+            let mut base = (&mut layout as &mut dyn std::any::Any)
+                .downcast_mut::<Option<gpui::AnyElement>>()
+                .and_then(Option::take)
+                .expect("the kit's Checkbox renders a base Checkbox");
+            let witness = gpui_kit::base::Checkbox::new("witness")
+                .render(window, cx)
+                .into_element();
+            let element = of_type(&witness, &mut base).expect("the base element writes the node");
+            let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+            element.write_a11y_info(&mut node);
+            node
+        })
+    }
+
+    /// The edge the line checkbox on `row` draws its box with, as the last
+    /// frame painted it.
+    fn line_edge(cx: &mut gpui::VisualTestContext, row: usize) -> gpui::Hsla {
+        let cell = cx
+            .debug_bounds(format!("partial-line-{row}").leak())
+            .expect("the checkbox is drawn");
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.border_widths.left.as_f32() > 0.)
+                .find(|quad| {
+                    let (origin, extent) = (quad.bounds.origin, quad.bounds.size);
+                    cell.contains(&gpui::point(
+                        gpui::px((origin.x.as_f32() + extent.width.as_f32() / 2.) / scale),
+                        gpui::px((origin.y.as_f32() + extent.height.as_f32() / 2.) / scale),
+                    ))
+                })
+                .expect("the checkbox's box is painted")
+                .border_color
+        })
+    }
+
+    /// A line's checkbox refuses a press from the press of a partial write
+    /// and is announced unavailable from then too, as the bar's action,
+    /// Clear and Stage hunk are, while it looks available until the window
+    /// looks busy, 200 ms in, as DESIGN.md has every control a write
+    /// refuses: through the delay its node is disabled (on Linux neither
+    /// enabled nor sensitive to AT-SPI) and its box keeps the enabled edge;
+    /// then it dims, still disabled, and once the write lands it is
+    /// available again. The kit's Checkbox reported no unavailable state
+    /// apart from its look, so it was announced available through the
+    /// delay, and even dimmed.
+    #[gpui::test]
+    async fn a_line_checkbox_is_announced_unavailable_before_it_dims(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui_kit::component::ActiveTheme as _;
+        let (_fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &landing_notes()).await;
+        let (_, twelve) = route_controls(&app, &route, cx);
+        let refusal = |row: usize| {
+            crate::workspace::refusals::get(&format!("partial-line-{row}"))
+                .map(|refusal| (refusal.announced, refusal.dimmed))
+        };
+        let enabled = cx.update(|_, cx| cx.theme().input);
+        crate::workspace::refusals::forget();
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            refusal(twelve),
+            Some((true, false)),
+            "the press: announced unavailable, not dimmed"
+        );
+        let node = line_node(&route.view, twelve, cx);
+        assert_eq!(node.role(), gpui::accesskit::Role::CheckBox);
+        assert!(node.is_disabled(), "its node is disabled through the delay");
+        #[cfg(target_os = "linux")]
+        {
+            use crate::native_accessibility::atspi_state_tests::IgnoreCallbacks;
+            use accesskit_atspi_common::{Adapter, AppContext, State, WindowBounds};
+            use gpui::accesskit::{Node, NodeId, Role, Tree, TreeId, TreeUpdate};
+            let mut window = Node::new(Role::Window);
+            window.set_children(vec![NodeId(1)]);
+            let adapter = Adapter::new(
+                &AppContext::new(None),
+                IgnoreCallbacks,
+                TreeUpdate {
+                    nodes: vec![(NodeId(0), window), (NodeId(1), node.clone())],
+                    tree: Some(Tree::new(NodeId(0))),
+                    tree_id: TreeId::ROOT,
+                    focus: NodeId(0),
+                },
+                true,
+                WindowBounds::default(),
+                IgnoreCallbacks,
+            );
+            let root = adapter.platform_node(adapter.root_id());
+            let checkbox = root.child_at_index(0).unwrap().unwrap();
+            let state = adapter.platform_node(checkbox).state();
+            assert!(
+                !state.contains(State::Enabled) && !state.contains(State::Sensitive),
+                "AT-SPI hears the checkbox unavailable: {state:?}"
+            );
+        }
+        assert_eq!(
+            line_edge(cx, twelve),
+            enabled,
+            "drawn undimmed through the delay"
+        );
+        crate::workspace::refusals::forget();
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        native_frames(cx);
+        assert_eq!(
+            refusal(twelve),
+            Some((true, true)),
+            "dimmed once the window looks busy"
+        );
+        assert!(line_node(&route.view, twelve, cx).is_disabled());
+        assert_eq!(
+            line_edge(cx, twelve),
+            enabled.opacity(0.5),
+            "drawn dimmed once the window looks busy"
+        );
+        land_write(&app, cx, held).await;
+        let twelve = patch_row(&route.editor, cx, "+twelve");
+        assert_eq!(
+            refusal(twelve),
+            Some((false, false)),
+            "available once landed"
+        );
+        assert!(!line_node(&route.view, twelve, cx).is_disabled());
     }
 
     /// The Stage hunk on the tail's hunk and the checkbox on "+twelve" of
