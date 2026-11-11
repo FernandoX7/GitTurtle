@@ -508,8 +508,22 @@ pub struct State {
     /// ([`GitTurtle::close_menus_for_the_mark`]), and so does the way back's
     /// own ([`GitTurtle::return_to_the_way_back`]).
     open_focus: OpenFocus,
+    /// A press of the navigation's Refresh under the mark's line that a
+    /// running write refused as it began, which stays refused until it
+    /// ends ([`GitTurtle::way_back_key_down`],
+    /// [`GitTurtle::way_back_pointer_down`]).
+    refused_press: Option<RefusedPress>,
     #[cfg(test)]
     save_path: Option<PathBuf>,
+}
+/// A press of the mark's Refresh a running write refused as it began
+/// ([`State::refused_press`]).
+struct RefusedPress {
+    /// The key that pressed it, "enter" or "space", or "pointer".
+    by: &'static str,
+    /// A key's press ends as focus leaves the Refresh, whose key-up then
+    /// goes elsewhere.
+    _blur: Option<Subscription>,
 }
 /// What held keyboard focus as an Open of the shown tab began
 /// ([`State::open_focus`]).
@@ -1995,6 +2009,87 @@ impl GitTurtle {
             window.focus(&self.mark_way_back, cx);
             cx.notify();
         }
+    }
+    /// Return or Space going down on the navigation's Refresh under the
+    /// mark's line while a write runs, refused for its whole press
+    /// ([`State::refused_press`]): its repeats, marked held or, as X11 sends
+    /// them, fresh, and its key-up press nothing, even once the write has
+    /// ended, and the busy spell's look shows at once, so the Refresh dims
+    /// and says why in the frame of the refusal. GPUI arms a Button's press
+    /// on any Enter or Space key-down and makes it as the key comes up, so a
+    /// Return held through the write's end refreshed as it came up, and a
+    /// repeat after the write armed it again. Any other key ends the press.
+    pub(super) fn way_back_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        if (self.repository_tabs.refused_press.as_ref()).is_some_and(|press| press.by == key) {
+            window.prevent_default();
+            return;
+        }
+        self.repository_tabs.refused_press = None;
+        let key = match key {
+            "enter" => "enter",
+            "space" => "space",
+            _ => return,
+        };
+        if event.keystroke.modifiers.modified() || self.operation_busy.is_none() {
+            return;
+        }
+        window.prevent_default();
+        let blur = cx.on_blur(&self.mark_way_back, window, |this, _, _| {
+            this.repository_tabs.refused_press = None;
+        });
+        self.repository_tabs.refused_press = Some(RefusedPress {
+            by: key,
+            _blur: Some(blur),
+        });
+        self.show_busy_look(cx);
+    }
+    /// The key-up that ends a press [`Self::way_back_key_down`] refused
+    /// presses nothing.
+    pub(super) fn way_back_key_up(
+        &mut self,
+        event: &KeyUpEvent,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        if (self.repository_tabs.refused_press.as_ref()).is_some_and(|press| press.by == key) {
+            self.repository_tabs.refused_press = None;
+            window.prevent_default();
+        }
+    }
+    /// The pointer going down on the navigation's Refresh under the mark's
+    /// line while a write runs: its release presses nothing, even once the
+    /// write has ended, and the busy spell's look shows at once
+    /// ([`State::refused_press`]). GPUI makes a pointer's press as it comes
+    /// up, so one that went down refused refreshed if the write ended first.
+    pub(super) fn way_back_pointer_down(&mut self, cx: &mut Context<Self>) {
+        let refused = self.operation_busy.is_some();
+        self.repository_tabs.refused_press = refused.then_some(RefusedPress {
+            by: "pointer",
+            _blur: None,
+        });
+        if refused {
+            self.show_busy_look(cx);
+        }
+    }
+    /// A press of the navigation's Refresh under the mark's line, which
+    /// reads the tab's repository again unless a write runs or the press
+    /// began refused ([`Self::way_back_key_down`],
+    /// [`Self::way_back_pointer_down`]); a refused press shows the busy
+    /// spell's look at once, as one refused as it begins does.
+    pub(super) fn press_way_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let began_refused = self.repository_tabs.refused_press.take().is_some();
+        if began_refused || self.operation_busy.is_some() {
+            self.show_busy_look(cx);
+            return;
+        }
+        self.refresh(&Refresh, window, cx);
     }
     /// Closes every menu open on the shown tab as its mark lands
     /// ([`Self::tab_opening_failed`]), as a resize closes them: the
@@ -6029,6 +6124,148 @@ pub(crate) mod tests {
                 "{route} on {way}: not on the empty list"
             );
         }
+    }
+
+    /// The navigation's Refresh under the mark's line says why a running
+    /// write refuses it, as the other refused controls do
+    /// (`refusing_with_reason`): announced unavailable at once, and dimmed
+    /// with the busy reason in its tooltip once the write looks busy, or at
+    /// once as a press is refused. A press refused as it begins stays
+    /// refused for its whole press (`GitTurtle::way_back_key_down`,
+    /// `GitTurtle::way_back_pointer_down`): Return held, its repeats marked
+    /// held and, as X11 sends them, fresh, through the write's end reads
+    /// nothing as it comes up, and nor does the pointer's release after the
+    /// write; the next press reads the repository again. It was drawn
+    /// enabled, its tooltip only its name and shortcut, a press doing
+    /// nothing, and a Return held through the write's end refreshed as it
+    /// came up.
+    #[gpui::test]
+    async fn a_marked_tab_s_refresh_says_why_a_write_refuses_its_whole_press(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        use crate::workspace::refusals::{self, Refusal};
+        const KEY: &str = "navigation-refresh";
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        draw(cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("moved-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        let way_back = app.read_with(cx, |app, _| app.mark_way_back.clone());
+        let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
+        let busy = |cx: &mut VisualTestContext, write: Option<&'static str>| {
+            app.update(cx, |app, _| app.operation_busy = write);
+            draw(cx);
+        };
+        let looks_busy = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.busy_shown());
+        let enter = |cx: &mut VisualTestContext, is_held: bool| {
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                is_held,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        };
+        let release = |cx: &mut VisualTestContext| {
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+            });
+            draw(cx);
+        };
+        let shortcut = crate::shortcuts::label(crate::shortcuts::ShortcutId::Refresh);
+        let refusal = |announced, dimmed| Some(Refusal { announced, dimmed });
+        assert_eq!(refusals::get(KEY), refusal(false, false), "offered at rest");
+        assert_eq!(
+            refusals::tooltip(KEY).as_deref(),
+            Some(format!("Refresh · {shortcut}").as_str())
+        );
+
+        busy(cx, Some("Fetching…"));
+        assert_eq!(
+            refusals::get(KEY),
+            refusal(true, false),
+            "a write refuses it at once, dimmed only once it looks busy"
+        );
+        cx.update(|window, cx| window.focus(&way_back, cx));
+        draw(cx);
+        let before = generation(cx);
+        enter(cx, false);
+        assert!(
+            looks_busy(cx),
+            "a refused Return shows the busy look at once"
+        );
+        assert_eq!(refusals::get(KEY), refusal(true, true), "dimmed at once");
+        assert_eq!(
+            refusals::tooltip(KEY).as_deref(),
+            Some(format!("Refresh · {} · {shortcut}", crate::workspace::BUSY_REASON).as_str()),
+            "its tooltip says why"
+        );
+        for is_held in [true, true, false, false] {
+            enter(cx, is_held);
+        }
+        busy(cx, None);
+        assert_eq!(
+            refusals::get(KEY),
+            refusal(false, false),
+            "offered again as the write ends"
+        );
+        for is_held in [true, false] {
+            enter(cx, is_held);
+        }
+        release(cx);
+        settle(&app, cx).await;
+        assert_eq!(
+            generation(cx),
+            before,
+            "the refused Return reads nothing as it comes up after the write"
+        );
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "focus stays on Refresh"
+        );
+        enter(cx, false);
+        release(cx);
+        settle(&app, cx).await;
+        assert!(
+            generation(cx) > before,
+            "the next Return reads the repository again"
+        );
+
+        busy(cx, Some("Fetching…"));
+        let before = generation(cx);
+        let center = cx.debug_bounds(KEY).expect("the Refresh").center();
+        cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            looks_busy(cx),
+            "a refused click shows the busy look at once"
+        );
+        assert_eq!(refusals::get(KEY), refusal(true, true), "dimmed at once");
+        busy(cx, None);
+        cx.simulate_mouse_up(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+        settle(&app, cx).await;
+        assert_eq!(
+            generation(cx),
+            before,
+            "the refused click reads nothing as it comes up after the write"
+        );
+        cx.simulate_click(center, gpui::Modifiers::default());
+        settle(&app, cx).await;
+        assert!(
+            generation(cx) > before,
+            "the next click reads the repository again"
+        );
     }
 
     /// An explicit Open of a marked tab's folder whose snapshot names a

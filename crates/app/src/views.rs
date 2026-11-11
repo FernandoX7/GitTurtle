@@ -1104,27 +1104,36 @@ impl GitTurtle {
                     .map(|tree| if marked {
                         // Its way back below the line, Refresh, refused at
                         // once while a write runs, as the Refresh shortcut
-                        // is; focus goes there from a menu the mark closed
-                        // (`close_menus_for_the_mark`).
+                        // is, and for the whole of a press that began
+                        // refused (`way_back_key_down`); it says why as the
+                        // other refused controls do, dimmed with the busy
+                        // reason in its tooltip once the write looks busy, or
+                        // at once as a press is refused. It was drawn
+                        // enabled, its tooltip only its name and shortcut,
+                        // and a press did nothing. Focus goes there from a
+                        // menu the mark closed (`close_menus_for_the_mark`).
+                        static SHORTCUT: std::sync::LazyLock<SharedString> = std::sync::LazyLock::new(|| {
+                            shortcuts::label(shortcuts::ShortcutId::Refresh).into()
+                        });
                         let refresh = crate::empty_state::action("navigation-refresh", "Refresh", "refresh")
                             .track_focus(&self.mark_way_back)
-                            .tooltip(format!(
-                                "Refresh · {}",
-                                shortcuts::label(shortcuts::ShortcutId::Refresh)
-                            ))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.operation_busy.is_none() {
-                                    this.refresh(&Refresh, window, cx);
-                                }
-                            }));
+                            .capture_key_down(cx.listener(Self::way_back_key_down))
+                            .capture_key_up(cx.listener(Self::way_back_key_up))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.way_back_pointer_down(cx)))
+                            .on_click(cx.listener(|this, _, window, cx| this.press_way_back(window, cx)));
                         tree.child(
                             EmptyState::new("navigation-unavailable", nav_unavailable_line(self.nav_mode))
                                 .tooltip(crate::branch_actions::UNAVAILABLE_WAY_BACK)
-                                .action(crate::workspace::refusing(
+                                .action(self.refusing_with_reason(
                                     refresh,
-                                    || "navigation-refresh".into(),
+                                    "navigation-refresh",
                                     self.operation_busy.is_some(),
-                                    self.operation_shown().is_some(),
+                                    |app| crate::workspace::WaitingTooltip {
+                                        name: "Refresh".into(),
+                                        shortcut: Some(SHORTCUT.clone()),
+                                        dimmed: app.operation_shown().is_some(),
+                                    },
+                                    cx,
                                 ))
                                 .pane(cx),
                         )
