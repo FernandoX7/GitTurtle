@@ -68,7 +68,8 @@ pub(super) struct State {
     /// What the open editor was opened from: New theme… (`Some(None)`) or
     /// the edited theme's Edit… (`Some(Some(id))`). The editor's close gives
     /// focus back to that control and brings it into view
-    /// (`GitTurtle::reveal_theme_editor_opener`).
+    /// (`GitTurtle::reveal_theme_editor_opener`), except a new theme's Save,
+    /// which gives it to the saved theme's Edit….
     opened_from: Option<Option<u32>>,
     /// Custom-theme saves submitted from this window and not yet answered.
     /// Only their replies replace `GitTurtle::custom_themes`.
@@ -1033,12 +1034,13 @@ impl GitTurtle {
     }
 
     /// The editor is closing, and its close gives focus back to the control
-    /// that opened it (`open_theme_editor`): the Settings page reveals that
-    /// control with its ring's room in the first frame after the close,
-    /// whatever closed the editor, a pointer press on Save or Cancel
-    /// included, and an edited theme's row comes into the list's view, so
-    /// a window resized while the editor was open still shows the control
-    /// focus lands on.
+    /// that opened it (`open_theme_editor`), or, after a new theme's Save,
+    /// to the saved theme's Edit… (`finish_custom_theme_save` sets
+    /// `opened_from` to it): the Settings page reveals that control with its
+    /// ring's room in the first frame after the close, whatever closed the
+    /// editor, a pointer press on Save or Cancel included, and a theme's row
+    /// comes into the list's view, so a window resized while the editor was
+    /// open still shows the control focus lands on.
     fn reveal_theme_editor_opener(&mut self, cx: &mut Context<Self>) {
         let Some(editing) = self.theme_editor.opened_from.take() else {
             return;
@@ -1539,8 +1541,22 @@ impl GitTurtle {
                 {
                     self.theme_editor.form = None;
                     self.theme_editor.preview = None;
+                    // A new theme's Save gives focus to the saved theme's
+                    // Edit…, not back to New theme…: one spoken result that
+                    // names what was saved, and never a disabled control,
+                    // which New theme… is once the save reaches
+                    // `MAX_CUSTOM_THEMES` (decided 2026-11-10). The close
+                    // gives focus back to New theme… first, which recorded
+                    // it as the dialog opened.
+                    let saved = (self.theme_editor.opened_from == Some(None)).then_some(id);
+                    if saved.is_some() {
+                        self.theme_editor.opened_from = Some(saved);
+                    }
                     self.reveal_theme_editor_opener(cx);
                     window.close_dialog(cx);
+                    if let Some(id) = saved {
+                        window.focus(&self.theme_editor.action_focus(id, 0, cx), cx);
+                    }
                 }
                 // The window keeps what the editor showed: the saved theme is selected.
                 self.settings.theme = ThemeSelection::Custom(id);
@@ -4863,27 +4879,248 @@ pub(crate) mod tests {
         }
     }
 
+    /// How a test closes the open editor ([`close_editor`]).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Close {
+        /// A pointer press on Cancel.
+        CancelPress,
+        /// A pointer press on Save.
+        SavePress,
+        /// Escape.
+        Escape,
+        /// Space on Cancel, reached by Shift-Tab from Name.
+        SpaceOnCancel,
+        /// Return in Name.
+        ReturnInName,
+    }
+
+    impl Close {
+        /// A key closes the editor, so the control focus lands on draws its
+        /// ring.
+        fn by_key(self) -> bool {
+            !matches!(self, Close::CancelPress | Close::SavePress)
+        }
+
+        fn saves(self) -> bool {
+            matches!(self, Close::SavePress | Close::ReturnInName)
+        }
+    }
+
+    /// Close the open editor by `close` and run `observe` right after the
+    /// first frame drawn after the close, which is the only frame the close
+    /// draws: Escape closes as its key goes down, Space on Cancel as its key
+    /// comes up and a press on Cancel as the pointer is released, and a
+    /// save as the store's answer is handled, the store held behind that
+    /// answer so the selection's save, which the answer submits, answers
+    /// only after `observe`. Then the rest of the input is delivered and the
+    /// store answers.
+    fn close_editor<R>(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        close: Close,
+        observe: impl FnOnce(&mut VisualTestContext) -> R,
+    ) -> R {
+        let form = form(cx, app);
+        let key = |key: &str| Keystroke::parse(key).expect("a keystroke");
+        let down = |key: Keystroke| KeyDownEvent {
+            keystroke: key,
+            is_held: false,
+            prefer_character_input: false,
+        };
+        let name = cx.read(|cx| form.read(cx).name.read(cx).focus_handle(cx));
+        if close.by_key() {
+            // A pointer resting over the control the close reveals hovers it
+            // in the frame after, which the close does not draw.
+            mouse_away(cx);
+        }
+        if matches!(close, Close::ReturnInName | Close::SpaceOnCancel) {
+            cx.update(|window, cx| name.focus(window, cx));
+            settle(cx);
+        }
+        let held = close
+            .saves()
+            .then(|| cx.read(|cx| app.read(cx).preferences_writer.hold_reached()));
+        let mut draws = match close {
+            Close::CancelPress | Close::SavePress => {
+                let at = bounds(
+                    cx,
+                    if close == Close::CancelPress {
+                        "theme-editor-cancel"
+                    } else {
+                        "theme-editor-save"
+                    }
+                    .into(),
+                )
+                .center();
+                cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+                let draws = draw_count(cx, app);
+                cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+                draws
+            }
+            Close::Escape => {
+                // From Base, which Tab reaches from Name, so the window is
+                // already taking keys: the first key after the pointer
+                // redraws the window once more after the close.
+                cx.update(|window, cx| name.focus(window, cx));
+                settle(cx);
+                press(cx, "tab");
+                let draws = draw_count(cx, app);
+                cx.simulate_event(down(key("escape")));
+                draws
+            }
+            Close::SpaceOnCancel => {
+                cx.simulate_keystrokes("shift-tab shift-tab");
+                settle(cx);
+                assert!(
+                    cx.update(|window, cx| form.read(cx).cancel_focus.contains_focused(window, cx)),
+                    "Shift-Tab twice from Name reaches Cancel"
+                );
+                cx.simulate_event(down(key("space")));
+                let draws = draw_count(cx, app);
+                cx.simulate_event(KeyUpEvent {
+                    keystroke: key("space"),
+                });
+                draws
+            }
+            Close::ReturnInName => {
+                cx.simulate_event(down(key("enter")));
+                cx.simulate_event(KeyUpEvent {
+                    keystroke: key("enter"),
+                });
+                draw_count(cx, app)
+            }
+        };
+        let mut store = None;
+        if let Some(held) = held {
+            settle(cx);
+            assert!(
+                cx.read(|cx| app.read(cx).theme_editor.save_pending()),
+                "{close:?}: the save waits for the store"
+            );
+            // A job queued behind the save holds the store once it has
+            // answered the save.
+            let (reached, answered) = std::sync::mpsc::channel::<()>();
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let reply = cx.read(|cx| {
+                app.read(cx).preferences_writer.submit(move || {
+                    let _ = reached.send(());
+                    let _ = released.recv();
+                    anyhow::Ok(())
+                })
+            });
+            drop(held);
+            answered
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("the store answered the save");
+            draws = draw_count(cx, app);
+            cx.run_until_parked();
+            store = Some((release, reply));
+        }
+        assert!(
+            cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+            "{close:?} closed the editor"
+        );
+        assert_eq!(
+            draw_count(cx, app),
+            draws + 1,
+            "{close:?}: the close drew one frame"
+        );
+        let observed = observe(cx);
+        if close == Close::Escape {
+            cx.simulate_event(KeyUpEvent {
+                keystroke: key("escape"),
+            });
+        }
+        drop(store);
+        wait_for(cx, app, |cx| {
+            cx.read(|cx| !app.read(cx).theme_editor.save_pending())
+        });
+        observed
+    }
+
+    /// Whether the last frame drew the installed Button focus ring around
+    /// `control`, within a device pixel.
+    fn button_ringed(cx: &mut VisualTestContext, control: Bounds<Pixels>) -> bool {
+        cx.update(|window, cx| {
+            let scale = window.scale_factor();
+            let setting = gpui_kit::component::Theme::global(cx).button_focus_ring;
+            let footprint = control.dilate(setting.gap + setting.width);
+            window.painted_quads().into_iter().any(|quad| {
+                let b = quad.bounds;
+                let near = |edge: f32, expected: Pixels| {
+                    (px(edge / scale) - expected).abs() <= px(1. / scale)
+                };
+                near(b.left().as_f32(), footprint.left())
+                    && near(b.top().as_f32(), footprint.top())
+                    && near(b.right().as_f32(), footprint.right())
+                    && near(b.bottom().as_f32(), footprint.bottom())
+                    && quad.border_widths.top.as_f32() == setting.width.as_f32() * scale
+            })
+        })
+    }
+
+    /// In the frame being observed, the Your themes control `selector`
+    /// holds focus through `expected` and lies whole with its ring's room in
+    /// the Settings page, and in the list for a row's action, its ring drawn
+    /// for a key's close and not for a pointer's.
+    fn assert_focused_in_view(
+        cx: &mut VisualTestContext,
+        expected: &FocusHandle,
+        selector: String,
+        close: Close,
+        at: &str,
+    ) {
+        assert_eq!(
+            &focused_stop(cx),
+            expected,
+            "{at}, {close:?}: focus is on {selector}"
+        );
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let control = settings::shown(cx, selector.clone().leak())
+            .unwrap_or_else(|| panic!("{at}, {close:?}: {selector} is drawn"));
+        let mut views = vec![bounds(cx, "settings-scroll".into())];
+        if selector.starts_with("edit-custom-theme") {
+            views.push(bounds(cx, "custom-themes-rows".into()));
+        }
+        for view in views {
+            assert!(
+                control.top() - ring >= view.top() - px(0.01)
+                    && control.bottom() + ring <= view.bottom() + px(0.01),
+                "{at}, {close:?}: {control:?} lies whole with its ring's room in {view:?}"
+            );
+        }
+        assert_eq!(
+            button_ringed(cx, control),
+            close.by_key(),
+            "{at}, {close:?}: {selector} draws its ring only after a key's close"
+        );
+    }
+
     /// Closing the editor gives focus back to the control that opened it,
-    /// New theme… or the edited theme's Edit…, and the Settings page shows
-    /// that control whole with its ring's room in the first frame after the
-    /// close, whatever closed the editor: a pointer press on Save or
-    /// Cancel, or Escape, with a pointer press having opened it and the
-    /// window shrunk meanwhile. A press on either focused nothing, so the
-    /// close gave focus back to the page's first control, Follow system
-    /// appearance, scrolled out of view (QA-110, found outside the checks,
-    /// 5).
+    /// New theme… or the edited theme's Edit…, also after an edit's Save,
+    /// and the Settings page shows that control whole with its ring's room
+    /// in the first frame after the close, whatever closed the editor: a
+    /// pointer press on Save or Cancel, Escape, Space on Cancel or Return in
+    /// Name, with a pointer press having opened it and the window shrunk
+    /// meanwhile. A key's close draws the control's ring in that frame and
+    /// a pointer's leaves it focused without one (decided 2026-11-10). A
+    /// press on either opener focused nothing, so the close gave focus back
+    /// to the page's first control, Follow system appearance, scrolled out
+    /// of view (QA-110, found outside the checks, 5), and a pointer's close
+    /// drew the opener's ring as a key's did.
     #[gpui::test]
     fn closing_the_editor_gives_focus_back_to_its_opener_in_view(cx: &mut TestAppContext) {
         let (app, cx) = open_at_rest(cx);
         let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
         cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(vec![harbor], cx)));
         settle(cx);
-        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
         for (opener, close) in [
-            ("custom-themes-new", "theme-editor-cancel"),
-            ("edit-custom-theme-7", "theme-editor-cancel"),
-            ("edit-custom-theme-7", "escape"),
-            ("custom-themes-new", "theme-editor-save"),
+            ("custom-themes-new", Close::CancelPress),
+            ("custom-themes-new", Close::SpaceOnCancel),
+            ("edit-custom-theme-7", Close::CancelPress),
+            ("edit-custom-theme-7", Close::Escape),
+            ("edit-custom-theme-7", Close::SavePress),
+            ("edit-custom-theme-7", Close::ReturnInName),
         ] {
             cx.simulate_resize(size(px(1440.), px(2400.)));
             settle(cx);
@@ -4908,42 +5145,106 @@ pub(crate) mod tests {
                 cx.read(|cx| app.read(cx).theme_editor.form.is_some()),
                 "{opener}: the press opens the editor"
             );
-            if close == "theme-editor-save" {
-                let form = form(cx, &app);
-                cx.update(|window, cx| {
-                    form.read(cx)
-                        .name
-                        .clone()
-                        .update(cx, |input, cx| input.replace_all("Lagoon", window, cx))
-                });
-                settle(cx);
-            }
             // The card lies below the fold of the shrunk window.
             cx.simulate_resize(size(px(1000.), px(680.)));
             settle(cx);
-            if close == "escape" {
-                press(cx, "escape");
-            } else {
-                click(cx, close);
-            }
-            wait_for(cx, &app, |cx| {
-                cx.read(|cx| {
-                    app.read(cx).theme_editor.form.is_none()
-                        && !app.read(cx).theme_editor.save_pending()
+            close_editor(cx, &app, close, |cx| {
+                assert_focused_in_view(cx, &expected, opener.into(), close, opener)
+            });
+        }
+    }
+
+    /// A new theme's Save gives focus to the saved theme's Edit…, not back
+    /// to New theme…: saving the 32nd theme disables New theme…
+    /// (`MAX_CUSTOM_THEMES`), and focus given back there was read as "New
+    /// theme…, button, grayed" (decided 2026-11-10). In the first frame
+    /// after the close the saved theme's enabled Edit…, named for it, holds
+    /// focus, its row scrolled into the list's view and the page's with its
+    /// ring's room, by Return in Name with its ring and by a pointer press
+    /// on Save without one, in a window shrunk while the editor was open.
+    #[gpui::test]
+    fn a_new_themes_save_gives_focus_to_its_edit(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        for close in [Close::ReturnInName, Close::SavePress] {
+            let seeded = (1..MAX_CUSTOM_THEMES as u32)
+                .map(|n| CustomTheme::from_base(n, format!("Seed {n:02}"), ThemeChoice::Nord))
+                .collect();
+            cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(seeded, cx)));
+            cx.simulate_resize(size(px(1440.), px(2400.)));
+            settle(cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.theme_editor
+                        .rows_scroll()
+                        .scroll_to_item(0, ScrollStrategy::Top);
+                    app.show_settings(window, cx)
                 })
             });
-            assert_eq!(
-                focused_stop(cx),
-                expected,
-                "{opener}, {close}: focus is back on the control that opened the editor"
-            );
-            let page = bounds(cx, "settings-scroll".into());
-            let at = bounds(cx, opener.into());
-            assert!(
-                at.top() - ring >= page.top() && at.bottom() + ring <= page.bottom(),
-                "{opener}, {close}: {at:?} lies whole with its ring's room in the page {page:?}"
-            );
+            settle(cx);
+            click(cx, "custom-themes-new");
+            let form = form(cx, &app);
+            let name = cx.read(|cx| form.read(cx).name.read(cx).value().to_string());
+            cx.simulate_resize(size(px(1000.), px(680.)));
+            settle(cx);
+            close_editor(cx, &app, close, |cx| {
+                let (id, saved, full, pending) = cx.read(|cx| {
+                    let app = app.read(cx);
+                    let saved = app.custom_themes.last().expect("a saved theme");
+                    (
+                        saved.id,
+                        saved.name.clone(),
+                        app.custom_themes.len() >= MAX_CUSTOM_THEMES,
+                        app.theme_editor.save_pending() || app.theme_editor.transfer_pending(),
+                    )
+                });
+                assert_eq!(saved, name, "{close:?}: the new theme is saved last");
+                assert!(full, "{close:?}: New theme… is disabled at the bound");
+                // Edit… is disabled only while a save or a transfer owns
+                // the card's actions.
+                assert!(!pending, "{close:?}: Edit… is enabled in that frame");
+                let edit = cx.read(|cx| app.read(cx).theme_editor.action_focus(id, 0, cx));
+                let selector = format!("edit-custom-theme-{id}");
+                assert_focused_in_view(cx, &edit, selector.clone(), close, "new theme");
+                let spoken = cx.read(|cx| {
+                    app.read(cx)
+                        .theme_action_names
+                        .borrow()
+                        .iter()
+                        .find(|(drawn, _)| *drawn == selector)
+                        .map(|(_, name)| name.clone())
+                });
+                assert_eq!(
+                    spoken,
+                    Some(format!("Edit {name} theme")),
+                    "{close:?}: the focused Edit… is named for the saved theme"
+                );
+            });
         }
+    }
+
+    /// A Save the store refuses keeps the editor open, and a later Cancel
+    /// still gives focus back to New theme…, which opened it, in the first
+    /// frame after the close: only a new theme's successful Save gives it
+    /// to the saved theme's Edit….
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_failed_save_then_cancel_gives_focus_back_to_the_opener(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let expected =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus("custom-themes-new", cx)));
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        refuse_a_save(cx, &app, &form);
+        assert!(cx.read(|cx| app.read(cx).custom_themes.is_empty()));
+        close_editor(cx, &app, Close::CancelPress, |cx| {
+            assert_focused_in_view(
+                cx,
+                &expected,
+                "custom-themes-new".into(),
+                Close::CancelPress,
+                "a failed save",
+            )
+        });
     }
 
     /// The open picker's controls are named by what they set (QA-110, found

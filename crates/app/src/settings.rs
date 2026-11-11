@@ -3,7 +3,7 @@ use appearance::custom::{CustomTheme, ThemeSelection};
 use appearance::{CodeFont, Density, ThemeChoice};
 use columns::{ColumnId, ColumnSettings};
 use gitturtle_core::WriteCommand;
-use gpui_kit::base::{Scrollbar, ScrollbarMode};
+use gpui_kit::base::{FocusableExt, Scrollbar, ScrollbarMode};
 use gpui_kit::component::{checkbox::Checkbox, switch::Switch};
 use gpui_kit::prelude::FluentBuilder;
 use preferences::DisplayChoice;
@@ -1858,6 +1858,11 @@ impl GitTurtle {
                         .child(
                             button("custom-themes-new", new_label, "plus", false)
                                 .track_focus(&new_theme)
+                                // Ringed for keyboard focus only, so the
+                                // theme editor's close by a pointer press
+                                // leaves it focused without a ring, and a key
+                                // close draws it (decided 2026-11-10).
+                                .focus_ring(self.focus_ring.shows(&new_theme))
                                 .debug_selector(|| "custom-themes-new".into())
                                 .disabled(pending || full)
                                 .tooltip(new_tooltip)
@@ -2234,6 +2239,7 @@ impl GitTurtle {
             (format!("export-custom-theme-{id}"), export_name.clone()),
             (format!("delete-custom-theme-{id}"), delete_name.clone()),
         ]);
+        let edit = self.theme_editor.action_focus(id, 0, cx);
         let row = div()
             .id(("custom-theme", id as usize))
             .debug_selector(move || format!("custom-theme-{id}"))
@@ -2330,7 +2336,11 @@ impl GitTurtle {
             })
             .child(
                 button(("edit-custom-theme", id as usize), "Edit…", "", false)
-                    .track_focus(&self.theme_editor.action_focus(id, 0, cx))
+                    .track_focus(&edit)
+                    // Ringed for keyboard focus only, as New theme… is: the
+                    // theme editor's close gives it focus (decided
+                    // 2026-11-10).
+                    .focus_ring(self.focus_ring.shows(&edit))
                     .debug_selector(move || format!("edit-custom-theme-{id}"))
                     .accessibility_label(edit_name)
                     .disabled(pending)
