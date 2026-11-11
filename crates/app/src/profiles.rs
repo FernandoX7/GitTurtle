@@ -71,6 +71,8 @@ const STORAGE_UNAVAILABLE: &str = "Storage unavailable";
 /// read, or on a marked tab: applying one writes that repository's
 /// configuration.
 const REPOSITORY_UNAVAILABLE: &str = "Repository unavailable";
+/// What the window's notice says of a profile save no open manager shows.
+const PROFILES_SAVED: &str = "Profile preferences saved";
 
 /// The profile menu's groups of items, each refused for a reason of its
 /// own ([`GitTurtle::profile_menu_reason`]), in the menu's order.
@@ -674,13 +676,17 @@ impl GitTurtle {
             .follows_refusal(Self::profile_menu_refusal)
             .into_any_element()
     }
-    pub(super) fn open_profiles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Every route refuses it on a marked tab, as its menu item and the
-        // palette's command do (`profile_menu_reason`).
-        if self.operation_busy.is_some()
+    /// Whether the profile manager is refused now, on every route
+    /// ([`Self::open_profiles`]): while a write runs or a profile is saved,
+    /// and on a marked tab, as its menu item and the palette's command are
+    /// (`profile_menu_reason`).
+    fn profile_manager_refused(&self) -> bool {
+        self.operation_busy.is_some()
             || self.profiles.saving
             || (self.page != AppPage::Projects && self.shown_tab_unavailable())
-        {
+    }
+    pub(super) fn open_profiles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.profile_manager_refused() {
             return;
         }
         let owner = cx.entity().downgrade();
@@ -836,10 +842,20 @@ impl GitTurtle {
                             this.profiles.draft = None;
                             if visible {
                                 window.close_dialog(cx);
-                                this.open_profiles(window, cx);
+                                // The manager shows the saved profile where
+                                // it can open; where it cannot, as on a
+                                // marked tab, the window's notice confirms
+                                // the save, as it does a save with no form.
+                                // The form closed there and nothing said
+                                // the profile was saved.
+                                if this.profile_manager_refused() {
+                                    this.operation_notice = Some(PROFILES_SAVED.into());
+                                } else {
+                                    this.open_profiles(window, cx);
+                                }
                             }
                         } else {
-                            this.operation_notice = Some("Profile preferences saved".into());
+                            this.operation_notice = Some(PROFILES_SAVED.into());
                         }
                     }
                     Err(error) => {

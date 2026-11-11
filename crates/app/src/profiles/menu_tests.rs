@@ -669,6 +669,66 @@ async fn settings_manage_named_profiles_says_the_mark(cx: &mut TestAppContext) {
     assert_eq!(name(), Some(None), "its own name again");
 }
 
+/// A New profile… form saved on a marked tab, where the manager the save
+/// goes on to is refused (`open_profiles`), confirms the save where the
+/// person is: "Profile preferences saved" in the window's notice, as a save
+/// with no form showing says it. The form closed, the manager stayed
+/// closed, and nothing said the profile had been saved.
+#[gpui::test]
+async fn a_profile_saved_on_a_marked_tab_is_confirmed_where_the_person_is(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window(cx).await;
+    use_store(&app, cx, Store::default()).await;
+    hold_quiet_reads_for_test(&app, cx);
+    set(&app, cx, |app| {
+        let index = app.repository_tabs.active.expect("a tab");
+        app.repository_tabs.tabs[index].error = Some("Repository unavailable".into());
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.edit_profile(None, window, cx)));
+    settle(&app, cx).await;
+    let form = app
+        .read_with(cx, |app, _| app.profiles.draft.clone())
+        .expect("New profile… opens on a marked tab");
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    cx.update(|window, cx| {
+        form.update(cx, |form, cx| {
+            for (field, value) in [
+                (&form.label, "Work"),
+                (&form.name, "Profile Author"),
+                (&form.email, "work@example.invalid"),
+            ] {
+                field.update(cx, |field, cx| field.set_value(value, window, cx));
+            }
+            form.submit(window, cx);
+        })
+    });
+    let barrier = app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())));
+    barrier.await.unwrap().unwrap();
+    settle(&app, cx).await;
+    assert_eq!(
+        app.read_with(cx, |app, _| app
+            .profiles
+            .store
+            .as_ref()
+            .map(|store| store.definitions.len())),
+        Some(1),
+        "saved"
+    );
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "the form closes, and no manager opens on the marked tab"
+    );
+    assert_eq!(
+        app.read_with(cx, |app, _| app.operation_notice.clone())
+            .as_deref(),
+        Some("Profile preferences saved"),
+        "the save is confirmed"
+    );
+    assert!(
+        cx.debug_bounds("operation-notice-text").is_some(),
+        "where the person is"
+    );
+}
+
 /// Two saved profiles, Work and Personal.
 fn two_profiles() -> Store {
     let mut store = Store::default();
