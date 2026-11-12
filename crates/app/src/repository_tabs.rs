@@ -3121,6 +3121,12 @@ impl GitTurtle {
             if let Some(notice) = &notice {
                 self.record_outcome(path, notice.clone(), cx);
             }
+            // Each failure the banner reports is another refusal, so the
+            // same one again is announced again and its box opens at its
+            // top (`GitTurtle::operation_error_line`).
+            if error.is_some() {
+                self.error_refusals = self.error_refusals.wrapping_add(1);
+            }
             self.operation_notice = notice;
             self.operation_error = error;
         } else {
@@ -9441,11 +9447,14 @@ pub(crate) mod tests {
         let banner = app.read_with(cx, |app, _| {
             (app.operation_error.as_ref()).map(|error| error.banner().to_string())
         });
+        // What stays true once the read has landed, as it has here and as
+        // it does a frame or two after the refusal, while the banner stays
+        // until dismissed: "…, and the tab reads the repository again."
+        // outlived the read.
         assert!(
-            banner
-                .as_deref()
-                .is_some_and(|banner| banner.ends_with(crate::workspace::REFUSED_READ_AGAIN)),
-            "{press:?}: it says what the tab does: {banner:?}"
+            banner.as_deref().is_some_and(|banner| banner
+                .ends_with(". Nothing was written; the tab now shows the repository found there.")),
+            "{press:?}: it says what the tab shows: {banner:?}"
         );
         // Nothing written: neither index holds the file, which is still
         // there with its bytes.
@@ -9581,20 +9590,18 @@ pub(crate) mod tests {
         crate::views::OperationFailure::of(&error).followed_by(crate::workspace::REFUSED_READ_AGAIN)
     }
 
-    /// At the largest interface text size, 18 pt, in a half tile 461
-    /// pixels wide, the refusal's banner row grows with its line: the
-    /// line's box keeps its whole bounded height, which scales with the
-    /// text and is taller than 100 pixels there, the lines past it
-    /// scrolling inside it, and the box lies inside the row with its
-    /// padding, the row inside the window. Clipped at 100 pixels, the row
-    /// cut that box, its first and last lines drawn outside the banner.
-    #[gpui::test]
-    async fn a_refused_write_s_banner_row_grows_with_its_line_at_18_pt(cx: &mut TestAppContext) {
-        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
-        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
-        cx.simulate_resize(size(px(461.), px(680.)));
-        let interface = *appearance::INTERFACE_TEXT_RANGE.end();
-        assert_eq!(interface, 18, "the largest interface text size");
+    /// `refusal` in the banner of `app`'s window, `window` in size at
+    /// `interface` pt, Midnight with the app's key bindings, as the focus
+    /// sweep walks a window.
+    fn a_refusal_shown(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        refusal: crate::views::OperationFailure,
+        interface: u8,
+        window: Size<Pixels>,
+    ) {
+        crate::focus_ring::sweep::prepare(app, cx);
+        cx.simulate_resize(window);
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.settings.interface_text_size = interface;
@@ -9605,29 +9612,841 @@ pub(crate) mod tests {
             })
         });
         crate::views::tests::draw(cx);
+    }
+
+    /// At the largest interface text size, 18 pt, in a 461 × 490 half
+    /// tile, a refusal taller than its line's box is never cut by the box's
+    /// clip (DESIGN.md, "One responsive order"): the box holds the most
+    /// whole lines a scaled 100 px holds, inside the banner's row with its
+    /// padding and the row inside the window, Details… and Dismiss whole
+    /// beside it. Its words scroll inside it, cued by the toolkit's
+    /// scrollbar, and it is a Tab stop, by Tab and by Shift+Tab, ringed on
+    /// its own edge and read by the alert's whole report, which Down
+    /// scrolls a whole line at a time to the refusal's last sentence, and
+    /// Up back, focus staying on it. It scrolled with nothing to say so and
+    /// no key to reach that sentence, its bound cutting a line at its foot;
+    /// the tests drew it in a 680 px window.
+    #[gpui::test]
+    async fn a_refused_write_s_box_holds_whole_lines_and_scrolls_by_key_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::focus_ring::sweep;
+        use crate::native_accessibility::written;
+        use crate::views::tests::draw;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        let report = refusal.to_string();
+        assert!(
+            report.ends_with(" Nothing was written; the tab now shows the repository found there."),
+            "the refusal's last sentence: {report}"
+        );
+        let interface = *appearance::INTERFACE_TEXT_RANGE.end();
+        assert_eq!(interface, 18, "the largest interface text size");
+        a_refusal_shown(&app, cx, refusal, interface, size(px(461.), px(490.)));
+        let (line, viewport, device) = cx.update(|window, _| {
+            (
+                crate::image_compare::text_line(appearance::ui_text(11.), window),
+                window.viewport_size(),
+                px(1.) / window.scale_factor(),
+            )
+        });
+        let drawn = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
+            cx.debug_bounds(selector).expect(selector)
+        };
+        let (row, kept, text) = (
+            drawn(cx, "operation-error-row"),
+            drawn(cx, "operation-error-summary"),
+            drawn(cx, "operation-error-text"),
+        );
         let bound = appearance::ui_size(100.);
-        assert!(bound > px(100.), "18 pt bounds the line at {bound:?}");
-        let row = cx.debug_bounds("operation-error-row").expect("the banner");
-        let summary = (cx.debug_bounds("operation-error-summary")).expect("its line");
-        let text = (cx.debug_bounds("operation-error-text")).expect("the refusal's text");
-        let (viewport, device) =
-            cx.update(|window, _| (window.viewport_size(), px(1.) / window.scale_factor()));
+        let lines = (bound / line).floor();
+        assert!(lines >= 2., "the bound {bound:?} holds lines of {line:?}");
         assert!(
-            text.size.height > bound,
-            "its words take more than the bounded height: {text:?}"
+            text.size.height > kept.size.height,
+            "its words are taller than its box: {text:?} in {kept:?}"
         );
         assert!(
-            (summary.size.height - bound).abs() <= device,
-            "the line's box keeps its bounded height {bound:?}: {summary:?} in {row:?}"
+            (kept.size.height - line * lines).abs() <= device,
+            "the box holds {lines} whole lines of {line:?}, the most {bound:?} holds: {kept:?}"
         );
         assert!(
-            summary.top() > row.top() && summary.bottom() < row.bottom(),
-            "inside the row and its padding: {summary:?} in {row:?}"
+            (text.top() - kept.top()).abs() <= device,
+            "its first line starts at the box's top: {text:?} in {kept:?}"
+        );
+        assert!(
+            kept.top() > row.top() && kept.bottom() < row.bottom(),
+            "inside the row and its padding: {kept:?} in {row:?}"
         );
         assert!(
             row.top() >= px(0.) && row.bottom() <= viewport.height,
             "the row inside the window: {row:?} in {viewport:?}"
         );
+        let bar = drawn(cx, "operation-error-scrollbar");
+        assert!(
+            bar.size.height > px(0.)
+                && bar.top() >= kept.top() - device
+                && bar.bottom() <= kept.bottom() + device
+                && bar.right() <= kept.right() + device,
+            "the toolkit's scrollbar cues the scroll, over the box: {bar:?} in {kept:?}"
+        );
+        let mut beside = kept.right();
+        for selector in ["operation-error-details", "dismiss-operation-error"] {
+            let button = drawn(cx, selector);
+            assert!(
+                button.left() >= beside
+                    && button.top() >= row.top()
+                    && button.bottom() <= row.bottom()
+                    && button.right() <= row.right()
+                    && button.right() <= viewport.width,
+                "{selector} whole beside the line, inside the row and the window: {button:?} \
+                 in {row:?}"
+            );
+            beside = button.right();
+        }
+        // A Tab stop by either key, its ring on its own edge.
+        let mut failures = Vec::new();
+        for key in ["tab", "shift-tab"] {
+            let mut reached = false;
+            let mut walked = Vec::new();
+            sweep::walk_each(
+                &app,
+                cx,
+                key,
+                &format!("the refused write's banner by {key}"),
+                interface,
+                &mut walked,
+                &mut |cx, stop, rings| {
+                    if !cx.update(|window, _| crate::views::refusal_box_focused(window)) {
+                        return;
+                    }
+                    reached = true;
+                    let kept = drawn(cx, "operation-error-box");
+                    let rings: Vec<_> = rings.iter().map(|ring| ring.bounds).collect();
+                    if !sweep::rings_edge(&rings, kept) {
+                        failures.push(format!(
+                            "{stop}: no ring on the box's edge, {kept:?}, only {rings:?}"
+                        ));
+                    }
+                },
+            );
+            failures.extend(walked);
+            if !reached {
+                failures.push(format!("{key} never focused the refusal's box"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        for _ in 0..80 {
+            if cx.update(|window, _| crate::views::refusal_box_focused(window)) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+        }
+        let focused = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| crate::views::refusal_box_focused(window))
+        };
+        assert!(focused(cx), "Tab reaches the refusal's box");
+        // Read whole: the stop is the alert, named and valued by the whole
+        // report.
+        written::forget();
+        draw(cx);
+        let id = app.read_with(cx, |app, _| app.error_refusals);
+        let node = written::get(&format!("operation-error-summary-{id}"))
+            .expect("the box's node")
+            .node;
+        assert_eq!(
+            node.role(),
+            gpui::accesskit::Role::Alert,
+            "the box is the alert"
+        );
+        assert_eq!(
+            node.label(),
+            Some(report.as_str()),
+            "the stop reads the whole refusal"
+        );
+        let scrolled = |cx: &mut gpui::VisualTestContext| {
+            let (kept, text) = (
+                drawn(cx, "operation-error-summary"),
+                drawn(cx, "operation-error-text"),
+            );
+            (kept.top() - text.top(), kept, text)
+        };
+        let press = |key: &str, cx: &mut gpui::VisualTestContext| {
+            cx.simulate_keystrokes(key);
+            draw(cx);
+        };
+        let (mut at, _, _) = scrolled(cx);
+        assert!(at.abs() <= device, "from its top: {at:?}");
+        let mut steps = 0;
+        loop {
+            press("down", cx);
+            let (now, kept, text) = scrolled(cx);
+            let whole = (now / line).round();
+            assert!(
+                (now - line * whole).abs() <= device,
+                "Down leaves whole lines in the box: {now:?} past its top, lines of {line:?}"
+            );
+            if (now - at).abs() <= device {
+                // At its end: the refusal's last line, its last sentence's
+                // end, at the box's foot, inside it.
+                assert!(
+                    (text.bottom() - kept.bottom()).abs() <= device,
+                    "Down reaches the refusal's last line: {text:?} in {kept:?}"
+                );
+                break;
+            }
+            assert!(
+                (now - at - line).abs() <= device,
+                "Down scrolls a line: {at:?} to {now:?}"
+            );
+            at = now;
+            steps += 1;
+            assert!(steps < 40, "Down reaches the end");
+        }
+        assert!(steps >= 1, "Down scrolled the box");
+        assert!(focused(cx), "Down keeps focus on the box");
+        press("up", cx);
+        assert!(
+            (scrolled(cx).0 - (at - line)).abs() <= device,
+            "Up scrolls back a line"
+        );
+        assert!(focused(cx), "Up keeps focus on the box");
+    }
+
+    /// Presses Tab until the refusal's box holds focus.
+    fn tab_to_the_refusal_s_box(cx: &mut gpui::VisualTestContext) {
+        for _ in 0..80 {
+            if cx.update(|window, _| crate::views::refusal_box_focused(window)) {
+                return;
+            }
+            cx.simulate_keystrokes("tab");
+            crate::views::tests::draw(cx);
+        }
+        panic!("Tab never reached the refusal's box");
+    }
+
+    /// Whether the installed Button ring is painted around `selector`: a
+    /// bordered quad the ring's room outside the control.
+    fn button_ringed(cx: &mut gpui::VisualTestContext, selector: &'static str) -> bool {
+        let control = cx.debug_bounds(selector).expect(selector);
+        let ring = control.dilate(cx.read(appearance::button_ring_room));
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.border_widths.top.0 > 0.)
+                .any(|quad| {
+                    let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                    let (origin, extent) = (quad.bounds.origin, quad.bounds.size);
+                    let quad = Bounds::new(
+                        point(logical(origin.x), logical(origin.y)),
+                        size(logical(extent.width), logical(extent.height)),
+                    );
+                    [
+                        (quad.left(), ring.left()),
+                        (quad.top(), ring.top()),
+                        (quad.right(), ring.right()),
+                        (quad.bottom(), ring.bottom()),
+                    ]
+                    .into_iter()
+                    .all(|(drawn, edge)| (drawn - edge).abs() < px(0.5))
+                })
+        })
+    }
+
+    /// At 18 pt in a 461 × 490 half tile, the refusal's box keeps its 1 px
+    /// keyboard ring clear of its words on every side, at the test
+    /// platform's scale 2 and at the fractional 1.25 and 1.5 a desktop sets:
+    /// the region that clips them, holding its whole lines, lies the Button
+    /// ring's room snapped to device pixels inside the ring (3, 3.2 and
+    /// 2.67 px), the same on every side, and a wider installed Button ring's
+    /// room as File History's failed message keeps it (4 px at 1.5), with
+    /// the first glyph at its top left and, scrolled to its end, the last
+    /// line at its foot, while the words keep the left edge and the wrap
+    /// room a line Git answered has in the banner. Drawn on the box's own
+    /// edge, the ring lay over the first column of letters and the first
+    /// line's tops; a fixed 3 px kept its room from an installed ring's.
+    #[gpui::test]
+    async fn a_refused_write_s_ring_clears_its_words_on_every_side_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        use gpui_kit::component::{FocusRing, Theme};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        let half_tile = size(px(461.), px(490.));
+        // A resize takes the platform's scale again, so each scale is set
+        // after it.
+        let at = |cx: &mut gpui::VisualTestContext, scale: f32| {
+            cx.simulate_resize(half_tile);
+            cx.update(|window, _| window.set_scale_factor(scale));
+            draw(cx);
+            assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
+        };
+        let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
+        let wider = FocusRing {
+            width: px(2.),
+            gap: px(2.),
+            ..installed
+        };
+        let cases = [(2., None), (1.25, None), (1.5, None), (1.5, Some(wider))];
+        // A line Git answered at each scale, whose edges the words keep.
+        a_refusal_shown(&app, cx, "Short".into(), 18, half_tile);
+        let answered: Vec<_> = cases
+            .iter()
+            .map(|&(scale, _)| {
+                at(cx, scale);
+                cx.debug_bounds("operation-error-summary").expect("a line")
+            })
+            .collect();
+        app.update(cx, |app, cx| {
+            app.operation_error = Some(refusal);
+            cx.notify();
+        });
+        at(cx, cases[0].0);
+        tab_to_the_refusal_s_box(cx);
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let drawn = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
+            cx.debug_bounds(selector).expect(selector)
+        };
+        for (&(scale, ring), answered) in cases.iter().zip(answered) {
+            // The box keeps focus as the scale changes; Up back to its top.
+            at(cx, scale);
+            let scale = if let Some(ring) = ring {
+                cx.update(|window, cx| {
+                    Theme::global_mut(cx).button_focus_ring = ring;
+                    app.update(cx, |_, cx| cx.notify());
+                    window.refresh();
+                });
+                draw(cx);
+                format!("{scale} with a {:?} Button ring", ring.gap + ring.width)
+            } else {
+                scale.to_string()
+            };
+            for _ in 0..40 {
+                cx.simulate_keystrokes("up");
+                draw(cx);
+            }
+            assert!(
+                cx.update(|window, _| crate::views::refusal_box_focused(window)),
+                "at {scale}, the box keeps focus"
+            );
+            let (line, device, room) = cx.update(|window, cx| {
+                (
+                    crate::image_compare::text_line(appearance::ui_text(11.), window),
+                    px(1.) / window.scale_factor(),
+                    window.pixel_snap(appearance::button_ring_room(cx)),
+                )
+            });
+            let ring = |cx: &mut gpui::VisualTestContext, kept: Bounds<Pixels>| {
+                let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                    .into_iter()
+                    .filter(|ring| ring.bounds.contains(&kept.center()))
+                    .collect();
+                assert!(
+                    rings.len() == 1 && rings[0].whole,
+                    "at {scale}, one whole ring around the box: {rings:?}"
+                );
+                rings[0].bounds
+            };
+            // The room on every side is the snapped room itself, whole
+            // device pixels: within a device pixel of 3 px, a room the
+            // layout rounds to another pixel count would pass.
+            let clear = |ring: Bounds<Pixels>, kept: Bounds<Pixels>| {
+                [
+                    (kept.left() - ring.left(), "left"),
+                    (kept.top() - ring.top(), "top"),
+                    (ring.right() - kept.right(), "right"),
+                    (ring.bottom() - kept.bottom(), "bottom"),
+                ]
+                .into_iter()
+                .filter(|(gap, _)| (*gap - room).abs() > px(0.01))
+                .map(|(gap, side)| format!("{side} {gap:?}"))
+                .collect::<Vec<_>>()
+            };
+            let (kept, text) = (
+                drawn(cx, "operation-error-summary"),
+                drawn(cx, "operation-error-text"),
+            );
+            assert!(
+                (kept.left() - answered.left()).abs() <= device
+                    && (kept.right() - answered.right()).abs() <= device,
+                "at {scale}, the banner's left edge and wrap room: {kept:?}, a line Git answered {answered:?}"
+            );
+            assert!(
+                text.size.height > kept.size.height,
+                "at {scale}, its words scroll: {text:?} in {kept:?}"
+            );
+            let around = ring(cx, kept);
+            assert_eq!(
+                clear(around, kept),
+                Vec::<String>::new(),
+                "at {scale}, the ring {room:?} outside the words' region {kept:?}: {around:?}"
+            );
+            assert!(
+                (text.left() - kept.left()).abs() <= device
+                    && (text.top() - kept.top()).abs() <= device,
+                "at {scale}, the first glyph at the region's top left: {text:?} in {kept:?}"
+            );
+            assert!(
+                (kept.size.height / line - (kept.size.height / line).round()).abs() * line
+                    <= device,
+                "at {scale}, the region holds whole lines of {line:?}: {kept:?}"
+            );
+            for _ in 0..40 {
+                cx.simulate_keystrokes("down");
+                draw(cx);
+            }
+            let (kept, text) = (
+                drawn(cx, "operation-error-summary"),
+                drawn(cx, "operation-error-text"),
+            );
+            assert!(
+                (text.bottom() - kept.bottom()).abs() <= device,
+                "at {scale}, Down reaches the last line, at the region's foot: {text:?} in {kept:?}"
+            );
+            let around = ring(cx, kept);
+            assert_eq!(
+                clear(around, kept),
+                Vec::<String>::new(),
+                "at {scale}, at the end, the ring {room:?} below the last line {kept:?}: {around:?}"
+            );
+        }
+        cx.update(|window, cx| {
+            Theme::global_mut(cx).button_focus_ring = installed;
+            window.refresh();
+        });
+    }
+
+    /// From the refusal's box, while it scrolls, Tab moves on to Details…
+    /// and then Dismiss, and Shift+Tab back to the box: the order they are
+    /// read in, the words first.
+    #[gpui::test]
+    async fn tab_moves_from_a_refused_write_s_box_to_details_then_dismiss(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        a_refusal_shown(&app, cx, refusal, 18, size(px(461.), px(490.)));
+        tab_to_the_refusal_s_box(cx);
+        let at = |cx: &mut gpui::VisualTestContext| {
+            let mut at = Vec::new();
+            if cx.update(|window, _| crate::views::refusal_box_focused(window)) {
+                at.push("box");
+            }
+            for (selector, name) in [
+                ("operation-error-details", "Details…"),
+                ("dismiss-operation-error", "Dismiss"),
+            ] {
+                if button_ringed(cx, selector) {
+                    at.push(name);
+                }
+            }
+            at
+        };
+        let mut walked = vec![at(cx)];
+        for key in ["tab", "tab", "shift-tab", "shift-tab"] {
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            walked.push(at(cx));
+        }
+        assert_eq!(
+            walked,
+            [
+                vec!["box"],
+                vec!["Details…"],
+                vec!["Dismiss"],
+                vec!["Details…"],
+                vec!["box"]
+            ],
+            "Tab and Shift+Tab through the banner"
+        );
+    }
+
+    /// Made to fit while it holds focus, by a window grown around it, the
+    /// refusal's box keeps focus, drawing no scrollbar, and the next Tab
+    /// moves on to Details…, as it does from the box that scrolls.
+    #[gpui::test]
+    async fn a_refused_write_s_box_grown_to_fit_keeps_focus_until_the_next_tab(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        a_refusal_shown(&app, cx, refusal, 18, size(px(461.), px(490.)));
+        tab_to_the_refusal_s_box(cx);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("operation-error-scrollbar").is_none(),
+            "the refusal fits the grown window"
+        );
+        assert!(
+            cx.update(|window, _| crate::views::refusal_box_focused(window)),
+            "the box keeps focus"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            button_ringed(cx, "operation-error-details"),
+            "the next Tab moves on to Details…"
+        );
+    }
+
+    /// While the refusal's box holds focus, the same refusal reported again
+    /// opens it at its top, and a shorter one that fits keeps focus on it,
+    /// drawing no scrollbar, the next Tab moving on to Details…. Keyed on its
+    /// line alone, the same refusal again opened where the last was left
+    /// scrolled. Gone as a line Git answered takes the place of a refusal
+    /// that replaced another while it held focus, the box gives focus to the
+    /// control the first write was refused on, here Targets, which the
+    /// window's ring shows on: had the refusal that replaced another noted
+    /// the box itself as that control, Targets was lost.
+    #[gpui::test]
+    async fn a_refused_write_s_box_keeps_focus_as_another_refusal_replaces_it(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        a_refusal_shown(&app, cx, refusal.clone(), 18, size(px(461.), px(490.)));
+        let device = cx.update(|window, _| px(1.) / window.scale_factor());
+        let targets = tab_to_targets(cx);
+        let report = |failure: crate::views::OperationFailure, cx: &mut gpui::VisualTestContext| {
+            a_failure_reported(&app, cx, Some(failure));
+            draw(cx);
+        };
+        // A write refused while focus rests on Targets.
+        report(refusal.clone(), cx);
+        tab_to_the_refusal_s_box(cx);
+        let scrolled = |cx: &mut gpui::VisualTestContext| {
+            let kept = cx.debug_bounds("operation-error-summary").expect("its box");
+            let text = cx.debug_bounds("operation-error-text").expect("its words");
+            kept.top() - text.top()
+        };
+        for _ in 0..2 {
+            cx.simulate_keystrokes("down");
+            draw(cx);
+        }
+        assert!(scrolled(cx) > device, "Down scrolled the box");
+        report(refusal.clone(), cx);
+        assert!(
+            scrolled(cx).abs() <= device,
+            "the same refusal again opens at its top: {:?}",
+            scrolled(cx)
+        );
+        assert!(
+            cx.update(|window, _| crate::views::refusal_box_focused(window)),
+            "the box keeps focus as the refusal comes again"
+        );
+        a_failure_reported(
+            &app,
+            cx,
+            Some(
+                "fatal: unable to access 'https://example.invalid/': Could not resolve host".into(),
+            ),
+        );
+        let after: Vec<_> = (0..2).map(|_| a_frame(cx)).collect();
+        assert_eq!(
+            after,
+            vec![Some(targets.clone()); 2],
+            "the box gone, focus moves to Targets, where the first write was refused"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.focus_ring.shows(&targets))
+                && button_ringed(cx, "git-actions-toggle"),
+            "Targets draws the ring the window shows on it"
+        );
+        report(refusal, cx);
+        tabs_to_the_refusal_s_box(cx);
+        report(
+            crate::views::OperationFailure::refused("Git was not started."),
+            cx,
+        );
+        draw(cx);
+        assert!(
+            cx.debug_bounds("operation-error-scrollbar").is_none(),
+            "the shorter refusal fits"
+        );
+        assert!(
+            cx.update(|window, _| crate::views::refusal_box_focused(window)),
+            "the box keeps focus as a shorter refusal replaces it"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            button_ringed(cx, "operation-error-details"),
+            "the next Tab moves on to Details…"
+        );
+    }
+
+    /// A refused write's box that holds focus as a dialog opens from it,
+    /// gone under the dialog as a line Git answered takes the refusal's
+    /// place, gives focus to the control the write was refused on, here
+    /// Targets, ringed, as the dialog closes and gives focus back to the
+    /// box. Let go while the dialog was open, the control was lost and focus
+    /// went on to History's commits.
+    #[gpui::test]
+    async fn a_refused_write_s_box_gone_under_a_dialog_gives_focus_to_the_control_as_it_closes(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        a_refusal_shown(&app, cx, refusal.clone(), 18, size(px(461.), px(490.)));
+        let targets = tab_to_targets(cx);
+        // A write refused while focus rests on Targets.
+        a_failure_reported(&app, cx, Some(refusal));
+        draw(cx);
+        tab_to_the_refusal_s_box(cx);
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Probe")));
+        draw(cx);
+        a_failure_reported(
+            &app,
+            cx,
+            Some(
+                "fatal: unable to access 'https://example.invalid/': Could not resolve host".into(),
+            ),
+        );
+        draw(cx);
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the dialog stays open"
+        );
+        assert!(
+            cx.debug_bounds("operation-error-box").is_none(),
+            "the line Git answered takes the box's place"
+        );
+        cx.update(|window, cx| window.close_dialog(cx));
+        let after: Vec<_> = (0..2).map(|_| a_frame(cx)).collect();
+        assert_eq!(
+            after,
+            vec![Some(targets.clone()); 2],
+            "as the dialog closes, focus goes on from the box to Targets"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.focus_ring.shows(&targets))
+                && button_ringed(cx, "git-actions-toggle"),
+            "Targets draws the ring the window shows on it"
+        );
+    }
+
+    /// `failure` reported in the banner of `app`'s shown tab as a write's
+    /// reply reports it (`GitTurtle::tab_operation_feedback`), a fresh
+    /// refusal each time; `None` takes the banner away.
+    fn a_failure_reported(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        failure: Option<crate::views::OperationFailure>,
+    ) {
+        app.update(cx, |app, cx| {
+            let path = app.path.clone().expect("the tab's repository");
+            app.tab_operation_feedback(&path, None, failure, cx);
+            cx.notify();
+        });
+    }
+
+    /// One frame of `cx`'s window, and where focus is after it.
+    fn a_frame(cx: &mut gpui::VisualTestContext) -> Option<FocusHandle> {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.executor().run_until_parked();
+        cx.update(|window, cx| window.focused(cx))
+    }
+
+    /// Presses Tab from where focus is until the refusal's box holds it, and
+    /// returns the presses taken.
+    fn tabs_to_the_refusal_s_box(cx: &mut gpui::VisualTestContext) -> usize {
+        for press in 1..=80 {
+            cx.simulate_keystrokes("tab");
+            crate::views::tests::draw(cx);
+            if cx.update(|window, _| crate::views::refusal_box_focused(window)) {
+                return press;
+            }
+        }
+        panic!("Tab never reached the refusal's box");
+    }
+
+    /// Presses Tab until Targets draws its ring, and returns its focus.
+    fn tab_to_targets(cx: &mut gpui::VisualTestContext) -> FocusHandle {
+        for _ in 0..80 {
+            if button_ringed(cx, "git-actions-toggle") {
+                return cx
+                    .update(|window, cx| window.focused(cx))
+                    .expect("Targets holds focus");
+            }
+            cx.simulate_keystrokes("tab");
+            crate::views::tests::draw(cx);
+        }
+        panic!("Tab never reached Targets");
+    }
+
+    /// At 18 pt in a 461 × 490 half tile, a refused write's box that holds
+    /// focus as a line Git answered takes the refusal's place gives focus,
+    /// in the frame that draws the line, to the control the write was
+    /// refused on, where focus rested as the refusal came, here Targets: one
+    /// move, heard once, the control ringed, and Tab moving on from it. The
+    /// refusal reported again is a Tab stop again, reached from Targets
+    /// within the page's stops. Focus once stayed on the box no frame drew, which
+    /// the window's ring kept alive: no key reached a binding, so Tab moved
+    /// nothing, the new refusal's box, under another handle, never reached.
+    #[gpui::test]
+    async fn a_refused_write_s_box_gone_with_focus_gives_it_to_the_control_refused_on(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        a_refusal_shown(&app, cx, refusal.clone(), 18, size(px(461.), px(490.)));
+        let targets = tab_to_targets(cx);
+        // A write refused while focus rests on Targets.
+        a_failure_reported(&app, cx, Some(refusal.clone()));
+        draw(cx);
+        tabs_to_the_refusal_s_box(cx);
+        // From the box round to it again: the page's stops.
+        let cycle = tabs_to_the_refusal_s_box(cx);
+        a_failure_reported(
+            &app,
+            cx,
+            Some(
+                "fatal: unable to access 'https://example.invalid/': Could not resolve host".into(),
+            ),
+        );
+        let after: Vec<_> = (0..4).map(|_| a_frame(cx)).collect();
+        assert_eq!(
+            after,
+            vec![Some(targets.clone()); 4],
+            "focus moves to Targets in the frame that draws the line, once, and stays"
+        );
+        assert!(
+            cx.debug_bounds("operation-error-summary").is_some()
+                && cx.debug_bounds("operation-error-box").is_none(),
+            "the line Git answered takes the box's place"
+        );
+        assert!(
+            button_ringed(cx, "git-actions-toggle"),
+            "Targets draws its ring"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_ne!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(targets.clone()),
+            "Tab moves on from Targets"
+        );
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(targets));
+        a_failure_reported(&app, cx, Some(refusal));
+        draw(cx);
+        let again = tabs_to_the_refusal_s_box(cx);
+        assert!(
+            again <= cycle,
+            "the refusal again is reached within the page's {cycle} stops: {again}"
+        );
+    }
+
+    /// A refused write's box that holds focus as nothing takes the refusal's
+    /// place, where focus rested on nothing a person can see as the refusal
+    /// came, the window's root, gives focus to the shown mode's own list,
+    /// History's commits, which the window names as its pane, never to
+    /// nothing; Tab moves on from it and reaches the next refusal's box.
+    #[gpui::test]
+    async fn a_refused_write_s_box_gone_with_focus_and_no_control_gives_it_to_the_list(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        a_refusal_shown(&app, cx, refusal.clone(), 18, size(px(461.), px(490.)));
+        let (root, list) = app.read_with(cx, |app, _| (app.app_focus.clone(), app.focus.clone()));
+        cx.update(|window, cx| window.focus(&root, cx));
+        a_failure_reported(&app, cx, Some(refusal.clone()));
+        draw(cx);
+        tab_to_the_refusal_s_box(cx);
+        app.update(cx, |app, _| app.pane = crate::Pane::Files);
+        a_failure_reported(&app, cx, None);
+        assert_eq!(
+            a_frame(cx),
+            Some(list.clone()),
+            "focus moves to History's commits"
+        );
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let edge = cx
+            .debug_bounds("history-list-edge")
+            .expect("the list's edge");
+        let outlines = crate::focus_ring::painted_outlines(cx, accent);
+        assert!(
+            outlines.iter().any(|ring| ring.whole
+                && [
+                    (ring.bounds.left(), edge.left()),
+                    (ring.bounds.top(), edge.top()),
+                    (ring.bounds.right(), edge.right()),
+                    (ring.bounds.bottom(), edge.bottom()),
+                ]
+                .into_iter()
+                .all(|(drawn, at)| (drawn - at).abs() < px(0.5))),
+            "History's commits draw their outline whole on their edge {edge:?}: {outlines:?}"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.pane == crate::Pane::History),
+            "the window names the list's pane"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let moved = cx.update(|window, cx| window.focused(cx));
+        assert!(
+            moved.is_some() && moved != Some(list) && moved != Some(root),
+            "Tab moves on from the list: {moved:?}"
+        );
+        a_failure_reported(&app, cx, Some(refusal));
+        draw(cx);
+        tabs_to_the_refusal_s_box(cx);
+    }
+
+    /// A refusal that fits its line's box, at 13 pt in a window 1,480 wide,
+    /// draws no scrollbar and is no Tab stop, by Tab or by Shift+Tab:
+    /// nothing in it is left for a key to reach.
+    #[gpui::test]
+    async fn a_refused_write_that_fits_its_box_is_no_tab_stop(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+        a_refusal_shown(&app, cx, refusal, 13, size(px(1480.), px(980.)));
+        let kept = cx
+            .debug_bounds("operation-error-summary")
+            .expect("its line");
+        let text = cx.debug_bounds("operation-error-text").expect("its words");
+        assert!(
+            (text.size.height - kept.size.height).abs() < px(0.5),
+            "its words fit the box: {text:?} in {kept:?}"
+        );
+        assert!(
+            cx.debug_bounds("operation-error-scrollbar").is_none(),
+            "a refusal that fits draws no scrollbar"
+        );
+        let mut failures = Vec::new();
+        for key in ["tab", "shift-tab"] {
+            sweep::walk_each(
+                &app,
+                cx,
+                key,
+                &format!("the refused write's banner by {key}"),
+                13,
+                &mut failures,
+                &mut |cx, stop, _| {
+                    assert!(
+                        !cx.update(|window, _| crate::views::refusal_box_focused(window)),
+                        "{stop}: a refusal that fits is no Tab stop"
+                    );
+                },
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// A refusal before Git started, of a repository at a 74-character

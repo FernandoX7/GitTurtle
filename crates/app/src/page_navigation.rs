@@ -537,8 +537,10 @@ impl GitTurtle {
     /// changed files that closed onto its commit list left the window
     /// naming the file list, which a File history or Blame opened next
     /// keeps and restores as it closes. A `previous` that is the window's
-    /// root counts as none (`saved_focus`).
-    fn modal_return_target(
+    /// root counts as none (`saved_focus`). A refused write's box gone with
+    /// focus gives it to the same place, its control as `previous`
+    /// (`GitTurtle::return_refusal_focus`).
+    pub(super) fn modal_return_target(
         &mut self,
         previous: Option<&FocusHandle>,
         window: &Window,

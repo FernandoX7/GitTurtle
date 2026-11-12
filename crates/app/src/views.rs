@@ -9375,6 +9375,9 @@ impl std::fmt::Display for OperationFailure {
 thread_local! {
     /// The line the operation error banner drew last.
     static BANNER_DRAWN: RefCell<Option<SharedString>> = const { RefCell::new(None) };
+    /// The focus of the refusal's box the banner drew last
+    /// ([`RefusalBox`]), held weakly.
+    static REFUSAL_FOCUS: RefCell<Option<WeakFocusHandle>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -9382,6 +9385,288 @@ impl GitTurtle {
     /// The operation error's whole report.
     pub(crate) fn operation_error_text(&self) -> Option<String> {
         self.operation_error.as_deref().map(str::to_owned)
+    }
+}
+
+#[cfg(test)]
+impl OperationFailure {
+    /// A refusal before Git started whose report and line are `sentence`,
+    /// drawn whole as core's refusal is ([`Self::of`]), for a refusal
+    /// shorter than core's words.
+    pub(crate) fn refused(sentence: &str) -> Self {
+        Self {
+            report: sentence.to_owned(),
+            banner: sentence.to_owned().into(),
+            whole: true,
+        }
+    }
+}
+
+/// Whether the refusal's box the banner drew last holds focus.
+#[cfg(test)]
+pub(crate) fn refusal_box_focused(window: &Window) -> bool {
+    REFUSAL_FOCUS.with_borrow(|focus| {
+        focus
+            .as_ref()
+            .and_then(WeakFocusHandle::upgrade)
+            .is_some_and(|focus| focus.is_focused(window))
+    })
+}
+
+/// The box a refusal before Git started is drawn in, in the operation error
+/// banner, kept from frame to frame while the window draws, whether a
+/// refusal shows it or not ([`RefusalBox::kept`]): its focus, a Tab stop
+/// only while its words overflow it, the scroll of the refusal it was last
+/// drawn with, so another refusal, or the same one again, opens at its top,
+/// and the control the shown refusal's write was refused on, which focus the
+/// box holds as it goes is given back to
+/// ([`GitTurtle::return_refusal_focus`]).
+struct RefusalBox {
+    focus: FocusHandle,
+    scroll: RefCell<Option<(Refusal, ScrollHandle)>>,
+    /// The refusal shown and where focus rested as it was first drawn, the
+    /// control the person pressed, held weakly so a control its frame no
+    /// longer draws is let go; `None` while no refusal shows the box.
+    refused_on: RefCell<Option<(Refusal, Option<WeakFocusHandle>)>>,
+}
+
+/// Which refusal a [`RefusalBox`] shows: the window's count of refusals
+/// (`GitTurtle::error_refusals`), which the same refusal asked again moves,
+/// and its line, which a refusal from another flow or another tab changes
+/// without moving the count. Keyed on the line alone, the same refusal
+/// again opened where the last was left scrolled.
+type Refusal = (usize, SharedString);
+
+impl RefusalBox {
+    /// The window's box. Kept only while a frame drew it, the box went with
+    /// a refusal a line Git answered replaced while it held focus, and focus
+    /// stayed on its handle, which the window's ring kept alive with no
+    /// frame drawing it: no key context reached a binding, so Tab moved
+    /// nothing, and the next refusal's box, under another handle, was never
+    /// reached.
+    fn kept(window: &mut Window, cx: &mut App) -> std::rc::Rc<Self> {
+        window
+            .use_keyed_state(ElementId::from("operation-error-box"), cx, |_, cx| {
+                std::rc::Rc::new(RefusalBox {
+                    focus: cx.focus_handle(),
+                    scroll: RefCell::default(),
+                    refused_on: RefCell::default(),
+                })
+            })
+            .read(cx)
+            .clone()
+    }
+
+    /// Scrolls `scroll` one line of `line`, `down` or up, to the next whole
+    /// line's edge, as far as its ends, so a box that holds whole lines
+    /// holds them still, whatever a wheel left it at. Returns whether it
+    /// moved.
+    fn scroll_a_line(scroll: &ScrollHandle, line: Pixels, down: bool) -> bool {
+        let (at, end) = (-scroll.offset().y, scroll.max_offset().y.max(Pixels::ZERO));
+        // Within a hundredth of a line of an edge is at it: GPUI rounds the
+        // offsets it keeps.
+        let lines = at / line;
+        let to = if down {
+            (lines + 0.01).floor() + 1.
+        } else {
+            (lines - 0.01).ceil() - 1.
+        };
+        let to = (line * to).clamp(Pixels::ZERO, end);
+        if to == at {
+            return false;
+        }
+        scroll.set_offset(point(scroll.offset().x, -to));
+        true
+    }
+}
+
+impl GitTurtle {
+    /// The operation error banner's line for `error`. A refusal before Git
+    /// started ([`OperationFailure::of`]) wraps to as many lines as it needs,
+    /// as the notice does, so the path Git now finds and "Git was not
+    /// started" are read at every width, in a box at most a scaled 100 px
+    /// tall that holds whole lines, so none is cut by its clip. Where its
+    /// words are taller, as at 18 pt in a 461 × 490 half tile, the box
+    /// scrolls, cued by the toolkit's scrollbar as every scrolling region is
+    /// (`tags::ScrollCue`), and is a Tab stop that Up and Down scroll a line
+    /// at a time, ringed on its own edge, which assistive technology reads
+    /// by the alert's whole report, its ring 3 px out from the words on
+    /// every side; where they fit it draws no scrollbar and is
+    /// no stop, as the rewritten series' failed preview draws none and is
+    /// none either (`rewrite_review::SeriesBrowser::failure_box`). Made to
+    /// fit while it holds focus, it keeps focus and its ring until the next
+    /// Tab; gone while it holds focus, it gives focus to the control the
+    /// write was refused on ([`Self::return_refusal_focus`]). It once
+    /// scrolled with nothing to say so and no key to reach its
+    /// last sentence. A line Git answered stays one line, cut with an
+    /// ellipsis.
+    fn operation_error_line(
+        &self,
+        error: &OperationFailure,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        #[cfg(test)]
+        BANNER_DRAWN.with_borrow_mut(|drawn| *drawn = Some(error.banner()));
+        let size = crate::appearance::ui_text(11.);
+        let summary = |summary: Div| {
+            summary
+                // A fresh node for each refusal, so the same one again is
+                // announced again.
+                .id(("operation-error-summary", self.error_refusals))
+                .debug_selector(|| "operation-error-summary".into())
+                // The whole report, which Git's output can make megabytes
+                // long, bounded as every long accessible text is, and said
+                // once: a multi-megabyte name and value went to assistive
+                // technology in every frame.
+                .alert(native_accessibility::bounded_accessible_text(&**error))
+                .text_size(size)
+        };
+        if !error.whole {
+            return native_accessibility::recorded(
+                summary(div())
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(error.banner()),
+            )
+            .into_any_element();
+        }
+        let refusal: Refusal = (self.error_refusals, error.banner());
+        let kept = RefusalBox::kept(window, cx);
+        let scroll = {
+            let mut shown = kept.scroll.borrow_mut();
+            match &*shown {
+                Some((drawn, scroll)) if *drawn == refusal => scroll.clone(),
+                _ => {
+                    let scroll = ScrollHandle::new();
+                    *shown = Some((refusal, scroll.clone()));
+                    scroll
+                }
+            }
+        };
+        let focus = &kept.focus;
+        #[cfg(test)]
+        REFUSAL_FOCUS.with_borrow_mut(|kept| *kept = Some(focus.downgrade()));
+        // The most whole lines a scaled 100 px holds, as the line's text
+        // lays them out: the bound itself cut a line at either edge.
+        let line = crate::image_compare::text_line(size, window);
+        let most = line * (crate::appearance::ui_size(100.) / line).floor().max(1.);
+        let cue =
+            crate::tags::ScrollCue::new(&scroll, Pixels::ZERO).on(crate::tags::Surface::Removed);
+        let overflows = cue.kept();
+        let tracked = overflows || focus.is_focused(window);
+        let keys = scroll.clone();
+        let ring = self.focus_ring.edge(focus, rgb(palette(cx).accent));
+        let summary = cue.list(
+            summary(div().on_children_prepainted(cue.observe(|_, _, _| {})))
+                .max_h(most)
+                .overflow_y_scroll()
+                .track_scroll(&scroll)
+                .when(tracked, |summary| {
+                    summary
+                        // The handle carries the Tab stop: GPUI ignores
+                        // the `tab_stop` of the div that tracks it.
+                        .track_focus(&focus.clone().tab_stop(overflows))
+                        .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+                            let modifiers = &event.keystroke.modifiers;
+                            if modifiers.modified() {
+                                return;
+                            }
+                            let down = match event.keystroke.key.as_str() {
+                                "up" => false,
+                                "down" => true,
+                                _ => return,
+                            };
+                            if RefusalBox::scroll_a_line(&keys, line, down) {
+                                cx.notify();
+                            }
+                            cx.stop_propagation();
+                        }))
+                })
+                .child(
+                    div()
+                        .debug_selector(|| "operation-error-text".into())
+                        .child(error.banner()),
+                ),
+            "operation-error-scrollbar",
+        );
+        // Its keyboard ring on the box's own edge, which keeps its room
+        // around the scrolling words and pulls it back out of the banner's
+        // padding, so neither the words nor anything beside them moves and
+        // the words scroll inside the room, clipped at the lines they hold:
+        // on the box's edge, the ring was drawn over the first column of
+        // letters and the first line's tops. The room is a Button ring's,
+        // snapped to device pixels as File History's failed message snaps
+        // it, so it is the same whole pixels on every side at any scale.
+        let room = window.pixel_snap(crate::appearance::button_ring_room(cx));
+        div()
+            .debug_selector(|| "operation-error-box".into())
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .mx(-room)
+            .my(-room)
+            .p(room)
+            .child(native_accessibility::recorded(summary))
+            .children(ring)
+            .into_any_element()
+    }
+
+    /// Follows the refusal's box as the frame is built, before anything
+    /// reads focus: a refusal the box shows notes, as it is first drawn, the
+    /// control focus rests on, the one the person pressed, which a refusal
+    /// replacing it while the box holds focus keeps; and focus the box holds
+    /// as it goes, a line Git answered or nothing taking the refusal's place,
+    /// moves in this frame to that control while a frame draws it, else to
+    /// the shown mode's own list, which the window names as its pane, else
+    /// to the window's root, as a closing modal's focus does
+    /// (`GitTurtle::modal_return_target`), so the move is heard once, on the
+    /// control, and focus is never left on the box no frame draws. Gone
+    /// under a dialog or sheet opened from it, the box keeps its control
+    /// until the modal closes and gives focus back to it, which then moves
+    /// on to the control: let go under the modal, the control was lost and
+    /// focus went to the list. The box is kept while
+    /// the window draws ([`RefusalBox::kept`]), so the next refusal's box is
+    /// the same Tab stop, whatever came before it, and opens at its top.
+    fn return_refusal_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let kept = RefusalBox::kept(window, cx);
+        let in_box = kept.focus.is_focused(window);
+        let shown = match &self.operation_error {
+            Some(error) if error.whole && self.page == AppPage::Repository => {
+                Some((self.error_refusals, error.banner()))
+            }
+            _ => None,
+        };
+        if let Some(refusal) = shown {
+            let mut noted = kept.refused_on.borrow_mut();
+            if noted.as_ref().is_none_or(|(drawn, _)| *drawn != refusal) {
+                let control = if in_box {
+                    noted.take().and_then(|(_, control)| control)
+                } else {
+                    self.saved_focus(window.focused(cx))
+                        .map(|control| control.downgrade())
+                };
+                *noted = Some((refusal, control));
+            }
+            return;
+        }
+        kept.scroll.replace(None);
+        // Kept while a dialog or sheet is open: one opened from the box gives
+        // focus back to it as it closes, and the control is where it goes on.
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
+        let control = kept
+            .refused_on
+            .take()
+            .and_then(|(_, control)| control?.upgrade());
+        if in_box {
+            self.modal_return_target(control.as_ref(), window)
+                .focus(window, cx);
+        }
     }
 }
 
@@ -10455,6 +10740,7 @@ impl Render for GitTurtle {
         self.update_modal_focus(window, cx);
         self.return_focus_after_delete(window, cx);
         self.return_tab_focus(window, cx);
+        self.return_refusal_focus(window, cx);
         // After the focus repairs above, before any list is built.
         self.focus_ring.begin_frame(window, cx);
         let colors = palette(cx);
@@ -10596,59 +10882,24 @@ impl Render for GitTurtle {
                         .gap_3()
                         .bg(rgb(palette(cx).removed_background))
                         .text_color(rgb(palette(cx).removed))
-                        .child(native_accessibility::recorded(
-                            div()
-                                // A fresh node for each refusal, so the same
-                                // one again is announced again.
-                                .id(("operation-error-summary", self.error_refusals))
-                                .debug_selector(|| "operation-error-summary".into())
-                                // The whole report, which Git's output can make
-                                // megabytes long, bounded as every long
-                                // accessible text is, and said once: a
-                                // multi-megabyte name and value went to
-                                // assistive technology in every frame.
-                                .alert(native_accessibility::bounded_accessible_text(&**error))
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(crate::appearance::ui_text(11.))
-                                .map(|summary| {
-                                    #[cfg(test)]
-                                    BANNER_DRAWN.with_borrow_mut(|drawn| *drawn = Some(error.banner()));
-                                    // A refusal before Git started wraps to as
-                                    // many lines as it needs, as the notice
-                                    // does, so the path Git now finds and "Git
-                                    // was not started" are read at every width;
-                                    // a long one scrolls inside a bounded
-                                    // height. A line Git answered stays one
-                                    // line, cut with an ellipsis.
-                                    if error.whole {
-                                        summary
-                                            .max_h(crate::appearance::ui_size(100.))
-                                            .overflow_y_scroll()
-                                            .child(
-                                                div()
-                                                    .debug_selector(|| "operation-error-text".into())
-                                                    .child(error.banner()),
-                                            )
-                                    } else {
-                                        summary.truncate().child(error.banner())
-                                    }
-                                }),
-                        ))
+                        .child(self.operation_error_line(error, window, cx))
+                        // Whole beside the line, which gives way to them.
                         .child(
-                            button("operation-error-details", "Details…", "", false).on_click(
-                                cx.listener(|this, _, window, cx| {
+                            button("operation-error-details", "Details…", "", false)
+                                .debug_selector(|| "operation-error-details".into())
+                                .flex_shrink_0()
+                                .on_click(cx.listener(|this, _, window, cx| {
                                     this.show_operation_error(window, cx)
-                                }),
-                            ),
+                                })),
                         )
                         .child(
-                            button("dismiss-operation-error", "Dismiss", "", false).on_click(
-                                cx.listener(|this, _, _, cx| {
+                            button("dismiss-operation-error", "Dismiss", "", false)
+                                .debug_selector(|| "dismiss-operation-error".into())
+                                .flex_shrink_0()
+                                .on_click(cx.listener(|this, _, _, cx| {
                                     this.operation_error = None;
                                     cx.notify();
-                                }),
-                            ),
+                                })),
                         )
                 }))
             })

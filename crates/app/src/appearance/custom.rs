@@ -560,6 +560,9 @@ impl Palette {
         );
         // Focus ring, caret and list active border.
         rule(&[Accent], &SURFACES, GRAPHIC);
+        // The keyboard ring of a refused write's box, on the operation
+        // error banner's removed background.
+        rule(&[Accent], &[token(RemovedBackground)], GRAPHIC);
         // Selection, hover and dividers remain distinguishable surfaces.
         rule(&[Selected], &[token(Panel)], SELECTED_SURFACE);
         rule(&[Hover], &[token(Panel)], HOVER_SURFACE);
@@ -1337,6 +1340,55 @@ mod tests {
         );
     }
 
+    /// The accent, which a refused write's box draws its keyboard ring in on
+    /// the operation error banner, is judged at 3:1 on the removed
+    /// background as well as on the six surfaces: a removed background in
+    /// the accent's own colour is reported, with its ratio. The banner's
+    /// ring went unmeasured on its surface.
+    #[test]
+    fn the_accent_is_judged_on_the_removed_background() {
+        let midnight = ThemeChoice::Midnight.palette();
+        let palette = Palette {
+            removed_background: midnight.accent,
+            ..midnight
+        };
+        let issue = palette
+            .readability_issues()
+            .into_iter()
+            .find(|issue| {
+                issue.foreground == ReadabilityForeground::Token(Accent)
+                    && issue.background == ReadabilityBackground::Token(RemovedBackground)
+            })
+            .expect("the accent on the removed background is judged");
+        assert_eq!(
+            issue,
+            expected(
+                palette,
+                ReadabilityForeground::Token(Accent),
+                ReadabilityBackground::Token(RemovedBackground),
+                GRAPHIC
+            )
+        );
+    }
+
+    /// Every built-in palette, and on Linux every Omarchy fixture, keeps
+    /// every rule with More contrast off and on, the accent's 3:1 on the
+    /// removed background among them: More contrast can move the removed
+    /// line tint (`Palette::with_more_contrast`), the fill a refused write's
+    /// keyboard ring is drawn on, and only the palettes as given were judged.
+    #[test]
+    fn every_palette_keeps_its_rules_with_more_contrast_off_and_on() {
+        for (name, palette) in crate::appearance::test_palettes() {
+            for (more, palette) in [("off", palette), ("on", palette.with_more_contrast())] {
+                assert_eq!(
+                    palette.readability_issues(),
+                    Vec::new(),
+                    "{name}, More contrast {more}"
+                );
+            }
+        }
+    }
+
     /// Every issue marks exactly the tokens its measure reads, derived from
     /// `readability_issues` rather than copied from it: each token is changed
     /// alone, one channel at a time through every value, and an issue reads a
@@ -1394,12 +1446,12 @@ mod tests {
             .iter()
             .filter(|issue| matches!(issue.foreground, ReadabilityForeground::Lane(_)))
             .count();
-        // Every contrast pair in the rules, 77 token pairs and 24 lane pairs:
+        // Every contrast pair in the rules, 78 token pairs and 24 lane pairs:
         // a new rule changes this count, and one that passes at 1:1 (a
         // minimum of 1 or less) is left out and needs its own start palette.
         assert_eq!(
             gray_issues.len(),
-            101,
+            102,
             "the gray palette fails every contrast pair"
         );
         assert_eq!(lanes, 6 * 4, "every lane fails on every gray row state");

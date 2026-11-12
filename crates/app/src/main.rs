@@ -489,12 +489,16 @@ struct GitTurtle {
     operation_repository: Option<PathBuf>,
     operation_outcomes: operations::RepositoryOutcomes,
     operation_error: Option<views::OperationFailure>,
-    /// Refusals reported in the window's error
-    /// (`GitTurtle::refuse_while_paused`). Each draws the error's line as a
-    /// fresh node, which assistive technology announces as it is added, so
+    /// Refusals and failures reported in the window's error: a refusal while
+    /// paused (`GitTurtle::refuse_while_paused`), Ignore… refused before its
+    /// form opens, and every failure the shown tab's write reports
+    /// (`GitTurtle::tab_operation_feedback`). Each draws the error's line as
+    /// a fresh node, which assistive technology announces as it is added, so
     /// the same refusal asked for again is heard again: the line kept its
     /// node and its text, and a second Enter in a paused commit menu was
-    /// silent. Window-lived; it only names the node.
+    /// silent. A refused write's box opens at its top for each
+    /// (`views::RefusalBox`). Window-lived; it names the node and the box's
+    /// scroll.
     error_refusals: usize,
     operation_notice: Option<String>,
     /// This showing of the preview, which a line beneath an open control

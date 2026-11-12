@@ -626,8 +626,11 @@ const CLEAR_FILTER: &str = "Clear filter";
 /// one at its path ("… Git now finds the repository at …. Git was not
 /// started."): the window reads the repository again
 /// ([`GitTurtle::read_after_write`]), so the person need not find Refresh.
+/// It says what is true once that read lands, a frame or two later, since
+/// the banner stays until dismissed: "…, and the tab reads the repository
+/// again." stayed long after the read had finished.
 pub(crate) const REFUSED_READ_AGAIN: &str =
-    "Nothing was written, and the tab reads the repository again.";
+    "Nothing was written; the tab now shows the repository found there.";
 
 /// How the Working Changes inspector's rows fit its height, chosen before
 /// layout from the inspector's measured height and the heights its rows
