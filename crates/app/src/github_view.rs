@@ -19357,6 +19357,12 @@ mod tests {
         crate::focus_ring::sweep::interface_size(cx, 13);
         cx.simulate_resize(size(px(461.), px(490.)));
         crate::tags::tests::draw(cx);
+        let settings = cx.debug_bounds("settings").expect("Settings");
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        assert!(
+            settings.top() < button.bottom() && settings.bottom() > button.top(),
+            "the wrapped full header's Settings {settings:?} shares Pull requests' row {button:?}"
+        );
     }
 
     /// The window at 18 pt and 461 × 490, where the header draws its compact form: History and
@@ -19370,10 +19376,53 @@ mod tests {
         let button = cx.debug_bounds("pull-requests").expect("the button");
         assert!(
             toggles.iter().all(|toggle| toggle.is_some_and(|toggle| {
-                toggle.size.width == toggle.size.height && toggle.top() < button.bottom()
+                toggle.size.width == toggle.size.height
+                    && toggle.top() < button.bottom()
+                    && toggle.bottom() > button.top()
             })),
             "the compact form's glyph toggles {toggles:?} share Pull requests' row {button:?}"
         );
+    }
+
+    /// The header's two forms beside Pull requests at 461 × 490, each laid out by its function,
+    /// with the neighbours whose tooltips a test hovers there, a first and a second: the wrapped
+    /// full header's Settings, on the button's row, at 13 pt, the form a window takes at
+    /// typical sizes, and the compact form's Changes and History glyph toggles at 18 pt.
+    fn header_forms() -> [(&'static str, fn(&mut VisualTestContext), [&'static str; 2]); 2] {
+        [
+            (
+                "the wrapped full header",
+                wrapped_full_header,
+                ["settings", "settings"],
+            ),
+            (
+                "the compact form",
+                compact_form_header,
+                ["changes-tab", "history-tab"],
+            ),
+        ]
+    }
+
+    /// Lays out the header in `form` with a write running again and Pull requests focused, the
+    /// pointer away from the header and past the kit's grace period, so a test of one form
+    /// starts as the first did.
+    fn rearm_in_form(
+        app: &Entity<GitTurtle>,
+        opener: &FocusHandle,
+        form: fn(&mut VisualTestContext),
+        cx: &mut VisualTestContext,
+    ) {
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        cx.executor()
+            .advance_clock(crate::tags::tests::TOOLTIP_DELAY * 2);
+        cx.run_until_parked();
+        form(cx);
+        cx.update(|window, cx| window.focus(opener, cx));
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        crate::tags::tests::draw(cx);
     }
 
     /// The kit tooltip popups the last frame drew besides the ones that say why Pull requests
@@ -19387,17 +19436,17 @@ mod tests {
     }
 
     /// Another control's tooltip keeps its own show delay beside a keyboard press's answer at
-    /// Pull requests and survives the answer's end: at 18 pt in a 461 × 490 window, where the
-    /// header draws its compact form, the pointer resting on the button, its tooltip saying
-    /// why, as Return goes down, resting there past the kit's 500 ms show delay while the
-    /// answer stands, then moving on to Changes, the glyph toggle beside it, its tooltip shows
-    /// beside the answer only once its own delay has passed, and stays while the pointer rests
-    /// there as the write ends and takes the answer away. The button's leaving once hid
-    /// whatever the kit's overlay held, the neighbour's tooltip with it; an empty tooltip the
-    /// button offered under the resting pointer brought the neighbour's at once, sliding from
-    /// Pull requests; and a button that offered no tooltip from the answer's first frame kept
-    /// the hover GPUI last told it of, which the answer's end then ended, hiding the
-    /// neighbour's tooltip.
+    /// Pull requests and survives the answer's end, in both of the header's forms at 461 × 490
+    /// ([`header_forms`]): the pointer resting on the button, its tooltip saying why, as Return
+    /// goes down, resting there past the kit's 500 ms show delay while the answer stands, then
+    /// moving on to the neighbour, the wrapped full header's Settings at 13 pt or the compact
+    /// form's Changes glyph toggle at 18 pt, its tooltip shows beside the answer only once its
+    /// own delay has passed, and stays while the pointer rests there as the write ends and
+    /// takes the answer away. The button's leaving once hid whatever the kit's overlay held,
+    /// the neighbour's tooltip with it; an empty tooltip the button offered under the resting
+    /// pointer brought the neighbour's at once, sliding from Pull requests; and a button that
+    /// offered no tooltip from the answer's first frame kept the hover GPUI last told it of,
+    /// which the answer's end then ended, hiding the neighbour's tooltip.
     #[gpui::test]
     async fn a_neighbours_tooltip_survives_a_keyboard_answer_at_pull_requests(
         cx: &mut TestAppContext,
@@ -19408,96 +19457,101 @@ mod tests {
             appearance::ThemeChoice::Midnight.apply(None, cx);
             cx.set_reduce_motion(true);
         });
-        compact_form_header(cx);
-        cx.update(|window, cx| window.focus(&opener, cx));
-        draw(cx);
-        let (button, changes) = (
-            cx.debug_bounds("pull-requests").expect("the button"),
-            cx.debug_bounds("changes-tab").expect("Changes"),
-        );
         let tick = |cx: &mut VisualTestContext, by: Duration| {
             cx.executor().advance_clock(by);
             cx.run_until_parked();
             draw(cx);
         };
+        for (form, lay_out, [neighbour, _]) in header_forms() {
+            rearm_in_form(&app, &opener, lay_out, cx);
+            let (button, neighbour) = (
+                cx.debug_bounds("pull-requests").expect("the button"),
+                cx.debug_bounds(neighbour).expect("the neighbour"),
+            );
 
-        // The pointer rests on the button, whose tooltip says why, and Return goes down.
-        cx.simulate_mouse_move(button.center(), None, Modifiers::default());
-        draw(cx);
-        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
-        assert_eq!(
-            tooltip_popups(cx).len(),
-            1,
-            "the pointer's tooltip says why"
-        );
-        key_down(cx, "enter", false);
-        key_up(cx, "enter");
-        draw(cx);
-        assert!(answer_drawn(cx), "the reason stands at the button");
+            // The pointer rests on the button, whose tooltip says why, and Return goes down.
+            cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+            draw(cx);
+            tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+            assert_eq!(
+                tooltip_popups(cx).len(),
+                1,
+                "{form}: the pointer's tooltip says why"
+            );
+            key_down(cx, "enter", false);
+            key_up(cx, "enter");
+            draw(cx);
+            assert!(answer_drawn(cx), "{form}: the reason stands at the button");
 
-        // The pointer rests on the button past the show delay and the slide.
-        cx.simulate_mouse_move(
-            button.center() + point(px(2.), px(0.)),
-            None,
-            Modifiers::default(),
-        );
-        draw(cx);
-        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
-        assert_eq!(tooltip_popups(cx).len(), 1, "the answer alone says why");
-        let beside = neighbour_popups(cx);
-        assert!(
-            beside.is_empty(),
-            "nothing stands beside the answer: {beside:?}"
-        );
+            // The pointer rests on the button past the show delay and the slide.
+            cx.simulate_mouse_move(
+                button.center() + point(px(2.), px(0.)),
+                None,
+                Modifiers::default(),
+            );
+            draw(cx);
+            tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+            assert_eq!(
+                tooltip_popups(cx).len(),
+                1,
+                "{form}: the answer alone says why"
+            );
+            let beside = neighbour_popups(cx);
+            assert!(
+                beside.is_empty(),
+                "{form}: nothing stands beside the answer: {beside:?}"
+            );
 
-        // On to Changes.
-        cx.simulate_mouse_move(changes.center(), None, Modifiers::default());
-        draw(cx);
-        tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
-        assert!(answer_drawn(cx), "the answer stays");
-        let beside = neighbour_popups(cx);
-        assert!(
-            beside.is_empty(),
-            "Changes' tooltip waits its show delay: {beside:?}"
-        );
-        tick(cx, Duration::from_millis(100));
-        assert_eq!(
-            neighbour_popups(cx).len(),
-            1,
-            "then Changes' tooltip shows beside the answer"
-        );
-
-        // The write ends, and the answer with it.
-        app.update(cx, |app, cx| {
-            app.operation_busy = None;
-            cx.notify();
-        });
-        draw(cx);
-        assert!(!answer_drawn(cx), "the answer goes with the write");
-        for step in 0..=6 {
+            // On to the neighbour.
+            cx.simulate_mouse_move(neighbour.center(), None, Modifiers::default());
+            draw(cx);
+            tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
+            assert!(answer_drawn(cx), "{form}: the answer stays");
+            let beside = neighbour_popups(cx);
+            assert!(
+                beside.is_empty(),
+                "{form}: the neighbour's tooltip waits its show delay: {beside:?}"
+            );
             tick(cx, Duration::from_millis(100));
             assert_eq!(
-                kit_tooltip_popups(cx).len(),
+                neighbour_popups(cx).len(),
                 1,
-                "{} ms after the write: Changes' tooltip stays",
-                step * 100 + 100
+                "{form}: then the neighbour's tooltip shows beside the answer"
             );
+
+            // The write ends, and the answer with it.
+            app.update(cx, |app, cx| {
+                app.operation_busy = None;
+                cx.notify();
+            });
+            draw(cx);
+            assert!(!answer_drawn(cx), "{form}: the answer goes with the write");
+            for step in 0..=6 {
+                tick(cx, Duration::from_millis(100));
+                assert_eq!(
+                    kit_tooltip_popups(cx).len(),
+                    1,
+                    "{form}, {} ms after the write: the neighbour's tooltip stays",
+                    step * 100 + 100
+                );
+            }
         }
     }
 
     /// An answer a keyboard press stands at Pull requests that ends within the kit's show delay
-    /// of the pointer meeting the button leaves no tooltip there: Return on the focused button,
-    /// the pointer meeting it in the answer's first frame, the one that still offers a tooltip,
-    /// and leaving it in the next, which offers none, then the write ending 200 ms after the
-    /// pointer met the button, no frame in the next 600 ms draws a popup, the reason or the
-    /// button's idle sentence, and a hover on Changes then waits out the whole show delay; and
-    /// in another write, the pointer meeting the button in the answer's first frame and leaving
-    /// it, the show coming due while the answer stands draws nothing, and a hover on History
-    /// still waits out the whole delay. Both are the compact form's glyph toggles beside the
-    /// button, at 18 pt in a 461 × 490 window. The show the pointer asked for was still waiting as the
-    /// answer ended, and once its delay was up drew the button's idle tooltip at a button the
-    /// pointer had left; built as nothing and kept in the kit's overlay, it let the next hover
-    /// elsewhere take its tooltip at once.
+    /// of the pointer meeting the button leaves no tooltip there, in both of the header's forms
+    /// at 461 × 490 ([`header_forms`]): Return on the focused button, the pointer meeting it in
+    /// the answer's first frame, the one that still offers a tooltip, and leaving it in the
+    /// next, which offers none, then the write ending 200 ms after the pointer met the button,
+    /// no frame in the next 600 ms draws a popup, the reason or the button's idle sentence, and
+    /// a hover on a neighbour then waits out the whole show delay; and in another write, the
+    /// pointer meeting the button in the answer's first frame and leaving it, the show coming
+    /// due while the answer stands draws nothing, and a hover on a neighbour still waits out
+    /// the whole delay. The neighbours are the wrapped full header's Settings at 13 pt, twice,
+    /// and the compact form's Changes and then History glyph toggles at 18 pt. The show the
+    /// pointer asked for was still waiting as the answer ended, and once its delay was up drew
+    /// the button's idle tooltip at a button the pointer had left; built as nothing and kept in
+    /// the kit's overlay, it let the next hover elsewhere take its tooltip at once.
     #[gpui::test]
     async fn an_answer_ending_within_the_show_delay_leaves_no_tooltip_at_pull_requests(
         cx: &mut TestAppContext,
@@ -19509,107 +19563,109 @@ mod tests {
             cx.set_reduce_motion(true);
         });
         let away = point(px(1.), px(1.));
-        cx.simulate_mouse_move(away, None, Modifiers::default());
-        compact_form_header(cx);
-        cx.update(|window, cx| window.focus(&opener, cx));
-        draw(cx);
-        let (button, changes, history) = (
-            cx.debug_bounds("pull-requests").expect("the button"),
-            cx.debug_bounds("changes-tab").expect("Changes"),
-            cx.debug_bounds("history-tab").expect("History"),
-        );
         let tick = |cx: &mut VisualTestContext, by: Duration| {
             cx.executor().advance_clock(by);
             cx.run_until_parked();
             one_frame(cx);
         };
-
-        // The pointer meets the button in the answer's first frame and leaves it in the next.
-        meet_in_the_answers_first_frame(cx, button.center());
-        assert!(answer_drawn(cx), "the answer stands");
-        cx.simulate_mouse_move(away, None, Modifiers::default());
-        one_frame(cx);
-        tick(cx, Duration::from_millis(200));
-        assert!(answer_drawn(cx), "the answer stands");
-
-        // The write ends within the show delay of the pointer meeting the button.
-        app.update(cx, |app, cx| {
-            app.operation_busy = None;
-            cx.notify();
-        });
-        one_frame(cx);
-        for step in 0..=12 {
-            let at = format!("{} ms after the write", step * 50);
-            assert!(!answer_drawn(cx), "{at}: the answer has gone");
-            let popups = kit_tooltip_popups(cx);
-            assert!(popups.is_empty(), "{at}: no popup: {popups:?}");
-            assert!(
-                cx.debug_bounds(
-                    "pull-requests/tooltip/Pull requests · Discover pull requests and review \
-                     captured changes"
-                )
-                .is_none(),
-                "{at}: no tooltip stands at Pull requests"
+        for (form, lay_out, [first, second]) in header_forms() {
+            rearm_in_form(&app, &opener, lay_out, cx);
+            let (button, first, second) = (
+                cx.debug_bounds("pull-requests").expect("the button"),
+                cx.debug_bounds(first).expect("the first neighbour"),
+                cx.debug_bounds(second).expect("the second neighbour"),
             );
-            tick(cx, Duration::from_millis(50));
+
+            // The pointer meets the button in the answer's first frame and leaves it in the
+            // next.
+            meet_in_the_answers_first_frame(cx, button.center());
+            assert!(answer_drawn(cx), "{form}: the answer stands");
+            cx.simulate_mouse_move(away, None, Modifiers::default());
+            one_frame(cx);
+            tick(cx, Duration::from_millis(200));
+            assert!(answer_drawn(cx), "{form}: the answer stands");
+
+            // The write ends within the show delay of the pointer meeting the button.
+            app.update(cx, |app, cx| {
+                app.operation_busy = None;
+                cx.notify();
+            });
+            one_frame(cx);
+            for step in 0..=12 {
+                let at = format!("{form}, {} ms after the write", step * 50);
+                assert!(!answer_drawn(cx), "{at}: the answer has gone");
+                assert_no_tooltip(cx, &[], &at);
+                tick(cx, Duration::from_millis(50));
+            }
+
+            // A hover on the first neighbour waits out the show delay.
+            cx.simulate_mouse_move(first.center(), None, Modifiers::default());
+            draw(cx);
+            tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
+            let popups = kit_tooltip_popups(cx);
+            assert!(
+                popups.is_empty(),
+                "{form}: the neighbour's tooltip waits its show delay: {popups:?}"
+            );
+            tick(cx, Duration::from_millis(100));
+            draw(cx);
+            assert_eq!(
+                kit_tooltip_popups(cx).len(),
+                1,
+                "{form}: then the neighbour's tooltip shows"
+            );
+
+            // Another write, the pointer meeting the button in the answer's first frame and
+            // leaving, and the show it asked for coming due while the answer stands: built as
+            // nothing, it is hidden at once, so a hover on the second neighbour still waits out
+            // the whole show delay.
+            cx.simulate_mouse_move(away, None, Modifiers::default());
+            tick(cx, TOOLTIP_DELAY * 2);
+            app.update(cx, |app, cx| {
+                app.operation_busy = Some("Fetching…");
+                cx.notify();
+            });
+            draw(cx);
+            meet_in_the_answers_first_frame(cx, button.center());
+            assert!(answer_drawn(cx), "{form}: the second answer stands");
+            cx.simulate_mouse_move(away, None, Modifiers::default());
+            one_frame(cx);
+            tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+            assert_eq!(
+                tooltip_popups(cx).len(),
+                1,
+                "{form}: the answer alone says why"
+            );
+            cx.simulate_mouse_move(second.center(), None, Modifiers::default());
+            draw(cx);
+            tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
+            let beside = neighbour_popups(cx);
+            assert!(
+                beside.is_empty(),
+                "{form}: the second neighbour's tooltip waits its show delay: {beside:?}"
+            );
+            tick(cx, Duration::from_millis(100));
+            assert_eq!(
+                neighbour_popups(cx).len(),
+                1,
+                "{form}: then the second neighbour's tooltip shows"
+            );
+            app.update(cx, |app, cx| {
+                app.operation_busy = None;
+                cx.notify();
+            });
+            draw(cx);
         }
-
-        // A hover on Changes waits out the show delay.
-        cx.simulate_mouse_move(changes.center(), None, Modifiers::default());
-        draw(cx);
-        tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
-        let popups = kit_tooltip_popups(cx);
-        assert!(
-            popups.is_empty(),
-            "Changes' tooltip waits its show delay: {popups:?}"
-        );
-        tick(cx, Duration::from_millis(100));
-        draw(cx);
-        assert_eq!(
-            kit_tooltip_popups(cx).len(),
-            1,
-            "then Changes' tooltip shows"
-        );
-
-        // Another write, the pointer meeting the button in the answer's first frame and leaving,
-        // and the show it asked for coming due while the answer stands: built as nothing, it
-        // is hidden at once, so a hover on History still waits out the whole show delay.
-        cx.simulate_mouse_move(away, None, Modifiers::default());
-        tick(cx, TOOLTIP_DELAY * 2);
-        app.update(cx, |app, cx| {
-            app.operation_busy = Some("Fetching…");
-            cx.notify();
-        });
-        draw(cx);
-        meet_in_the_answers_first_frame(cx, button.center());
-        assert!(answer_drawn(cx), "the second answer stands");
-        cx.simulate_mouse_move(away, None, Modifiers::default());
-        one_frame(cx);
-        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
-        assert_eq!(tooltip_popups(cx).len(), 1, "the answer alone says why");
-        cx.simulate_mouse_move(history.center(), None, Modifiers::default());
-        draw(cx);
-        tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
-        let beside = neighbour_popups(cx);
-        assert!(
-            beside.is_empty(),
-            "History's tooltip waits its show delay: {beside:?}"
-        );
-        tick(cx, Duration::from_millis(100));
-        assert_eq!(
-            neighbour_popups(cx).len(),
-            1,
-            "then History's tooltip shows"
-        );
-        app.update(cx, |app, _| app.operation_busy = None);
     }
 
     /// The empty tooltip the kit's overlay builds for Pull requests beside a keyboard press's
-    /// answer never counts as a tooltip shown: Return on the focused button, the pointer meeting
-    /// it in the answer's first frame and resting there past the kit's show delay, then moving
-    /// on to History, the compact form's glyph toggle beside it at 18 pt in a 461 × 490 window,
-    /// History's tooltip waits out its whole show delay and then shows. Counted as shown, the
-    /// empty view let the neighbour's tooltip appear at once, sliding from Pull requests.
+    /// answer never counts as a tooltip shown, in both of the header's forms at 461 × 490
+    /// ([`header_forms`]): Return on the focused button, the pointer meeting it in the answer's
+    /// first frame and resting there past the kit's show delay, then moving on to a neighbour,
+    /// the wrapped full header's Settings at 13 pt or the compact form's History glyph toggle at
+    /// 18 pt, the neighbour's tooltip waits out its whole show delay and then shows. Counted as
+    /// shown, the empty view let the neighbour's tooltip appear at once, sliding from Pull
+    /// requests.
     #[gpui::test]
     async fn a_neighbour_waits_its_delay_after_a_pointer_rested_on_the_answer(
         cx: &mut TestAppContext,
@@ -19620,43 +19676,50 @@ mod tests {
             appearance::ThemeChoice::Midnight.apply(None, cx);
             cx.set_reduce_motion(true);
         });
-        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
-        compact_form_header(cx);
-        cx.update(|window, cx| window.focus(&opener, cx));
-        draw(cx);
-        let (button, history) = (
-            cx.debug_bounds("pull-requests").expect("the button"),
-            cx.debug_bounds("history-tab").expect("History"),
-        );
         let tick = |cx: &mut VisualTestContext, by: Duration| {
             cx.executor().advance_clock(by);
             cx.run_until_parked();
             draw(cx);
         };
-        meet_in_the_answers_first_frame(cx, button.center());
-        draw(cx);
-        assert!(answer_drawn(cx), "the answer stands");
-        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
-        assert_eq!(tooltip_popups(cx).len(), 1, "the answer alone says why");
-        assert!(
-            neighbour_popups(cx).is_empty(),
-            "nothing stands beside the answer"
-        );
-        cx.simulate_mouse_move(history.center(), None, Modifiers::default());
-        draw(cx);
-        tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
-        let beside = neighbour_popups(cx);
-        assert!(
-            beside.is_empty(),
-            "History's tooltip waits its show delay: {beside:?}"
-        );
-        tick(cx, Duration::from_millis(100));
-        assert_eq!(
-            neighbour_popups(cx).len(),
-            1,
-            "then History's tooltip shows"
-        );
-        app.update(cx, |app, _| app.operation_busy = None);
+        for (form, lay_out, [_, neighbour]) in header_forms() {
+            rearm_in_form(&app, &opener, lay_out, cx);
+            let (button, neighbour) = (
+                cx.debug_bounds("pull-requests").expect("the button"),
+                cx.debug_bounds(neighbour).expect("the neighbour"),
+            );
+            meet_in_the_answers_first_frame(cx, button.center());
+            draw(cx);
+            assert!(answer_drawn(cx), "{form}: the answer stands");
+            tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+            assert_eq!(
+                tooltip_popups(cx).len(),
+                1,
+                "{form}: the answer alone says why"
+            );
+            assert!(
+                neighbour_popups(cx).is_empty(),
+                "{form}: nothing stands beside the answer"
+            );
+            cx.simulate_mouse_move(neighbour.center(), None, Modifiers::default());
+            draw(cx);
+            tick(cx, TOOLTIP_DELAY - Duration::from_millis(50));
+            let beside = neighbour_popups(cx);
+            assert!(
+                beside.is_empty(),
+                "{form}: the neighbour's tooltip waits its show delay: {beside:?}"
+            );
+            tick(cx, Duration::from_millis(100));
+            assert_eq!(
+                neighbour_popups(cx).len(),
+                1,
+                "{form}: then the neighbour's tooltip shows"
+            );
+            app.update(cx, |app, cx| {
+                app.operation_busy = None;
+                cx.notify();
+            });
+            draw(cx);
+        }
     }
 
     /// The pointer resting on Pull requests through the end of the write a keyboard press's
@@ -19718,9 +19781,15 @@ mod tests {
     /// overlay's last build of it draws nothing and hides it; either way no frame in the 600 ms
     /// after the write's end draws a popup, the reason or the button's idle sentence, and a
     /// hover on Changes, then on History, the compact form's glyph toggles beside the button at
-    /// 18 pt in a 461 × 490 window, waits out the whole show delay. A tooltip shows only for what
-    /// the pointer rests on: the request left standing would build the button's idle tooltip as
-    /// the overlay was built again at the write's end, but for the answer it was asked during.
+    /// 18 pt in a 461 × 490 window, waits out the whole show delay. A pointer that left and came
+    /// back to rest on the button before the write ends is one that came to it later: no frame
+    /// in the 600 ms after the write's end draws the button's idle tooltip under it, and a hover
+    /// on Changes then waits out the whole delay. A tooltip shows only for what the pointer
+    /// rests on: the request left standing would build the button's idle tooltip as the overlay
+    /// was built again at the write's end, but for the answer it was asked during, and under a
+    /// pointer back on the button drew it at once, without the show delay. Whether the overlay
+    /// still held the request after the pointer left, which only the pointer back on the button
+    /// shows, is checked once every pass has run, so what a person sees fails first.
     #[gpui::test]
     async fn a_pointer_that_left_the_answer_for_blank_space_draws_no_tooltip_as_the_write_ends(
         cx: &mut TestAppContext,
@@ -19742,12 +19811,16 @@ mod tests {
             cx.run_until_parked();
             one_frame(cx);
         };
-        for (frames_after_leaving, neighbour) in [(true, "changes-tab"), (false, "history-tab")] {
-            let pass = if frames_after_leaving {
-                "frames drawn after the pointer left"
-            } else {
-                "no frame drawn after the pointer left"
-            };
+        // Each pass that draws frames after the pointer left, and whether the overlay still held
+        // the button's request, built as nothing, 100 ms after it left.
+        let mut held_after_leaving = Vec::new();
+        for (pass, neighbour) in [
+            ("frames drawn after the pointer left", "changes-tab"),
+            ("no frame drawn after the pointer left", "history-tab"),
+            ("the pointer back on the button", "changes-tab"),
+        ] {
+            let frames_after_leaving = pass != "no frame drawn after the pointer left";
+            let back = pass == "the pointer back on the button";
             let neighbour = cx.debug_bounds(neighbour).expect("the neighbour");
             meet_in_the_answers_first_frame(cx, button.center());
             draw(cx);
@@ -19770,11 +19843,20 @@ mod tests {
                 cx.simulate_event(leave);
                 draw(cx);
                 tick(cx, Duration::from_millis(100));
-                assert!(
-                    !app.read_with(cx, |app, _| app.github_refusal.built_empty.get()),
-                    "{pass}: the overlay holds the button's request no more once the pointer \
-                     has left"
-                );
+                held_after_leaving.push((
+                    pass,
+                    app.read_with(cx, |app, _| app.github_refusal.built_empty.get()),
+                ));
+                if back {
+                    cx.simulate_mouse_move(
+                        button.center() + point(px(2.), px(0.)),
+                        None,
+                        Modifiers::default(),
+                    );
+                    draw(cx);
+                    tick(cx, Duration::from_millis(100));
+                    assert!(answer_drawn(cx), "{pass}: the answer stands");
+                }
                 app.update(cx, |app, cx| {
                     app.operation_busy = None;
                     cx.notify();
@@ -19833,6 +19915,11 @@ mod tests {
             draw(cx);
         }
         app.update(cx, |app, _| app.operation_busy = None);
+        assert!(
+            held_after_leaving.iter().all(|(_, held)| !held),
+            "the overlay holds the button's request no more once the pointer has left: \
+             {held_after_leaving:?}"
+        );
     }
 
     /// Asserts that the last frame drew no tooltip popup, none besides `own`, the popups the
@@ -19985,14 +20072,21 @@ mod tests {
     }
 
     /// A page change hides the tooltip the window shows or waits to show, whatever control asked
-    /// for it: at 18 pt in a 461 × 490 window, where the header draws its compact form, the
-    /// pointer resting on History past the kit's 500 ms show delay, its tooltip drawn, Settings
-    /// opened by its shortcut draws no popup besides its own in its first frame or in the
-    /// 600 ms after; and back on the repository, the pointer meeting Changes and Projects
-    /// opened by its shortcut 200 ms later, the show coming due draws nothing over Projects.
-    /// The kit's overlay forgets a tooltip only as its trigger's hover ends, which a control the
-    /// page no longer draws never ends: History's tooltip stood over Settings, and Changes'
-    /// showed over Projects once its delay was up.
+    /// for it and whatever changed the page, and a hover on the new page waits out its own
+    /// delay, in both of the header's forms at 461 × 490 ([`header_forms`]): the pointer resting
+    /// past the kit's 500 ms show delay on the wrapped full header's Settings at 13 pt or the
+    /// compact form's History at 18 pt, its tooltip drawn, Settings opened by its shortcut draws
+    /// no popup besides its own in its first frame or in the 600 ms after; back on the
+    /// repository, the pointer meeting the full header's Projects or the compact form's Changes
+    /// and Projects opened by its shortcut 200 ms later, the show coming due draws nothing over
+    /// Projects; and the pointer resting past the delay on a theme card of Settings', scrolled
+    /// into view, its tooltip drawn, Back's shortcut draws no popup on the repository in its
+    /// first frame, and the pointer meeting the repository's Back to Projects 150 ms later,
+    /// within the kit's 300 ms grace after a tooltip goes, draws nothing until that control's
+    /// own delay has passed, and then its own tooltip. The kit's overlay forgets a tooltip only
+    /// as its trigger's hover ends, which a control the page no longer draws never ends:
+    /// History's tooltip stood over Settings, Changes' showed over Projects once its delay was
+    /// up, and the theme card's stood over the repository.
     #[gpui::test]
     async fn a_page_change_hides_the_tooltip_shown_or_waiting(cx: &mut TestAppContext) {
         use crate::tags::tests::{TOOLTIP_DELAY, draw};
@@ -20003,78 +20097,174 @@ mod tests {
             appearance::ThemeChoice::Midnight.apply(None, cx);
             cx.set_reduce_motion(true);
         });
-        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
-        compact_form_header(cx);
-        let (settings, projects) = (
-            own_popups(&app, AppPage::Settings, cx),
-            own_popups(&app, AppPage::Projects, cx),
-        );
-        let (history, changes) = (
-            cx.debug_bounds("history-tab").expect("History"),
-            cx.debug_bounds("changes-tab").expect("Changes"),
-        );
         let tick = |cx: &mut VisualTestContext, by: Duration| {
             cx.executor().advance_clock(by);
             cx.run_until_parked();
             one_frame(cx);
         };
-
-        // A tooltip shown, and Settings by its shortcut.
-        cx.simulate_mouse_move(history.center(), None, Modifiers::default());
-        draw(cx);
-        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
-        assert_eq!(
-            kit_tooltip_popups(cx).len(),
-            1,
-            "History's tooltip is drawn"
+        let away = point(px(1.), px(1.));
+        let back_to_projects = format!(
+            "page-back/tooltip/Back to Projects · {}[",
+            crate::primary_label()
         );
-        cx.simulate_keystrokes("secondary-,");
-        one_frame(cx);
-        assert_eq!(
-            app.read_with(cx, |app, _| app.page),
-            AppPage::Settings,
-            "the shortcut opens Settings"
-        );
-        for step in 0..=6 {
-            assert_no_tooltip(
-                cx,
-                &settings,
-                &format!("Settings, {} ms after it opened", step * 100),
+        // The controls hovered in each form, in `header_forms`' order: one whose tooltip is
+        // drawn as Settings opens, and one whose tooltip still waits as Projects opens; the
+        // full header's Projects is its labelled return action.
+        let hovered = [["settings", "page-back"], ["history-tab", "changes-tab"]];
+        for ((form, lay_out, _), [shown, waiting]) in header_forms().into_iter().zip(hovered) {
+            cx.simulate_mouse_move(away, None, Modifiers::default());
+            tick(cx, TOOLTIP_DELAY * 2);
+            lay_out(cx);
+            let (settings, projects) = (
+                own_popups(&app, AppPage::Settings, cx),
+                own_popups(&app, AppPage::Projects, cx),
             );
-            tick(cx, Duration::from_millis(100));
-        }
-
-        // A tooltip waiting out its delay, and Projects by its shortcut.
-        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
-        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
-        draw(cx);
-        assert_eq!(
-            app.read_with(cx, |app, _| app.page),
-            AppPage::Repository,
-            "back on the repository"
-        );
-        tick(cx, TOOLTIP_DELAY * 2);
-        cx.simulate_mouse_move(changes.center(), None, Modifiers::default());
-        draw(cx);
-        tick(cx, Duration::from_millis(200));
-        assert!(
-            kit_tooltip_popups(cx).is_empty(),
-            "Changes' tooltip waits out its delay"
-        );
-        cx.simulate_keystrokes("secondary-shift-o");
-        one_frame(cx);
-        assert_eq!(
-            app.read_with(cx, |app, _| app.page),
-            AppPage::Projects,
-            "the shortcut opens Projects"
-        );
-        for step in 0..=8 {
-            assert_no_tooltip(
-                cx,
-                &projects,
-                &format!("Projects, {} ms after it opened", step * 100),
+            let (shown, waiting) = (
+                cx.debug_bounds(shown).expect("the control shown"),
+                cx.debug_bounds(waiting).expect("the control waiting"),
             );
-            tick(cx, Duration::from_millis(100));
+
+            // A tooltip shown, and Settings by its shortcut.
+            cx.simulate_mouse_move(shown.center(), None, Modifiers::default());
+            draw(cx);
+            tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+            assert_eq!(
+                kit_tooltip_popups(cx).len(),
+                1,
+                "{form}: the tooltip is drawn"
+            );
+            cx.simulate_keystrokes("secondary-,");
+            one_frame(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.page),
+                AppPage::Settings,
+                "{form}: the shortcut opens Settings"
+            );
+            for step in 0..=6 {
+                assert_no_tooltip(
+                    cx,
+                    &settings,
+                    &format!("{form}: Settings, {} ms after it opened", step * 100),
+                );
+                tick(cx, Duration::from_millis(100));
+            }
+
+            // A tooltip waiting out its delay, and Projects by its shortcut.
+            cx.simulate_mouse_move(away, None, Modifiers::default());
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            draw(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.page),
+                AppPage::Repository,
+                "{form}: back on the repository"
+            );
+            tick(cx, TOOLTIP_DELAY * 2);
+            cx.simulate_mouse_move(waiting.center(), None, Modifiers::default());
+            draw(cx);
+            tick(cx, Duration::from_millis(200));
+            assert!(
+                kit_tooltip_popups(cx).is_empty(),
+                "{form}: the tooltip waits out its delay"
+            );
+            cx.simulate_keystrokes("secondary-shift-o");
+            one_frame(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.page),
+                AppPage::Projects,
+                "{form}: the shortcut opens Projects"
+            );
+            for step in 0..=8 {
+                assert_no_tooltip(
+                    cx,
+                    &projects,
+                    &format!("{form}: Projects, {} ms after it opened", step * 100),
+                );
+                tick(cx, Duration::from_millis(100));
+            }
+
+            // Back on the repository.
+            cx.simulate_mouse_move(away, None, Modifiers::default());
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            draw(cx);
+
+            // A tooltip shown on Settings, and the repository by Back's shortcut.
+            tick(cx, TOOLTIP_DELAY * 2);
+            cx.simulate_keystrokes("secondary-,");
+            draw(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.page),
+                AppPage::Settings,
+                "{form}: the shortcut opens Settings again"
+            );
+            // Settings' first theme card, the page scrolled to put it 160 px down the window.
+            let card =
+                crate::settings::shown(cx, "settings-theme-0").expect("Settings' first theme card");
+            app.update(cx, |app, cx| {
+                let page = app.theme_editor.page_scroll();
+                let offset = page.offset();
+                page.set_offset(point(offset.x, offset.y - (card.top() - px(160.))));
+                app.notify_settings_page(cx);
+            });
+            draw(cx);
+            let card =
+                crate::settings::shown(cx, "settings-theme-0").expect("Settings' first theme card");
+            assert!(
+                card.top() > px(100.) && card.bottom() < px(490.),
+                "{form}: the card {card:?} stands in the window"
+            );
+            // What the page draws of its own scrolled so, the pointer away from every control.
+            let scrolled = kit_tooltip_popups(cx);
+            cx.simulate_mouse_move(card.center(), None, Modifiers::default());
+            draw(cx);
+            tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+            let drawn: Vec<_> = kit_tooltip_popups(cx)
+                .into_iter()
+                .filter(|popup| !scrolled.contains(popup))
+                .collect();
+            assert_eq!(drawn.len(), 1, "{form}: the theme card's tooltip is drawn");
+            cx.simulate_keystrokes("secondary-[");
+            one_frame(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.page),
+                AppPage::Repository,
+                "{form}: Back's shortcut returns to the repository"
+            );
+            // The pointer meets the repository's Back to Projects 150 ms after Back's keystroke,
+            // within the kit's 300 ms grace after a tooltip goes, in which a hover shows its
+            // tooltip at once: nothing is drawn from Back's first frame until that control's own
+            // delay has passed, which a hide that left the grace set would not wait out.
+            let projects_back = cx
+                .debug_bounds("page-back")
+                .expect("the repository's Back to Projects");
+            let met = Duration::from_millis(150);
+            let step = Duration::from_millis(50);
+            let mut since_back = Duration::ZERO;
+            while since_back < met + TOOLTIP_DELAY {
+                if since_back == met {
+                    cx.simulate_mouse_move(projects_back.center(), None, Modifiers::default());
+                    one_frame(cx);
+                }
+                assert_no_tooltip(
+                    cx,
+                    &[],
+                    &format!(
+                        "{form}: the repository, {} ms after Back",
+                        since_back.as_millis()
+                    ),
+                );
+                tick(cx, step);
+                since_back += step;
+            }
+            tick(cx, step);
+            assert_eq!(
+                kit_tooltip_popups(cx).len(),
+                1,
+                "{form}: then Back to Projects' tooltip is drawn"
+            );
+            assert!(
+                cx.debug_bounds(back_to_projects.clone().leak()).is_some(),
+                "{form}: the tooltip drawn is Back to Projects' own"
+            );
         }
     }
 
