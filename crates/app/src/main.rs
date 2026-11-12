@@ -1435,7 +1435,7 @@ impl GitTurtle {
             return;
         }
         // Before the return to History below takes focus to the list.
-        self.note_open_focus(window);
+        self.note_open_focus(window, cx);
         // A repository opened again in place, as History's Refresh opens
         // it, drops what it was preparing, and waits for its read as a
         // switch that drops it does, or holds the wait for a preparation a
@@ -1476,7 +1476,10 @@ impl GitTurtle {
         if self.path.as_ref() != Some(&path) {
             self.forget_repository_state(window, cx);
         }
-        self.back_to_history(window, cx);
+        // A marked tab read again from its way back keeps focus there for
+        // the whole read, never passing through the list it draws empty.
+        let keep_the_way_back = self.open_keeps_the_way_back(&path);
+        self.return_to_history(!keep_the_way_back, window, cx);
         if self.path.as_ref() != Some(&path) {
             self.history_updates.committed = None;
         }
@@ -2201,6 +2204,13 @@ impl GitTurtle {
     }
 
     fn back_to_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.return_to_history(true, window, cx);
+    }
+
+    /// [`Self::back_to_history`], giving the commit list focus only where
+    /// `focus_list`: an Open of a marked tab begun from its way back keeps
+    /// focus there ([`Self::open_keeps_the_way_back`]).
+    fn return_to_history(&mut self, focus_list: bool, window: &mut Window, cx: &mut Context<Self>) {
         pdf_view::pause(self.content.as_deref());
         model_view::pause(self.content.as_deref());
         markdown_view::pause(self.content.as_deref());
@@ -2269,7 +2279,9 @@ impl GitTurtle {
         self.page = AppPage::Repository;
         self.interaction_started = None;
         self.pane = Pane::History;
-        window.focus(&self.focus, cx);
+        if focus_list {
+            window.focus(&self.focus, cx);
+        }
         self.try_automatic_refresh(window, cx);
         cx.notify();
     }

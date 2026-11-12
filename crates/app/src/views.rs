@@ -980,8 +980,12 @@ impl GitTurtle {
                 button("rail-open", "", "folder", false)
                     .debug_selector(|| "rail-open".into())
                     // A marked tab's way back where the rail stands in the
-                    // navigation's place (`close_menus_for_the_mark`).
+                    // navigation's place (`close_menus_for_the_mark`), which
+                    // takes no press that began elsewhere
+                    // (`rail_way_back_key_down`).
                     .track_focus(&self.mark_way_back)
+                    .capture_key_down(cx.listener(Self::rail_way_back_key_down))
+                    .capture_key_up(cx.listener(Self::way_back_key_up))
                     .accessibility_label("Open repository")
                     .tooltip("Open repository")
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1103,9 +1107,11 @@ impl GitTurtle {
                     .on_action(cx.listener(|this, _: &native_accessibility::ManageNavigation, window, cx| this.manage_navigation(window, cx))))
                     .map(|tree| if marked {
                         // Its way back below the line, Refresh, refused at
-                        // once while a write runs, as the Refresh shortcut
-                        // is, and for the whole of a press that began
-                        // refused (`way_back_key_down`); it says why as the
+                        // once while a write runs, and for the whole of a
+                        // press that began refused (`way_back_key_down`);
+                        // the Refresh shortcut, unlike it, reads the
+                        // repository once even then, a passive read found
+                        // harmless (FU44-C). It says why as the
                         // other refused controls do, dimmed with the busy
                         // reason in its tooltip once the write looks busy, or
                         // at once as a press is refused. It was drawn
@@ -1120,7 +1126,9 @@ impl GitTurtle {
                             .capture_key_down(cx.listener(Self::way_back_key_down))
                             .capture_key_up(cx.listener(Self::way_back_key_up))
                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.way_back_pointer_down(cx)))
-                            .on_click(cx.listener(|this, _, window, cx| this.press_way_back(window, cx)));
+                            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.way_back_pointer_up()))
+                            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.way_back_pointer_up()))
+                            .on_click(cx.listener(|this, event, window, cx| this.press_way_back(event, window, cx)));
                         tree.child(
                             EmptyState::new("navigation-unavailable", nav_unavailable_line(self.nav_mode))
                                 .tooltip(crate::branch_actions::UNAVAILABLE_WAY_BACK)
@@ -11102,6 +11110,10 @@ impl Render for GitTurtle {
             .id("gitturtle")
             .relative()
             .track_focus(&self.app_focus)
+            // Return's and Space's presses, noted for the mark's way back,
+            // which takes none that began elsewhere (`way_back_key_down`).
+            .capture_key_down(cx.listener(Self::note_key_press_down))
+            .capture_key_up(cx.listener(Self::note_key_press_up))
             // Compare names itself, so the Find shortcut finds in the
             // comparison from anywhere in the window (`shortcuts::COMPARE`).
             .key_context(if self.comparing() {

@@ -608,6 +608,88 @@ async fn a_marked_tab_s_saved_profiles_say_the_mark(cx: &mut TestAppContext) {
     );
 }
 
+/// The bounds of the Settings page's element with debug selector
+/// `selector`, read from a frame that builds the page again: GPUI records
+/// an element's bounds only in a frame that paints it, and a frame that
+/// replays the cached page (`GitTurtle::settings_page_element`) records
+/// none of its elements'.
+fn page_bounds(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    selector: &'static str,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
+    let page = app.read_with(cx, |app, _| app.settings_page.clone());
+    cx.update(|window, cx| {
+        page.update(cx, |_, cx| cx.notify());
+        window.draw(cx).clear(cx);
+    });
+    cx.debug_bounds(selector)
+}
+
+/// The bounds of the Settings page's control with debug selector
+/// `selector` once the page is scrolled to it as a person scrolls, by a
+/// wheel step over the page of the least that shows it whole with a ring's
+/// room, asserted drawn whole inside the window and the page's scroll view,
+/// where a click reaches it. A click outside them reaches nothing, so that
+/// it did nothing proves nothing.
+fn wheeled_into_view(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    selector: &'static str,
+) -> gpui::Bounds<gpui::Pixels> {
+    let room = gpui::px(4.);
+    let view = page_bounds(app, cx, "settings-scroll").expect("Settings is drawn");
+    let control = page_bounds(app, cx, selector).expect(selector);
+    let step = if control.bottom() + room > view.bottom() {
+        view.bottom() - control.bottom() - room
+    } else if control.top() - room < view.top() {
+        view.top() - control.top() + room
+    } else {
+        gpui::px(0.)
+    };
+    if step != gpui::px(0.) {
+        // Over the page's own padding, clear of the Your themes list, which
+        // takes a step while it can move.
+        let over = gpui::point(view.left() + gpui::px(12.), view.center().y);
+        cx.simulate_mouse_move(over, None, gpui::Modifiers::default());
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: over,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), step)),
+            ..Default::default()
+        });
+    }
+    let view = page_bounds(app, cx, "settings-scroll").expect("Settings is drawn");
+    let control = page_bounds(app, cx, selector).expect(selector);
+    let window = gpui::Bounds::new(
+        gpui::point(gpui::px(0.), gpui::px(0.)),
+        cx.update(|window, _| window.viewport_size()),
+    );
+    let whole_inside = |outer: gpui::Bounds<gpui::Pixels>| {
+        control.left() >= outer.left()
+            && control.right() <= outer.right()
+            && control.top() >= outer.top()
+            && control.bottom() <= outer.bottom()
+    };
+    assert!(
+        whole_inside(window) && whole_inside(view),
+        "{selector} drawn whole inside the window, {window:?}, and the page's \
+         view, {view:?}: {control:?}"
+    );
+    control
+}
+
+/// The name the Settings Button with element ID `key` gives assistive
+/// technology as the window last drew it, and whether it is announced
+/// unavailable (`DrawnButton::node_recorded`).
+fn drawn_button(key: &str) -> Option<(Option<String>, bool)> {
+    crate::native_accessibility::written::get(key).map(|written| {
+        (
+            written.node.label().map(str::to_owned),
+            written.node.is_disabled(),
+        )
+    })
+}
+
 /// Settings' Manage named profiles… on a marked tab is refused with the
 /// mark's reason, as the profile picker's Manage profiles… is: announced
 /// unavailable and dimmed, its tooltip saying "Repository unavailable",
@@ -623,19 +705,22 @@ async fn settings_manage_named_profiles_says_the_mark(cx: &mut TestAppContext) {
     hold_quiet_reads_for_test(&app, cx);
     // The notes outlive a seed's app on its thread; only this one's count.
     crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow_mut().clear());
-    crate::settings::MARKED_NAMES.with(|names| names.borrow_mut().clear());
     refusals::forget();
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     settle(&app, cx).await;
     let tooltip =
         || crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(KEY).cloned());
-    let name = || crate::settings::MARKED_NAMES.with(|names| names.borrow().get(KEY).cloned());
     let offered = Some(Refusal {
         announced: false,
         dimmed: false,
     });
     assert_eq!(refusals::get(KEY), offered, "offered before the mark");
     assert_eq!(tooltip(), None, "no reason to give");
+    assert_eq!(
+        drawn_button(KEY),
+        Some((Some("Manage named profiles…".into()), false)),
+        "drawn under its own name"
+    );
     set(&app, cx, |app| {
         let index = app.repository_tabs.active.expect("a tab");
         app.repository_tabs.tabs[index].error = Some("Repository unavailable".into());
@@ -654,38 +739,826 @@ async fn settings_manage_named_profiles_says_the_mark(cx: &mut TestAppContext) {
         "its tooltip says why"
     );
     assert_eq!(
-        name(),
-        Some(Some(
-            "Manage named profiles…: Repository unavailable".into()
+        drawn_button(KEY),
+        Some((
+            Some("Manage named profiles…: Repository unavailable".into()),
+            true
         )),
-        "its accessible name says why, as Fetch's does: out of the Tab order, \
-         its tooltip shows only under the pointer"
+        "drawn unavailable, its accessible name saying why, as Fetch's does: \
+         out of the Tab order, its tooltip shows only under the pointer"
     );
     set(&app, cx, |app| {
         let index = app.repository_tabs.active.expect("a tab");
         app.repository_tabs.tabs[index].error = None;
     });
     assert_eq!(refusals::get(KEY), offered, "offered as the mark clears");
-    assert_eq!(name(), Some(None), "its own name again");
+    assert_eq!(
+        drawn_button(KEY),
+        Some((Some("Manage named profiles…".into()), false)),
+        "its own name again"
+    );
+}
+
+/// Settings' Git identity on a marked tab says the mark and nothing from
+/// before it, as the bar and the navigation do there: its line reads the
+/// mark's reason and its way back in place of "Current identity: …", the
+/// identity read before the mark, and Name and Email are unavailable as
+/// while a write runs, refused and dimmed, so nothing typed there waits for
+/// a save no route makes. They took a Name and Email the dimmed Save could
+/// not write, and nothing on the page said why. Both come back as the mark
+/// clears. The fields are read in the frame the mark lands in, before one
+/// is focused, which builds the page again, so a page the mark alone does
+/// not build again shows here.
+#[gpui::test]
+async fn settings_identity_fields_and_line_say_the_mark(cx: &mut TestAppContext) {
+    use crate::branch_actions::{UNAVAILABLE_REASON, UNAVAILABLE_WAY_BACK};
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    set(&app, cx, |app| {
+        app.profile = Some(GitProfile {
+            name: "Fixture Person".into(),
+            email: "person@example.invalid".into(),
+            ..GitProfile::default()
+        })
+    });
+    let (name, email) = app.read_with(cx, |app, _| {
+        (app.identity_name.clone(), app.identity_email.clone())
+    });
+    let current =
+        "settings-identity-line: Current identity: Fixture Person <person@example.invalid>";
+    let marked: &'static str =
+        format!("settings-identity-line: {UNAVAILABLE_REASON} · {UNAVAILABLE_WAY_BACK}").leak();
+    // Whether each field, as the page last drew it, takes typing and looks
+    // it: the state the drawn Input gave the field.
+    let fields = |cx: &mut VisualTestContext| {
+        cx.read(|cx| {
+            [&name, &email].map(|field| {
+                let field = field.read(cx);
+                (field.is_editable(), field.presentation().is_disabled())
+            })
+        })
+    };
+    // Typed into `field`, focused, as a person types: what it holds after.
+    let typed = |field: &Entity<InputState>, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| field.read(cx).focus_handle(cx).focus(window, cx));
+        draw(cx);
+        let before = cx.read(|cx| field.read(cx).value());
+        cx.simulate_input("x");
+        draw(cx);
+        let after = cx.read(|cx| field.read(cx).value());
+        (before, after)
+    };
+    assert!(
+        page_bounds(&app, cx, current).is_some(),
+        "the identity read"
+    );
+    assert_eq!(fields(cx), [(true, false); 2], "offered before the mark");
+    // Typing in both, which the mark leaves as typed: a field holding the
+    // identity read is emptied as the mark lands, which builds the page
+    // again whatever else does.
+    for field in [&name, &email] {
+        typed(field, cx);
+    }
+
+    set(&app, cx, |app| {
+        let index = app.repository_tabs.active.expect("a tab");
+        app.repository_tabs.tabs[index].error = Some("Repository unavailable".into());
+    });
+    assert_eq!(
+        fields(cx),
+        [(false, true); 2],
+        "refused and dimmed as the mark lands, as while a write runs"
+    );
+    for (field, which) in [(&name, "Name"), (&email, "Email")] {
+        let (before, after) = typed(field, cx);
+        assert_eq!(after, before, "{which}: nothing typed is taken");
+    }
+    assert!(
+        page_bounds(&app, cx, marked).is_some(),
+        "the line says the mark and its way back"
+    );
+    assert!(
+        page_bounds(&app, cx, current).is_none(),
+        "nothing from before the mark"
+    );
+
+    set(&app, cx, |app| {
+        let index = app.repository_tabs.active.expect("a tab");
+        app.repository_tabs.tabs[index].error = None;
+    });
+    assert_eq!(fields(cx), [(true, false); 2], "offered as the mark clears");
+    assert!(
+        page_bounds(&app, cx, current).is_some(),
+        "the identity again"
+    );
+    assert!(page_bounds(&app, cx, marked).is_none(), "the mark is gone");
+}
+
+/// Marks the shown tab, as a read that cannot open its repository does,
+/// and draws.
+fn mark(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, error: Option<&str>) {
+    set(app, cx, |app| {
+        let index = app.repository_tabs.active.expect("a tab");
+        app.repository_tabs.tabs[index].error = error.map(Into::into);
+    });
+}
+
+/// What a Settings field gives assistive technology as the window draws
+/// it: its name, its value, its placeholder, and whether it takes typing
+/// and looks unavailable.
+type DrawnField = (Option<String>, String, Option<String>, (bool, bool));
+
+/// What Settings' Name and Email give assistive technology as the window
+/// draws them ([`DrawnField`]).
+fn drawn_fields(cx: &mut VisualTestContext, fields: &[Entity<InputState>; 2]) -> [DrawnField; 2] {
+    draw(cx);
+    fields.clone().map(|field| {
+        let node = crate::views::tests::input_node(cx, &field);
+        let value = cx.update(|_, cx| {
+            field.update(cx, |state, _| {
+                state
+                    .accessible_text(true)
+                    .map(|text| text.value().to_string())
+            })
+        });
+        let state = cx.read(|cx| {
+            let field = field.read(cx);
+            (field.is_editable(), field.presentation().is_disabled())
+        });
+        (
+            node.label().map(str::to_owned),
+            value.unwrap_or_default(),
+            node.placeholder().map(str::to_owned),
+            state,
+        )
+    })
+}
+
+/// The accessible descriptions Settings' Name and Email give as the window
+/// draws them.
+fn drawn_descriptions(
+    cx: &mut VisualTestContext,
+    fields: &[Entity<InputState>; 2],
+) -> [Option<String>; 2] {
+    draw(cx);
+    fields.clone().map(|field| {
+        crate::views::tests::input_node(cx, &field)
+            .description()
+            .map(str::to_owned)
+    })
+}
+
+/// Settings' Name and Email on a marked tab draw nothing read before the
+/// mark: a field holding the identity read from the repository is drawn
+/// empty with its placeholder, as assistive technology reads it too,
+/// dimmed and refused, and neither the signing line nor the note on where
+/// a save goes, which that read chose, is drawn, while each field says the
+/// mark and its way back as its description, as the line does. They drew
+/// the identity read before the mark, dimmed, under a line saying the
+/// repository was unavailable, and were announced with nothing to say why
+/// (decided 2026-11-14). A Refresh that clears the mark shows what its
+/// read finds in both fields, the signing line and the note.
+#[gpui::test]
+async fn settings_identity_fields_draw_no_value_read_before_the_mark(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    set(&app, cx, |app| {
+        app.profile = Some(GitProfile {
+            name: "Fixture Person".into(),
+            email: "person@example.invalid".into(),
+            signing: true,
+            ..GitProfile::default()
+        })
+    });
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    let field = |name: &str, value: &str, placeholder: &str, state| {
+        (
+            Some(name.to_owned()),
+            value.to_owned(),
+            Some(placeholder.to_owned()),
+            state,
+        )
+    };
+    const SIGNED: &str = "settings-signing-line: Commit signing is enabled in Git. \
+                          GitTurtle uses your configured signer.";
+    const UNSIGNED: &str = "settings-signing-line: Commit signing is off in Git. \
+                            Your existing Git signing configuration is preserved.";
+    const UNREAD: &str = "settings-signing-line: Signing follows your existing Git configuration.";
+    const SHARED: &str = "settings-identity-note: Name and email are saved to repository Git \
+                          configuration shared by linked worktrees. Global identity is preserved.";
+    const PRIVATE: &str = "settings-identity-note: Name and email are saved only to this \
+                           worktree’s existing private Git configuration.";
+    let line = format!(
+        "{} · {}",
+        crate::branch_actions::UNAVAILABLE_REASON,
+        crate::branch_actions::UNAVAILABLE_WAY_BACK
+    );
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "Fixture Person", "Your name", (true, false)),
+            field(
+                "Email",
+                "person@example.invalid",
+                "you@example.com",
+                (true, false)
+            ),
+        ],
+        "the identity read, offered"
+    );
+    assert!(
+        page_bounds(&app, cx, SIGNED).is_some(),
+        "the read's signing line"
+    );
+    assert!(page_bounds(&app, cx, SHARED).is_some(), "the read's note");
+    assert_eq!(
+        drawn_descriptions(cx, &fields),
+        [None, None],
+        "no description"
+    );
+
+    mark(&app, cx, Some("Repository unavailable"));
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "", "Your name", (false, true)),
+            field("Email", "", "you@example.com", (false, true)),
+        ],
+        "empty with their placeholders, refused and dimmed"
+    );
+    for line in [SIGNED, UNSIGNED, UNREAD, SHARED, PRIVATE] {
+        assert!(
+            page_bounds(&app, cx, line).is_none(),
+            "no signing line or note: {line}"
+        );
+    }
+    assert_eq!(
+        drawn_descriptions(cx, &fields),
+        [Some(line.clone()), Some(line)],
+        "each says the mark and its way back"
+    );
+
+    // The repository's own identity, which the Refresh's read finds.
+    for (key, value) in [
+        ("user.name", "Read Again"),
+        ("user.email", "again@example.invalid"),
+    ] {
+        let status = std::process::Command::new("git")
+            .args(["config", "--local", key, value])
+            .current_dir(&root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap();
+        assert!(status.success(), "{key} configured");
+    }
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "the Refresh clears the mark"
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "Read Again", "Your name", (true, false)),
+            field(
+                "Email",
+                "again@example.invalid",
+                "you@example.com",
+                (true, false)
+            ),
+        ],
+        "what the read finds, offered"
+    );
+    assert!(
+        page_bounds(&app, cx, UNSIGNED).is_some(),
+        "the read's signing line"
+    );
+    assert!(page_bounds(&app, cx, SHARED).is_some(), "the read's note");
+    assert_eq!(
+        drawn_descriptions(cx, &fields),
+        [None, None],
+        "no description again"
+    );
+}
+
+/// Text typed into Settings' Name and not saved is the person's: on a
+/// marked tab it stays as typed, dimmed and refused, while Email, holding
+/// the identity read before the mark, is drawn empty. As the mark clears
+/// with a read that finds another identity the typing is still there,
+/// while Email takes what that read finds, never the address read before
+/// the mark (decided 2026-11-14): it went back to that address, kept with
+/// the edit as an unsaved edit keeps both fields.
+#[gpui::test]
+async fn settings_identity_typing_stays_as_typed_on_a_marked_tab(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    set(&app, cx, |app| {
+        app.profile = Some(GitProfile {
+            name: "Fixture Person".into(),
+            email: "person@example.invalid".into(),
+            ..GitProfile::default()
+        })
+    });
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    cx.update(|window, cx| fields[0].read(cx).focus_handle(cx).focus(window, cx));
+    draw(cx);
+    cx.simulate_input(" Typed");
+    let field = |name: &str, value: &str, placeholder: &str, state| {
+        (
+            Some(name.to_owned()),
+            value.to_owned(),
+            Some(placeholder.to_owned()),
+            state,
+        )
+    };
+    assert_eq!(
+        drawn_fields(cx, &fields)[0],
+        field("Name", "Fixture Person Typed", "Your name", (true, false)),
+        "typed"
+    );
+
+    mark(&app, cx, Some("Repository unavailable"));
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "Fixture Person Typed", "Your name", (false, true)),
+            field("Email", "", "you@example.com", (false, true)),
+        ],
+        "the typing as typed and the read Email empty, both refused and dimmed"
+    );
+
+    land_identity(&app, cx, ("Read Again", "again@example.invalid"), true);
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "Fixture Person Typed", "Your name", (true, false)),
+            field(
+                "Email",
+                "again@example.invalid",
+                "you@example.com",
+                (true, false)
+            ),
+        ],
+        "the typing kept as the mark clears, Email what the read finds"
+    );
+}
+
+/// A value the fields were filled with from the repository is read, not
+/// typed, though a later read found another identity: an unsaved edit of
+/// Name keeps both fields through that read (`DraftState::identity_update`),
+/// so Email still holds the address read before it, and on a marked tab
+/// that address is drawn empty with its placeholder while Name keeps its
+/// typing (`DraftState::was_read`). Email drew the earlier address, read
+/// before the mark, matching neither the latest read nor anything typed.
+#[gpui::test]
+async fn settings_identity_fields_draw_no_value_an_earlier_read_filled(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let read = |app: &mut GitTurtle, name: &str, email: &str| {
+        app.profile = Some(GitProfile {
+            name: name.into(),
+            email: email.into(),
+            ..GitProfile::default()
+        })
+    };
+    set(&app, cx, |app| read(app, "Bob", "bob@example.invalid"));
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    let field = |name: &str, value: &str, placeholder: &str, state| {
+        (
+            Some(name.to_owned()),
+            value.to_owned(),
+            Some(placeholder.to_owned()),
+            state,
+        )
+    };
+    cx.update(|window, cx| fields[0].read(cx).focus_handle(cx).focus(window, cx));
+    draw(cx);
+    cx.simulate_input(" X");
+    // A read after an outside change finds another identity; the unsaved
+    // edit keeps both fields as they were.
+    set(&app, cx, |app| read(app, "Carol", "carol@example.invalid"));
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "Bob X", "Your name", (true, false)),
+            field(
+                "Email",
+                "bob@example.invalid",
+                "you@example.com",
+                (true, false)
+            ),
+        ],
+        "the edit and the address it kept"
+    );
+
+    mark(&app, cx, Some("Repository unavailable"));
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "Bob X", "Your name", (false, true)),
+            field("Email", "", "you@example.com", (false, true)),
+        ],
+        "the typing as typed, the address read before the mark empty"
+    );
+}
+
+/// A read on a marked tab finding no identity leaves the read that clears
+/// the mark nothing to take for an edit: Name and Email, drawn empty on the
+/// marked tab, show what that read finds, Save is not offered for it, and a
+/// click on Save asks for no write. The empty read matched the emptied
+/// fields, so the identity read before the mark, given back as the mark
+/// cleared, was taken for an unsaved edit: the fields drew it, Save was
+/// offered, and a click on it wrote it back to the repository (the
+/// security re-check of FU44-D8).
+#[gpui::test]
+async fn settings_identity_an_empty_read_on_a_marked_tab_gives_nothing_back(
+    cx: &mut TestAppContext,
+) {
+    use crate::workspace::refusals::{self, Refusal};
+    const SAVE: &str = "save-repository-identity";
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    refusals::forget();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    let field = |name: &str, value: &str, placeholder: &str, state| {
+        (
+            Some(name.to_owned()),
+            value.to_owned(),
+            Some(placeholder.to_owned()),
+            state,
+        )
+    };
+    mark(&app, cx, Some("Repository unavailable"));
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "", "Your name", (false, true)),
+            field("Email", "", "you@example.com", (false, true)),
+        ],
+        "the identity read before the mark drawn empty"
+    );
+    // A read of the marked tab, its `.git` back or replaced, finding no
+    // identity; then the mark clears with a read finding another.
+    land_identity(&app, cx, ("", ""), false);
+    land_identity(&app, cx, ("New Read", "new@example.invalid"), true);
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "New Read", "Your name", (true, false)),
+            field(
+                "Email",
+                "new@example.invalid",
+                "you@example.com",
+                (true, false)
+            ),
+        ],
+        "what the read that clears the mark finds"
+    );
+    assert_eq!(
+        refusals::get(SAVE),
+        Some(Refusal {
+            announced: true,
+            dimmed: true,
+        }),
+        "Save not offered for what the read finds"
+    );
+    let writes = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let _counting = cx.update(|_, cx| {
+        let writes = writes.clone();
+        let mut was = false;
+        cx.observe(&app, move |app, cx| {
+            let now = app.read(cx).operation_busy == Some("Saving repository identity…");
+            writes.set(writes.get() + usize::from(now && !was));
+            was = now;
+        })
+    });
+    let save = wheeled_into_view(&app, cx, SAVE);
+    cx.simulate_click(save.center(), gpui::Modifiers::default());
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    assert_eq!(writes.get(), 0, "a click on Save asks for no write");
+}
+
+/// Lands a working-state read of the shown repository that finds `name`
+/// and `email` as its Git identity, as the status read a Refresh asks for
+/// lands (`GitTurtle::apply_worktree_state`), and draws; where
+/// `clears_the_mark`, the shown tab's mark clears in the same update, as a
+/// quiet read that finds the repository readable again lands its read and
+/// clears it (`GitTurtle::tab_found_readable`).
+fn land_identity(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    (name, email): (&str, &str),
+    clears_the_mark: bool,
+) {
+    let repository = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
+    let mut state = crate::worker::WorkingState::read(&repository).expect("the working state");
+    state.profile = Ok(GitProfile {
+        name: name.into(),
+        email: email.into(),
+        ..GitProfile::default()
+    });
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let requested = app.request_status_read();
+            app.apply_worktree_state(state, false, false, requested, window, cx);
+            if clears_the_mark {
+                let index = app.repository_tabs.active.expect("a tab");
+                app.repository_tabs.tabs[index].error = None;
+            }
+            cx.notify();
+        })
+    });
+    draw(cx);
+}
+
+/// Settings opened after a Refresh's snapshot has cleared the tab's mark in
+/// place, before that Refresh's status read lands, draws Name and Email
+/// empty with their placeholders, offered, and they take nothing until a
+/// read landing after the mark does: the window holds the identity read
+/// before the mark until then, as an Open in place keeps what it read
+/// (`GitTurtle::tab_snapshot_accepted`), and the fields drew it (FU44-D9's
+/// code re-check: Settings opened between the snapshot and the status
+/// read). Typing there meanwhile stays as typed as that read lands, Email
+/// taking what it finds, and Save writes only that, the typing and the new
+/// read's address, never the identity read before the mark (decided
+/// 2026-11-14: nothing from before the mark). `shown_before`: whether
+/// Settings had drawn the identity read before the mark, which the fields
+/// then held while History was shown.
+async fn settings_identity_waits_after_an_in_place_clear(
+    cx: &mut TestAppContext,
+    shown_before: bool,
+) {
+    const SAVE: &str = "save-repository-identity";
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let configured = || {
+        ["user.name", "user.email"].map(|key| {
+            let output = std::process::Command::new("git")
+                .args(["config", "--local", "--get", key])
+                .current_dir(&root)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        })
+    };
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    let field = |name: &str, value: &str, placeholder: &str| {
+        (
+            Some(name.to_owned()),
+            value.to_owned(),
+            Some(placeholder.to_owned()),
+            (true, false),
+        )
+    };
+    land_identity(&app, cx, ("Before Mark", "before@example.invalid"), false);
+    if shown_before {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(
+            drawn_fields(cx, &fields),
+            [
+                field("Name", "Before Mark", "Your name"),
+                field("Email", "before@example.invalid", "you@example.com"),
+            ],
+            "the identity read before the mark"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        settle(&app, cx).await;
+    }
+    // On History the read that marks the tab lands, then a Refresh's
+    // snapshot clears the mark in place, its status read still to land.
+    mark(&app, cx, Some("Repository unavailable"));
+    mark(&app, cx, None);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "", "Your name"),
+            field("Email", "", "you@example.com"),
+        ],
+        "empty with their placeholders, offered, until a read after the mark lands"
+    );
+    cx.update(|window, cx| fields[0].read(cx).focus_handle(cx).focus(window, cx));
+    draw(cx);
+    cx.simulate_input("Typed");
+    land_identity(&app, cx, ("After Mark", "after@example.invalid"), false);
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "Typed", "Your name"),
+            field("Email", "after@example.invalid", "you@example.com"),
+        ],
+        "the typing as typed, Email what the read after the mark finds"
+    );
+    let writes = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let _counting = cx.update(|_, cx| {
+        let writes = writes.clone();
+        let mut was = false;
+        cx.observe(&app, move |app, cx| {
+            let now = app.read(cx).operation_busy == Some("Saving repository identity…");
+            writes.set(writes.get() + usize::from(now && !was));
+            was = now;
+        })
+    });
+    let save = wheeled_into_view(&app, cx, SAVE);
+    cx.simulate_click(save.center(), gpui::Modifiers::default());
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    assert_eq!(writes.get(), 1, "Save asks for one identity write");
+    assert_eq!(
+        configured(),
+        ["Typed", "after@example.invalid"],
+        "it writes the typing and the read's address, nothing from before the mark"
+    );
+}
+
+#[gpui::test]
+async fn settings_identity_opened_first_after_an_in_place_clear_waits_for_its_read(
+    cx: &mut TestAppContext,
+) {
+    settings_identity_waits_after_an_in_place_clear(cx, false).await;
+}
+
+#[gpui::test]
+async fn settings_identity_opened_again_after_an_in_place_clear_waits_for_its_read(
+    cx: &mut TestAppContext,
+) {
+    settings_identity_waits_after_an_in_place_clear(cx, true).await;
+}
+
+/// Settings shown as the tab's mark lands and as a Refresh's snapshot
+/// clears it in place keeps Name and Email empty, offered, until that
+/// Refresh's status read lands, and Reset edits meanwhile restores nothing
+/// read before the mark, leaving both to wait for that read: the identity
+/// read before the mark came back into both as the mark cleared (FU44-D9's
+/// code re-check), and Reset edits filled it, so either, kept as an edit
+/// once the read landed, was what Save wrote. The read after the mark
+/// fills both.
+#[gpui::test]
+async fn settings_identity_shown_through_an_in_place_clear_waits_for_its_read(
+    cx: &mut TestAppContext,
+) {
+    const RESET: &str = "use-current-identity";
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    land_identity(&app, cx, ("Before Mark", "before@example.invalid"), false);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    let field = |name: &str, value: &str, placeholder: &str, state| {
+        (
+            Some(name.to_owned()),
+            value.to_owned(),
+            Some(placeholder.to_owned()),
+            state,
+        )
+    };
+    let empty = |state| {
+        [
+            field("Name", "", "Your name", state),
+            field("Email", "", "you@example.com", state),
+        ]
+    };
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "Before Mark", "Your name", (true, false)),
+            field(
+                "Email",
+                "before@example.invalid",
+                "you@example.com",
+                (true, false)
+            ),
+        ],
+        "the identity read before the mark"
+    );
+    mark(&app, cx, Some("Repository unavailable"));
+    assert_eq!(drawn_fields(cx, &fields), empty((false, true)), "marked");
+    mark(&app, cx, None);
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        empty((true, false)),
+        "the mark cleared in place, no read after it yet"
+    );
+    let reset = wheeled_into_view(&app, cx, RESET);
+    cx.simulate_click(reset.center(), gpui::Modifiers::default());
+    settle(&app, cx).await;
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        empty((true, false)),
+        "Reset edits restores nothing read before the mark"
+    );
+    land_identity(&app, cx, ("After Mark", "after@example.invalid"), false);
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        [
+            field("Name", "After Mark", "Your name", (true, false)),
+            field(
+                "Email",
+                "after@example.invalid",
+                "you@example.com",
+                (true, false)
+            ),
+        ],
+        "what the read after the mark finds"
+    );
+}
+
+/// On a marked tab Settings' dimmed Name and Email leave the Tab order, as
+/// the dimmed buttons after them do: a disabled field draws no focus ring,
+/// so Tab stopped on them with nothing drawn to show where focus was
+/// (decided 2026-11-14). They are Tab stops again as the mark clears.
+#[gpui::test]
+async fn settings_identity_fields_leave_the_tab_order_on_a_marked_tab(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let fields = app.read_with(cx, |app, cx| {
+        [
+            app.identity_name.focus_handle(cx),
+            app.identity_email.focus_handle(cx),
+        ]
+    });
+    // Whether Tab, pressed round the whole window from where focus is,
+    // stops on Name and on Email.
+    let stops = |cx: &mut VisualTestContext| {
+        let mut round: Vec<FocusHandle> = Vec::new();
+        for _ in 0..400 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            let focused = cx
+                .update(|window, cx| window.focused(cx))
+                .expect("Tab keeps focus");
+            if round.contains(&focused) {
+                return fields.clone().map(|field| round.contains(&field));
+            }
+            round.push(focused);
+        }
+        panic!("Tab never came round");
+    };
+    assert_eq!(stops(cx), [true; 2], "Tab stops on both before the mark");
+    mark(&app, cx, Some("Repository unavailable"));
+    assert_eq!(stops(cx), [false; 2], "on neither on the marked tab");
+    mark(&app, cx, None);
+    assert_eq!(stops(cx), [true; 2], "on both as the mark clears");
 }
 
 /// Settings' Save repository identity and Reset edits on a marked tab are
 /// refused with the mark's reason, as Manage named profiles… is: announced
 /// unavailable and dimmed, the reason in their tooltips and accessible
-/// names, and no route acts. Return in the Name field and the click start
-/// no write, so the repository read before the mark keeps its `user.name`,
-/// which Save wrote where its `.git` came back before a read (the security
-/// re-check of FU44-D3), and Reset edits refills nothing. Offered again as
-/// the mark clears.
+/// names, and no route acts. Return in the Name or the Email field, a
+/// single press, a held Return's repeats, marked held or fresh as X11 sends
+/// them, and a release with its press, and the click start no write, so the
+/// repository read before the mark keeps its `user.name`, which Save wrote
+/// where its `.git` came back before a read (the security re-check of
+/// FU44-D3), and Reset edits refills nothing. Offered again as the mark
+/// clears, when the same clicks act: Reset edits refills the identity read
+/// and Save saves once. Each is clicked where the page shows it, scrolled
+/// to as a person scrolls (`wheeled_into_view`): clicked where the page
+/// laid it out, below the window's foot, neither reached anything, mark or
+/// no mark.
 #[gpui::test]
 async fn settings_identity_actions_say_the_mark(cx: &mut TestAppContext) {
+    use crate::branch_actions::tests::{REPEATS, enter};
     use crate::workspace::refusals::{self, Refusal};
     const SAVE: &str = "save-repository-identity";
     const RESET: &str = "use-current-identity";
     let (_fixture, app, cx) = history_window(cx).await;
     hold_quiet_reads_for_test(&app, cx);
     crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow_mut().clear());
-    crate::settings::MARKED_NAMES.with(|names| names.borrow_mut().clear());
     refusals::forget();
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     settle(&app, cx).await;
@@ -701,12 +1574,17 @@ async fn settings_identity_actions_say_the_mark(cx: &mut TestAppContext) {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     };
     let before = configured();
-    // An edit, so Save and Reset edits are offered.
+    // An edit of both, so Save and Reset edits are offered, and the mark,
+    // which leaves typing as typed, leaves Save a whole identity to write
+    // were a press not refused.
     let edit = |cx: &mut VisualTestContext| {
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.identity_name
-                    .update(cx, |input, cx| input.set_value("Another Name", window, cx))
+                    .update(cx, |input, cx| input.set_value("Another Name", window, cx));
+                app.identity_email.update(cx, |input, cx| {
+                    input.set_value("another@example.invalid", window, cx)
+                });
             })
         });
         draw(cx);
@@ -716,11 +1594,16 @@ async fn settings_identity_actions_say_the_mark(cx: &mut TestAppContext) {
         announced: false,
         dimmed: false,
     });
-    for key in [SAVE, RESET] {
+    for (key, label) in [(SAVE, "Save repository identity"), (RESET, "Reset edits")] {
         assert_eq!(
             refusals::get(key),
             offered,
             "{key}: offered before the mark"
+        );
+        assert_eq!(
+            drawn_button(key),
+            Some((Some(label.into()), false)),
+            "{key}: drawn under its own name"
         );
     }
     set(&app, cx, |app| {
@@ -755,58 +1638,200 @@ async fn settings_identity_actions_say_the_mark(cx: &mut TestAppContext) {
             "{key}: its tooltip says why"
         );
         assert_eq!(
-            crate::settings::MARKED_NAMES.with(|names| names.borrow().get(key).cloned()),
-            Some(Some(name.into())),
-            "{key}: its accessible name says why"
+            drawn_button(key),
+            Some((Some(name.into()), true)),
+            "{key}: drawn unavailable, its accessible name saying why"
         );
     }
-    // Return in the Name field, then the click.
-    let field = app.read_with(cx, |app, cx| app.identity_name.read(cx).focus_handle(cx));
-    cx.update(|window, cx| window.focus(&field, cx));
-    draw(cx);
-    cx.simulate_keystrokes("enter");
+    // Return in each field, then the click. Git's configuration is locked,
+    // as another Git process can hold it, so a press the mark did not
+    // refuse asks for a write that fails at once, leaving the identity as
+    // it was: each press that asks for one is counted, whatever the press
+    // before it asked.
+    let lock = root.join(".git").join("config.lock");
+    std::fs::write(&lock, "").unwrap();
+    let writes = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let _counting = cx.update(|_, cx| {
+        let writes = writes.clone();
+        let mut was = false;
+        cx.observe(&app, move |app, cx| {
+            let now = app.read(cx).operation_busy == Some("Saving repository identity…");
+            writes.set(writes.get() + usize::from(now && !was));
+            was = now;
+        })
+    });
+    let fields = app.read_with(cx, |app, _| {
+        [
+            (app.identity_name.clone(), "Name"),
+            (app.identity_email.clone(), "Email"),
+        ]
+    });
+    let mut asked = Vec::new();
+    for (field, which) in &fields {
+        cx.update(|window, cx| field.read(cx).focus_handle(cx).focus(window, cx));
+        draw(cx);
+        let presses = std::iter::once(("a single press", &[Some(false)][..]))
+            .chain(REPEATS.iter().map(|(repeat, events)| (*repeat, *events)))
+            .chain(std::iter::once(("its key-up", &[None][..])));
+        for (press, events) in presses {
+            let from = writes.get();
+            for down in events {
+                enter(cx, *down);
+            }
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.run_until_parked();
+            draw(cx);
+            asked.push((format!("{which}, {press}"), writes.get() - from));
+        }
+    }
     assert_eq!(
-        app.read_with(cx, |app, _| app.operation_busy),
-        None,
-        "Return in the Name field saves nothing"
+        asked,
+        asked
+            .iter()
+            .map(|(press, _)| (press.clone(), 0))
+            .collect::<Vec<_>>(),
+        "no Return in Name or Email asks for a write"
     );
-    let center = cx.debug_bounds(SAVE).expect("Save").center();
-    cx.simulate_click(center, gpui::Modifiers::default());
-    assert_eq!(
-        app.read_with(cx, |app, _| app.operation_busy),
-        None,
-        "the click saves nothing"
-    );
-    let center = cx.debug_bounds(RESET).expect("Reset edits").center();
-    cx.simulate_click(center, gpui::Modifiers::default());
+    std::fs::remove_file(&lock).unwrap();
+    // Each clicked where the page shows it, scrolled to it as a person
+    // scrolls: at the window's usual size the card lies below its foot.
+    let click = |cx: &mut VisualTestContext, key: &'static str| {
+        let control = wheeled_into_view(&app, cx, key);
+        cx.simulate_click(control.center(), gpui::Modifiers::default());
+    };
+    let name = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, cx| app.identity_name.read(cx).value().to_string())
+    };
+    click(cx, SAVE);
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    assert_eq!(writes.get(), 0, "the click on Save asks for no write");
+    click(cx, RESET);
     settle(&app, cx).await;
     assert_eq!(
         configured(),
         before,
         "the repository's identity is as it was"
     );
-    assert_eq!(
-        app.read_with(cx, |app, cx| app.identity_name.read(cx).value().to_string()),
-        "Another Name",
-        "Reset edits refills nothing"
-    );
-    set(&app, cx, |app| {
-        let index = app.repository_tabs.active.expect("a tab");
-        app.repository_tabs.tabs[index].error = None;
-    });
+    assert_eq!(name(cx), "Another Name", "Reset edits refills nothing");
+    // The mark clears with a read, which a cleared mark's fields wait for.
+    land_identity(&app, cx, ("Read Again", "again@example.invalid"), true);
     edit(cx);
-    for key in [SAVE, RESET] {
+    for (key, label) in [(SAVE, "Save repository identity"), (RESET, "Reset edits")] {
         assert_eq!(
             refusals::get(key),
             offered,
             "{key}: offered as the mark clears"
         );
         assert_eq!(
-            crate::settings::MARKED_NAMES.with(|names| names.borrow().get(key).cloned()),
-            Some(None),
+            drawn_button(key),
+            Some((Some(label.into()), false)),
             "{key}: its own name again"
         );
     }
+    // With no mark the same clicks act: Reset edits refills the identity
+    // read, and Save, after another edit, saves once.
+    click(cx, RESET);
+    settle(&app, cx).await;
+    assert_eq!(name(cx), "Read Again", "with no mark Reset edits refills");
+    edit(cx);
+    click(cx, SAVE);
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    assert_eq!(writes.get(), 1, "with no mark the click on Save saves once");
+    assert_eq!(configured(), "Another Name", "what it saved");
+}
+
+/// A Save pressed before the tab's mark lands and released after it, over
+/// the Save the marked tab draws, writes nothing: the press ends on a Save
+/// drawn refused, so the repository read before the mark keeps its
+/// identity. With no mark, the same press and release saves.
+#[gpui::test]
+async fn settings_identity_save_pressed_before_the_mark_writes_nothing(cx: &mut TestAppContext) {
+    const SAVE: &str = "save-repository-identity";
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    // Tall enough to show Save without scrolling the page, which a
+    // pointer's press needs: in a window of the usual size it lies below
+    // the window's foot, where no press reaches it.
+    cx.simulate_resize(gpui::size(gpui::px(1480.), gpui::px(4400.)));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let configured = || {
+        ["user.name", "user.email"].map(|key| {
+            let output = std::process::Command::new("git")
+                .args(["config", "--local", "--get", key])
+                .current_dir(&root)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        })
+    };
+    let before = configured();
+    // An unsaved edit of both, which the mark leaves as typed, so a press
+    // the mark did not refuse would save it.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.identity_name
+                .update(cx, |input, cx| input.set_value("Pressed Name", window, cx));
+            app.identity_email.update(cx, |input, cx| {
+                input.set_value("pressed@example.invalid", window, cx)
+            });
+        })
+    });
+    draw(cx);
+    let writes = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let _counting = cx.update(|_, cx| {
+        let writes = writes.clone();
+        let mut was = false;
+        cx.observe(&app, move |app, cx| {
+            let now = app.read(cx).operation_busy == Some("Saving repository identity…");
+            writes.set(writes.get() + usize::from(now && !was));
+            was = now;
+        })
+    });
+    let center = page_bounds(&app, cx, SAVE).expect("Save").center();
+    let viewport = cx.update(|window, _| window.viewport_size());
+    assert!(
+        center.y < viewport.height,
+        "Save lies inside the window, at {center:?} in {viewport:?}"
+    );
+    let left = gpui::MouseButton::Left;
+    cx.simulate_mouse_down(center, left, gpui::Modifiers::default());
+    mark(&app, cx, Some("Repository unavailable"));
+    // Released over the Save the marked tab draws, which the signing line
+    // it leaves out moves up: released where it was pressed, the press
+    // ended off it.
+    let released = page_bounds(&app, cx, SAVE).expect("Save").center();
+    cx.simulate_mouse_up(released, left, gpui::Modifiers::default());
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    assert_eq!(
+        writes.get(),
+        0,
+        "the press ending on the marked tab asks for no write"
+    );
+    assert_eq!(
+        configured(),
+        before,
+        "the repository's identity is as it was"
+    );
+
+    mark(&app, cx, None);
+    let center = page_bounds(&app, cx, SAVE).expect("Save").center();
+    cx.simulate_mouse_down(center, left, gpui::Modifiers::default());
+    cx.simulate_mouse_up(center, left, gpui::Modifiers::default());
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    assert_eq!(writes.get(), 1, "with no mark the same press saves");
+    assert_eq!(
+        configured(),
+        ["Pressed Name", "pressed@example.invalid"].map(str::to_owned),
+        "what it saved"
+    );
 }
 
 /// A New profile… form saved on a marked tab, where the manager the save

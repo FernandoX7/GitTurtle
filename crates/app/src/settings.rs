@@ -187,6 +187,53 @@ pub(super) struct DraftState {
     /// line's text, the failure was forgotten once another operation's
     /// error replaced it, and Return in the field saved nothing.
     failed_save: Option<AppSettings>,
+    /// Settings' Name and Email from the moment the shown tab is seen
+    /// marked, on any page, until a read landing after the mark gives them
+    /// what it finds ([`Withheld`]).
+    withheld: Option<Withheld>,
+}
+
+/// Settings' Name and Email through a mark of the shown tab
+/// ([`DraftState::withheld`]; `GitTurtle::withhold_through_the_mark`): each
+/// holding a value read from the repository is drawn empty with its
+/// placeholder, so nothing read before the mark is drawn, while text the
+/// person typed and has not saved stays as typed (decided 2026-11-14: the
+/// dimmed fields drew the identity read before the mark). Once the mark has
+/// cleared, each still empty takes only what a read landing after the mark
+/// finds, and waits empty with its placeholder until one lands, typing
+/// meanwhile kept as typed (decided 2026-11-14 night: nothing from before
+/// the mark). Given back the value read before the mark, as an unread
+/// value, it was taken for an unsaved edit after a read on the marked tab
+/// that found no identity, and given the identity the window held as the
+/// mark cleared, it drew the one read before the mark wherever a Refresh's
+/// snapshot cleared the mark in place, which keeps what was read until its
+/// status read lands (`GitTurtle::tab_snapshot_accepted`): in either, Save
+/// wrote that identity back.
+pub(super) struct Withheld {
+    /// The repository the marked tab showed.
+    path: PathBuf,
+    /// The working state the window held as the mark was seen, read with
+    /// the identity it held then, from before the mark: each read that
+    /// lands replaces it with its own (`GitTurtle::apply_worktree_state`),
+    /// so another, or one where there was none, landed after the mark. Weak,
+    /// so the status it names is not kept, while no later status can take
+    /// its address.
+    before: Option<std::sync::Weak<gitturtle_core::RepositoryStatus>>,
+    /// Which of Name and Email wait for that read: each emptied as the mark
+    /// was seen, or empty then.
+    fields: [bool; 2],
+}
+
+impl Withheld {
+    /// Whether `held`, the working state the window holds, is a read that
+    /// landed after the mark ([`Self::before`]).
+    fn read_after(&self, held: Option<&Arc<gitturtle_core::RepositoryStatus>>) -> bool {
+        held.is_some_and(|held| {
+            self.before
+                .as_ref()
+                .is_none_or(|before| !std::ptr::eq(before.as_ptr(), Arc::as_ptr(held)))
+        })
+    }
 }
 
 impl DraftState {
@@ -195,6 +242,7 @@ impl DraftState {
             branch,
             identity: None,
             failed_save: None,
+            withheld: None,
         }
     }
     fn branch_update(&mut self, saved: &str, edited: &str) -> Option<String> {
@@ -222,6 +270,25 @@ impl DraftState {
     }
     fn reset_identity(&mut self, path: Option<&Path>, effective: (String, String)) {
         self.identity = path.map(|path| (path.to_owned(), effective));
+    }
+    /// Whether `value`, the text of field `index` (Name, then Email), is
+    /// one read from the repository at `path` rather than typed: the
+    /// identity read, `read`, or the one the fields were last filled with
+    /// there, which an unsaved edit of the other field keeps.
+    fn was_read(
+        &self,
+        path: &Path,
+        read: Option<&(String, String)>,
+        index: usize,
+        value: &str,
+    ) -> bool {
+        let holds =
+            |(name, email): &(String, String)| *value == *if index == 0 { name } else { email };
+        read.is_some_and(holds)
+            || self
+                .identity
+                .as_ref()
+                .is_some_and(|(scope, baseline)| scope == path && holds(baseline))
     }
 }
 
@@ -488,6 +555,17 @@ impl GitTurtle {
     }
 
     fn fill_identity_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Until a read lands after the shown tab's mark, the identity the
+        // window holds is the one read before it, which Reset edits put back
+        // into both fields to be kept as an edit: both wait for that read
+        // instead ([`Withheld`]).
+        if let Some(withheld) = &mut self.settings_drafts.withheld {
+            withheld.fields = [true; 2];
+            for input in [&self.identity_name, &self.identity_email] {
+                input.update(cx, |input, cx| input.set_value("", window, cx));
+            }
+            return;
+        }
         let profile = self.profile.clone().unwrap_or_default();
         self.settings_drafts.reset_identity(
             self.repository.as_ref().map(|repository| repository.path()),
@@ -500,6 +578,9 @@ impl GitTurtle {
     }
 
     fn sync_settings_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // On every page, so that Settings opened once the mark has cleared
+        // finds the fields as the mark left them.
+        self.withhold_through_the_mark(window, cx);
         if self.page != AppPage::Settings {
             return;
         }
@@ -510,22 +591,117 @@ impl GitTurtle {
             self.settings_branch
                 .update(cx, |input, cx| input.set_value(value, window, cx));
         }
-        let (Some(repository), Some(profile)) = (&self.repository, &self.profile) else {
+        // While the fields are withheld the mark stands, or the identity the
+        // window holds is the one read before it: nothing to reconcile them
+        // with until a read lands after it.
+        if self.settings_drafts.withheld.is_some() {
+            return;
+        }
+        let Some(path) = self
+            .repository
+            .as_ref()
+            .map(|repository| repository.path().to_owned())
+        else {
             return;
         };
-        let effective = (profile.name.clone(), profile.email.clone());
+        let Some(effective) = self
+            .profile
+            .as_ref()
+            .map(|profile| (profile.name.clone(), profile.email.clone()))
+        else {
+            return;
+        };
         let edited = (
             self.identity_name.read(cx).value().to_string(),
             self.identity_email.read(cx).value().to_string(),
         );
-        if let Some((name, email)) =
-            self.settings_drafts
-                .identity_update(repository.path(), &effective, &edited)
+        if let Some((name, email)) = self
+            .settings_drafts
+            .identity_update(&path, &effective, &edited)
         {
             self.identity_name
                 .update(cx, |input, cx| input.set_value(name, window, cx));
             self.identity_email
                 .update(cx, |input, cx| input.set_value(email, window, cx));
+        }
+    }
+
+    /// Whether Settings' Name or Email holds keyboard focus.
+    pub(super) fn identity_field_focused(&self, window: &Window, cx: &App) -> bool {
+        [&self.identity_name, &self.identity_email]
+            .into_iter()
+            .any(|field| field.focus_handle(cx).is_focused(window))
+    }
+
+    /// Settings' Name and Email through a mark of the shown tab
+    /// ([`Withheld`]), on every page: as the mark is first seen, each
+    /// holding a value read from the repository at its path
+    /// (`DraftState::was_read`) is emptied and waits, as does one empty
+    /// then, while text the person typed and has not saved is theirs and
+    /// stays as typed; once the mark has cleared, the first read landing
+    /// after it gives each still empty what it finds, and is what the
+    /// fields were last filled with, so typing meanwhile stays an edit.
+    /// Another repository shown ends the wait, its own read filling the
+    /// fields (`DraftState::identity_update`); with none shown, as a fresh
+    /// capture's Open forgets the one read before
+    /// (`GitTurtle::forget_repository_state`), they wait.
+    fn withhold_through_the_mark(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let marked = self.shown_tab_unavailable();
+        if !marked && self.settings_drafts.withheld.is_none() {
+            return;
+        }
+        let Some(path) = self.repository.as_ref().map(|repository| repository.path()) else {
+            return;
+        };
+        let drafts = &mut self.settings_drafts;
+        drafts.withheld.take_if(|withheld| withheld.path != path);
+        if let Some(withheld) = &drafts.withheld {
+            // The read the fields wait for: one landed after the mark, with
+            // an identity found.
+            let Some(profile) = self
+                .profile
+                .as_ref()
+                .filter(|_| !marked && withheld.read_after(self.work_status.as_ref()))
+            else {
+                return;
+            };
+            let read = (profile.name.clone(), profile.email.clone());
+            for ((input, value), waits) in [
+                (&self.identity_name, &read.0),
+                (&self.identity_email, &read.1),
+            ]
+            .into_iter()
+            .zip(withheld.fields)
+            {
+                if waits && input.read(cx).value().is_empty() {
+                    input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+                }
+            }
+            drafts.reset_identity(Some(path), read);
+            drafts.withheld = None;
+        } else if marked {
+            let read = self
+                .profile
+                .as_ref()
+                .map(|profile| (profile.name.clone(), profile.email.clone()));
+            let mut fields = [false; 2];
+            for (index, input) in [&self.identity_name, &self.identity_email]
+                .into_iter()
+                .enumerate()
+            {
+                let value = input.read(cx).value();
+                if value.is_empty() {
+                    fields[index] = true;
+                } else if drafts.was_read(path, read.as_ref(), index, &value) {
+                    input.update(cx, |input, cx| input.set_value("", window, cx));
+                    fields[index] = true;
+                }
+            }
+            drafts.withheld = Some(Withheld {
+                path: path.to_owned(),
+                before: self.work_status.as_ref().map(Arc::downgrade),
+                fields,
+            });
         }
     }
 
@@ -2770,6 +2946,9 @@ impl GitTurtle {
         // identity card's actions on it are refused with the mark's reason.
         let marked = self.shown_tab_unavailable();
         let identity = if let Some(repository_name) = repository_name {
+            // Its actions, drawn as recorded for tests, which read the name
+            // and state each gives assistive technology.
+            use native_accessibility::DrawnButton as _;
             let repository_identity = format!(
                 "{}\n{}",
                 repository_name,
@@ -2786,21 +2965,39 @@ impl GitTurtle {
             // standing its frame on the edge, a wrapped Reset edits started its
             // icon 10 px past the field labels at 13 pt and 14 px at 18 pt.
             let pull = ghost_pull(window);
+            // On a marked tab what the mark says and its way back, nothing
+            // from before it, as the bar and the navigation say there: the
+            // identity read before the mark read as the repository's own, and
+            // nothing on the page said why its fields and actions were refused
+            // (decided 2026-11-12).
+            let line: SharedString = match &self.profile {
+                _ if marked => format!(
+                    "{} · {}",
+                    crate::branch_actions::UNAVAILABLE_REASON,
+                    crate::branch_actions::UNAVAILABLE_WAY_BACK
+                )
+                .into(),
+                Some(profile) if !profile.name.is_empty() && !profile.email.is_empty() => {
+                    format!("Current identity: {} <{}>", profile.name, profile.email).into()
+                }
+                Some(_) => "A commit identity has not been configured yet.".into(),
+                None => "Git identity has not been loaded yet.".into(),
+            };
+            // The repository card, Name, Email, the signing line, the save
+            // buttons, the note and Manage named profiles…; on a marked tab
+            // neither the signing line nor the note, both chosen from the
+            // identity read before the mark (decided 2026-11-14).
+            let mut kept = vec![
+                None,
+                Some(self.identity_name.focus_handle(cx)),
+                Some(self.identity_email.focus_handle(cx)),
+            ];
+            kept.extend((!marked).then_some(None));
+            kept.push(None);
+            kept.extend((!marked).then_some(None));
+            kept.push(Some(manage_profiles.clone()));
             div()
-                // The repository card, Name, Email, the signing line, the
-                // save buttons, the note and Manage named profiles….
-                .on_children_prepainted(self.keep_in_view(
-                    vec![
-                        None,
-                        Some(self.identity_name.focus_handle(cx)),
-                        Some(self.identity_email.focus_handle(cx)),
-                        None,
-                        None,
-                        None,
-                        Some(manage_profiles.clone()),
-                    ],
-                    cx,
-                ))
+                .on_children_prepainted(self.keep_in_view(kept, cx))
                 .flex()
                 .flex_col()
                 .gap_4()
@@ -2827,29 +3024,41 @@ impl GitTurtle {
                                 self.path.as_ref().map(|path| path.display().to_string()).unwrap_or_default(),
                             ),
                         )
-                        .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(
-                            match &self.profile {
-                                Some(profile) if !profile.name.is_empty() && !profile.email.is_empty() => {
-                                    format!("Current identity: {} <{}>", profile.name, profile.email)
-                                }
-                                Some(_) => "A commit identity has not been configured yet.".into(),
-                                None => "Git identity has not been loaded yet.".into(),
-                            },
-                        )),
+                        .child(
+                            div()
+                                .debug_selector({
+                                    let line = line.clone();
+                                    move || format!("settings-identity-line: {line}")
+                                })
+                                .text_size(crate::appearance::ui_text(11.))
+                                .line_height(relative(1.5))
+                                .text_color(rgb(p.muted))
+                                .child(line.clone()),
+                        ),
                 )
-                .child(settings_field("Name", &self.identity_name, (busy, looks_busy), cx))
-                .child(settings_field("Email", &self.identity_email, (busy, looks_busy), cx))
-                .child(
-                    div()
-                        .text_size(crate::appearance::ui_text(11.))
-                        .line_height(relative(1.5))
-                        .text_color(rgb(p.muted))
-                        .child(match self.profile.as_ref() {
-                            Some(profile) if profile.signing => "Commit signing is enabled in Git. GitTurtle uses your configured signer.",
-                            Some(_) => "Commit signing is off in Git. Your existing Git signing configuration is preserved.",
-                            None => "Signing follows your existing Git configuration.",
-                        }),
-                )
+                // A marked tab refuses them as a write does, refused and
+                // dimmed, so nothing typed there waits for a save no route
+                // makes: they took a Name and Email the dimmed Save could not
+                // write (decided 2026-11-12). There they draw no value read
+                // before the mark (`withhold_through_the_mark`), say why as the
+                // line does and leave the Tab order (decided 2026-11-14).
+                .child(settings_field("Name", &self.identity_name, (busy || marked, looks_busy || marked), marked.then(|| line.clone()), cx))
+                .child(settings_field("Email", &self.identity_email, (busy || marked, looks_busy || marked), marked.then(|| line.clone()), cx))
+                .when(!marked, |card| {
+                    let signing = match self.profile.as_ref() {
+                        Some(profile) if profile.signing => "Commit signing is enabled in Git. GitTurtle uses your configured signer.",
+                        Some(_) => "Commit signing is off in Git. Your existing Git signing configuration is preserved.",
+                        None => "Signing follows your existing Git configuration.",
+                    };
+                    card.child(
+                        div()
+                            .debug_selector(move || format!("settings-signing-line: {signing}"))
+                            .text_size(crate::appearance::ui_text(11.))
+                            .line_height(relative(1.5))
+                            .text_color(rgb(p.muted))
+                            .child(signing),
+                    )
+                })
                 .child(
                     div()
                         .on_children_prepainted(self.keep_in_view(
@@ -2878,7 +3087,8 @@ impl GitTurtle {
                                     let save = crate::workspace::refusing(save, || "save-repository-identity".into(), busy || unavailable, looks_busy || unavailable);
                                     says_the_mark(save, "save-repository-identity", "Save repository identity", None, marked)
                                 })
-                                .on_click(cx.listener(|this, _, window, cx| this.save_identity(window, cx))),
+                                .on_click(cx.listener(|this, _, window, cx| this.save_identity(window, cx)))
+                                .node_recorded(),
                         )
                         .child(
                             button("use-current-identity", "Reset edits", "refresh", false)
@@ -2892,10 +3102,16 @@ impl GitTurtle {
                                 })
                                 // Refused at once while a write runs, and on a
                                 // marked tab.
-                                .on_click(cx.listener(|this, _, window, cx| if this.operation_busy.is_none() && !this.shown_tab_unavailable() { this.fill_identity_inputs(window, cx) })),
+                                .on_click(cx.listener(|this, _, window, cx| if this.operation_busy.is_none() && !this.shown_tab_unavailable() { this.fill_identity_inputs(window, cx) }))
+                                .node_recorded(),
                         ),
                 )
-                .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(if self.profile.as_ref().is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." }))
+                // Where a save goes, which the identity read chose: on a
+                // marked tab it is not drawn, as the signing line is not.
+                .when(!marked, |card| {
+                    let note = if self.profile.as_ref().is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." };
+                    card.child(div().debug_selector(move || format!("settings-identity-note: {note}")).text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(note))
+                })
                 // A ghost Button at the card's text edge: its icon on the
                 // edge, its frame `pull` before it, as wide as its content
                 // as Settings' other ghost Buttons are. Stretched across the
@@ -2908,7 +3124,7 @@ impl GitTurtle {
                 .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).track_focus(&manage_profiles).debug_selector(|| "settings-manage-profiles".into()).self_start().ml(-pull).map(|manage| {
                     let manage = crate::workspace::refusing(manage, || "settings-manage-profiles".into(), busy || marked, looks_busy || marked);
                     says_the_mark(manage, "settings-manage-profiles", "Manage named profiles…", None, marked)
-                }).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
+                }).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))).node_recorded())
                 .into_any_element()
         } else {
             let open_projects = self.page_focus("settings-open-projects", cx);
@@ -5226,15 +5442,6 @@ fn setting_text<E: Styled + ParentElement>(
         )
 }
 
-#[cfg(test)]
-thread_local! {
-    /// The accessible name each Git identity card action was last built
-    /// with where a marked tab refuses it, or `None` where it was built
-    /// offered, by element ID ([`says_the_mark`]).
-    pub(crate) static MARKED_NAMES: std::cell::RefCell<std::collections::BTreeMap<&'static str, Option<SharedString>>> =
-        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
-}
-
 /// `control`, an action of the Git identity card with element ID `id` and
 /// label `label`, which a marked tab refuses (`marked`) with the mark's
 /// reason, as Fetch is refused there (decided 2026-11-11: an entry is
@@ -5253,8 +5460,6 @@ fn says_the_mark(
 ) -> Button {
     let reason = crate::branch_actions::UNAVAILABLE_REASON;
     let name: Option<SharedString> = marked.then(|| format!("{label}: {reason}").into());
-    #[cfg(test)]
-    MARKED_NAMES.with(|names| names.borrow_mut().insert(id, name.clone()));
     let Some(name) = name else {
         return match purpose {
             Some(purpose) => control.tooltip(purpose),
@@ -5270,12 +5475,22 @@ fn says_the_mark(
 /// (`workspace::refusing_input`), named by its label, the words drawn above
 /// it: its placeholder is no name, yet the Git identity's Name and Email
 /// fields, named by nothing else, were announced by it ("Your name").
+///
+/// On a marked tab, `marked` holds the identity line, which the field gives
+/// assistive technology as its description, so a screen reader says why on
+/// it as the refused buttons' names do, and the field leaves the Tab order,
+/// as those dimmed buttons do: a disabled field draws no focus ring, so Tab
+/// stopped on Name and Email with nothing drawn to show it (decided
+/// 2026-11-14). The tab stop is the focus handle's own, which every copy
+/// GPUI tracks reads.
 fn settings_field(
     label: &'static str,
     input: &Entity<InputState>,
     (refused, dimmed): (bool, bool),
+    marked: Option<SharedString>,
     cx: &App,
 ) -> AnyElement {
+    let _ = input.focus_handle(cx).tab_stop(marked.is_none());
     div()
         .flex()
         .flex_col()
@@ -5293,7 +5508,9 @@ fn settings_field(
                 })),
         )
         .child(crate::workspace::refusing_input(
-            Input::new(input).aria_label(label),
+            Input::new(input)
+                .aria_label(label)
+                .when_some(marked, |input, line| input.aria_description(line)),
             || format!("settings-field-{label}"),
             refused,
             dimmed,

@@ -508,22 +508,87 @@ pub struct State {
     /// ([`GitTurtle::close_menus_for_the_mark`]), and so does the way back's
     /// own ([`GitTurtle::return_to_the_way_back`]).
     open_focus: OpenFocus,
-    /// A press of the navigation's Refresh under the mark's line that a
-    /// running write refused as it began, which stays refused until it
-    /// ends ([`GitTurtle::way_back_key_down`],
+    /// The presses of the navigation's Refresh under the mark's line that a
+    /// running write refused as they began, each refused until it ends
+    /// ([`GitTurtle::way_back_key_down`],
     /// [`GitTurtle::way_back_pointer_down`]).
-    refused_press: Option<RefusedPress>,
+    refused_press: RefusedPress,
+    /// Return's and Space's presses in the window, each from its first
+    /// key-down until its key-up ([`GitTurtle::note_key_press_down`]), with
+    /// whether the mark's way back held focus as it began: the way back's
+    /// Refresh takes no press that began on another control
+    /// ([`GitTurtle::way_back_key_down`]).
+    key_presses: [Option<KeyPress>; 2],
+    /// The key-ups [`Self::key_presses`] has counted, so that a key-up's
+    /// end of a press ([`GitTurtle::note_key_press_up`]) is its own.
+    key_ups: u64,
+    /// While a press is noted ([`Self::key_presses`]): ends every noted
+    /// press as the window loses keyboard focus, to another app or to
+    /// nothing in it focused, after which a key-up may never reach it
+    /// (decided 2026-11-14, by the 2026-11-11 latch rule: a press latch ends
+    /// on a lost key-up, focus leaving the view or the window). Kept, a
+    /// press begun on another control whose key-up was lost so made the way
+    /// back refuse the next press of that key there, once, with nothing to
+    /// say why.
+    key_presses_end: Option<Subscription>,
     #[cfg(test)]
     save_path: Option<PathBuf>,
 }
-/// A press of the mark's Refresh a running write refused as it began
-/// ([`State::refused_press`]).
+/// A press of Return or Space in the window ([`State::key_presses`]).
+#[derive(Clone, Copy)]
+struct KeyPress {
+    /// Whether the mark's way back held focus as the key went down.
+    on_way_back: bool,
+    /// The key-up that ends it as the window next runs a task, unless the
+    /// key goes down again first, as the release and press of an X11
+    /// repeat, or an input method's, arrive together. The window losing
+    /// keyboard focus ends it too, its key-up perhaps lost outside the
+    /// window ([`State::key_presses_end`]).
+    released: Option<u64>,
+}
+/// The presses of the mark's Refresh a running write refused as they began,
+/// and the presses of a key that began on another control
+/// ([`State::refused_press`]): each key's and the pointer's, each its own,
+/// so none ends another. While a key's is down no key's click presses the
+/// Refresh, and while the pointer's is down no click does
+/// ([`GitTurtle::press_way_back`]); a key's never refuses the pointer's
+/// click (decided 2026-11-12, one press per input): a Return whose key-up
+/// came outside the window refused every later click, with nothing to say
+/// why, until a key went down or focus moved.
+#[derive(Default)]
 struct RefusedPress {
-    /// The key that pressed it, "enter" or "space", or "pointer".
-    by: &'static str,
-    /// A key's press ends as focus leaves the Refresh, whose key-up then
-    /// goes elsewhere.
-    _blur: Option<Subscription>,
+    /// Return's, then Space's ([`refused_key`]).
+    keys: [Option<RefusedKey>; 2],
+    /// While a key's is down: ends the keys' presses as focus moves to
+    /// another control inside the window, whose key-ups then go there, and
+    /// marks them as the window goes inactive, which keeps them
+    /// ([`RefusedKey::left`]; FU45-A5's rule, decided 2026-11-11): under
+    /// X11 a keyboard grab mid-hold ended a press, and the next repeat after
+    /// the write pressed Refresh.
+    blur: Option<Subscription>,
+    /// The pointer's, until it comes up, over the Refresh or off it
+    /// ([`GitTurtle::way_back_pointer_up`]).
+    pointer: bool,
+}
+/// A refused press of Return or Space on the mark's Refresh
+/// ([`RefusedPress::keys`]).
+#[derive(Clone, Copy)]
+struct RefusedKey {
+    /// Whether the window went inactive while it was down, so that its
+    /// key-up may have come outside the window, never to reach it: a fresh
+    /// press of its key is refused as its repeats are and ends it with its
+    /// own key-up, and a press of the other key, refused with it, ends it,
+    /// so a key-up lost costs one press at most.
+    left: bool,
+}
+/// Where [`RefusedPress::keys`] keeps the press of `key`: Return's, then
+/// Space's.
+fn refused_key(key: &str) -> Option<usize> {
+    match key {
+        "enter" => Some(0),
+        "space" => Some(1),
+        _ => None,
+    }
 }
 /// What held keyboard focus as an Open of the shown tab began
 /// ([`State::open_focus`]).
@@ -537,6 +602,13 @@ enum OpenFocus {
     /// The mark's way back (`GitTurtle::mark_way_back`): the navigation's
     /// Refresh under its line or the rail's Open repository.
     WayBack,
+    /// The mark's way back, on a marked tab read again in place, which
+    /// keeps focus for the whole read ([`GitTurtle::open_keeps_the_way_back`]).
+    KeptOnWayBack,
+    /// Settings' Name or Email, which a marked tab refuses and takes out of
+    /// the Tab order: where the read marks the tab, focus goes on to the way
+    /// back as from the way back itself (decided 2026-11-14).
+    IdentityField,
 }
 /// An explicit Open of a marked tab's folder (Open…, the projects list, a
 /// library group): its read names no root or Git directory, so it may find
@@ -1892,6 +1964,8 @@ impl GitTurtle {
         // FU39-A5; S2 and S3, FU44-A).
         let replaced = self.shows_another_repository(repo);
         self.repository_tabs.recapture = None;
+        // What held focus as the Open began is for that Open alone.
+        let open_focus = std::mem::take(&mut self.repository_tabs.open_focus);
         if let Some(existing) = self.repository_tabs.find(repo.path())
             && self.repository_tabs.active != Some(existing)
         {
@@ -1915,7 +1989,16 @@ impl GitTurtle {
             tab.path = repo.path().to_owned();
             tab.resolved = true;
             tab.git_dir = Some(worker::GitDirectories::of(repo));
-            tab.error = None;
+            // The mark clearing takes its way back, which kept focus for
+            // the read (`open_keeps_the_way_back`): focus goes to the list,
+            // as Open's return to History gives it, while it is still there.
+            if tab.error.take().is_some()
+                && open_focus == OpenFocus::KeptOnWayBack
+                && self.page == AppPage::Repository
+                && self.mark_way_back.is_focused(window)
+            {
+                window.focus(&self.focus, cx);
+            }
         }
         // Capture after receive installs the accepted metadata. A newly opened
         // active tab may never be switched or otherwise trigger a session save.
@@ -1976,20 +2059,47 @@ impl GitTurtle {
         false
     }
     /// Notes, as an Open of the shown tab begins, what holds keyboard focus
-    /// ([`State::open_focus`]), a menu or the mark's way back: the Open
-    /// returns to History, which takes focus to the list before its read can
-    /// mark the tab, so a menu open on the tab as the watcher's quiet read
-    /// found its repository gone no longer held focus as the mark landed,
-    /// and a Refresh pressed under the mark's line left focus on the list
-    /// the tab draws empty as its read left the tab marked.
-    pub(super) fn note_open_focus(&mut self, window: &Window) {
+    /// ([`State::open_focus`]), a menu, the mark's way back or Settings' Name
+    /// or Email: the Open returns to History, which takes focus to the list
+    /// before its read can mark the tab, so a menu open on the tab as the
+    /// watcher's quiet read found its repository gone no longer held focus
+    /// as the mark landed, and a Refresh pressed under the mark's line left
+    /// focus on the list the tab draws empty as its read left the tab
+    /// marked.
+    pub(super) fn note_open_focus(&mut self, window: &Window, cx: &App) {
         self.repository_tabs.open_focus = if crate::native_accessibility::focus_in_menu(window) {
             OpenFocus::Menu
         } else if self.mark_way_back.is_focused(window) {
             OpenFocus::WayBack
+        } else if self.page == AppPage::Settings && self.identity_field_focused(window, cx) {
+            OpenFocus::IdentityField
         } else {
             OpenFocus::Elsewhere
         };
+    }
+    /// Whether the Open of `path` beginning now keeps focus on the mark's
+    /// way back, which held it as the Open began ([`State::open_focus`]),
+    /// rather than give it to the commit list as Open's return to History
+    /// does: the shown tab, marked, read again in place on History, its
+    /// Refresh pressed or asked for there or on the rail's Open repository.
+    /// The mark stays drawn until a snapshot is accepted, and with it its
+    /// way back, so focus stays there for the whole read and a screen reader
+    /// says "Refresh" once (decided 2026-11-11: the ring sat on the empty
+    /// list until the read ended, and the list was heard, then Refresh).
+    /// The snapshot that clears the mark gives focus to the list
+    /// ([`Self::tab_snapshot_accepted`]); one that leaves it leaves focus
+    /// where it is, [`Self::return_to_the_way_back`] the fallback.
+    pub(super) fn open_keeps_the_way_back(&mut self, path: &Path) -> bool {
+        let keeps = self.repository_tabs.open_focus == OpenFocus::WayBack
+            && !self.repository_tabs.switching
+            && self.page == AppPage::Repository
+            && self.mode == WorkspaceMode::History
+            && self.path.as_deref() == Some(path)
+            && self.shown_tab_unavailable();
+        if keeps {
+            self.repository_tabs.open_focus = OpenFocus::KeptOnWayBack;
+        }
+        keeps
     }
     /// Gives focus back to the mark's way back where it held focus as the
     /// shown tab's latest Open began and that Open's read leaves the tab
@@ -1997,12 +2107,16 @@ impl GitTurtle {
     /// stays unavailable, or Refresh asked for there or on the rail's Open
     /// repository. Open's return to History took focus to the list, which a
     /// marked tab draws empty, so Enter again did nothing (decided
-    /// 2026-11-11: whole focus, feedback in place). Only while focus is
-    /// still on the list that return gave it: focus the person moved during
-    /// a slow read stays where they took it.
+    /// 2026-11-11: whole focus, feedback in place). An Open of a tab marked
+    /// as it began kept focus there ([`Self::open_keeps_the_way_back`]); one
+    /// the read marked gave it to the list. Only while focus is still on the
+    /// list that return gave it: focus the person moved during a slow read
+    /// stays where they took it.
     pub(super) fn return_to_the_way_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if std::mem::take(&mut self.repository_tabs.open_focus) == OpenFocus::WayBack
-            && self.page == AppPage::Repository
+        if matches!(
+            std::mem::take(&mut self.repository_tabs.open_focus),
+            OpenFocus::WayBack | OpenFocus::KeptOnWayBack | OpenFocus::IdentityField
+        ) && self.page == AppPage::Repository
             && self.shown_tab_unavailable()
             && self.focus.is_focused(window)
         {
@@ -2018,50 +2132,184 @@ impl GitTurtle {
     /// and says why in the frame of the refusal. GPUI arms a Button's press
     /// on any Enter or Space key-down and makes it as the key comes up, so a
     /// Return held through the write's end refreshed as it came up, and a
-    /// repeat after the write armed it again. Any other key ends the press.
+    /// repeat after the write armed it again. The other key pressed while
+    /// it is down is refused with it, the write running or not, and its
+    /// key-up leaves the first key's press refused (decided 2026-11-12):
+    /// Space pressed after the write ended Return's press, and the press
+    /// GPUI armed on Space's key-down was made at the next key-up, which
+    /// read. A press ends at its own key-up or as focus moves to another
+    /// control inside the window, never as the window goes inactive
+    /// ([`RefusedPress::blur`]) or as another key goes down, though one
+    /// whose key-up may have come outside the window ends as the other key
+    /// is refused with it ([`RefusedKey::left`]), and a key going down never
+    /// ends the pointer's: a letter typed while the pointer was held let its
+    /// release refresh. A press that began on another control, its key held
+    /// as focus came here ([`State::key_presses`]), is refused the same way,
+    /// with no busy look, since nothing waits: its repeats and its key-up
+    /// press nothing, and a fresh press after its key-up reads.
     pub(super) fn way_back_key_down(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let key = event.keystroke.key.as_str();
-        if (self.repository_tabs.refused_press.as_ref()).is_some_and(|press| press.by == key) {
+        self.refuse_way_back_key(event, true, window, cx);
+    }
+    /// Return or Space going down on the rail's Open repository, the mark's
+    /// way back where the rail stands in the navigation's place: a press
+    /// that began on another control is refused there for its whole press,
+    /// and the other key's while it is down, as on the navigation's Refresh
+    /// ([`Self::way_back_key_down`]), while a running write refuses
+    /// neither, the folder chooser it opens being no write. It held the way
+    /// back's focus with no such refusal, so a Return held in Settings' Name
+    /// as the read that marks the tab gave it focus opened the chooser
+    /// (FU44-D9's code and design re-checks).
+    pub(super) fn rail_way_back_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.refuse_way_back_key(event, false, window, cx);
+    }
+    /// [`Self::way_back_key_down`], a running write refusing the press, with
+    /// its busy look, only where `write_refuses`.
+    fn refuse_way_back_key(
+        &mut self,
+        event: &KeyDownEvent,
+        write_refuses: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(slot) = refused_key(event.keystroke.key.as_str()) else {
+            return;
+        };
+        // A press that began on another control, its key held as focus came
+        // here, as the read that marks the tab gives focus on from Settings'
+        // Name (decided 2026-11-14: a press acts only on the control it
+        // began on): its repeats armed the Refresh, and its key-up pressed
+        // it.
+        let elsewhere =
+            self.repository_tabs.key_presses[slot].is_some_and(|press| !press.on_way_back);
+        let press = &mut self.repository_tabs.refused_press;
+        if press.keys[slot].is_some() {
             window.prevent_default();
             return;
         }
-        self.repository_tabs.refused_press = None;
-        let key = match key {
-            "enter" => "enter",
-            "space" => "space",
-            _ => return,
-        };
-        if event.keystroke.modifiers.modified() || self.operation_busy.is_none() {
+        let other = &mut press.keys[1 - slot];
+        let waits = other.is_some() || (write_refuses && self.operation_busy.is_some());
+        if event.keystroke.modifiers.modified() || !(waits || elsewhere) {
             return;
         }
+        if other.is_some_and(|other| other.left) {
+            *other = None;
+        }
         window.prevent_default();
-        let blur = cx.on_blur(&self.mark_way_back, window, |this, _, _| {
-            this.repository_tabs.refused_press = None;
-        });
-        self.repository_tabs.refused_press = Some(RefusedPress {
-            by: key,
-            _blur: Some(blur),
-        });
-        self.show_busy_look(cx);
+        press.keys[slot] = Some(RefusedKey { left: false });
+        if press.blur.is_none() {
+            press.blur = Some(cx.on_blur(&self.mark_way_back, window, |this, window, _| {
+                let press = &mut this.repository_tabs.refused_press;
+                if window.is_window_active() {
+                    press.keys = [None; 2];
+                    press.blur = None;
+                } else {
+                    for key in press.keys.iter_mut().flatten() {
+                        key.left = true;
+                    }
+                }
+            }));
+        }
+        if waits && write_refuses {
+            self.show_busy_look(cx);
+        }
     }
     /// The key-up that ends a press [`Self::way_back_key_down`] refused
-    /// presses nothing.
+    /// presses nothing, and leaves the other key's, still down, refused.
     pub(super) fn way_back_key_up(
         &mut self,
         event: &KeyUpEvent,
         window: &mut Window,
         _: &mut Context<Self>,
     ) {
-        let key = event.keystroke.key.as_str();
-        if (self.repository_tabs.refused_press.as_ref()).is_some_and(|press| press.by == key) {
-            self.repository_tabs.refused_press = None;
+        let Some(slot) = refused_key(event.keystroke.key.as_str()) else {
+            return;
+        };
+        let press = &mut self.repository_tabs.refused_press;
+        if press.keys[slot].take().is_some() {
             window.prevent_default();
+            if press.keys.iter().all(Option::is_none) {
+                press.blur = None;
+            }
         }
+    }
+    /// Return or Space going down anywhere in the window, noted for the
+    /// mark's way back ([`State::key_presses`]): a press as it begins, with
+    /// whether the way back held focus then, and its repeats, marked held
+    /// or, as X11 sends them, fresh or a release with its press, as part of
+    /// it.
+    pub(super) fn note_key_press_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(slot) = refused_key(event.keystroke.key.as_str()) else {
+            return;
+        };
+        let on_way_back = self.mark_way_back.is_focused(window);
+        let press = &mut self.repository_tabs.key_presses[slot];
+        match press {
+            Some(press) => press.released = None,
+            None => {
+                *press = Some(KeyPress {
+                    on_way_back,
+                    released: None,
+                })
+            }
+        }
+        if self.repository_tabs.key_presses_end.is_none() {
+            self.repository_tabs.key_presses_end =
+                Some(cx.on_focus_out(&self.app_focus, window, |this, _, _, _| {
+                    let state = &mut this.repository_tabs;
+                    state.key_presses = [None; 2];
+                    state.key_presses_end = None;
+                }));
+        }
+    }
+    /// Return or Space coming up anywhere in the window ends its press
+    /// ([`State::key_presses`]) as the window next runs a task, unless the
+    /// key goes down again first, as an X11 repeat's or an input method's
+    /// release and press arrive together.
+    pub(super) fn note_key_press_up(
+        &mut self,
+        event: &KeyUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(slot) = refused_key(event.keystroke.key.as_str()) else {
+            return;
+        };
+        let state = &mut self.repository_tabs;
+        state.key_ups += 1;
+        let key_up = state.key_ups;
+        let Some(press) = &mut state.key_presses[slot] else {
+            return;
+        };
+        press.released = Some(key_up);
+        cx.spawn(async move |this, cx| {
+            this.update(cx, |this, _| {
+                let state = &mut this.repository_tabs;
+                let press = &mut state.key_presses[slot];
+                if press.is_some_and(|press| press.released == Some(key_up)) {
+                    *press = None;
+                }
+                if state.key_presses.iter().all(Option::is_none) {
+                    state.key_presses_end = None;
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
     /// The pointer going down on the navigation's Refresh under the mark's
     /// line while a write runs: its release presses nothing, even once the
@@ -2070,21 +2318,37 @@ impl GitTurtle {
     /// up, so one that went down refused refreshed if the write ended first.
     pub(super) fn way_back_pointer_down(&mut self, cx: &mut Context<Self>) {
         let refused = self.operation_busy.is_some();
-        self.repository_tabs.refused_press = refused.then_some(RefusedPress {
-            by: "pointer",
-            _blur: None,
-        });
+        self.repository_tabs.refused_press.pointer = refused;
         if refused {
             self.show_busy_look(cx);
         }
     }
+    /// The pointer coming up, over the navigation's Refresh or off it, ends
+    /// its refused press: over it, after the click it makes there, which
+    /// the press refuses ([`Self::press_way_back`]), GPUI's mouse-up
+    /// listeners on one element running in the bubble phase after its
+    /// click. Released off it, or over it dimmed, which makes no click, the
+    /// press stayed refused and refused every later Return after the write.
+    pub(super) fn way_back_pointer_up(&mut self) {
+        self.repository_tabs.refused_press.pointer = false;
+    }
     /// A press of the navigation's Refresh under the mark's line, which
-    /// reads the tab's repository again unless a write runs or the press
-    /// began refused ([`Self::way_back_key_down`],
-    /// [`Self::way_back_pointer_down`]); a refused press shows the busy
-    /// spell's look at once, as one refused as it begins does.
-    pub(super) fn press_way_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let began_refused = self.repository_tabs.refused_press.take().is_some();
+    /// reads the tab's repository again unless a write runs or a press that
+    /// began refused is still down ([`State::refused_press`]): for a key's
+    /// click, a key's or the pointer's; for the pointer's, its own, which
+    /// ends with it, never a key's ([`RefusedPress`]). A refused press shows
+    /// the busy spell's look at once, as one refused as it begins does.
+    pub(super) fn press_way_back(
+        &mut self,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let press = &mut self.repository_tabs.refused_press;
+        let began_refused = match event {
+            ClickEvent::Keyboard(_) => press.pointer || press.keys.iter().any(Option::is_some),
+            _ => std::mem::take(&mut press.pointer),
+        };
         if began_refused || self.operation_busy.is_some() {
             self.show_busy_look(cx);
             return;
@@ -5881,6 +6145,70 @@ pub(crate) mod tests {
         assert!(cx.debug_bounds(ITEM).is_none(), "no menu comes back");
     }
 
+    /// Focus in Settings' Name as a quiet read finds the repository gone
+    /// goes on to the mark's way back, the navigation's Refresh, once the
+    /// Open that read asks for marks the tab, and takes it there once: the
+    /// Open's return to History gave it to the list the marked tab draws
+    /// empty, where a key does nothing, since a marked tab's Name and Email
+    /// leave the Tab order (decided 2026-11-14).
+    #[gpui::test]
+    async fn a_marked_tab_s_way_back_takes_focus_from_a_settings_identity_field(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        // Focus events carry focus paths only in an active window.
+        cx.update(|window, _| window.activate_window());
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(&app, cx).await;
+        let (name, way_back, list) = app.read_with(cx, |app, cx| {
+            (
+                app.identity_name.focus_handle(cx),
+                app.mark_way_back.clone(),
+                app.focus.clone(),
+            )
+        });
+        cx.update(|window, cx| window.focus(&name, cx));
+        draw(cx);
+        // Every control focus comes to, in order, as a screen reader says it.
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::<&str>::new()));
+        let _listening = cx.update(|window, cx| {
+            [(list, "the list"), (way_back.clone(), "the way back")].map(|(handle, name)| {
+                let heard = heard.clone();
+                window.on_focus_in(&handle, cx, move |_, _| heard.borrow_mut().push(name))
+            })
+        });
+
+        let away = fixture.path().join("moved-away");
+        std::fs::rename(root.join(".git"), &away).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        assert!(
+            cx.debug_bounds("navigation-refresh").is_some(),
+            "the way back is drawn"
+        );
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "focus is on the way back"
+        );
+        let heard = heard.borrow().clone();
+        assert_eq!(
+            (
+                heard.iter().filter(|name| **name == "the way back").count(),
+                heard.last().copied()
+            ),
+            (1, Some("the way back")),
+            "the way back is said once, last: {heard:?}"
+        );
+        std::fs::rename(&away, root.join(".git")).unwrap();
+    }
+
     /// A row's right-click menu open as the tab's mark lands closes, focus
     /// moving from it to the mark's way back: here a commit's in History,
     /// whose row the marked tab no longer draws, the menu going with it.
@@ -6126,6 +6454,159 @@ pub(crate) mod tests {
         }
     }
 
+    /// Refresh pressed on a marked tab's way back keeps focus there for the
+    /// whole read, never passing through the commit list the tab draws
+    /// empty (`GitTurtle::open_keeps_the_way_back`), by Return, the pointer
+    /// and the Refresh shortcut on the navigation's Refresh and the
+    /// shortcut on the rail's Open repository: every frame of the held read
+    /// draws focus on the way back and nothing else takes focus, so a
+    /// screen reader says "Refresh" once. A read that clears the mark gives
+    /// focus to the list as the Refresh goes. Open's return to History took
+    /// focus to the list at once, and only the read's end brought it back.
+    #[gpui::test]
+    async fn a_marked_tab_s_refresh_keeps_focus_for_its_whole_read(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        // Focus events carry focus paths only in an active window.
+        cx.update(|window, _| window.activate_window());
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        draw(cx);
+        let moved = fixture.path().join("moved-away");
+        std::fs::rename(root.join(".git"), &moved).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        let (way_back, list) =
+            app.read_with(cx, |app, _| (app.mark_way_back.clone(), app.focus.clone()));
+        // Every control focus comes to, in order, from the press on.
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::<&str>::new()));
+        let _listening = cx.update(|window, cx| {
+            [
+                (list.clone(), "the list"),
+                (way_back.clone(), "the way back"),
+            ]
+            .map(|(handle, name)| {
+                let heard = heard.clone();
+                window.on_focus_in(&handle, cx, move |_, _| heard.borrow_mut().push(name))
+            })
+        });
+        let refresh_keys = crate::shortcuts::resolve_key("primary-r", cfg!(target_os = "macos"));
+        let press = |cx: &mut VisualTestContext, route: &str, way: &'static str| match route {
+            "Return" => {
+                cx.simulate_event(gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                    is_held: false,
+                    prefer_character_input: false,
+                });
+                cx.simulate_event(gpui::KeyUpEvent {
+                    keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                });
+            }
+            "the pointer" => {
+                let bounds = cx.debug_bounds(way).expect(way);
+                cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            }
+            _ => cx.simulate_keystrokes(&refresh_keys),
+        };
+        // Draws the held read's frames, each with focus on the way back.
+        let held_frames = |cx: &mut VisualTestContext, when: &str| {
+            for frame in 0..3 {
+                draw(cx);
+                assert!(
+                    app.read_with(cx, |app, _| app.loading.is_some()),
+                    "{when}: the read is held"
+                );
+                assert_eq!(
+                    drawn_focus(&app, cx),
+                    Some(way_back.clone()),
+                    "{when}: frame {frame} of the read draws focus on the way back"
+                );
+            }
+        };
+        for (route, way) in [
+            ("Return", "navigation-refresh"),
+            ("the pointer", "navigation-refresh"),
+            ("the shortcut", "navigation-refresh"),
+            ("the shortcut", "rail-open"),
+        ] {
+            let when = format!("{route} on {way}");
+            if way == "rail-open" {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_sidebar(window, cx)));
+                draw(cx);
+            }
+            assert!(cx.debug_bounds(way).is_some(), "{when}: drawn");
+            cx.update(|window, cx| window.focus(&way_back, cx));
+            draw(cx);
+            heard.borrow_mut().clear();
+            let before = app.read_with(cx, |app, _| app.generation);
+            let held = hold_reads(&app, cx);
+            press(cx, route, way);
+            assert!(
+                app.read_with(cx, |app, _| app.generation) > before,
+                "{when}: the repository is read again"
+            );
+            held_frames(cx, &when);
+            drop(held);
+            settle(&app, cx).await;
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+                "{when}: still marked"
+            );
+            assert_eq!(
+                drawn_focus(&app, cx),
+                Some(way_back.clone()),
+                "{when}: focus stays on the way back"
+            );
+            assert_eq!(
+                *heard.borrow(),
+                Vec::<&str>::new(),
+                "{when}: focus never moved, so Refresh is said once"
+            );
+        }
+
+        // Found again, the read clears the mark and its way back with it.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_sidebar(window, cx)));
+        draw(cx);
+        std::fs::rename(&moved, root.join(".git")).unwrap();
+        cx.update(|window, cx| window.focus(&way_back, cx));
+        draw(cx);
+        heard.borrow_mut().clear();
+        let held = hold_reads(&app, cx);
+        press(cx, "Return", "navigation-refresh");
+        held_frames(cx, "Return on a tab found again");
+        drop(held);
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(
+            !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "unmarked"
+        );
+        assert!(
+            cx.debug_bounds("navigation-refresh").is_none(),
+            "the way back goes with the mark"
+        );
+        assert_eq!(
+            drawn_focus(&app, cx),
+            Some(list.clone()),
+            "focus goes to the list the read fills"
+        );
+        assert_eq!(*heard.borrow(), ["the list"], "once, as the read ends");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.repository_tabs.open_focus),
+            OpenFocus::Elsewhere,
+            "the Open's focus is forgotten as it succeeds"
+        );
+    }
+
     /// The navigation's Refresh under the mark's line says why a running
     /// write refuses it, as the other refused controls do
     /// (`refusing_with_reason`): announced unavailable at once, and dimmed
@@ -6266,6 +6747,658 @@ pub(crate) mod tests {
             generation(cx) > before,
             "the next click reads the repository again"
         );
+    }
+
+    /// A press of the marked tab's Refresh refused as it began ends as
+    /// FU45-A5's rule ends a refused press (`GitTurtle::way_back_key_down`,
+    /// `GitTurtle::way_back_pointer_down`): a key's at its key-up or as focus
+    /// moves to another control inside the window, never as the window goes
+    /// inactive, so a Return held through an X11 keyboard grab and the
+    /// write's end presses nothing with its next repeat or its key-up; a
+    /// key's refuses no click, so with its key-up lost outside the window a
+    /// click after the write reads once, and the lost key-up costs one key
+    /// press at most; a key going down never ends the pointer's, so the
+    /// pointer's release over the Refresh after the write presses nothing
+    /// though a letter was typed meanwhile; and the pointer's ends as it
+    /// comes up, off the Refresh as well as over it, dimmed, so the next
+    /// Return reads once. The window going inactive ended a key's press, the
+    /// next repeat after the write arming the Refresh; a key's press whose
+    /// key-up was lost refused every later click; any key going down ended
+    /// the pointer's, its release reading; and released off the Refresh, or
+    /// over it dimmed, which makes no click, the pointer's stayed refused,
+    /// and so did every Return after the write.
+    #[gpui::test]
+    async fn a_marked_tab_s_refused_refresh_press_ends_only_as_it_ends(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        const KEY: &str = "navigation-refresh";
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        // Focus events carry focus paths only in an active window.
+        cx.update(|window, _| window.activate_window());
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        draw(cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("moved-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        let (way_back, list) =
+            app.read_with(cx, |app, _| (app.mark_way_back.clone(), app.focus.clone()));
+        let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
+        let busy = |cx: &mut VisualTestContext, write: Option<&'static str>| {
+            app.update(cx, |app, _| app.operation_busy = write);
+            draw(cx);
+        };
+        let key_down = |cx: &mut VisualTestContext, key: &str, is_held: bool| {
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse(key).unwrap(),
+                is_held,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        };
+        let key_up = |cx: &mut VisualTestContext, key: &str| {
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse(key).unwrap(),
+            });
+            draw(cx);
+        };
+        let focus = |cx: &mut VisualTestContext, handle: &FocusHandle| {
+            cx.update(|window, cx| window.focus(handle, cx));
+            draw(cx);
+        };
+        let looks_busy = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.busy_shown());
+        // What the Refresh draws with no write running, whatever press is
+        // refused: no busy look, and its tooltip its name and shortcut.
+        let at_rest = |cx: &mut VisualTestContext, at: &str| {
+            assert!(!looks_busy(cx), "{at}: no busy look without a write");
+            assert_eq!(
+                crate::workspace::refusals::tooltip(KEY).as_deref(),
+                Some(
+                    format!(
+                        "Refresh · {}",
+                        crate::shortcuts::label(crate::shortcuts::ShortcutId::Refresh)
+                    )
+                    .as_str()
+                ),
+                "{at}: its tooltip gives its name and shortcut"
+            );
+        };
+
+        // The window going inactive mid-hold, as an X11 keyboard grab
+        // takes it, keeps a key's press.
+        focus(cx, &way_back);
+        busy(cx, Some("Fetching…"));
+        let before = generation(cx);
+        key_down(cx, "enter", false);
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "focus comes back to the Refresh"
+        );
+        busy(cx, None);
+        key_down(cx, "enter", true);
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        settle(&app, cx).await;
+        assert_eq!(
+            generation(cx),
+            before,
+            "a press held through the window going inactive reads nothing"
+        );
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        settle(&app, cx).await;
+        assert!(generation(cx) > before, "the next Return: it reads again");
+
+        // A key's press refuses no click: its key-up lost outside the
+        // window, a click after the write reads once; and the key press the
+        // lost key-up costs, one at most, Space's here, refused with
+        // Return's, ends that too, so the next Return reads.
+        busy(cx, Some("Fetching…"));
+        let before = generation(cx);
+        key_down(cx, "enter", false);
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        busy(cx, None);
+        at_rest(cx, "the key-up lost outside the window");
+        let center = cx.debug_bounds(KEY).expect("the Refresh").center();
+        cx.simulate_click(center, gpui::Modifiers::default());
+        settle(&app, cx).await;
+        assert_eq!(
+            generation(cx),
+            before + 1,
+            "a click after a key-up lost outside the window reads once"
+        );
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "focus stays on the Refresh"
+        );
+        key_down(cx, "space", false);
+        at_rest(cx, "the key press the lost key-up costs");
+        key_up(cx, "space");
+        settle(&app, cx).await;
+        assert_eq!(
+            generation(cx),
+            before + 1,
+            "the one key press the lost key-up costs"
+        );
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        settle(&app, cx).await;
+        assert_eq!(generation(cx), before + 2, "the next Return reads once");
+
+        // Focus moving to another control inside the window ends it: the
+        // next Return there reads.
+        busy(cx, Some("Fetching…"));
+        let before = generation(cx);
+        key_down(cx, "enter", false);
+        focus(cx, &list);
+        busy(cx, None);
+        focus(cx, &way_back);
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        settle(&app, cx).await;
+        assert!(
+            generation(cx) > before,
+            "a Return after focus moved: it reads again"
+        );
+
+        // A key going down keeps the pointer's press: pressed while the
+        // Refresh is offered, not yet dimmed, and released over it once the
+        // write has ended. Any key going down puts the window in keyboard
+        // modality, in which GPUI hovers nothing, so a release straight
+        // after it drops the click its press queued, refused or not: the
+        // pointer moves on the Refresh, still held, as a hand does, which
+        // hovers it again, and its release then clicks.
+        let center = cx.debug_bounds(KEY).expect("the Refresh").center();
+        let nudged = center + gpui::point(px(1.), px(0.));
+        busy(cx, Some("Fetching…"));
+        assert!(!looks_busy(cx), "offered as the press begins");
+        let before = generation(cx);
+        cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert!(looks_busy(cx), "the press is refused as it begins");
+        busy(cx, None);
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "the letter goes to the Refresh"
+        );
+        key_down(cx, "a", false);
+        key_up(cx, "a");
+        cx.simulate_mouse_move(
+            nudged,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        cx.simulate_mouse_up(nudged, gpui::MouseButton::Left, gpui::Modifiers::default());
+        settle(&app, cx).await;
+        assert_eq!(
+            generation(cx),
+            before,
+            "the refused click reads nothing though a letter was typed"
+        );
+        let press_return = |cx: &mut VisualTestContext| {
+            focus(cx, &way_back);
+            key_down(cx, "enter", false);
+            key_up(cx, "enter");
+        };
+        press_return(cx);
+        settle(&app, cx).await;
+        assert_eq!(generation(cx), before + 1, "the next Return reads once");
+        // With no write the same press, the letter and the move on the
+        // Refresh with it, reads once: its release does click there.
+        let before = generation(cx);
+        cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        key_down(cx, "a", false);
+        key_up(cx, "a");
+        cx.simulate_mouse_move(
+            nudged,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        cx.simulate_mouse_up(nudged, gpui::MouseButton::Left, gpui::Modifiers::default());
+        settle(&app, cx).await;
+        assert_eq!(
+            generation(cx),
+            before + 1,
+            "with no write the same press reads once"
+        );
+
+        // The pointer's press ends as it comes up over the Refresh, dimmed
+        // as the press is refused, which makes no click.
+        busy(cx, Some("Fetching…"));
+        assert!(!looks_busy(cx), "offered as the press begins");
+        let before = generation(cx);
+        cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            crate::workspace::refusals::get(KEY),
+            Some(crate::workspace::refusals::Refusal {
+                announced: true,
+                dimmed: true,
+            }),
+            "dimmed as the press is refused"
+        );
+        cx.simulate_mouse_up(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        busy(cx, None);
+        assert_eq!(generation(cx), before, "released, it reads nothing");
+        press_return(cx);
+        settle(&app, cx).await;
+        assert_eq!(generation(cx), before + 1, "the next Return reads once");
+
+        // The pointer's press ends as it comes up off the Refresh.
+        busy(cx, Some("Fetching…"));
+        let before = generation(cx);
+        let bounds = cx.debug_bounds(KEY).expect("the Refresh");
+        let off = gpui::point(center.x, bounds.top() - px(12.));
+        cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_move(
+            off,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(off, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        busy(cx, None);
+        assert_eq!(generation(cx), before, "released off it, it reads nothing");
+        focus(cx, &way_back);
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        settle(&app, cx).await;
+        assert!(generation(cx) > before, "the next Return: it reads again");
+    }
+
+    /// Return or Space pressed on the marked tab's Refresh while the other
+    /// key's refused press is down is refused with it, though the write has
+    /// ended, and its key-up leaves the first key's press refused
+    /// (`GitTurtle::way_back_key_down`), in either key order and whichever
+    /// comes up first: the first key's repeats after it and its key-up press
+    /// nothing, and the next press of it reads once. The second key going
+    /// down ended the first's press, so the press GPUI armed on the second
+    /// key-down was made at whichever key-up came next, and read.
+    #[gpui::test]
+    async fn a_marked_tab_s_refused_refresh_key_press_refuses_the_other_key(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        cx.update(|window, _| window.activate_window());
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        draw(cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("moved-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        let way_back = app.read_with(cx, |app, _| app.mark_way_back.clone());
+        let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
+        let busy = |cx: &mut VisualTestContext, write: Option<&'static str>| {
+            app.update(cx, |app, _| app.operation_busy = write);
+            draw(cx);
+        };
+        let key_down = |cx: &mut VisualTestContext, key: &str, is_held: bool| {
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse(key).unwrap(),
+                is_held,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        };
+        let key_up = |cx: &mut VisualTestContext, key: &str| {
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse(key).unwrap(),
+            });
+            draw(cx);
+        };
+        let tooltip = format!(
+            "Refresh · {}",
+            crate::shortcuts::label(crate::shortcuts::ShortcutId::Refresh)
+        );
+        cx.update(|window, cx| window.focus(&way_back, cx));
+        draw(cx);
+        for (first, second, first_up_first) in [
+            ("enter", "space", false),
+            ("space", "enter", false),
+            ("enter", "space", true),
+        ] {
+            busy(cx, Some("Fetching…"));
+            let before = generation(cx);
+            key_down(cx, first, false);
+            busy(cx, None);
+            key_down(cx, second, false);
+            // Refused with the first, it draws nothing of the write that
+            // ended: no busy look, its tooltip its name and shortcut.
+            assert!(
+                !app.read_with(cx, |app, _| app.busy_shown()),
+                "{second} refused after the write: no busy look ({first} up first: \
+                 {first_up_first})"
+            );
+            assert_eq!(
+                crate::workspace::refusals::tooltip("navigation-refresh").as_deref(),
+                Some(tooltip.as_str()),
+                "{second} refused after the write: its tooltip gives its name and \
+                 shortcut ({first} up first: {first_up_first})"
+            );
+            if first_up_first {
+                key_up(cx, first);
+                key_down(cx, second, true);
+                key_up(cx, second);
+            } else {
+                key_up(cx, second);
+                // The first key's repeats, marked held and, as X11 sends
+                // them, fresh, then its key-up.
+                key_down(cx, first, true);
+                key_down(cx, first, false);
+                key_up(cx, first);
+            }
+            settle(&app, cx).await;
+            assert_eq!(
+                generation(cx),
+                before,
+                "{second} pressed while a refused {first} is down reads nothing \
+                 ({first} up first: {first_up_first})"
+            );
+            assert!(
+                cx.update(|window, _| way_back.is_focused(window)),
+                "focus stays on the Refresh"
+            );
+            key_down(cx, first, false);
+            key_up(cx, first);
+            settle(&app, cx).await;
+            assert_eq!(
+                generation(cx),
+                before + 1,
+                "the next {first} reads once ({first} up first: {first_up_first})"
+            );
+        }
+    }
+
+    /// A Return or Space held in Settings' Name as the read that marks the
+    /// tab gives focus on to the mark's way back presses nothing there, as
+    /// its press began on Name (decided 2026-11-14: a press acts only on the
+    /// control it began on; `GitTurtle::way_back_key_down`): its repeats,
+    /// marked held and, as X11 sends them, fresh or a release with its
+    /// press, and its key-up read nothing, while a fresh press after its
+    /// key-up reads once. The repeats armed the Refresh, so a release with
+    /// its press, and the key-up, read the repository again.
+    #[gpui::test]
+    async fn a_marked_tab_s_refresh_takes_no_press_that_began_elsewhere(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::REPEATS;
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        // Focus events carry focus paths only in an active window.
+        cx.update(|window, _| window.activate_window());
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let away = fixture.path().join("moved-away");
+        let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
+        // A key event as the window gets it, with no frame or task between
+        // it and the next, as a release and its press come together.
+        let key = |cx: &mut VisualTestContext, name: &str, down: Option<bool>| {
+            let keystroke = gpui::Keystroke::parse(name).unwrap();
+            let input = match down {
+                Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke,
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                None => gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+            };
+            cx.update(|window, cx| window.dispatch_event(input, cx));
+        };
+        let way_back = app.read_with(cx, |app, _| app.mark_way_back.clone());
+        for name in ["enter", "space"] {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+            settle(&app, cx).await;
+            let field = app.read_with(cx, |app, cx| app.identity_name.focus_handle(cx));
+            cx.update(|window, cx| window.focus(&field, cx));
+            draw(cx);
+            key(cx, name, Some(false));
+            std::fs::rename(root.join(".git"), &away).unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+            settle(&app, cx).await;
+            assert!(
+                app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+                "{name}: marked"
+            );
+            assert!(
+                cx.update(|window, _| way_back.is_focused(window)),
+                "{name}: focus goes on to the way back, the key still down"
+            );
+            let before = generation(cx);
+            let held = REPEATS
+                .iter()
+                .copied()
+                .chain(std::iter::once(("its key-up", &[None][..])));
+            for (repeat, events) in held {
+                for down in events {
+                    key(cx, name, *down);
+                }
+                settle(&app, cx).await;
+                assert_eq!(
+                    generation(cx),
+                    before,
+                    "{name}, {repeat}: the press that began on Name reads nothing"
+                );
+            }
+            assert!(
+                cx.update(|window, _| way_back.is_focused(window)),
+                "{name}: focus stays on the way back"
+            );
+            key(cx, name, Some(false));
+            key(cx, name, None);
+            settle(&app, cx).await;
+            assert_eq!(
+                generation(cx),
+                before + 1,
+                "{name}: a fresh press after the key-up reads once"
+            );
+            // Found again, so the next key's read can mark the tab.
+            std::fs::rename(&away, root.join(".git")).unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+            settle(&app, cx).await;
+            assert!(
+                !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+                "{name}: found again"
+            );
+        }
+    }
+
+    /// The rail's Open repository, the mark's way back where the rail stands
+    /// in the navigation's place, takes no press that began on another
+    /// control either: in a window too narrow for the navigation, a Return
+    /// or Space held in Settings' Name as the read that marks the tab gives
+    /// focus on to it opens no folder chooser, its repeats, marked held and,
+    /// as X11 sends them, fresh or a release with its press, and its key-up
+    /// included, while a fresh press after its key-up opens one, once. It
+    /// held the way back's focus with none of the Refresh's capture, so the
+    /// held key's repeats armed it and its key-up, or a release with its
+    /// press, opened the chooser (FU44-D9's code and design re-checks).
+    #[gpui::test]
+    async fn a_marked_tab_s_rail_open_takes_no_press_that_began_elsewhere(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::REPEATS;
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        // Focus events carry focus paths only in an active window.
+        cx.update(|window, _| window.activate_window());
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        // Too narrow for the navigation, so the rail stands in its place.
+        cx.simulate_resize(size(px(700.), px(900.)));
+        draw(cx);
+        let away = fixture.path().join("moved-away");
+        // A key event as the window gets it, with no frame or task between
+        // it and the next, as a release and its press come together.
+        let key = |cx: &mut VisualTestContext, name: &str, down: Option<bool>| {
+            let keystroke = gpui::Keystroke::parse(name).unwrap();
+            let input = match down {
+                Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke,
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                None => gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+            };
+            cx.update(|window, cx| window.dispatch_event(input, cx));
+        };
+        let way_back = app.read_with(cx, |app, _| app.mark_way_back.clone());
+        for name in ["enter", "space"] {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+            settle(&app, cx).await;
+            let field = app.read_with(cx, |app, cx| app.identity_name.focus_handle(cx));
+            cx.update(|window, cx| window.focus(&field, cx));
+            draw(cx);
+            key(cx, name, Some(false));
+            std::fs::rename(root.join(".git"), &away).unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+            settle(&app, cx).await;
+            assert!(
+                app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+                "{name}: marked"
+            );
+            assert!(
+                cx.debug_bounds("rail-open").is_some()
+                    && cx.debug_bounds("navigation-refresh").is_none(),
+                "{name}: the rail's Open repository is the way back"
+            );
+            assert!(
+                cx.update(|window, _| way_back.is_focused(window)),
+                "{name}: focus goes on to it, the key still down"
+            );
+            let held = REPEATS
+                .iter()
+                .copied()
+                .chain(std::iter::once(("its key-up", &[None][..])));
+            for (repeat, events) in held {
+                for down in events {
+                    key(cx, name, *down);
+                }
+                settle(&app, cx).await;
+                assert!(
+                    !cx.did_prompt_for_paths(),
+                    "{name}, {repeat}: the press that began on Name opens no folder chooser"
+                );
+            }
+            assert!(
+                cx.update(|window, _| way_back.is_focused(window)),
+                "{name}: focus stays on the rail's Open repository"
+            );
+            key(cx, name, Some(false));
+            key(cx, name, None);
+            settle(&app, cx).await;
+            assert!(
+                cx.did_prompt_for_paths(),
+                "{name}: a fresh press after the key-up opens the folder chooser"
+            );
+            cx.simulate_path_prompt_response(|_| None);
+            settle(&app, cx).await;
+            assert!(!cx.did_prompt_for_paths(), "{name}: one chooser");
+            // Found again, so the next key's read can mark the tab.
+            std::fs::rename(&away, root.join(".git")).unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+            settle(&app, cx).await;
+            assert!(
+                !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+                "{name}: found again"
+            );
+        }
+    }
+
+    /// The window losing keyboard focus, to another app or to nothing in it
+    /// focused, ends every Return and Space press it noted, whose key-up it
+    /// may then never get (decided 2026-11-14 night, by the 2026-11-11 latch
+    /// rule: a press latch ends on a lost key-up, focus leaving the view or
+    /// the window), so the next press of that key on a marked tab's Refresh
+    /// reads. A press begun on the list, its key-up lost so, was kept, and
+    /// the Refresh took that next press for the one that began elsewhere
+    /// and refused it, once, with nothing to say why (FU44-D9's code
+    /// re-check). Each first press here sends no key-up: the window never
+    /// gets it.
+    #[gpui::test]
+    async fn a_marked_tab_s_refresh_takes_a_press_after_the_window_lost_keyboard_focus(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        // Focus events carry focus paths only in an active window.
+        cx.update(|window, _| window.activate_window());
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("moved-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
+        let key = |cx: &mut VisualTestContext, name: &str, down: bool| {
+            let keystroke = gpui::Keystroke::parse(name).unwrap();
+            let input = if down {
+                gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke,
+                    is_held: false,
+                    prefer_character_input: false,
+                })
+            } else {
+                gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke })
+            };
+            cx.update(|window, cx| window.dispatch_event(input, cx));
+        };
+        let (way_back, list) =
+            app.read_with(cx, |app, _| (app.mark_way_back.clone(), app.focus.clone()));
+        for name in ["enter", "space"] {
+            for lost in ["another app takes focus", "nothing in the window has focus"] {
+                cx.update(|window, cx| window.focus(&list, cx));
+                draw(cx);
+                key(cx, name, true);
+                if lost == "another app takes focus" {
+                    cx.deactivate_window();
+                    draw(cx);
+                    cx.update(|window, _| window.activate_window());
+                } else {
+                    cx.update(|window, cx| window.blur(cx));
+                }
+                draw(cx);
+                cx.update(|window, cx| window.focus(&way_back, cx));
+                draw(cx);
+                let before = generation(cx);
+                key(cx, name, true);
+                key(cx, name, false);
+                settle(&app, cx).await;
+                assert_eq!(
+                    generation(cx),
+                    before + 1,
+                    "{name}, {lost}: the next press on the Refresh reads once"
+                );
+            }
+        }
     }
 
     /// An explicit Open of a marked tab's folder whose snapshot names a
