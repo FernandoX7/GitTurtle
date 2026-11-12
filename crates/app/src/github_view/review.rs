@@ -3204,12 +3204,14 @@ impl Panel {
         }
     }
     /// A Button pressed by `event` whose action moved focus, where it may have given a
-    /// composer focus: a section tab, which gives Review's comment or review body, or an open
-    /// conversation's reply, focus; or, used in Review, Add to review, Discard this comment, a
-    /// collected comment's Remove or Save and close reply, which leave focus in the review
-    /// body, or in the comment still open. Its Enter is held off the composers when one holds
-    /// focus now ([`Self::hold_enter_click`]), and otherwise left alone: on the changed-file
-    /// list, a section's first stop or the repository field it takes no new line.
+    /// composer focus: a conversation's Reply, which opens its reply unless refused; a section
+    /// tab, which gives Review's comment or review body, or an open conversation's reply,
+    /// focus; or, used in Review, Add to review, Discard this comment, a collected comment's
+    /// Remove, Save and close reply or a confirmation's Keep editing, which leave focus in the
+    /// review body, or in the comment or reply still open. Its Enter is held off the
+    /// composers when one holds focus now ([`Self::hold_enter_click`]), and otherwise left
+    /// alone: on the changed-file list, a section's first stop, the repository field or a
+    /// refused Reply it takes no new line.
     pub(super) fn hold_enter_on_composer(
         &mut self,
         event: &ClickEvent,
@@ -7565,7 +7567,8 @@ mod tests {
 
     /// Return on `route`, a Button used in Review whose action leaves focus in the empty
     /// review body: Add to review and Discard this comment, beside the comment open on a line,
-    /// a collected comment's Remove, and an open reply's Save and close reply. The press acts
+    /// a collected comment's Remove, an open reply's Save and close reply, and a
+    /// confirmation's Keep editing. The press acts
     /// once and types nothing into the body while the key is held ([`return_held_off`]);
     /// after the key-up a fresh press types its line. Each Button took the press as the key
     /// went down, and each of its repeats typed a new line into the body (decided 2026-11-11:
@@ -7577,6 +7580,7 @@ mod tests {
             "Add to review" => "github-add-comment".into(),
             "Discard this comment" => "github-discard-composer".into(),
             "Remove" => ("github-remove-inline", 0usize).into(),
+            "Keep editing" => "github-edit-submission".into(),
             _ => "github-close-reply".into(),
         };
         if route == "Save and close reply" {
@@ -7588,6 +7592,19 @@ mod tests {
                     panel.change_section(Section::Review, window, cx);
                     let target = panel.conversations.threads[0].target.clone();
                     panel.begin_reply(target, window, cx);
+                    return;
+                }
+                if route == "Keep editing" {
+                    panel.change_section(Section::Review, window, cx);
+                    let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+                    panel.confirm = Some(Confirmation {
+                        action: Action::Comment {
+                            pull: model::fixture_pull(false).capture(repository),
+                            body: "Looks right".into(),
+                        },
+                        account: "offline-reviewer".into(),
+                    });
+                    panel.focus_confirmation(window, cx);
                     return;
                 }
                 panel.select_review_line(3, false, window, cx);
@@ -7615,6 +7632,7 @@ mod tests {
             let acted = match route {
                 "Add to review" => panel.review.comments.len() == 1,
                 "Save and close reply" => panel.conversations.active.is_none(),
+                "Keep editing" => panel.confirm.is_none(),
                 _ => panel.review.comments.is_empty(),
             } && panel.review.composing.is_none();
             (
@@ -7644,6 +7662,10 @@ mod tests {
     #[gpui::test]
     async fn a_return_on_remove_types_nothing_into_the_review_body(cx: &mut TestAppContext) {
         a_return_left_in_the_review_body(cx, "Remove");
+    }
+    #[gpui::test]
+    async fn a_return_on_keep_editing_types_nothing_into_the_review_body(cx: &mut TestAppContext) {
+        a_return_left_in_the_review_body(cx, "Keep editing");
     }
     #[gpui::test]
     async fn a_return_on_save_and_close_reply_types_nothing_into_the_review_body(

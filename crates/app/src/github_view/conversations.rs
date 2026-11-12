@@ -1203,9 +1203,10 @@ impl Panel {
                         self.button("github-edit-submission", "Keep editing", "", false, cx)
                             .debug_selector(|| "github-edit-submission".into())
                             .disabled(pending)
-                            .on_click(cx.listener(|this, _, window, cx| {
+                            .on_click(cx.listener(|this, event, window, cx| {
                                 this.confirm = None;
                                 this.focus_visible_section(window, cx);
+                                this.hold_enter_on_composer(event, window, cx);
                                 cx.notify();
                             })),
                     ),
@@ -1419,7 +1420,7 @@ impl Panel {
                                 .child(label(("github-conversation-body",index * 1000 + comment_index),comment.body.clone()).min_w_0())
                         }))
                         .child(self.conversation_part(index, div(), cx).debug_selector(move||format!("github-thread-actions-{index}")).flex().flex_wrap().items_center().gap_2().pt_1()
-                            .child(self.button(("github-thread-reply",index),"Reply","",false, cx).debug_selector(move||format!("github-thread-reply-{index}")).disabled(self.pending||!can_reply).on_click(cx.listener(move|this,event,window,cx|{this.begin_reply(reply.clone(),window,cx);this.hold_enter_click(event,window,cx);})))
+                            .child(self.button(("github-thread-reply",index),"Reply","",false, cx).debug_selector(move||format!("github-thread-reply-{index}")).disabled(self.pending||!can_reply).on_click(cx.listener(move|this,event,window,cx|{this.begin_reply(reply.clone(),window,cx);this.hold_enter_on_composer(event,window,cx);})))
                             .child(self.button(("github-thread-resolution",index),if resolved{"Reopen"}else{"Resolve"},"",false, cx).disabled(self.pending||!can_resolve).on_click(cx.listener(move|this,_,window,cx|this.review_resolution(resolve.clone(),!resolved,window,cx))))
                             .child(self.button(("github-thread-reload",index),if opening_missing{"Opening comments"}else{"Refresh thread"},"refresh",false, cx).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(refresh.clone(),None,window,cx))))
                             .when(cursor.is_some(),|element|element.child(self.button(("github-thread-more",index),"Next comment page","",false, cx).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(more.clone(),cursor.clone(),window,cx)))))
