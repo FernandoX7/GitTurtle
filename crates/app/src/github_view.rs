@@ -19384,11 +19384,15 @@ mod tests {
         );
     }
 
+    /// A form of the header ([`header_forms`]): its name, the function that lays it out, and the
+    /// neighbours of Pull requests a test hovers there.
+    type HeaderForm = (&'static str, fn(&mut VisualTestContext), [&'static str; 2]);
+
     /// The header's two forms beside Pull requests at 461 × 490, each laid out by its function,
     /// with the neighbours whose tooltips a test hovers there, a first and a second: the wrapped
     /// full header's Settings, on the button's row, at 13 pt, the form a window takes at
     /// typical sizes, and the compact form's Changes and History glyph toggles at 18 pt.
-    fn header_forms() -> [(&'static str, fn(&mut VisualTestContext), [&'static str; 2]); 2] {
+    fn header_forms() -> [HeaderForm; 2] {
         [
             (
                 "the wrapped full header",
