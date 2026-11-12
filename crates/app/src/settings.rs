@@ -1292,8 +1292,17 @@ impl GitTurtle {
         self.save_preferences(window, cx);
     }
 
+    /// Saves the identity fields to the shown repository's Git
+    /// configuration, refused on a marked tab, whose repository is the one
+    /// read before the mark: where its `.git` came back before a read, the
+    /// save wrote `user.name` and `user.email` there (security re-check of
+    /// FU44-D3; decided 2026-11-11: an entry is offered only where it can
+    /// act), as Apply profile… is refused there.
     fn save_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.repository.is_none() || self.operation_busy.is_some() {
+        if self.repository.is_none()
+            || self.operation_busy.is_some()
+            || self.shown_tab_unavailable()
+        {
             return;
         }
         let name = self.identity_name.read(cx).value().trim().to_owned();
@@ -2757,8 +2766,8 @@ impl GitTurtle {
 
         let save_identity = self.page_focus("save-repository-identity", cx);
         let reset_identity = self.page_focus("use-current-identity", cx);
-        // A marked tab's repository is the one read before the mark:
-        // Manage named profiles… is refused there with the mark's reason.
+        // A marked tab's repository is the one read before the mark: the
+        // identity card's actions on it are refused with the mark's reason.
         let marked = self.shown_tab_unavailable();
         let identity = if let Some(repository_name) = repository_name {
             let repository_identity = format!(
@@ -2864,7 +2873,11 @@ impl GitTurtle {
                                 .primary()
                                 .icon(Icon::default().path("icons/check.svg").size(px(14.)))
                                 .label(if looks_busy { "Working…" } else { "Save repository identity" })
-                                .map(|save| crate::workspace::refusing(save, || "save-repository-identity".into(), busy || !identity_edited, looks_busy || !identity_edited))
+                                .map(|save| {
+                                    let unavailable = !identity_edited || marked;
+                                    let save = crate::workspace::refusing(save, || "save-repository-identity".into(), busy || unavailable, looks_busy || unavailable);
+                                    says_the_mark(save, "save-repository-identity", "Save repository identity", None, marked)
+                                })
                                 .on_click(cx.listener(|this, _, window, cx| this.save_identity(window, cx))),
                         )
                         .child(
@@ -2872,13 +2885,14 @@ impl GitTurtle {
                                 .track_focus(&reset_identity)
                                 .debug_selector(|| "use-current-identity".into())
                                 .ml(-pull)
-                                .tooltip("Restore the repository’s current name and email")
                                 .map(|reset| {
-                                    let unavailable = self.profile.is_none() || !identity_edited;
-                                    crate::workspace::refusing(reset, || "use-current-identity".into(), busy || unavailable, looks_busy || unavailable)
+                                    let unavailable = self.profile.is_none() || !identity_edited || marked;
+                                    let reset = crate::workspace::refusing(reset, || "use-current-identity".into(), busy || unavailable, looks_busy || unavailable);
+                                    says_the_mark(reset, "use-current-identity", "Reset edits", Some("Restore the repository’s current name and email"), marked)
                                 })
-                                // Refused at once while a write runs.
-                                .on_click(cx.listener(|this, _, window, cx| if this.operation_busy.is_none() { this.fill_identity_inputs(window, cx) })),
+                                // Refused at once while a write runs, and on a
+                                // marked tab.
+                                .on_click(cx.listener(|this, _, window, cx| if this.operation_busy.is_none() && !this.shown_tab_unavailable() { this.fill_identity_inputs(window, cx) })),
                         ),
                 )
                 .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(if self.profile.as_ref().is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." }))

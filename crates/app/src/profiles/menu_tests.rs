@@ -669,6 +669,146 @@ async fn settings_manage_named_profiles_says_the_mark(cx: &mut TestAppContext) {
     assert_eq!(name(), Some(None), "its own name again");
 }
 
+/// Settings' Save repository identity and Reset edits on a marked tab are
+/// refused with the mark's reason, as Manage named profiles… is: announced
+/// unavailable and dimmed, the reason in their tooltips and accessible
+/// names, and no route acts. Return in the Name field and the click start
+/// no write, so the repository read before the mark keeps its `user.name`,
+/// which Save wrote where its `.git` came back before a read (the security
+/// re-check of FU44-D3), and Reset edits refills nothing. Offered again as
+/// the mark clears.
+#[gpui::test]
+async fn settings_identity_actions_say_the_mark(cx: &mut TestAppContext) {
+    use crate::workspace::refusals::{self, Refusal};
+    const SAVE: &str = "save-repository-identity";
+    const RESET: &str = "use-current-identity";
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow_mut().clear());
+    crate::settings::MARKED_NAMES.with(|names| names.borrow_mut().clear());
+    refusals::forget();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let configured = || {
+        let output = std::process::Command::new("git")
+            .args(["config", "--local", "--get", "user.name"])
+            .current_dir(&root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let before = configured();
+    // An edit, so Save and Reset edits are offered.
+    let edit = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.identity_name
+                    .update(cx, |input, cx| input.set_value("Another Name", window, cx))
+            })
+        });
+        draw(cx);
+    };
+    edit(cx);
+    let offered = Some(Refusal {
+        announced: false,
+        dimmed: false,
+    });
+    for key in [SAVE, RESET] {
+        assert_eq!(
+            refusals::get(key),
+            offered,
+            "{key}: offered before the mark"
+        );
+    }
+    set(&app, cx, |app| {
+        let index = app.repository_tabs.active.expect("a tab");
+        app.repository_tabs.tabs[index].error = Some("Repository unavailable".into());
+    });
+    for (key, tooltip, name) in [
+        (
+            SAVE,
+            "Save repository identity · Repository unavailable",
+            "Save repository identity: Repository unavailable",
+        ),
+        (
+            RESET,
+            "Restore the repository’s current name and email · Repository unavailable",
+            "Reset edits: Repository unavailable",
+        ),
+    ] {
+        assert_eq!(
+            refusals::get(key),
+            Some(Refusal {
+                announced: true,
+                dimmed: true,
+            }),
+            "{key}: refused and dimmed on the marked tab"
+        );
+        assert_eq!(
+            crate::views::CONTROL_TOOLTIPS
+                .with(|tooltips| tooltips.borrow().get(key).cloned())
+                .as_deref(),
+            Some(tooltip),
+            "{key}: its tooltip says why"
+        );
+        assert_eq!(
+            crate::settings::MARKED_NAMES.with(|names| names.borrow().get(key).cloned()),
+            Some(Some(name.into())),
+            "{key}: its accessible name says why"
+        );
+    }
+    // Return in the Name field, then the click.
+    let field = app.read_with(cx, |app, cx| app.identity_name.read(cx).focus_handle(cx));
+    cx.update(|window, cx| window.focus(&field, cx));
+    draw(cx);
+    cx.simulate_keystrokes("enter");
+    assert_eq!(
+        app.read_with(cx, |app, _| app.operation_busy),
+        None,
+        "Return in the Name field saves nothing"
+    );
+    let center = cx.debug_bounds(SAVE).expect("Save").center();
+    cx.simulate_click(center, gpui::Modifiers::default());
+    assert_eq!(
+        app.read_with(cx, |app, _| app.operation_busy),
+        None,
+        "the click saves nothing"
+    );
+    let center = cx.debug_bounds(RESET).expect("Reset edits").center();
+    cx.simulate_click(center, gpui::Modifiers::default());
+    settle(&app, cx).await;
+    assert_eq!(
+        configured(),
+        before,
+        "the repository's identity is as it was"
+    );
+    assert_eq!(
+        app.read_with(cx, |app, cx| app.identity_name.read(cx).value().to_string()),
+        "Another Name",
+        "Reset edits refills nothing"
+    );
+    set(&app, cx, |app| {
+        let index = app.repository_tabs.active.expect("a tab");
+        app.repository_tabs.tabs[index].error = None;
+    });
+    edit(cx);
+    for key in [SAVE, RESET] {
+        assert_eq!(
+            refusals::get(key),
+            offered,
+            "{key}: offered as the mark clears"
+        );
+        assert_eq!(
+            crate::settings::MARKED_NAMES.with(|names| names.borrow().get(key).cloned()),
+            Some(None),
+            "{key}: its own name again"
+        );
+    }
+}
+
 /// A New profile… form saved on a marked tab, where the manager the save
 /// goes on to is refused (`open_profiles`), confirms the save where the
 /// person is: "Profile preferences saved" in the window's notice, as a save
