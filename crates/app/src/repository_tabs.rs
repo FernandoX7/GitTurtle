@@ -5803,6 +5803,86 @@ pub(crate) mod tests {
         );
     }
 
+    /// The Linux Main Menu open as the tab's mark lands closes too, by the
+    /// mark's close itself, the one every tab change uses
+    /// (`GitTurtle::close_menus_for_the_mark`), and focus moves from it to
+    /// the mark's way back, the navigation's Refresh, never back to the
+    /// list it opened from: opened for the repository read before the mark,
+    /// its items acted on that repository. The mark clearing brings no menu
+    /// back.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_main_menu_open_as_the_mark_lands_closes_to_the_way_back(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let quick = crate::command_palette::COMMANDS
+            .iter()
+            .find(|spec| spec.id == crate::command_palette::CommandId::QuickOpen)
+            .expect("Quick Open is a command")
+            .label;
+        let drawn = |cx: &mut VisualTestContext| {
+            ["MenuItem", "MenuItem disabled"].iter().any(|role| {
+                cx.debug_bounds(format!("menu-item: {quick} · {role}").leak())
+                    .is_some()
+            })
+        };
+        let list = app.read_with(cx, |app, _| app.focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        draw(cx);
+        let trigger = cx.debug_bounds("main-menu").expect("the Main Menu button");
+        cx.simulate_click(trigger.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(drawn(cx), "the Main Menu is drawn");
+        assert!(
+            cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+            "focus is in it"
+        );
+
+        let dismissed = crate::native_accessibility::tab_dismissals();
+        let away = fixture.path().join("moved-away");
+        std::fs::rename(root.join(".git"), &away).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "marked"
+        );
+        assert!(!drawn(cx), "the Main Menu is closed");
+        assert!(
+            crate::native_accessibility::tab_dismissals() > dismissed,
+            "closed by the mark's close itself"
+        );
+        assert!(
+            !cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+            "focus left it"
+        );
+        assert!(
+            cx.update(|window, cx| app.read(cx).mark_way_back.is_focused(window)),
+            "focus is on the way back"
+        );
+        assert!(
+            !cx.update(|window, _| list.is_focused(window)),
+            "not back on the list it opened from"
+        );
+
+        std::fs::rename(&away, root.join(".git")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(
+            !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "unmarked"
+        );
+        assert!(!drawn(cx), "no menu comes back");
+    }
+
     /// An explicit Open of a marked tab's folder whose snapshot names a
     /// repository another tab already shows, as the work tree enclosing the
     /// folder can be once the folder's own `.git` has gone, merges into that
