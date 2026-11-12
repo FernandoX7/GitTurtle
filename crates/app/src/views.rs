@@ -10460,6 +10460,7 @@ impl Render for GitTurtle {
         let colors = palette(cx);
         self.update_native_menus(window, cx);
         let chrome = self.chrome(window, cx);
+        self.hide_tooltip_on_page_change(window, cx);
         let page = match self.page {
             AppPage::Repository => self.render_repository(chrome, window, cx),
             AppPage::Projects => self.hub.clone().into_any_element(),

@@ -1021,13 +1021,24 @@ impl GitTurtle {
             .on_action(cx.listener(Self::pull_requests_escape))
             .when(pointer_tooltip, |open| {
                 let build = move |window: &mut Window, cx: &mut App| {
-                    let (kept, refusal) = owner.upgrade().map_or((false, None), |app| {
-                        let app = app.read(cx);
-                        (
-                            app.github_refusal_kept().is_some(),
-                            app.github_open_refusal(),
-                        )
-                    });
+                    let (drawn, kept, refusal) =
+                        owner.upgrade().map_or((false, false, None), |app| {
+                            let app = app.read(cx);
+                            (
+                                app.page == AppPage::Repository && app.repository.is_some(),
+                                app.github_refusal_kept().is_some(),
+                                app.github_open_refusal(),
+                            )
+                        });
+                    // The header draws the button only on the Repository page, where its
+                    // prepaint keeps `answering` and `resting` for this frame: elsewhere they
+                    // are the last Repository frame's, and a request still held, under a
+                    // pointer in the button's old place, drew the reason over Settings and the
+                    // idle sentence once the write ended. A page change hides the overlay too
+                    // (`GitTurtle::hide_tooltip_on_page_change`).
+                    if !drawn {
+                        return cx.new(|_| gpui::EmptyView).into();
+                    }
                     // A pointer that met the button in the answer's first frame asked for this
                     // tooltip: an empty view, drawn as nothing beside the answer, and once the
                     // answer has gone, under a pointer that has left the button since.
@@ -19822,6 +19833,249 @@ mod tests {
             draw(cx);
         }
         app.update(cx, |app, _| app.operation_busy = None);
+    }
+
+    /// Asserts that the last frame drew no tooltip popup, none besides `own`, the popups the
+    /// page draws of its own ([`own_popups`]), and none of Pull requests' sentences: the reason
+    /// it is refused for or its idle sentence in either header form.
+    fn assert_no_tooltip(cx: &mut VisualTestContext, own: &[Bounds<Pixels>], at: &str) {
+        let popups: Vec<_> = kit_tooltip_popups(cx)
+            .into_iter()
+            .filter(|popup| !own.contains(popup))
+            .collect();
+        assert!(popups.is_empty(), "{at}: no popup: {popups:?}");
+        for sentence in [
+            REFUSED_TOOLTIP,
+            "pull-requests/tooltip/Discover pull requests and review captured changes",
+            "pull-requests/tooltip/Pull requests · Discover pull requests and review captured \
+             changes",
+        ] {
+            assert!(
+                cx.debug_bounds(sentence).is_none(),
+                "{at}: {sentence} is not drawn"
+            );
+        }
+    }
+
+    /// The popups `page` draws of its own in the kit's popover fill with rounded corners, as a
+    /// tooltip's popup is drawn ([`kit_tooltip_popups`]), such as Settings' cards: the page
+    /// opened from the repository with the pointer away from every control and no tooltip
+    /// shown or waiting, then left for the repository again.
+    fn own_popups(
+        app: &Entity<GitTurtle>,
+        page: AppPage,
+        cx: &mut VisualTestContext,
+    ) -> Vec<Bounds<Pixels>> {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        cx.executor().advance_clock(TOOLTIP_DELAY * 2);
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| match page {
+                AppPage::Settings => app.show_settings(window, cx),
+                AppPage::Projects => app.show_projects(window, cx),
+                AppPage::Repository => unreachable!("the repository is the page left"),
+            })
+        });
+        draw(cx);
+        let own = kit_tooltip_popups(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        draw(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.page),
+            AppPage::Repository,
+            "back on the repository"
+        );
+        own
+    }
+
+    /// A tooltip Pull requests asked for draws nothing on another page, though the page changes
+    /// while it still waits out the kit's 500 ms show delay: the pointer meeting the button in
+    /// the answer's first frame, Settings opened by its shortcut 200 ms later, and the pointer
+    /// moving 1 px inside the place the button stood, no frame on Settings draws a popup besides
+    /// Settings' own, the reason or the button's idle sentence, while the write runs, the show
+    /// coming due 300 ms after the move among them, or in the 600 ms after it ends. The
+    /// shortcut's key goes down on the Repository page and draws a frame there first, but the
+    /// button's prepaint, which hands back a request built as nothing, finds none built yet:
+    /// left waiting across the page change, the show came due on Settings, and the builder,
+    /// deciding from the last Repository frame, drew the reason over Settings, and the button's
+    /// idle tooltip once the write had ended. A shortcut pressed after the delay meets a request
+    /// already built, which that prepaint hands back, so that route drew nothing even without
+    /// the builder's page check and the page change's hide.
+    #[gpui::test]
+    async fn a_tooltip_pull_requests_asked_for_within_its_delay_draws_nothing_on_settings(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (_fixture, app, opener, cx) = refused_by_tab(cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        // Settings' own popups while the write runs and once it has ended, which changes a
+        // card's height.
+        let settings = own_popups(&app, AppPage::Settings, cx);
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        let settings_after = own_popups(&app, AppPage::Settings, cx);
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        let button = cx.debug_bounds("pull-requests").expect("the button");
+        let tick = |cx: &mut VisualTestContext, by: Duration| {
+            cx.executor().advance_clock(by);
+            cx.run_until_parked();
+            one_frame(cx);
+        };
+        meet_in_the_answers_first_frame(cx, button.center());
+        draw(cx);
+        // 200 ms on, 300 ms before the button's show comes due.
+        tick(cx, TOOLTIP_DELAY - Duration::from_millis(300));
+        assert!(
+            answer_drawn(cx),
+            "the answer stands under the resting pointer"
+        );
+        assert_eq!(
+            kit_tooltip_popups(cx).len(),
+            1,
+            "the answer alone, the button's tooltip still waiting out its delay"
+        );
+
+        // Settings by its shortcut within the delay, and the pointer moving 1 px where the
+        // button stood.
+        cx.simulate_keystrokes("secondary-,");
+        one_frame(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.page),
+            AppPage::Settings,
+            "the shortcut opens Settings"
+        );
+        assert_no_tooltip(cx, &settings, "Settings' first frame");
+        cx.simulate_mouse_move(
+            button.center() + point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        one_frame(cx);
+        for step in 0..=6 {
+            assert_no_tooltip(cx, &settings, &format!("{} ms after the move", step * 100));
+            tick(cx, Duration::from_millis(100));
+        }
+
+        // The write ends.
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        one_frame(cx);
+        for step in 0..=12 {
+            assert_no_tooltip(
+                cx,
+                &settings_after,
+                &format!("{} ms after the write", step * 50),
+            );
+            tick(cx, Duration::from_millis(50));
+        }
+    }
+
+    /// A page change hides the tooltip the window shows or waits to show, whatever control asked
+    /// for it: at 18 pt in a 461 × 490 window, where the header draws its compact form, the
+    /// pointer resting on History past the kit's 500 ms show delay, its tooltip drawn, Settings
+    /// opened by its shortcut draws no popup besides its own in its first frame or in the
+    /// 600 ms after; and back on the repository, the pointer meeting Changes and Projects
+    /// opened by its shortcut 200 ms later, the show coming due draws nothing over Projects.
+    /// The kit's overlay forgets a tooltip only as its trigger's hover ends, which a control the
+    /// page no longer draws never ends: History's tooltip stood over Settings, and Changes'
+    /// showed over Projects once its delay was up.
+    #[gpui::test]
+    async fn a_page_change_hides_the_tooltip_shown_or_waiting(cx: &mut TestAppContext) {
+        use crate::tags::tests::{TOOLTIP_DELAY, draw};
+        let (_fixture, app, cx) = repository_window(cx);
+        cx.update(|window, cx| {
+            window.activate_window();
+            crate::shortcuts::bind_keys(cx);
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        compact_form_header(cx);
+        let (settings, projects) = (
+            own_popups(&app, AppPage::Settings, cx),
+            own_popups(&app, AppPage::Projects, cx),
+        );
+        let (history, changes) = (
+            cx.debug_bounds("history-tab").expect("History"),
+            cx.debug_bounds("changes-tab").expect("Changes"),
+        );
+        let tick = |cx: &mut VisualTestContext, by: Duration| {
+            cx.executor().advance_clock(by);
+            cx.run_until_parked();
+            one_frame(cx);
+        };
+
+        // A tooltip shown, and Settings by its shortcut.
+        cx.simulate_mouse_move(history.center(), None, Modifiers::default());
+        draw(cx);
+        tick(cx, TOOLTIP_DELAY + Duration::from_millis(150));
+        assert_eq!(
+            kit_tooltip_popups(cx).len(),
+            1,
+            "History's tooltip is drawn"
+        );
+        cx.simulate_keystrokes("secondary-,");
+        one_frame(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.page),
+            AppPage::Settings,
+            "the shortcut opens Settings"
+        );
+        for step in 0..=6 {
+            assert_no_tooltip(
+                cx,
+                &settings,
+                &format!("Settings, {} ms after it opened", step * 100),
+            );
+            tick(cx, Duration::from_millis(100));
+        }
+
+        // A tooltip waiting out its delay, and Projects by its shortcut.
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        draw(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.page),
+            AppPage::Repository,
+            "back on the repository"
+        );
+        tick(cx, TOOLTIP_DELAY * 2);
+        cx.simulate_mouse_move(changes.center(), None, Modifiers::default());
+        draw(cx);
+        tick(cx, Duration::from_millis(200));
+        assert!(
+            kit_tooltip_popups(cx).is_empty(),
+            "Changes' tooltip waits out its delay"
+        );
+        cx.simulate_keystrokes("secondary-shift-o");
+        one_frame(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.page),
+            AppPage::Projects,
+            "the shortcut opens Projects"
+        );
+        for step in 0..=8 {
+            assert_no_tooltip(
+                cx,
+                &projects,
+                &format!("Projects, {} ms after it opened", step * 100),
+            );
+            tick(cx, Duration::from_millis(100));
+        }
     }
 
     /// Forgets the side the reason's popup at Pull requests last took and how many times it was

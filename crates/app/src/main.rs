@@ -559,6 +559,9 @@ struct GitTurtle {
     /// The pointer where a row's Stage or Unstage was pressed, until it moves.
     still_pointer: Option<motion::StillPointer>,
     page: AppPage,
+    /// The page the last frame drew, which a frame drawing another hides the window's tooltip
+    /// for ([`GitTurtle::hide_tooltip_on_page_change`]).
+    drawn_page: Option<AppPage>,
     hub: Entity<projects::ProjectHub>,
     commit_title: Entity<InputState>,
     commit_message: Entity<TextareaState>,
@@ -988,6 +991,7 @@ impl GitTurtle {
             } else {
                 AppPage::Projects
             },
+            drawn_page: None,
             hub: hub.clone(),
             commit_title,
             commit_message,
@@ -2261,6 +2265,23 @@ impl GitTurtle {
         window.focus(&self.focus, cx);
         self.try_automatic_refresh(window, cx);
         cx.notify();
+    }
+    /// Hides the window's tooltip, shown or still waiting out its delay, in the first frame
+    /// drawn on a page other than the last frame's, whatever changed the page. A tooltip
+    /// describes the control under the pointer in this frame, and the kit's overlay forgets one
+    /// only as its trigger's hover ends, which a trigger the page no longer draws never ends:
+    /// under a pointer resting on a header control, a shortcut that opened Settings left that
+    /// control's tooltip drawn over Settings. Run as this view is built, before the overlay,
+    /// which the window builds after it, so the new page's first frame draws none; a hover
+    /// begun on the new page then shows its tooltip after its own delay.
+    fn hide_tooltip_on_page_change(&mut self, window: &Window, cx: &mut App) {
+        if self
+            .drawn_page
+            .replace(self.page)
+            .is_some_and(|drawn| drawn != self.page)
+        {
+            gpui_kit::component::Root::hide_tooltip(window, cx);
+        }
     }
     fn select_commit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.close_blame(window, cx);

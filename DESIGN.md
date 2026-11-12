@@ -164,7 +164,7 @@ Where the icons still leave the list too narrow, a tab cuts its name, with an el
 
 The tab strip's Workspaces menu exposes the complete tab list, pinning, keyboard-friendly reorder actions and saved-workspace management; these occasional actions no longer occupy permanent separate buttons.
 
-Projects and Settings temporarily hide the repository workspace. Returning restores the retained editor or list focus, including an open editor Find field, selection, and viewport. Dragged navigation and inspector widths survive those visits and History/Compare transitions. File-history inspection and comparison modes remain available after returning. Theme changes refresh retained editor decorations without replacing the editors or their search state.
+Projects and Settings temporarily hide the repository workspace. A tooltip shows only for a control drawn under the pointer in the frame that draws it, so a page change, by a shortcut, a click or Back, hides any tooltip shown or still waiting out its delay: none from the page left stands over the next, as Pull requests' reason once stood over Settings under a pointer resting where the button had been, and a hover on the new page waits out its own delay. Returning restores the retained editor or list focus, including an open editor Find field, selection, and viewport. Dragged navigation and inspector widths survive those visits and History/Compare transitions. File-history inspection and comparison modes remain available after returning. Theme changes refresh retained editor decorations without replacing the editors or their search state.
 
 ### Projects
 
