@@ -3152,6 +3152,9 @@ impl GitTurtle {
         self.remotes = remotes;
         if !quiet && self.mode == WorkspaceMode::Working {
             self.invalidate_read();
+            // History's read in place, owed behind Changes, goes with the
+            // rest and is asked for again.
+            self.read_owed_history_in_place(window, cx);
             if let Some((index, area)) = self.working_selected {
                 if self.shows_written_diff(index, area, cx) {
                     self.read_written_diff(index, area, window, cx);

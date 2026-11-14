@@ -38,6 +38,13 @@ pub(super) struct State {
     /// landing replaces History's rows, graph or page: the landing compares
     /// this count, not the rows (`automatic_refresh::QuietDrawn`).
     pub installed: u64,
+    /// History's read in place ([`GitTurtle::read_all_history_in_place`])
+    /// is owed: asked for, and neither answered by its own reply nor
+    /// settled by a snapshot that installs History ([`Self::captured`]).
+    /// A status read landing in Changes stops every read
+    /// (`invalidate_read`), this one with them, and asks for it again
+    /// ([`GitTurtle::read_owed_history_in_place`]).
+    owes_in_place: bool,
 }
 impl State {
     pub fn retained_bytes(&self) -> usize {
@@ -120,6 +127,7 @@ impl State {
     pub fn captured(&mut self, snapshot: &worker::Snapshot) {
         self.remember(snapshot);
         self.pending = None;
+        self.owes_in_place = false;
     }
     /// A quiet read's `snapshot`. Where History is `following` its newest
     /// rows, the read is installed at the top of the list it follows, so the
@@ -412,6 +420,10 @@ impl GitTurtle {
     /// (`worker::QuietHistory::Retained`), the rows gone with the replaced
     /// repository: it showed an empty History under "The displayed history
     /// is retained". An Open would leave Changes and cancel an open form.
+    /// The read stays owed until its own reply lands or a snapshot installs
+    /// History ([`State::captured`]), so a status read that stops it as it
+    /// lands in Changes asks for it again
+    /// ([`Self::read_owed_history_in_place`]).
     pub(super) fn read_all_history_in_place(
         &mut self,
         window: &mut Window,
@@ -420,6 +432,7 @@ impl GitTurtle {
         let Some(path) = self.path.clone() else {
             return;
         };
+        self.history_updates.owes_in_place = true;
         self.request_history_discovery(
             Job::Open {
                 root: Some(path.clone()),
@@ -435,6 +448,24 @@ impl GitTurtle {
             window,
             cx,
         );
+    }
+
+    /// Asks again for History's read in place while it is owed
+    /// ([`Self::read_all_history_in_place`]), with a fresh generation, as a
+    /// status read landing in Changes has just stopped it with every other
+    /// read (`apply_worktree_state`'s `invalidate_read`). A re-clone's
+    /// landing behind Changes asks for both reads, the found repository's
+    /// status on the operation executor and this one on the reader, and a
+    /// status read landing first left History with no rows of the
+    /// repository it found.
+    pub(super) fn read_owed_history_in_place(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.history_updates.owes_in_place {
+            self.read_all_history_in_place(window, cx);
+        }
     }
 
     pub(super) fn view_created_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -487,6 +518,9 @@ impl GitTurtle {
                 }
                 this.loading = None;
                 this.task = None;
+                if discovery == Discovery::InPlace {
+                    this.history_updates.owes_in_place = false;
+                }
                 match result {
                     Ok(Ok(output)) => {
                         let in_place = discovery == Discovery::InPlace;
@@ -1241,11 +1275,97 @@ mod tests {
     /// selection, nor Changes' rows. Changes stays shown, its landing
     /// skipping the switch to History that Show latest's makes, with the
     /// found repository's newest row selected behind it, so History opens
-    /// there on that commit's changed files, read as it opens.
+    /// there on that commit's changed files, read as it opens. Here History's
+    /// read in place lands before the found repository's status read.
     #[gpui::test]
     async fn a_re_clone_beside_a_vanished_scope_lands_behind_changes_with_nothing_from_before(
         cx: &mut TestAppContext,
     ) {
+        land_a_re_clone_behind_changes(cx, FirstLanding::History).await;
+    }
+
+    /// The landing of
+    /// [`a_re_clone_beside_a_vanished_scope_lands_behind_changes_with_nothing_from_before`]
+    /// with the found repository's status read landing first: it stops
+    /// every read as it lands in Changes (`invalidate_read`), History's read
+    /// in place among them, and asks for that one again, so History still
+    /// shows the found repository's rows. It once kept none.
+    #[gpui::test]
+    async fn a_re_clone_behind_changes_reads_history_again_when_its_status_lands_first(
+        cx: &mut TestAppContext,
+    ) {
+        land_a_re_clone_behind_changes(cx, FirstLanding::Status).await;
+    }
+
+    /// History's read in place, owed behind Changes and stopped by Back
+    /// before the reader took it, is settled by the history History's
+    /// Refresh installs ([`State::captured`]): a status read landing in
+    /// Changes afterwards reads nothing in place, and History keeps the
+    /// commit selected since, where All history read again in place would
+    /// select its newest row.
+    #[gpui::test]
+    async fn a_history_read_owed_behind_changes_ends_with_the_history_a_refresh_installs(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{
+            history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(3, 1)).await;
+        settle(&app, cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        // Asked for as a re-clone's landing asks for it, and stopped by Back
+        // while the reader is held.
+        let reader_held = app.read_with(cx, |app, _| app.worker.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.read_all_history_in_place(window, cx);
+                app.back_to_history(window, cx);
+            })
+        });
+        drop(reader_held);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let path = app.path.clone().expect("a repository");
+                app.open(path, app.scope.clone(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        // The reader's reads but a working row's comparison.
+        let reads =
+            |app: &GitTurtle, _: &App| app.worker.submissions() - app.worker.working_previews();
+        let before = app.read_with(cx, reads);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.executor().run_until_parked();
+        assert_eq!(
+            app.read_with(cx, |app, cx| (app.status_task.is_some(), reads(app, cx))),
+            (false, before),
+            "the status read landed in Changes and read nothing in place"
+        );
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.selected_commit),
+            Some(1),
+            "History keeps the commit selected"
+        );
+    }
+
+    /// Which of the two reads a re-clone's landing behind Changes asks for
+    /// lands first: History's read in place, on the reader, or the found
+    /// repository's status read, on the operation executor.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum FirstLanding {
+        History,
+        Status,
+    }
+
+    async fn land_a_re_clone_behind_changes(cx: &mut TestAppContext, first: FirstLanding) {
         use crate::views::tests::{
             fixture_git, fixture_git_output, fixture_repository, history_script,
             history_window_from, hold_quiet_reads_for_test, settle,
@@ -1332,6 +1452,57 @@ mod tests {
                 );
             })
         });
+        // The quiet read answers on the reader before anything runs here,
+        // and lands with the reader and the operation executor both held,
+        // so the two reads its landing asks for, History's in place and the
+        // found repository's status, wait and land in the order named as
+        // each thread is let go. Neither thread is the test's to schedule:
+        // parked before the holds, the quiet read could land with both
+        // free, and with the executor free where the status read lands
+        // first, that read could land as it was asked for.
+        assert!(
+            app.read_with(cx, |app, _| app.automatic.quiet_read_running()),
+            "the quiet read runs"
+        );
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        let reader_held = app.read_with(cx, |app, _| app.worker.hold());
+        let executor_held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.executor().run_until_parked();
+        let asked = |app: &GitTurtle, _: &App| {
+            (
+                (app.repository.as_ref()).is_some_and(|repo| repo.git_dir_inode() == found),
+                app.loading,
+                app.task.is_some(),
+                app.status_task.is_some(),
+            )
+        };
+        let reading = Some("Reading latest local history…");
+        assert_eq!(
+            app.read_with(cx, asked),
+            (true, reading, true, true),
+            "the quiet read landed, asking for History's read in place and the status read"
+        );
+        if first == FirstLanding::Status {
+            drop(executor_held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.executor().run_until_parked();
+            assert_eq!(
+                app.read_with(cx, asked),
+                (true, reading, true, false),
+                "the status read landed, and History's read in place is asked for again"
+            );
+            drop(reader_held);
+        } else {
+            drop(reader_held);
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            assert_eq!(
+                app.read_with(cx, asked),
+                (true, None, false, true),
+                "History's read in place landed before the status read"
+            );
+            drop(executor_held);
+        }
         // Landed once the found repository's status read and watch, asked
         // for on the operation thread, and the history read in place have
         // answered too, as with History shown.
@@ -1407,6 +1578,20 @@ mod tests {
             );
             assert_eq!(kept(app), Vec::<PathBuf>::new(), "no files from before");
         });
+        // Its own reply ended the read owed: Refresh in Changes reads the
+        // status, and the reader nothing but a selected row's comparison,
+        // which takes the place of any read asked for before it.
+        let reads =
+            |app: &GitTurtle, _: &App| app.worker.submissions() - app.worker.working_previews();
+        let before = app.read_with(cx, reads);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.executor().run_until_parked();
+        assert_eq!(
+            app.read_with(cx, |app, cx| (app.status_task.is_some(), reads(app, cx))),
+            (false, before),
+            "Refresh in Changes landed its status read and read nothing in place"
+        );
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
         settle(&app, cx).await;
         app.read_with(cx, |app, _| {
