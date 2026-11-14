@@ -675,6 +675,20 @@ fn written_path_text(path: &std::path::Path) -> String {
     format!("…{}", &text[start..])
 }
 
+/// Focus `pressed`, the Your themes button whose action starts, unless it
+/// holds focus already: focus stays where the person acted, as a dialog's
+/// close gives focus back to its opener (decided 2026-11-12), and the kit's
+/// Button takes none from a pointer press. A button its action disables
+/// keeps the focus it holds (the kit `Button::track_focus` patch), so the
+/// button holds it again once the action has finished, without a ring when
+/// the pointer pressed it, since nothing the chooser or the alert does marks
+/// keyboard focus but a key in the window.
+fn focus_pressed(pressed: &FocusHandle, window: &mut Window, cx: &mut App) {
+    if !pressed.is_focused(window) {
+        window.focus(pressed, cx);
+    }
+}
+
 /// Read a chosen theme document with the preference store's bounded reader: a
 /// regular file, no symbolic link as the final component, at most 64 KiB, and
 /// one descriptor for the check and the read. Its refusals are translated here
@@ -780,9 +794,7 @@ impl GitTurtle {
             None => self.page_focus("custom-themes-new", cx),
             Some(id) => self.theme_editor.action_focus(id, 0, cx),
         };
-        if !opener.is_focused(window) {
-            window.focus(&opener, cx);
-        }
+        focus_pressed(&opener, window, cx);
         self.theme_editor.opened_from = Some(editing);
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let viewport = window.viewport_size();
@@ -1136,6 +1148,10 @@ impl GitTurtle {
                 theme.name
             )
         };
+        // The alert gives focus back to Delete…, which a press focuses
+        // first, as its close and a delete the store refuses leave it
+        // (decided 2026-11-12).
+        focus_pressed(&self.theme_editor.action_focus(id, 2, cx), window, cx);
         let owner = cx.entity().downgrade();
         let previous = window.focused(cx);
         let cancel_focus = cx.focus_handle();
@@ -1328,6 +1344,9 @@ impl GitTurtle {
         let name = theme.name.clone();
         let bytes = theme.to_document();
         let suggested = theme.suggested_file_name();
+        // Export… keeps focus through the chooser and holds it once the
+        // export finishes (decided 2026-11-12).
+        focus_pressed(&self.theme_editor.action_focus(id, 1, cx), window, cx);
         let response = cx.prompt_for_new_path(&preferences::home_directory(), Some(&suggested));
         self.theme_editor.transfer_pending = true;
         self.clear_theme_transfer_result();
@@ -1380,6 +1399,9 @@ impl GitTurtle {
         if self.theme_transfer_busy() {
             return;
         }
+        // Import… keeps focus through the chooser and holds it once the
+        // import finishes (decided 2026-11-12).
+        focus_pressed(&self.page_focus("custom-themes-import", cx), window, cx);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -1573,11 +1595,26 @@ impl GitTurtle {
                 });
             }
             (Ok(themes), SaveOutcome::Imported { id, notice }) => {
+                // An import that fills the last place disables Import…, so
+                // focus it still holds goes to the imported theme's Edit…,
+                // which names what was imported, as a new theme's Save gives
+                // focus to the saved theme, rather than resting on a disabled
+                // control (decided 2026-11-14). Focus the person moved
+                // meanwhile stays where they put it. A row's action that
+                // gains focus brings its row into the list's view and the
+                // page's (`State::reveal_focused_row`), the new row included.
+                let filled = themes.len() >= MAX_CUSTOM_THEMES
+                    && self
+                        .page_focus("custom-themes-import", cx)
+                        .is_focused(window);
                 // Added and highlighted, not applied: the window keeps its theme.
                 self.set_custom_themes(themes, cx);
                 self.theme_editor.error = None;
                 self.theme_editor.notice = Some(notice);
                 self.theme_editor.imported = Some(id);
+                if filled {
+                    window.focus(&self.theme_editor.action_focus(id, 0, cx), cx);
+                }
             }
             (Err(error), SaveOutcome::Imported { .. }) => {
                 self.theme_editor.error =
@@ -5599,7 +5636,9 @@ pub(crate) mod tests {
     /// after `observe`. Then the rest of the input is delivered and the
     /// store answers. Escape, the first key after the pointer, also draws
     /// GPUI's frame for the input's turn to keys before the editor takes
-    /// it, which is not the close's ([`escape_reaching_the_editor`]).
+    /// it, which is not the close's ([`escape_reaching_the_editor`]). Each
+    /// press on Cancel or Save, a key's or the pointer's, finds the button
+    /// whole with its ring's room first ([`assert_whole_before_press`]).
     fn close_editor<R>(
         cx: &mut VisualTestContext,
         app: &Entity<GitTurtle>,
@@ -5642,22 +5681,20 @@ pub(crate) mod tests {
                 cx.update(|window, cx| save.contains_focused(window, cx)),
                 "Tab from Name reaches Save"
             );
+            assert_whole_before_press(cx, "theme-editor-save", close);
         }
         let held = close
             .saves()
             .then(|| cx.read(|cx| app.read(cx).preferences_writer.hold_reached()));
         let mut draws = match close {
             Close::CancelPress | Close::SavePress => {
-                let at = bounds(
-                    cx,
-                    if close == Close::CancelPress {
-                        "theme-editor-cancel"
-                    } else {
-                        "theme-editor-save"
-                    }
-                    .into(),
-                )
-                .center();
+                let selector = if close == Close::CancelPress {
+                    "theme-editor-cancel"
+                } else {
+                    "theme-editor-save"
+                };
+                assert_whole_before_press(cx, selector, close);
+                let at = bounds(cx, selector.into()).center();
                 cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
                 let draws = draw_count(cx, app);
                 cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
@@ -5671,6 +5708,7 @@ pub(crate) mod tests {
                     cx.update(|window, cx| form.read(cx).cancel_focus.contains_focused(window, cx)),
                     "Shift-Tab twice from Name reaches Cancel"
                 );
+                assert_whole_before_press(cx, "theme-editor-cancel", close);
                 cx.simulate_event(down(key("space")));
                 let draws = draw_count(cx, app);
                 cx.simulate_event(KeyUpEvent {
@@ -5775,6 +5813,35 @@ pub(crate) mod tests {
             "GPUI drew the input's turn to keys once before Escape reached the editor"
         );
         draws
+    }
+
+    /// Before `close` presses the editor's `selector`, Cancel or Save: the
+    /// button with its ring's room lies inside the window and the alert's
+    /// clipped body, so the press lands on a button drawn whole, and for a
+    /// key's press its ring is drawn whole there. A press on Save's centre
+    /// at 18 pt in a 461 × 490 half tile once went unchecked against what
+    /// the footer showed.
+    fn assert_whole_before_press(cx: &mut VisualTestContext, selector: &'static str, close: Close) {
+        let (ring, footprint) = installed_ring(cx);
+        let button = bounds(cx, selector.into());
+        let window =
+            cx.update(|window, _| Bounds::new(point(px(0.), px(0.)), window.viewport_size()));
+        for (view, clip) in [("window", window), ("body", body_clip(cx))] {
+            assert!(
+                holds(clip, button.dilate(footprint)),
+                "{close:?}: {selector} with its ring's room {:?} lies inside the {view} {clip:?}",
+                button.dilate(footprint)
+            );
+        }
+        if close.by_key() {
+            let drawn = PaintedRing::around(&painted_quads(cx), button, footprint);
+            for (side, band) in drawn.edges(ring.width) {
+                assert!(
+                    drawn.shows(band),
+                    "{close:?}: {selector}'s ring's {side} edge {band:?} is drawn before the key"
+                );
+            }
+        }
     }
 
     /// Whether the last frame drew the installed Button focus ring around
@@ -7836,6 +7903,360 @@ pub(crate) mod tests {
             }
             mouse_away(cx);
             assert_focus(cx, stop, false, "after a pointer press");
+        }
+    }
+
+    /// How a test presses one of the Your themes card's buttons.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum CardPress {
+        /// Space, with the button reached by Tab from the card.
+        Space,
+        /// A pointer press, with focus on another control.
+        Pointer,
+    }
+
+    /// Focus stays where the person acted (decided 2026-11-12): Export… and
+    /// Import… hold focus through the desktop's file chooser and after the
+    /// export or import it starts has finished, written or imported, or
+    /// failed, a refused document's import here, as a dialog's close gives
+    /// focus back to its opener. The button draws its
+    /// ring there after Space, and after a pointer press holds focus
+    /// without one, which the chooser's own keys leave so, since the window
+    /// never sees them. The page does not move for it: the button was
+    /// whole where it was pressed. A pointer press focused neither, so
+    /// focus stayed on the page's first control, Follow system appearance,
+    /// out of view.
+    #[gpui::test]
+    fn a_finished_export_or_import_gives_focus_back_to_its_button(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, _| window.activate_window());
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(vec![harbor], cx)));
+        settle(cx);
+        mouse_away(cx);
+        let card = cx.update(|_, cx| app.read(cx).theme_editor.card_focus(cx));
+        let fixture = tempfile::tempdir().unwrap();
+        let document = fixture.path().join("harbor.gitturtle-theme.json");
+        let refused = fixture.path().join("broken.gitturtle-theme.json");
+        std::fs::write(&refused, b"{").unwrap();
+        // The export writes the document each import reads; the last two
+        // imports read a document that is not a theme.
+        for (selector, press_by, fails) in [
+            ("export-custom-theme-7", CardPress::Space, false),
+            ("export-custom-theme-7", CardPress::Pointer, false),
+            ("custom-themes-import", CardPress::Space, false),
+            ("custom-themes-import", CardPress::Pointer, false),
+            ("custom-themes-import", CardPress::Space, true),
+            ("custom-themes-import", CardPress::Pointer, true),
+        ] {
+            let at = format!("{selector}, {press_by:?}, failing {fails}");
+            let export = selector.starts_with("export");
+            // Settings opens with focus on its first control.
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+            settle(cx);
+            let button = cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    if export {
+                        app.theme_editor.action_focus(7, 1, cx)
+                    } else {
+                        app.page_focus(selector, cx)
+                    }
+                })
+            });
+            assert_ne!(focused_stop(cx), button, "{at}: focus starts elsewhere");
+            match press_by {
+                CardPress::Space => {
+                    cx.update(|window, cx| card.focus(window, cx));
+                    settle(cx);
+                    // Import… is the card's second stop, Export… its fourth.
+                    for _ in 0..if export { 4 } else { 2 } {
+                        press(cx, "tab");
+                    }
+                    assert_eq!(focused_stop(cx), button, "{at}: Tab reaches it");
+                    press(cx, "space");
+                }
+                CardPress::Pointer => click(cx, selector),
+            }
+            assert!(
+                cx.read(|cx| app.read(cx).theme_transfer_busy()),
+                "{at}: the press opens the file chooser"
+            );
+            let offset = cx.read(|cx| app.read(cx).theme_editor.page_scroll().offset());
+            let chosen = if fails {
+                refused.clone()
+            } else {
+                document.clone()
+            };
+            if export {
+                cx.simulate_new_path_selection(move |_| Some(chosen));
+            } else {
+                cx.simulate_path_prompt_response(move |_| Some(vec![chosen]));
+            }
+            wait_for(cx, &app, |cx| {
+                !cx.read(|cx| app.read(cx).theme_transfer_busy())
+            });
+            let (notice, error, _) = transfer_result(cx, &app);
+            assert_eq!(error.is_some(), fails, "{at}: {error:?}");
+            assert_eq!(
+                notice.is_some(),
+                !fails,
+                "{at}: the card reports the finished transfer"
+            );
+            assert_eq!(focused_stop(cx), button, "{at}: the button holds focus");
+            let control = bounds(cx, selector.into());
+            assert_eq!(
+                button_ringed(cx, control),
+                press_by == CardPress::Space,
+                "{at}: draws its ring only after a key"
+            );
+            assert_eq!(
+                cx.read(|cx| app.read(cx).theme_editor.page_scroll().offset()),
+                offset,
+                "{at}: the page stays where the press found it"
+            );
+        }
+    }
+
+    /// An import that fills the 32nd place disables Import…, and focus it
+    /// held goes to the imported theme's Edit…, as a new theme's 32nd Save
+    /// gives focus to the saved theme (decided 2026-11-14): ringed when a
+    /// key pressed Import…, without a ring after a pointer press, its row
+    /// scrolled into the list's view and the page's with its ring's room.
+    /// Focus stayed on the disabled Import…, which the next key could not
+    /// press and a screen reader read as unavailable.
+    #[gpui::test]
+    fn an_import_that_fills_the_last_place_gives_focus_to_the_imported_theme(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, _| window.activate_window());
+        let fixture = tempfile::tempdir().unwrap();
+        let document = fixture.path().join("harbor.gitturtle-theme.json");
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        std::fs::write(&document, harbor.to_document()).unwrap();
+        let card = cx.update(|_, cx| app.read(cx).theme_editor.card_focus(cx));
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        for press_by in [CardPress::Space, CardPress::Pointer] {
+            let at = format!("{press_by:?}");
+            // 31 saved themes, so the import fills the last place, the list
+            // on its first rows; the imported row comes in as its last.
+            seed_themes(cx, &app, MAX_CUSTOM_THEMES as u32 - 1);
+            cx.simulate_resize(size(px(1440.), px(600.)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.theme_editor
+                        .rows_scroll()
+                        .scroll_to_item(0, ScrollStrategy::Top);
+                    app.show_settings(window, cx)
+                })
+            });
+            settle(cx);
+            mouse_away(cx);
+            let import = cx.update(|_, cx| {
+                app.update(cx, |app, cx| app.page_focus("custom-themes-import", cx))
+            });
+            if press_by == CardPress::Space {
+                cx.update(|window, cx| card.focus(window, cx));
+                settle(cx);
+                // Import… is the card's second stop.
+                press(cx, "tab");
+                press(cx, "tab");
+                assert_eq!(focused_stop(cx), import, "{at}: Tab reaches Import…");
+            }
+            // Import… whole with its ring's room at the page's foot, so the
+            // list below it lies past the fold, as does the imported row
+            // the list brings in at its foot.
+            let page = bounds(cx, "settings-scroll".into());
+            let button = bounds(cx, "custom-themes-import".into());
+            cx.update(|window, cx| {
+                let scroll = app.read(cx).theme_editor.page_scroll();
+                let offset = scroll.offset();
+                let delta = page.bottom() - ring - button.bottom();
+                scroll.set_offset(point(offset.x, offset.y + delta));
+                window.refresh();
+            });
+            settle(cx);
+            let button = bounds(cx, "custom-themes-import".into());
+            assert!(
+                button.top() - ring >= page.top() - px(0.01)
+                    && button.bottom() + ring <= page.bottom() + px(0.01),
+                "{at}: Import… {button:?} is in view in {page:?} to be pressed"
+            );
+            let rows = bounds(cx, "custom-themes-rows".into());
+            assert!(
+                rows.bottom() - ring > page.bottom(),
+                "{at}: the list's foot {rows:?} lies past the page's {page:?}"
+            );
+            match press_by {
+                CardPress::Space => press(cx, "space"),
+                CardPress::Pointer => click(cx, "custom-themes-import"),
+            }
+            assert!(
+                cx.read(|cx| app.read(cx).theme_transfer_busy()),
+                "{at}: the press opens the file chooser"
+            );
+            let chosen = document.clone();
+            cx.simulate_path_prompt_response(move |_| Some(vec![chosen]));
+            wait_for(cx, &app, |cx| {
+                !cx.read(|cx| app.read(cx).theme_transfer_busy())
+            });
+            mouse_away(cx);
+            let (count, imported, error) = cx.read(|cx| {
+                let app = app.read(cx);
+                (
+                    app.custom_themes.len(),
+                    app.theme_editor.imported,
+                    app.theme_editor.error.clone(),
+                )
+            });
+            assert_eq!(error, None, "{at}");
+            assert_eq!(
+                count, MAX_CUSTOM_THEMES,
+                "{at}: the import fills the last place"
+            );
+            let id = imported.unwrap_or_else(|| panic!("{at}: the imported row is highlighted"));
+            let edit = cx.read(|cx| app.read(cx).theme_editor.action_focus(id, 0, cx));
+            assert_eq!(
+                focused_stop(cx),
+                edit,
+                "{at}: the imported theme's Edit… holds focus, not the disabled Import…"
+            );
+            let selector = format!("edit-custom-theme-{id}");
+            let control = bounds(cx, selector.clone());
+            for view in [
+                bounds(cx, "settings-scroll".into()),
+                bounds(cx, "custom-themes-rows".into()),
+            ] {
+                assert!(
+                    control.top() - ring >= view.top() - px(0.01)
+                        && control.bottom() + ring <= view.bottom() + px(0.01),
+                    "{at}: {selector} {control:?} lies whole with its ring's room in {view:?}"
+                );
+            }
+            assert_eq!(
+                button_ringed(cx, control),
+                press_by == CardPress::Space,
+                "{at}: {selector} draws its ring only after a key"
+            );
+        }
+    }
+
+    /// How a test closes the delete alert.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum AlertClose {
+        /// Escape.
+        Escape,
+        /// Return on Cancel, which the alert opens on.
+        ReturnOnCancel,
+        /// Space on Cancel, with its key-up, which the Button acts on.
+        SpaceOnCancel,
+        /// A pointer press on Cancel.
+        CancelPress,
+        /// Return on Delete theme, reached by Tab, the store refusing.
+        RefusedReturn,
+        /// A pointer press on Delete theme, the store refusing.
+        RefusedPress,
+    }
+
+    /// Delete… gets focus back once its alert closes and after a delete the
+    /// store refuses, as a dialog's close gives focus back to its opener
+    /// (decided 2026-11-12): a pointer press on it focuses it before the
+    /// alert opens, and the close, or the failure the card then reports at
+    /// its foot with the theme kept, leaves it focused, ringed when a key
+    /// closed the alert (Escape, Return or Space on Cancel, Return on Delete
+    /// theme), an alert the pointer opened included, and without a ring
+    /// after a pointer press on Cancel or Delete theme. Opened by a press,
+    /// the alert gave focus back to the page's first control, Follow system
+    /// appearance, out of view.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn delete_gets_focus_back_after_its_alert_and_a_refused_delete(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, _| window.activate_window());
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.set_custom_themes(vec![harbor.clone()], cx)
+            })
+        });
+        settle(cx);
+        mouse_away(cx);
+        let delete = cx.read(|cx| app.read(cx).theme_editor.action_focus(7, 2, cx));
+        for (press_by, close) in [
+            (CardPress::Pointer, AlertClose::Escape),
+            (CardPress::Pointer, AlertClose::ReturnOnCancel),
+            (CardPress::Pointer, AlertClose::SpaceOnCancel),
+            (CardPress::Pointer, AlertClose::CancelPress),
+            (CardPress::Space, AlertClose::RefusedReturn),
+            (CardPress::Pointer, AlertClose::RefusedPress),
+        ] {
+            let at = format!("{press_by:?}, {close:?}");
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+            settle(cx);
+            match press_by {
+                CardPress::Space => open_delete_alert(cx, &app),
+                CardPress::Pointer => {
+                    assert_ne!(focused_stop(cx), delete, "{at}: focus starts elsewhere");
+                    click(cx, "delete-custom-theme-7");
+                    // The next frame runs the alert's move to Cancel.
+                    native_frame(cx);
+                    mouse_away(cx);
+                }
+            }
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: the alert is open"
+            );
+            let refused = matches!(close, AlertClose::RefusedReturn | AlertClose::RefusedPress)
+                .then(ReadOnlyPreferences::new);
+            match close {
+                AlertClose::Escape => press(cx, "escape"),
+                AlertClose::ReturnOnCancel => press(cx, "enter"),
+                AlertClose::SpaceOnCancel => press(cx, "space"),
+                AlertClose::CancelPress => click(cx, "delete-theme-cancel"),
+                AlertClose::RefusedReturn => {
+                    press(cx, "tab");
+                    press(cx, "enter");
+                }
+                AlertClose::RefusedPress => click(cx, "delete-theme-confirm"),
+            }
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: the alert closed"
+            );
+            wait_for(cx, &app, |cx| {
+                !cx.read(|cx| app.read(cx).theme_editor.save_pending())
+            });
+            drop(refused);
+            mouse_away(cx);
+            let error = cx.read(|cx| app.read(cx).theme_editor.error.clone());
+            if matches!(close, AlertClose::RefusedReturn | AlertClose::RefusedPress) {
+                let error = error.unwrap_or_else(|| panic!("{at}: the card reports the failure"));
+                assert!(
+                    error.starts_with("Could not delete the theme: "),
+                    "{at}: {error}"
+                );
+            } else {
+                assert_eq!(error, None, "{at}");
+            }
+            assert_eq!(
+                cx.read(|cx| app.read(cx).custom_themes.clone()),
+                vec![harbor.clone()],
+                "{at}: the theme is kept"
+            );
+            assert_eq!(focused_stop(cx), delete, "{at}: Delete… holds focus");
+            let control = bounds(cx, "delete-custom-theme-7".into());
+            assert_eq!(
+                button_ringed(cx, control),
+                matches!(
+                    close,
+                    AlertClose::Escape
+                        | AlertClose::ReturnOnCancel
+                        | AlertClose::SpaceOnCancel
+                        | AlertClose::RefusedReturn
+                ),
+                "{at}: Delete… draws its ring only after a key's close"
+            );
         }
     }
 
