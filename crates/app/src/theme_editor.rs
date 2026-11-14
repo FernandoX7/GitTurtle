@@ -1736,16 +1736,24 @@ pub(super) struct ThemeForm {
     error: Option<String>,
     /// The token column (wide layout) or the whole body (stacked): group
     /// labels and rows are its direct children. Each row reports its hex
-    /// field and its picker's trigger (`column_row`), so the control holding
-    /// focus scrolls into view, with its ring's room, in the frame that
-    /// first draws the focus, a pointer's focus included, and again in the
-    /// frame after a resize or text-size change that cuts it, as the
+    /// field and its picker's trigger (`column_row`), and the stacked body
+    /// the Readability list after them (`report_warnings`), so the control
+    /// holding focus scrolls into view, with its ring's room, in the frame
+    /// that first draws the focus, a pointer's focus included, and again in
+    /// the frame after a resize or text-size change that cuts it, as the
     /// project hub's form does (decided 2026-11-10): revealed only on a
     /// focus change, a trigger Tab had shown low in the column was left cut
     /// by a window shrunk under it.
     column: FocusReveal,
-    /// The wide layout's preview-and-warnings column.
-    side_scroll: ScrollHandle,
+    /// The wide layout's preview-and-warnings column, which keeps the
+    /// Readability list in view as `column` keeps a row's controls
+    /// (`report_warnings`). The stacked body ends its frames too, with
+    /// nothing drawn in it, so a widening finds the focus the last frame
+    /// drew and reveals the list only where the stacked body showed it
+    /// (`hand_over_warnings`): recorded only while wide, it counted the
+    /// list's focus as new once widened and revealed a list the person had
+    /// scrolled out of the stacked body's view.
+    side: FocusReveal,
     /// The last render used the two-column layout.
     wide: bool,
     /// Wrap the toolkit buttons, whose own focus handles are private. Return
@@ -1756,9 +1764,6 @@ pub(super) struct ThemeForm {
     reset_focus: FocusHandle,
     cancel_focus: FocusHandle,
     save_focus: FocusHandle,
-    /// The Readability list held focus as the last render drew, so the
-    /// render that first draws it focused scrolls it into view.
-    warnings_revealed: bool,
     /// The window's keyboard ring: a picker's trigger draws its ring only
     /// while it holds focus a key gave it, so a picker opened and closed by
     /// the pointer leaves its trigger focused without one, and Escape, Enter
@@ -1860,14 +1865,13 @@ impl ThemeForm {
             visible: true,
             error: None,
             column: FocusReveal::new(Trigger::AnyFocus),
-            side_scroll: ScrollHandle::new(),
+            side: FocusReveal::new(Trigger::AnyFocus),
             wide: false,
             keep_focus: cx.focus_handle(),
             replace_focus: cx.focus_handle(),
             reset_focus: cx.focus_handle(),
             cancel_focus: cx.focus_handle(),
             save_focus: cx.focus_handle(),
-            warnings_revealed: false,
             focus_ring,
             warnings_focus,
             _subscriptions: subscriptions,
@@ -1988,24 +1992,44 @@ impl ThemeForm {
         index
     }
 
-    /// The Readability list, once it gains focus, scrolls into view in the
-    /// draw that shows the focus. A focus change refreshes the window, so
-    /// this render belongs to that draw and the target is applied by its
-    /// prepaint. Focus listeners would be too late: GPUI dispatches them
-    /// after the draw's layout, where a refresh no longer produces a frame,
-    /// so the scroll would wait for the next input. In the wide layout the
-    /// list follows the miniature in the side column; stacked, it follows
-    /// the rows. A row's controls are revealed by the column's own reveal
-    /// (`column`).
-    fn reveal_warnings(&mut self, window: &Window) {
-        let focused = self.warnings_focus.is_focused(window);
-        if std::mem::replace(&mut self.warnings_revealed, focused) || !focused {
+    /// `warnings`, the Readability list, reported to `reveal`, the reveal of
+    /// the container that holds it (`side` in the wide layout, `column`
+    /// stacked), which shows it with the ring's room as it shows a row's
+    /// controls: in the frame that first draws its focus, a pointer's
+    /// included, and in the frame after a resize or text-size change that
+    /// cuts it. Scrolled into view only as it gained focus, the list was
+    /// left cut by a window shrunk under it. The wrapper is laid out as the
+    /// list and takes no focus.
+    fn report_warnings(&self, reveal: &FocusReveal, warnings: AnyElement, cx: &App) -> Div {
+        div()
+            .on_children_prepainted(reveal.control(
+                self.warnings_focus.clone(),
+                appearance::button_ring_room(cx),
+            ))
+            .child(warnings)
+    }
+
+    /// A layout that crosses the breakpoint moves the Readability list
+    /// between the side column and the stacked body, two containers that
+    /// each keep only what they drew: where the one it leaves showed it
+    /// holding focus in the last frame, as that container's reveal judges it
+    /// (`FocusReveal::shows_focus`), the one it enters reveals it, in the
+    /// next frame, as a resize does within one, and otherwise leaves it
+    /// where it lies. Narrowed from 1,440 × 900 to 1,000 × 680, the focused
+    /// list moved below the stacked body's fold and stayed there; widened
+    /// from a 1,000 × 420 stacked body scrolled to its top, a list out of
+    /// view there was scrolled into the side column.
+    fn hand_over_warnings(&self, wide: bool, window: &Window) {
+        if wide == self.wide || !self.warnings_focus.is_focused(window) {
             return;
         }
-        if self.wide {
-            self.side_scroll.scroll_to_item(1);
+        let (from, to) = if wide {
+            (&self.column, &self.side)
         } else {
-            self.column.scroll().scroll_to_item(Self::TOKEN_ENTRIES + 1);
+            (&self.side, &self.column)
+        };
+        if from.shows_focus() {
+            to.reveal_next_focus();
         }
     }
 
@@ -2832,15 +2856,24 @@ impl Render for ThemeForm {
         let p = palette(cx);
         let viewport = window.viewport_size();
         let wide = viewport.width >= appearance::ui_size(1060.);
+        self.hand_over_warnings(wide, window);
         self.wide = wide;
-        // A row's control focus has moved onto, or a resize has cut, comes
-        // into view in this frame.
+        // A picker a press has just opened holds focus in its popover, which
+        // the column counts as its row's once a frame has drawn it: its
+        // trigger comes into view in this frame, the popover's first.
+        if let Some(row) = self.rows.iter().find(|row| row.picker.read(cx).is_open()) {
+            self.column
+                .reveal_opener(&row.picker.focus_handle(cx), window, cx);
+        }
+        // A control focus has moved onto, or a resize has cut, comes into
+        // view in this frame: a row's, or the Readability list in its column.
         self.column.reveal(window, cx);
-        self.reveal_warnings(window);
+        if wide {
+            self.side.reveal(window, cx);
+        }
         let max_height = Self::max_height(window, cx);
         // Group labels and rows are direct children of the scroll container,
-        // so `ScrollHandle::scroll_to_item` can reveal the Readability list
-        // after them.
+        // which keeps where each lies (`ScrollHandle::bounds_for_item`).
         let mut entries: Vec<AnyElement> = Vec::with_capacity(Self::TOKEN_ENTRIES + 2);
         for (index, group) in TokenGroup::ALL.into_iter().enumerate() {
             entries.push(
@@ -2902,14 +2935,18 @@ impl Render for ThemeForm {
             // layout decides, and the column's prepaint asks for the next
             // frame when this one laid it out the other way (a notify during
             // a draw requests no frame).
-            let side_overflows = self.side_scroll.max_offset().y > Pixels::ZERO;
+            let side_overflows = self.side.scroll().max_offset().y > Pixels::ZERO;
             let side_track = if side_overflows {
                 Scrollbar::width()
             } else {
                 Pixels::ZERO
             };
             let form = cx.entity().downgrade();
-            let side_scroll = self.side_scroll.clone();
+            let side_scroll = self.side.scroll().clone();
+            // Records the focus this frame drew with, after the list has
+            // reported.
+            let side_observed = self.side.observe();
+            let warnings = self.report_warnings(&self.side, warnings, cx);
             div()
                 .relative()
                 .flex()
@@ -2950,13 +2987,14 @@ impl Render for ThemeForm {
                 )
                 .child(crate::native_accessibility::clips_children(
                     div()
-                        .on_children_prepainted(move |_, window, _| {
+                        .on_children_prepainted(move |bounds, window, cx| {
                             if (side_scroll.max_offset().y > Pixels::ZERO) != side_overflows {
                                 let form = form.clone();
                                 window.on_next_frame(move |_, cx| {
                                     form.update(cx, |_, cx| cx.notify()).ok();
                                 });
                             }
+                            side_observed(bounds, window, cx);
                         })
                         .id("theme-editor-side")
                         .debug_selector(|| "theme-editor-side".into())
@@ -2965,7 +3003,10 @@ impl Render for ThemeForm {
                         .flex_shrink_0()
                         .min_h_0()
                         .overflow_y_scroll()
-                        .track_scroll(&self.side_scroll)
+                        .track_scroll(self.side.scroll())
+                        // The focus ring's room under the list, which its
+                        // reveal leaves below it (`report_warnings`).
+                        .pb(appearance::button_ring_room(cx))
                         .flex()
                         .flex_col()
                         .gap_4()
@@ -2974,14 +3015,21 @@ impl Render for ThemeForm {
                 ))
                 .when(side_overflows, |body| {
                     body.child(Self::render_scrollbar(
-                        &self.side_scroll,
+                        self.side.scroll(),
                         "theme-editor-side-scrollbar",
                     ))
                 })
                 .into_any_element()
         } else {
             entries.push(preview.mt_5().into_any_element());
-            entries.push(div().mt_4().child(warnings).into_any_element());
+            entries.push(
+                self.report_warnings(&self.column, warnings, cx)
+                    .mt_4()
+                    .into_any_element(),
+            );
+            let column_observed = self.column.observe();
+            // The side column draws nothing while stacked, and records so.
+            let side_observed = self.side.observe();
             div()
                 .relative()
                 .flex_1()
@@ -2990,12 +3038,18 @@ impl Render for ThemeForm {
                 .flex_col()
                 .child(crate::native_accessibility::clips_children(
                     div()
-                        .on_children_prepainted(self.column.observe())
+                        .on_children_prepainted(move |bounds, window, cx| {
+                            column_observed(bounds, window, cx);
+                            side_observed(Vec::new(), window, cx);
+                        })
                         .id("theme-editor-body")
                         .debug_selector(|| "theme-editor-body".into())
                         .flex_1()
                         .min_h_0()
                         .pr(Scrollbar::width())
+                        // The focus ring's room under the Readability list,
+                        // its last entry, which its reveal leaves below it.
+                        .pb(appearance::button_ring_room(cx))
                         .overflow_y_scroll()
                         .track_scroll(self.column.scroll())
                         .flex()
@@ -4293,7 +4347,7 @@ pub(crate) mod tests {
         let last_entry = ThemeForm::row_entry(last);
         assert_eq!(last_entry, ThemeForm::TOKEN_ENTRIES - 1);
         let scroll = cx.read(|cx| form.read(cx).column.scroll().clone());
-        let side_scroll = cx.read(|cx| form.read(cx).side_scroll.clone());
+        let side_scroll = cx.read(|cx| form.read(cx).side.scroll().clone());
         assert!(
             !entry_visible(&scroll, last_entry),
             "the last row starts below the fold at 1,000 × 680"
@@ -4367,47 +4421,153 @@ pub(crate) mod tests {
         );
     }
 
+    /// What a case of [`a_resize_keeps_the_focused_rows_control_in_view`]
+    /// changes under the focused control.
+    #[derive(Clone, Copy, Debug)]
+    enum Under {
+        /// The window is resized to this width and height.
+        Resize(f32, f32),
+        /// The interface text size changes to this size.
+        TextSize(u8),
+    }
+
+    /// The interface text size set as the Settings page sets it.
+    fn set_text_size(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, text_size: u8) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, _| app.settings.interface_text_size = text_size);
+            appearance::apply_text_sizes(text_size, 12, window, cx);
+        });
+    }
+
+    /// The editor opened on a new theme at `text_size` in a `width` ×
+    /// `height` window.
+    fn open_editor_at(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        text_size: u8,
+        width: f32,
+        height: f32,
+    ) -> Entity<ThemeForm> {
+        set_text_size(cx, app, text_size);
+        cx.simulate_resize(size(px(width), px(height)));
+        settle(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        let form = form(cx, app);
+        next_frame(cx);
+        form
+    }
+
+    /// The quads filled with the kit's popover colour the last frame drew,
+    /// in device pixels.
+    fn drawn_popover_fills(window: &Window, cx: &App) -> Vec<Bounds<ScaledPixels>> {
+        let surface = Background::from(gpui_kit::component::Theme::global(cx).popover);
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background == surface)
+            .map(|quad| quad.bounds)
+            .collect()
+    }
+
+    /// A popover's surface the last frame drew that `before` did not: the
+    /// largest quad filled with the popover colour outside `before`, in
+    /// logical pixels.
+    fn new_popover(
+        window: &Window,
+        cx: &App,
+        before: &[Bounds<ScaledPixels>],
+    ) -> Option<Bounds<Pixels>> {
+        let scale = window.scale_factor();
+        let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+        drawn_popover_fills(window, cx)
+            .into_iter()
+            .filter(|fill| !before.contains(fill))
+            .map(|fill| {
+                Bounds::from_corners(
+                    point(logical(fill.left()), logical(fill.top())),
+                    point(logical(fill.right()), logical(fill.bottom())),
+                )
+            })
+            .max_by(|a, b| {
+                f32::from(a.size.width * f32::from(a.size.height))
+                    .total_cmp(&f32::from(b.size.width * f32::from(b.size.height)))
+            })
+    }
+
+    /// Every frame `reveal`'s container painted through `change` and those
+    /// the frames asked for after it, with no draw forced: the first is laid
+    /// out after the change, and the second, which a reveal the first
+    /// requests asks for, is the next frame.
+    fn frames_through(
+        cx: &mut VisualTestContext,
+        reveal: &FocusReveal,
+        change: impl FnOnce(&mut VisualTestContext),
+    ) -> Vec<crate::focus_reveal::tests::Painted> {
+        reveal.take_painted();
+        change(cx);
+        cx.run_until_parked();
+        reveal.take_painted()
+    }
+
+    /// Whether `frame` drew the control holding focus whole, `room` clear of
+    /// its container's view.
+    fn painted_whole(frame: &crate::focus_reveal::tests::Painted, room: Pixels) -> bool {
+        frame.control.is_some_and(|control| {
+            control.top() - room >= frame.viewport.top() - px(0.01)
+                && control.bottom() + room <= frame.viewport.bottom() + px(0.01)
+        })
+    }
+
     /// A row's hex field or picker trigger holding focus stays in view
-    /// through a resize, not only when focus moves onto it (decided
+    /// through a change under it, not only when focus moves onto it (decided
     /// 2026-11-10): a low row's control, focused and so scrolled into view
-    /// at the column's foot, lies below the fold of a window shrunk under
-    /// it, and the frame after the shrink shows it whole with its ring's
-    /// room, in the wide layout and stacked. The column revealed a row only
-    /// as its control gained focus, so the shrink left it cut until focus
-    /// moved again.
+    /// at the column's foot, is cut by the first frame laid out after the
+    /// change, and the next frame shows it whole with its ring's room. The
+    /// changes: a window shrunk under it in the wide layout and stacked, and
+    /// at 18 pt from a 461 × 490 half tile to 461 × 420; one narrowed across
+    /// the breakpoint, where the stacked body takes the column's place; and
+    /// the interface text grown from 13 to 18 pt. The column revealed a row
+    /// only as its control gained focus, so the shrink left it cut until
+    /// focus moved again; settled after the change, this test once passed a
+    /// reveal any number of frames late.
     #[gpui::test]
     fn a_resize_keeps_the_focused_rows_control_in_view(cx: &mut TestAppContext) {
         let (app, cx) = open_at_rest(cx);
         let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
         let kind = TokenKind::ALL[TokenKind::ALL.len() - 2];
-        for (width, tall, short) in [(1440., 900., 760.), (1000., 680., 560.)] {
+        let selector = |control: &str| {
+            if control == "trigger" {
+                format!("theme-token-picker-{}", kind.key())
+            } else {
+                format!("theme-token-{}", kind.key())
+            }
+        };
+        let close = |cx: &mut VisualTestContext, at: &str| {
+            click(cx, "theme-editor-cancel");
+            assert!(
+                cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+                "{at}: Cancel closes the editor"
+            );
+        };
+        for (text_size, (width, height), under) in [
+            (13, (1440., 900.), Under::Resize(1440., 760.)),
+            (13, (1000., 680.), Under::Resize(1000., 560.)),
+            (18, (461., 490.), Under::Resize(461., 420.)),
+            (13, (1440., 900.), Under::Resize(1000., 680.)),
+            (13, (1000., 680.), Under::TextSize(18)),
+        ] {
             for control in ["hex field", "trigger"] {
-                let at = format!("{width} px, {control}");
-                cx.simulate_resize(size(px(width), px(tall)));
-                settle(cx);
-                cx.update(|window, cx| {
-                    app.update(cx, |app, cx| app.open_theme_editor(None, window, cx))
-                });
-                settle(cx);
-                let form = form(cx, &app);
-                next_frame(cx);
+                let at = format!("{text_size} pt {width} × {height}, {under:?}, {control}");
+                let form = open_editor_at(cx, &app, text_size, width, height);
                 assert_eq!(cx.read(|cx| form.read(cx).wide), width > 1060., "{at}");
-                let selector = if control == "trigger" {
-                    format!("theme-token-picker-{}", kind.key())
-                } else {
-                    format!("theme-token-{}", kind.key())
-                };
                 let whole = |cx: &mut VisualTestContext| {
                     let column = bounds(cx, "theme-editor-body".into());
-                    let control = bounds(cx, selector.clone());
-                    (
-                        control.top() - ring >= column.top() - px(0.01)
-                            && control.bottom() + ring <= column.bottom() + px(0.01),
-                        control,
-                        column,
-                    )
+                    let control = bounds(cx, selector(control));
+                    control.top() - ring >= column.top() - px(0.01)
+                        && control.bottom() + ring <= column.bottom() + px(0.01)
                 };
-                assert!(!whole(cx).0, "{at}: the row starts below the fold");
+                assert!(!whole(cx), "{at}: the row starts below the fold");
                 cx.update(|window, cx| {
                     let row = form.read(cx).row(kind);
                     let focus = if control == "trigger" {
@@ -4418,22 +4578,388 @@ pub(crate) mod tests {
                     focus.focus(window, cx);
                 });
                 settle(cx);
-                let (shown, drawn, column) = whole(cx);
-                assert!(shown, "{at}: focus shows {drawn:?} whole in {column:?}");
-                cx.simulate_resize(size(px(width), px(short)));
-                settle(cx);
-                let (shown, drawn, column) = whole(cx);
+                assert!(whole(cx), "{at}: focus shows the control whole");
+                let column = cx.read(|cx| form.read(cx).column.clone());
+                let frames = frames_through(cx, &column, |cx| match under {
+                    Under::Resize(width, height) => cx.simulate_resize(size(px(width), px(height))),
+                    Under::TextSize(text_size) => set_text_size(cx, &app, text_size),
+                });
+                let [cut, next, ..] = frames.as_slice() else {
+                    panic!("{at}: the change draws a frame and asks for the next: {frames:?}");
+                };
                 assert!(
-                    shown,
-                    "{at}: after the shrink {drawn:?} is whole with its ring's room in {column:?}"
+                    !painted_whole(cut, ring),
+                    "{at}: the first frame after the change cuts the control: {cut:?}"
                 );
-                click(cx, "theme-editor-cancel");
                 assert!(
-                    cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
-                    "{at}: Cancel closes the editor"
+                    painted_whole(next, ring),
+                    "{at}: the next frame shows it whole with its ring's room: {next:?}"
                 );
+                close(cx, &at);
             }
         }
+        set_text_size(cx, &app, 13);
+    }
+
+    /// The Readability list holding focus stays in view through a resize, as
+    /// a row's control does: the first frame laid out at the new size cuts
+    /// it, and the next shows it whole by the least scroll, its ring's room
+    /// below it, in the side column and in the stacked body shrunk under it,
+    /// and across the breakpoint, where the list moves between the side
+    /// column and the stacked body; and a list scrolled out of view is not
+    /// scrolled into view across the breakpoint: the column it enters draws
+    /// it where that column's offset puts it, cut at 1,100 × 420, and
+    /// leaves it there in every frame. Nord at 13 pt: it was scrolled into view
+    /// only as it gained focus, so narrowed from 1,440 × 900 to 1,000 × 680
+    /// it moved below the stacked body's fold and stayed there, and shrunk
+    /// from 1,000 × 680 to 1,000 × 560 it was left cut at the body's foot;
+    /// and the side column, which kept no record while the layout stacked,
+    /// counted the focus on it as new once widened, so from a 1,000 × 420
+    /// body scrolled to its top it was scrolled 18.5 px into the side
+    /// column.
+    #[gpui::test]
+    fn a_resize_keeps_the_focused_readability_list_in_view(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        for ((width, height), (to_width, to_height), scrolled_out) in [
+            ((1440., 900.), (1000., 680.), false),
+            ((1000., 680.), (1000., 560.), false),
+            ((1440., 900.), (1440., 420.), false),
+            ((1000., 420.), (1100., 420.), false),
+            ((1000., 420.), (1100., 420.), true),
+        ] {
+            let at = format!(
+                "{width} × {height} to {to_width} × {to_height}{}",
+                if scrolled_out { ", scrolled out" } else { "" }
+            );
+            let form = open_editor_at(cx, &app, 13, width, height);
+            cx.update(|window, cx| {
+                form.update(cx, |form, cx| {
+                    form.choose_base(ThemeChoice::Nord, window, cx)
+                })
+            });
+            next_frame(cx);
+            let container = |wide: bool| {
+                if wide {
+                    "theme-editor-side"
+                } else {
+                    "theme-editor-body"
+                }
+            };
+            let warnings = cx.read(|cx| form.read(cx).warnings_focus.clone());
+            cx.update(|window, cx| warnings.focus(window, cx));
+            settle(cx);
+            let (list, view) = (
+                bounds(cx, "theme-editor-warnings".into()),
+                bounds(cx, container(width > 1060.).into()),
+            );
+            assert!(
+                list.top() - ring >= view.top() - px(0.01)
+                    && list.bottom() + ring <= view.bottom() + px(0.01),
+                "{at}: focus shows the list {list:?} whole in {view:?}"
+            );
+            if scrolled_out {
+                let column = cx.read(|cx| form.read(cx).column.clone());
+                cx.update(|window, _| {
+                    column.scroll().set_offset(Point::default());
+                    window.refresh();
+                });
+                settle(cx);
+                let (list, view) = (
+                    bounds(cx, "theme-editor-warnings".into()),
+                    bounds(cx, container(false).into()),
+                );
+                assert!(
+                    list.top() >= view.bottom(),
+                    "{at}: the person scrolls the list {list:?} out of {view:?}"
+                );
+            }
+            let wide = to_width > 1060.;
+            let reveal = cx.read(|cx| {
+                let form = form.read(cx);
+                if wide {
+                    form.side.clone()
+                } else {
+                    form.column.clone()
+                }
+            });
+            let still = reveal.scroll().offset().y;
+            let frames = frames_through(cx, &reveal, |cx| {
+                cx.simulate_resize(size(px(to_width), px(to_height)))
+            });
+            assert_eq!(cx.read(|cx| form.read(cx).wide), wide, "{at}");
+            if scrolled_out {
+                assert!(
+                    frames
+                        .first()
+                        .is_some_and(|cut| !painted_whole(cut, Pixels::ZERO)),
+                    "{at}: the resize draws a frame that cuts the list: {frames:?}"
+                );
+                for (index, frame) in frames.iter().enumerate() {
+                    assert!(
+                        (frame.offset - still).abs() < px(0.01),
+                        "{at}: frame {index} of {} leaves {} at {still:?}: {frame:?}",
+                        frames.len(),
+                        container(wide)
+                    );
+                }
+            } else {
+                let [cut, next, ..] = frames.as_slice() else {
+                    panic!("{at}: the resize draws a frame and asks for the next: {frames:?}");
+                };
+                assert!(
+                    !painted_whole(cut, Pixels::ZERO),
+                    "{at}: the first frame at the new size cuts the list: {cut:?}"
+                );
+                assert!(
+                    painted_whole(next, ring)
+                        && next.control.is_some_and(|list| {
+                            (list.bottom() + ring - next.viewport.bottom()).abs() < px(0.01)
+                        }),
+                    "{at}: the next frame shows the list whole in {} by the least scroll, \
+                     its ring's room below it: {next:?}",
+                    container(wide)
+                );
+            }
+            click(cx, "theme-editor-cancel");
+            assert!(
+                cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+                "{at}: Cancel closes the editor"
+            );
+        }
+    }
+
+    /// A pointer press on a picker trigger the column's foot cuts, 4 px of
+    /// it in view, opens the picker with the trigger's row whole, by the
+    /// least scroll and with its ring's room, from the popover's first
+    /// frame, so the popover opens beside it and never moves, at 13 pt in
+    /// 1,000 × 680 and at 18 pt in a 461 × 490 half tile (decided
+    /// 2026-11-14), each frame's popover read where that frame draws it; and
+    /// focus inside the popover counts as the trigger's, so a window shrunk
+    /// under the open picker cuts the row for one frame and the next shows
+    /// it whole again. At both sizes the window's margins clamp the popover
+    /// over its trigger, with the opener's reveal or without it, so its
+    /// place says nothing of the trigger's and the row is what the reveal
+    /// decides. The press focuses the popover before any frame, and GPUI
+    /// places that focus under the trigger only once a frame has drawn the
+    /// popover, when focus no longer moves, so the column never revealed the
+    /// row: the popover opened beside the cut trigger, and both stayed
+    /// there.
+    #[gpui::test]
+    fn a_press_on_a_cut_trigger_opens_its_picker_beside_it_whole(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let kind = TokenKind::ALL[TokenKind::ALL.len() - 2];
+        let (row, trigger) = (
+            format!("theme-token-{}", kind.key()),
+            format!("theme-token-picker-{}", kind.key()),
+        );
+        for (text_size, (width, height)) in [(13, (1000., 680.)), (18, (461., 490.))] {
+            let at = format!("{text_size} pt {width} × {height}");
+            let form = open_editor_at(cx, &app, text_size, width, height);
+            let column = cx.read(|cx| form.read(cx).column.clone());
+            let picker = cx.read(|cx| form.read(cx).row(kind).picker.clone());
+            let view = bounds(cx, "theme-editor-body".into());
+            let cut = bounds(cx, trigger.clone());
+            cx.update(|window, _| {
+                let offset = column.scroll().offset().y + view.bottom() - px(4.) - cut.top();
+                column.scroll().set_offset(point(px(0.), offset));
+                window.refresh();
+            });
+            settle(cx);
+            let cut = bounds(cx, trigger.clone());
+            assert!(
+                (view.bottom() - cut.top() - px(4.)).abs() < px(0.01),
+                "{at}: 4 px of the trigger show at the column's foot: {cut:?} in {view:?}"
+            );
+            // The press as native input, each frame drawn alone in GPUI's
+            // order, the popover read from every frame: the press, the frame
+            // after it, the release and the frames after that.
+            let visible = point(cut.center().x, view.bottom() - px(2.));
+            column.take_painted();
+            let (before, popovers) = cx.update(|window, cx| {
+                let before = drawn_popover_fills(window, cx);
+                let mut popovers = Vec::new();
+                let mut frame = |window: &mut Window, cx: &mut App| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    popovers.push(new_popover(window, cx, &before));
+                };
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        position: visible,
+                        modifiers: Modifiers::default(),
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+                frame(window, cx);
+                window.dispatch_event(
+                    PlatformInput::MouseUp(MouseUpEvent {
+                        position: visible,
+                        modifiers: Modifiers::default(),
+                        button: MouseButton::Left,
+                        click_count: 1,
+                    }),
+                    cx,
+                );
+                for _ in 0..3 {
+                    frame(window, cx);
+                }
+                (before, popovers)
+            });
+            cx.run_until_parked();
+            let frames = column.take_painted();
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: the press opens the picker"
+            );
+            let shown = bounds(cx, row.clone());
+            assert!(
+                shown.top() - ring >= view.top() - px(0.01)
+                    && (shown.bottom() + ring - view.bottom()).abs() < px(0.01),
+                "{at}: the press shows the row {shown:?} whole, its ring's room above the \
+                 foot of {view:?}"
+            );
+            let offset = column.scroll().offset().y;
+            assert!(!frames.is_empty(), "{at}: the press draws the column");
+            for (index, frame) in frames.iter().enumerate() {
+                assert!(
+                    (frame.offset - offset).abs() < px(0.01),
+                    "{at}: frame {index} of {} after the press, the popover's first the \
+                     first of them, draws the column at {offset:?}, which shows the row \
+                     whole: {frame:?}",
+                    frames.len()
+                );
+            }
+            // From its first frame the popover is drawn where it rests,
+            // clamped by the window's margins over the trigger.
+            let first = popovers
+                .iter()
+                .position(Option::is_some)
+                .unwrap_or_else(|| panic!("{at}: the press draws the popover: {popovers:?}"));
+            settle(cx);
+            let rest = cx
+                .update(|window, cx| new_popover(window, cx, &before))
+                .expect("the open popover is drawn");
+            for (index, popover) in popovers.iter().enumerate().skip(first) {
+                assert_eq!(
+                    *popover,
+                    Some(rest),
+                    "{at}: frame {index} of the press, the popover's first being {first}, \
+                     draws it where it rests: {popovers:?}"
+                );
+            }
+            let frames = frames_through(cx, &column, |cx| {
+                cx.simulate_resize(size(px(width), px(height - 40.)))
+            });
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: the picker stays open through the resize"
+            );
+            let [cut, next, ..] = frames.as_slice() else {
+                panic!("{at}: the resize draws a frame and asks for the next: {frames:?}");
+            };
+            assert!(
+                !painted_whole(cut, ring),
+                "{at}: the first frame after the shrink cuts the row: {cut:?}"
+            );
+            assert!(
+                painted_whole(next, ring),
+                "{at}: the next frame shows the row of the open picker whole: {next:?}"
+            );
+            press(cx, "escape");
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: Escape closes the picker"
+            );
+            click(cx, "theme-editor-cancel");
+            assert!(
+                cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+                "{at}: Cancel closes the editor"
+            );
+        }
+        set_text_size(cx, &app, 13);
+    }
+
+    /// A pointer press low on a Readability list taller than the stacked
+    /// body focuses the list and leaves the body where it was in every frame
+    /// after the press, so the warning under the pointer stays put, while
+    /// Tab onto the list still shows its top with the ring's room (decided
+    /// 2026-11-14): revealed by its top, the press scrolled the warning it
+    /// landed on out of view. Twenty or more warnings at 13 pt in 1,000 ×
+    /// 560, the body scrolled to its foot.
+    #[gpui::test]
+    fn a_press_low_on_a_tall_readability_list_leaves_the_body_still(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let form = open_editor_at(cx, &app, 13, 1000., 560.);
+        assert!(!cx.read(|cx| form.read(cx).wide));
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                let mut gray = form.draft;
+                for kind in TokenKind::ALL {
+                    gray.set(kind, 0x808080);
+                }
+                form.warnings = gray.readability_issues();
+                cx.notify();
+            });
+            window.refresh();
+        });
+        settle(cx);
+        let column = cx.read(|cx| form.read(cx).column.clone());
+        cx.update(|window, _| {
+            let foot = column.scroll().max_offset().y;
+            column.scroll().set_offset(point(px(0.), -foot));
+            window.refresh();
+        });
+        settle(cx);
+        let view = bounds(cx, "theme-editor-body".into());
+        let list = bounds(cx, "theme-editor-warnings".into());
+        assert!(
+            list.size.height > view.size.height && list.top() < view.top(),
+            "the list {list:?} is taller than the body {view:?}, its top above the view"
+        );
+        let still = column.scroll().offset();
+        let frames = frames_through(cx, &column, |cx| {
+            cx.simulate_click(
+                point(list.center().x, view.bottom() - px(24.)),
+                Modifiers::default(),
+            );
+        });
+        let warnings = cx.read(|cx| form.read(cx).warnings_focus.clone());
+        assert!(
+            cx.update(|window, _| warnings.is_focused(window)),
+            "the press focuses the list"
+        );
+        assert!(!frames.is_empty(), "the press draws the body");
+        for (index, frame) in frames.iter().enumerate() {
+            assert!(
+                (frame.offset - still.y).abs() < px(0.01),
+                "frame {index} of {} after the press leaves the body at {still:?}: {frame:?}",
+                frames.len()
+            );
+        }
+        // Shift-Tab back onto the last row's picker, then Tab onto the list.
+        press(cx, "shift-tab");
+        assert!(!cx.update(|window, _| warnings.is_focused(window)));
+        press(cx, "tab");
+        assert!(cx.update(|window, _| warnings.is_focused(window)));
+        let (list, view) = (
+            bounds(cx, "theme-editor-warnings".into()),
+            bounds(cx, "theme-editor-body".into()),
+        );
+        assert!(
+            (list.top() - ring - view.top()).abs() < px(0.01),
+            "Tab shows the list's top {list:?} its ring's room below the top of {view:?}"
+        );
+        click(cx, "theme-editor-cancel");
+        assert!(
+            cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+            "Cancel closes the editor"
+        );
     }
 
     /// The stops inside the popover `trigger` holds, as GPUI's order meets
@@ -6646,7 +7172,7 @@ pub(crate) mod tests {
         let form = form(cx, &app);
         next_frame(cx);
         assert!(cx.read(|cx| form.read(cx).wide));
-        let side_scroll = cx.read(|cx| form.read(cx).side_scroll.clone());
+        let side_scroll = cx.read(|cx| form.read(cx).side.scroll().clone());
         let fits = |cx: &mut VisualTestContext| {
             let side = bounds(cx, "theme-editor-side".into());
             let preview = bounds(cx, "theme-editor-preview".into());

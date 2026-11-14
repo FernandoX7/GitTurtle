@@ -2592,6 +2592,133 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A pointer press low on a form field taller than the page's view with
+    /// its clearance, focus in another field, focuses the field and leaves
+    /// the page where it was in every frame, so what lies under the pointer
+    /// stays put, while Tab onto the field still shows its top the clearance
+    /// below the page's top: the press rule the theme editor's columns
+    /// follow (`DESIGN.md`, decided 2026-11-14). At 18 pt in a window whose
+    /// page is shorter than the folder name field and its clearance, the
+    /// field's top just above the page's. Revealed by its top, the press
+    /// scrolled the input under the pointer down by the cut and the
+    /// clearance.
+    #[gpui::test]
+    fn a_press_low_on_a_field_taller_than_the_page_leaves_the_page_still(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            Theme::global_mut(cx).font_size = px(18.);
+        });
+        let captured = Rc::new(RefCell::new(None));
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let hub =
+                cx.new(|cx| ProjectHub::new(vec![], HashMap::new(), "main".into(), window, cx));
+            *captured.borrow_mut() = Some(hub.clone());
+            gpui_kit::component::Root::new(hub, window, cx)
+        });
+        let hub = observed.borrow_mut().take().unwrap();
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(1000.), px(160.)));
+        fn settle(cx: &mut VisualTestContext) {
+            for _ in 0..2 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                cx.run_until_parked();
+            }
+        }
+        // As `project_hub_reveals_fields_in_the_frame_that_draws_focus`
+        // places the field: to the device pixel either way.
+        const SLACK: Pixels = px(0.5);
+        cx.update(|window, cx| {
+            hub.update(cx, |hub, cx| {
+                hub.change_mode(ProjectMode::Create, window, cx)
+            });
+        });
+        // Create opens with focus in the folder name field
+        // (`ProjectHub::change_mode`); here it lies in the Parent folder
+        // field below, so the press moves focus onto the field. Left in the
+        // field, the press moved no focus and revealed nothing, whatever the
+        // rule.
+        cx.update(|window, cx| {
+            let parent = hub.read(cx).parent.clone();
+            parent.update(cx, |input, cx| input.focus(window, cx));
+        });
+        settle(cx);
+        let margin = cx.read(focus_clearance);
+        let viewport = cx.read(|cx| hub.read(cx).body.scroll().bounds());
+        let field = cx.debug_bounds("Project folder name").expect("the field");
+        assert!(
+            field.size.height + margin * 2. > viewport.size.height,
+            "the field {field:?} and its clearance {margin:?} are taller than the page {viewport:?}"
+        );
+        // The field's top 2 px above the page's, its input in view below.
+        let offset = cx.read(|cx| hub.read(cx).body.scroll().offset().y);
+        let cut = offset + viewport.top() - px(2.) - field.top();
+        cx.update(|window, cx| {
+            let body = hub.read(cx).body.scroll();
+            assert!(cut < px(0.) && -cut <= body.max_offset().y, "{cut:?}");
+            body.set_offset(point(px(0.), cut));
+            window.refresh();
+        });
+        settle(cx);
+        let field = cx.debug_bounds("Project folder name").expect("the field");
+        assert!(
+            (viewport.top() - px(2.) - field.top()).abs() < px(0.01),
+            "the field's top lies 2 px above the page's: {field:?} in {viewport:?}"
+        );
+        // Low on the field, on its input's text line, which the press
+        // focuses.
+        let low = point(field.center().x, field.bottom() - px(20.));
+        assert!(low.y < viewport.bottom(), "{low:?} lies in {viewport:?}");
+        cx.update(|window, cx| {
+            let hub = hub.read(cx);
+            assert!(
+                hub.parent.focus_handle(cx).is_focused(window)
+                    && !hub.name.focus_handle(cx).is_focused(window),
+                "focus lies in the Parent folder field until the press"
+            )
+        });
+        cx.read(|cx| hub.read(cx).body.take_painted());
+        cx.simulate_click(low, Modifiers::default());
+        settle(cx);
+        cx.update(|window, cx| {
+            assert!(
+                hub.read(cx).name.focus_handle(cx).is_focused(window),
+                "the press focuses the field"
+            )
+        });
+        let frames = cx.read(|cx| hub.read(cx).body.take_painted());
+        assert!(!frames.is_empty(), "the press draws the page");
+        for (index, frame) in frames.iter().enumerate() {
+            assert!(
+                (frame.offset - cut).abs() < px(0.01),
+                "frame {index} of {} after the press draws the page at {:?}, not where the \
+                 press found it, {cut:?}",
+                frames.len(),
+                frame.offset
+            );
+        }
+        cx.simulate_keystrokes("shift-tab");
+        settle(cx);
+        cx.update(|window, cx| {
+            assert!(!hub.read(cx).name.focus_handle(cx).is_focused(window));
+        });
+        cx.simulate_keystrokes("tab");
+        settle(cx);
+        cx.update(|window, cx| {
+            assert!(
+                hub.read(cx).name.focus_handle(cx).is_focused(window),
+                "Tab returns to the field"
+            )
+        });
+        let field = cx.debug_bounds("Project folder name").expect("the field");
+        let offset = cx.read(|cx| hub.read(cx).body.scroll().offset().y);
+        assert!(
+            (field.top() - margin - viewport.top()).abs() < SLACK || offset >= Pixels::ZERO,
+            "Tab shows the field's top {margin:?} below the page's: {field:?} in {viewport:?}"
+        );
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     #[gpui::test]
     fn populated_project_inputs_keep_their_names_across_modes(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);

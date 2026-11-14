@@ -153,7 +153,12 @@ struct Kept {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Trigger {
     /// Every focus change, from the keyboard or a pointer: the project hub's
-    /// form fields.
+    /// form fields and the custom theme editor's columns. A pointer's focus
+    /// scrolls only by the least amount that shows its control whole, so a
+    /// control taller than the view, which no scroll shows whole, stays
+    /// where the press found it, while the keyboard's shows its leading
+    /// edge: revealed by that edge, the Readability list a press low in it
+    /// focused scrolled the warning under the pointer out of view.
     AnyFocus,
     /// Focus moved by the keyboard, as GPUI's `focus_visible` judges it: the
     /// last input was a key. Clicking a partly visible row focuses it and
@@ -167,6 +172,10 @@ enum Due {
     /// Focus has moved in a way the trigger reveals, or a page asked for its
     /// focus to be revealed.
     Focus,
+    /// Focus a pointer has moved, which only [`Trigger::AnyFocus`] reveals:
+    /// by the least scroll that shows the control whole, and not at all for
+    /// a control taller than the view ([`FocusReveal::target`]).
+    Press,
     /// The container's size or the text size has changed under focus the
     /// last frame showed so.
     Resize(Shown),
@@ -432,6 +441,47 @@ impl FocusReveal {
             .map(|(id, _)| id.clone())
     }
 
+    /// Whether the last frame showed the control holding focus as it ended:
+    /// whole in the container's view or, taller than the view, by its leading
+    /// edge, as a resize that cuts it then reveals it again.
+    pub(crate) fn shows_focus(&self) -> bool {
+        self.shown.get().is_some()
+    }
+
+    /// For the render of the view that builds the container, before
+    /// [`Self::reveal`], while a popup that the control `opener` tracks has
+    /// opened holds focus: in the frame focus has moved into the popup, as
+    /// the frame that first draws it, reveals `opener` from where the last
+    /// frame drew it, as focus moved onto it is revealed, so the popup,
+    /// placed beside its opener as it is laid out, opens beside it shown.
+    /// Focus inside the popup counts as its opener's once the popup is drawn,
+    /// for GPUI places the popup's focus under its opener's only then, so the
+    /// container could not reveal it before, and once it could, focus had
+    /// not moved since the last frame: a picker a press opened on its
+    /// trigger's visible edge at the theme editor column's foot opened
+    /// beside the cut trigger, and both stayed there.
+    pub(crate) fn reveal_opener(&self, opener: &FocusHandle, window: &Window, cx: &App) {
+        let observed = self.observation(window, cx);
+        let Some(due @ (Due::Focus | Due::Press)) = self.due(&observed, window) else {
+            return;
+        };
+        let opener = opener.downgrade();
+        let drawn = self
+            .drawn
+            .borrow()
+            .controls
+            .iter()
+            .find(|control| control.focus == opener)
+            .map(|control| (control.bounds, control.margin));
+        let Some((bounds, margin)) = drawn else {
+            return;
+        };
+        let at = bounds + point(px(0.), self.offset().y);
+        if let Some(offset) = self.target(at, margin, self.viewport(), due, self.reach()) {
+            self.set_offset(offset);
+        }
+    }
+
     /// For the render of the view that builds the container, in every frame:
     /// when focus has moved, in a way the trigger reveals, onto a control
     /// the last frame drew outside the container's view, scrolls the
@@ -658,7 +708,11 @@ impl FocusReveal {
         if self.next_focus.get() {
             Some(Due::Focus)
         } else if last.focus != observed.focus {
-            self.revealing(window).then_some(Due::Focus)
+            if window.last_input_was_keyboard() {
+                Some(Due::Focus)
+            } else {
+                (self.trigger == Trigger::AnyFocus).then_some(Due::Press)
+            }
         } else if *last != *observed && (self.placed.get() || last.content != observed.content) {
             self.shown.get().map(Due::Resize)
         } else {
@@ -829,7 +883,9 @@ impl FocusReveal {
     /// the render's reveal and the request its bounds make agree. Shown by
     /// the least scroll, it showed its foot when it lay below the view, and
     /// the request then scrolled back to its top, so the page swung between
-    /// its edges. After a resize (`due`) that follows a frame showing such a
+    /// its edges. Focus a pointer moved onto such a control (`Due::Press`)
+    /// leaves it where it is, so what lies under the pointer stays put.
+    /// After a resize (`due`) that follows a frame showing such a
     /// control by its leading edge, it stays where it is while that edge
     /// lies in the view with its margin: only a resize that cuts the edge
     /// reveals it by it again. One the last frame showed whole is revealed
@@ -849,7 +905,9 @@ impl FocusReveal {
             return None;
         }
         let delta = if tall(bounds, margin, viewport) {
-            if due == Due::Resize(Shown::Leading) && leads(bounds, margin, viewport) {
+            if due == Due::Press
+                || (due == Due::Resize(Shown::Leading) && leads(bounds, margin, viewport))
+            {
                 return None;
             }
             let delta = viewport.top() - (bounds.top() - margin);
