@@ -1231,6 +1231,201 @@ mod tests {
         assert!(cx.debug_bounds("history-newest-dot").is_none());
     }
 
+    /// A quiet read that finds a re-clone at the tab's path while Changes
+    /// is shown and History is scoped to a branch the found repository
+    /// lacks lands as it does with History shown
+    /// (`repository_tabs::tests::a_quiet_read_that_finds_a_re_clone_beside_a_vanished_scope_reads_all_history`):
+    /// it reads the found repository's All history in place, says so and
+    /// drops the scope, and nothing from before stays, neither History's
+    /// rows, the traversal they were read at and the files it kept for its
+    /// selection, nor Changes' rows. Changes stays shown, its landing
+    /// skipping the switch to History that Show latest's makes, with the
+    /// found repository's newest row selected behind it, so History opens
+    /// there on that commit's changed files, read as it opens.
+    #[gpui::test]
+    async fn a_re_clone_beside_a_vanished_scope_lands_behind_changes_with_nothing_from_before(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{
+            fixture_git, fixture_git_output, fixture_repository, history_script,
+            history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        let page = history_paging::PAGE_SIZE;
+        let (fixture, app, cx) = history_window_from(cx, history_script(page + 1, 1)).await;
+        let base = fixture.path().to_owned();
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        hold_quiet_reads_for_test(&app, cx);
+        fixture_git(&root, &["branch", "before"]);
+        let scope = worker::Scope::Branch {
+            name: "before".into(),
+            remote: false,
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open(root.clone(), Some(("before".into(), scope)), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        std::fs::write(root.join("staged.txt"), "the person's\n").unwrap();
+        fixture_git(&root, &["add", "staged.txt"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        let staged = |app: &GitTurtle| {
+            (app.work_status.iter())
+                .flat_map(|status| &status.entries)
+                .filter(|entry| entry.staged.is_some())
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        };
+        let kept = |app: &GitTurtle| {
+            (app.retained_history_files.iter())
+                .flat_map(|(files, _)| files)
+                .filter_map(|file| file.new_path.clone())
+                .collect::<Vec<_>>()
+        };
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Working, "Changes is shown");
+            assert!(
+                staged(app).contains(&PathBuf::from("staged.txt")),
+                "the replaced repository's staged rows: {:?}",
+                staged(app)
+            );
+            assert_eq!(
+                kept(app),
+                [PathBuf::from("notes.txt")],
+                "History keeps its selection's changed files"
+            );
+            assert_eq!(
+                (app.scope.is_some(), app.history_paging.next_offset),
+                (true, Some(page)),
+                "the scoped history read a page at a time"
+            );
+        });
+        let tip = |root: &std::path::Path| {
+            let output = fixture_git_output(root, &["rev-parse", "HEAD"]);
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        let replaced_tip = tip(&root);
+        let third = fixture_repository(base.join("third"));
+        std::fs::write(third.path().join("third.txt"), "third\n").unwrap();
+        fixture_git(third.path(), &["add", "third.txt"]);
+        fixture_git(third.path(), &["commit", "-q", "-m", "Third"]);
+        std::fs::write(third.path().join("planted.txt"), "not the person's\n").unwrap();
+        fixture_git(third.path(), &["add", "planted.txt"]);
+        std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+        std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+        let found_tip = tip(&root);
+        let found = gitturtle_core::GitRepository::open(&root)
+            .unwrap()
+            .git_dir_inode();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(false);
+                app.queue_automatic_refresh(
+                    local_refresh::LocalChange {
+                        git: true,
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+        // Landed once the found repository's status read and watch, asked
+        // for on the operation thread, and the history read in place have
+        // answered too, as with History shown.
+        let landed = |app: &GitTurtle, _: &App| {
+            app.repository
+                .as_ref()
+                .is_some_and(|repo| repo.git_dir_inode() == found)
+                && app.loading.is_none()
+                && app.task.is_none()
+                && !app.automatic.quiet_read_requested()
+                && app.automatic.replies_landed()
+                && app.status_task.is_none()
+        };
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            if app.read_with(cx, landed) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.operations.drain());
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+        }
+        assert!(
+            app.read_with(cx, landed),
+            "the capture and its reads landed"
+        );
+        app.update(cx, |app, _| app.automatic.hold_quiet_reads(true));
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let subjects = (app.commits.iter())
+                .map(|commit| commit.subject.as_str())
+                .collect::<Vec<_>>();
+            assert!(app.mode == WorkspaceMode::Working, "Changes stays shown");
+            assert_eq!(
+                subjects.first(),
+                Some(&"Third"),
+                "the found repository's history, newest first: {subjects:?}"
+            );
+            assert!(
+                subjects.len() < page,
+                "no row from before: {} rows",
+                subjects.len()
+            );
+            assert_eq!(
+                app.selected_commit,
+                Some(0),
+                "its newest row selected behind Changes, the row History opens on"
+            );
+            assert!(app.scope.is_none(), "All history");
+            assert!(
+                matches!(&app.history_paging.scope, Some(HistoryScope::PinnedRefs(tips))
+                    if tips.contains(&found_tip) && !tips.contains(&replaced_tip)),
+                "the found repository's tips, none from before: {:?}",
+                app.history_paging.scope
+            );
+            assert_eq!(app.history_paging.next_offset, None, "no page from before");
+            let notice = app.operation_notice.as_deref();
+            assert!(
+                notice.is_some_and(|notice| {
+                    notice.starts_with("History scope changed: ")
+                        && notice.ends_with("Showing All history.")
+                }),
+                "it says so: {notice:?}"
+            );
+            let banner = app.operation_error_text();
+            assert!(
+                !(banner.as_deref()).is_some_and(|banner| banner.contains("retained")),
+                "no claim of a history it does not show: {banner:?}"
+            );
+            assert_eq!(
+                staged(app),
+                [PathBuf::from("planted.txt")],
+                "Changes shows the found repository's rows, none from before"
+            );
+            assert_eq!(kept(app), Vec::<PathBuf>::new(), "no files from before");
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let selected = app.selected_commit.map(|index| &app.commits[index]);
+            assert_eq!(
+                selected.map(|commit| commit.subject.as_str()),
+                Some("Third")
+            );
+            let files = (app.files.iter())
+                .filter_map(|file| file.new_path.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                files,
+                [PathBuf::from("third.txt")],
+                "History opens on the found commit's changed files"
+            );
+        });
+    }
+
     /// While the cue lasts, Latest's dot is 5 px across, 1 px inside the
     /// button's top right corner, scaled with the text, at 13 and 18 pt in
     /// the labelled and the compact toolbar. In the compact square it stands
