@@ -442,17 +442,16 @@ struct FailureBox<'a> {
 
 /// The download a Download in the review's preview asked for: the chosen
 /// file whose missing object it fetches, of the commit inspected, the side
-/// pressed, whether its write has started, and the failure's words once it
-/// failed, which the row says in place of its sentence
-/// (`lfs_download::AskedState`). It is said of that file of that commit
-/// only, while the review shows it ([`SeriesBrowser::shows`]); while the
-/// review shows another, the dialog's footer says the progress and offers
-/// Cancel ([`SeriesBrowser::footer_line`]).
+/// pressed, and the failure's words once it failed, which the row says in
+/// place of its sentence (`lfs_download::AskedState`). It is said of that
+/// file of that commit only, while the review shows it
+/// ([`SeriesBrowser::shows`]); while the review shows another, the dialog's
+/// footer says the progress and offers Cancel
+/// ([`SeriesBrowser::footer_line`]).
 struct ReviewDownload {
     file: FileChange,
     commit: Option<String>,
     side: usize,
-    started: bool,
     failure: Option<SharedString>,
     /// Whether the row has said the failure: one that landed while the
     /// review showed another file or commit waits for the person to come
@@ -550,11 +549,19 @@ pub(crate) struct SeriesBrowser {
     failure_focus: FocusHandle,
     /// The line a failing Git LFS side says above the file's preview.
     lfs_failure_line: crate::lfs_download::FailureLine,
-    /// The download a Download in the preview asked for, which the review
-    /// follows as its write runs and ends ([`Self::follow_download`]): it
-    /// covers the operation bar, so its own Download row says the
-    /// download's progress, offers its Cancel and says how it failed.
+    /// The download a Download in the preview asked for once its write
+    /// started, which the review follows as it runs and ends
+    /// ([`Self::follow_download`]): it covers the operation bar, so its own
+    /// Download row says the download's progress, offers its Cancel and
+    /// says how it failed.
     lfs_download: Option<ReviewDownload>,
+    /// What a Download asked for while its form is open, which takes
+    /// [`Self::lfs_download`]'s place only as its write starts: a form
+    /// opened and cancelled leaves a failure kept there for its file's
+    /// return, and the next press replaces it. Recorded over that failure
+    /// as the form merely opened, it lost the failure the footer kept until
+    /// the person returned to its file.
+    asking: Option<ReviewDownload>,
     /// The focus each side's Download in the preview tracks.
     download_focus: [FocusHandle; 2],
     /// Cancel download's focus, in the row while the download runs.
@@ -644,6 +651,7 @@ impl SeriesBrowser {
             failure_focus: cx.focus_handle(),
             lfs_failure_line: crate::lfs_download::FailureLine::new("series-lfs-failure", cx),
             lfs_download: None,
+            asking: None,
             download_focus: [cx.focus_handle(), cx.focus_handle()],
             download_cancel: cx.focus_handle(),
             downloaded: None,
@@ -701,7 +709,9 @@ impl SeriesBrowser {
     /// preview again, if it is still the file asked from, which is its
     /// feedback; a failure says its words in the row, at once to assistive
     /// technology too, and the Download comes back, taking focus from
-    /// Cancel. A form cancelled before its write leaves nothing to follow.
+    /// Cancel. What a Download asked for is followed once its write starts,
+    /// in place of a failure kept until then; a form cancelled before its
+    /// write leaves nothing to follow.
     fn follow_download(
         &mut self,
         owner: Entity<GitTurtle>,
@@ -717,6 +727,11 @@ impl SeriesBrowser {
                 owner.lfs_downloads.ended(me),
             )
         };
+        // The window refuses a press while a write runs, so the write that
+        // runs for the review is the one its last form asked for.
+        if running && let Some(asking) = self.asking.take() {
+            self.lfs_download = Some(asking);
+        }
         // Every file's row tracks the same handles, so another file's
         // Download may hold focus while this download runs: focus moved
         // onto a Cancel no row drew.
@@ -741,13 +756,9 @@ impl SeriesBrowser {
             return;
         };
         if running {
-            asked.started = true;
             if shown && drawn && self.download_focus[asked.side].is_focused(window) {
                 self.download_cancel.focus(window, cx);
             }
-            return;
-        }
-        if !asked.started {
             return;
         }
         let cancel_focused = self.download_cancel.is_focused(window);
@@ -909,7 +920,7 @@ impl SeriesBrowser {
         let asked = self
             .lfs_download
             .as_ref()
-            .filter(|asked| asked.started && !asked.seen.get())?;
+            .filter(|asked| !asked.seen.get())?;
         if self.row_says(asked) {
             return None;
         }
@@ -1007,9 +1018,10 @@ impl SeriesBrowser {
         };
         let me = crate::lfs_download::Asker::Review(view.entity_id());
         let browser = view.read(cx);
-        let named = browser.lfs_download.as_ref().is_some_and(|asked| {
-            asked.started && asked.failure.is_none() && asked.object() == object
-        });
+        let named = browser
+            .lfs_download
+            .as_ref()
+            .is_some_and(|asked| asked.failure.is_none() && asked.object() == object);
         let Some(owner) = browser.owner.upgrade().filter(|_| named) else {
             return;
         };
@@ -2036,7 +2048,10 @@ impl SeriesBrowser {
                     // Recorded only once the window accepts it and a form
                     // opens, never over one in flight: a press refused while
                     // the download ran once recorded a fresh request over
-                    // it, whose end then read nothing again.
+                    // it, whose end then read nothing again. A failure the
+                    // row says clears as a Download is pressed again; one
+                    // kept for its file's return stays until the new write
+                    // starts ([`Self::follow_download`]).
                     if !GitTurtle::open_lfs_download_from(&owner, target, me, window, cx) {
                         return;
                     }
@@ -2044,17 +2059,23 @@ impl SeriesBrowser {
                         if this
                             .lfs_download
                             .as_ref()
-                            .is_some_and(|asked| asked.started && asked.failure.is_none())
+                            .is_some_and(|asked| asked.failure.is_none())
                         {
                             return;
                         }
+                        if this
+                            .lfs_download
+                            .as_ref()
+                            .is_some_and(|kept| kept.seen.get())
+                        {
+                            this.lfs_download = None;
+                        }
                         let (file, commit) = chosen.clone();
                         this.downloaded = None;
-                        this.lfs_download = file.map(|file| ReviewDownload {
+                        this.asking = file.map(|file| ReviewDownload {
                             file,
                             commit,
                             side,
-                            started: false,
                             failure: None,
                             seen: Default::default(),
                             footer_widest: Default::default(),
@@ -6318,8 +6339,8 @@ mod tests {
             "the download's form opens for the file's object"
         );
         assert!(
-            browser.read_with(cx, |browser, _| browser.lfs_download.is_some()),
-            "the review follows the download it asked for"
+            browser.read_with(cx, |browser, _| browser.asking.is_some()),
+            "the review records the download it asked for"
         );
         // The write runs and ends: the file's preview is read again.
         // By its showing: a comparison read again may land at the address
@@ -6361,6 +6382,15 @@ mod tests {
     /// [`missing_before`], its last commit also adding each of `others`, a
     /// text file, so the review can show another file of that commit.
     fn missing_before_with(others: &[&str]) -> (tempfile::TempDir, GitRepository, Vec<FileChange>) {
+        missing_before_of(&["flow.mmd"], others)
+    }
+
+    /// [`missing_before_with`] where each of `lost` is a pointer like
+    /// `flow.mmd`'s, each having lost its own old object.
+    fn missing_before_of(
+        lost: &[&str],
+        others: &[&str],
+    ) -> (tempfile::TempDir, GitRepository, Vec<FileChange>) {
         use crate::tags::tests::{git, tagged_repository};
         use sha2::{Digest, Sha256};
         let fixture = tempfile::tempdir().unwrap();
@@ -6381,11 +6411,15 @@ mod tests {
             .join(&oid[2..4]);
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join(&oid), diagram).unwrap();
-        let gone = pointer("flowchart LR\n  One --> Gone\n");
-        std::fs::write(repo.path().join("flow.mmd"), gone).unwrap();
+        for (index, name) in lost.iter().enumerate() {
+            let gone = format!("flowchart LR\n  One --> Gone{}\n", " again".repeat(index));
+            std::fs::write(repo.path().join(name), pointer(&gone)).unwrap();
+        }
         git(repo.path(), &["add", "."]);
         git(repo.path(), &["commit", "--quiet", "-m", "Before"]);
-        std::fs::write(repo.path().join("flow.mmd"), pointer(diagram)).unwrap();
+        for name in lost {
+            std::fs::write(repo.path().join(name), pointer(diagram)).unwrap();
+        }
         for other in others {
             std::fs::write(repo.path().join(other), "Notes\n").unwrap();
         }
@@ -7426,10 +7460,7 @@ mod tests {
         shown(cx);
         assert!(
             browser.read_with(cx, |browser, _| {
-                browser
-                    .lfs_download
-                    .as_ref()
-                    .is_some_and(|asked| asked.failure.is_none())
+                browser.lfs_download.is_none() && browser.asking.is_some()
             }),
             "the press asks for a download again"
         );
@@ -8654,6 +8685,83 @@ mod tests {
         assert!(
             holds_focus(&browser, cx, |browser| &browser.download_cancel),
             "focus on Cancel download comes back with it"
+        );
+        end_download(&app, &browser, cx, None);
+    }
+
+    /// A failure kept for its file while the review shows another stays
+    /// kept as the person opens another file's download form and cancels
+    /// it, the footer still saying it: only a download that starts takes
+    /// its place, and then its file's row is at rest. Recorded as the form
+    /// merely opened, the other file's request took the failure's place,
+    /// so the footer stopped saying it and, back on its file, the person
+    /// never learnt that its download had failed.
+    #[gpui::test]
+    async fn another_file_s_form_keeps_the_failure_until_its_download_starts(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_before_of(&["flow.mmd", "second.mmd"], &[]);
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        running_with_cancel_focused(&app, &browser, cx);
+        choose(&browser, cx, file_index(&files, "second.mmd"));
+        let words = "Git LFS could not reach origin";
+        end_download(&app, &browser, cx, Some(words));
+        let failed = format!("Couldn't download flow.mmd's Before object: {words}");
+        let footer = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("series-download-failure")?;
+            written::get("series-download-failure")
+                .and_then(|node| node.node.value().map(str::to_owned))
+        };
+        assert_eq!(
+            footer(cx).as_deref(),
+            Some(failed.as_str()),
+            "the footer keeps the failure while the review shows another file"
+        );
+        // second.mmd's Download Before… opens its form, which is cancelled.
+        let at = cx
+            .debug_bounds("download-lfs-side-0")
+            .expect("second.mmd offers Download Before…")
+            .center();
+        let forms = crate::lfs_download::FORMS_OPENED.get();
+        cx.simulate_click(at, Modifiers::none());
+        draw(cx);
+        assert_eq!(
+            crate::lfs_download::FORMS_OPENED.get(),
+            forms + 1,
+            "its form opens"
+        );
+        cx.update(|window, cx| window.close_dialog(cx));
+        draw(cx);
+        assert_eq!(
+            footer(cx).as_deref(),
+            Some(failed.as_str()),
+            "a form opened and cancelled leaves the failure kept"
+        );
+        // Pressed again, its write starts, which takes the failure's place.
+        start_download(&app, &browser, cx, at);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        assert!(
+            footer(cx).is_none() && cx.debug_bounds("lfs-download-progress").is_some(),
+            "a download that starts replaces the failure, its row saying its progress"
+        );
+        choose(&browser, cx, file_index(&files, "flow.mmd"));
+        assert!(
+            cx.debug_bounds("lfs-download-failure").is_none()
+                && cx.debug_bounds("download-lfs-side-0").is_some()
+                && cx.debug_bounds("series-download-status").is_some(),
+            "back on flow.mmd, its row is at rest"
+        );
+        assert_eq!(
+            written::get("series-download-line")
+                .and_then(|node| node.node.label().map(str::to_owned))
+                .as_deref(),
+            Some("Downloading second.mmd's Before object"),
+            "and the footer says the download that runs"
         );
         end_download(&app, &browser, cx, None);
     }
