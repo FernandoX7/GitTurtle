@@ -852,10 +852,14 @@ impl SeriesBrowser {
     }
     /// Whether the preview's row says what `asked` asks, or will once the
     /// person's file, being read, lands: the line on the dialog's footer
-    /// stays away meanwhile, so it does not come and go as they return.
+    /// stays away meanwhile, so it does not come and go as they return. A
+    /// read that ends without a preview, failed or interrupted, leaves no
+    /// row, so the line stands again: counted as the row's whenever the
+    /// file had no preview, the download's progress and Cancel were then
+    /// drawn nowhere.
     fn row_says(&self, asked: &ReviewDownload) -> bool {
         self.row_draws(asked)
-            || (self.shows(asked).is_some() && self.messages.is_none() && self.content.is_none())
+            || (self.shows(asked).is_some() && self.messages.is_none() && self.reading_preview())
     }
     /// The progress and Cancel download of the download a Download in the
     /// preview asked for, on the leading side of the dialog's footer beside
@@ -8593,6 +8597,65 @@ mod tests {
             said(cx).is_none() && cx.debug_bounds("download-lfs-side-0").is_some(),
             "once said, leaving the file drops it"
         );
+    }
+
+    /// Back on its file while its download runs, the person's file read
+    /// again keeps the line on the dialog's footer away, as the row will say
+    /// the download once the read lands, so the line does not come and go;
+    /// but a read that ends without a preview, failed or interrupted,
+    /// leaves no row to say it, so the footer says the progress and offers
+    /// Cancel download again, focus on Cancel coming back with it. Counted
+    /// as the row's whenever the file had no preview, the download's
+    /// progress and Cancel were drawn nowhere after such a read.
+    #[gpui::test]
+    async fn a_read_that_fails_on_return_leaves_the_download_on_the_footer(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, repo, files) = missing_before_with(&["notes.txt"]);
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        let browser = reviewing_download(&app, cx, &files);
+        running_with_cancel_focused(&app, &browser, cx);
+        choose(&browser, cx, file_index(&files, "notes.txt"));
+        cx.debug_bounds("series-download-status")
+            .expect("the dialog's footer says the download");
+        // Back on its file, whose read waits behind a slower one.
+        let held = browser.read_with(cx, |browser, _| browser.worker.hold());
+        let flow = file_index(&files, "flow.mmd");
+        cx.update(|window, cx| browser.update(cx, |browser, cx| browser.file(flow, window, cx)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("series-download-status").is_none()
+                && cx.debug_bounds("lfs-download-progress").is_none(),
+            "while its file is read again, the line stays away for the row"
+        );
+        // The read is dropped unanswered, as an interrupted one is.
+        browser.read_with(cx, |browser, _| browser.worker.cancel());
+        drop(held);
+        browser.read_with(cx, |browser, _| browser.worker.wait_idle());
+        draw(cx);
+        assert!(
+            browser.read_with(cx, |browser, _| browser.content.is_none()
+                && !browser.reading_preview()
+                && browser.preview_error.is_some()),
+            "the read ended without a preview"
+        );
+        let status = cx
+            .debug_bounds("series-download-status")
+            .expect("the dialog's footer says the download again");
+        let [progress, cancel] = ["lfs-download-progress", "cancel-lfs-download"]
+            .map(|id| cx.debug_bounds(id).unwrap_or_else(|| panic!("{id}")));
+        assert!(
+            status.contains(&progress.center())
+                && status.contains(&cancel.center())
+                && cx.debug_bounds("download-lfs-side-0").is_none(),
+            "its progress, {progress:?}, and Cancel, {cancel:?}, stand on the footer, {status:?}"
+        );
+        assert!(
+            holds_focus(&browser, cx, |browser| &browser.download_cancel),
+            "focus on Cancel download comes back with it"
+        );
+        end_download(&app, &browser, cx, None);
     }
 
     /// While the review shows another file, its download's line stands on
