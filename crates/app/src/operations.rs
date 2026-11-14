@@ -53,19 +53,54 @@ impl<K, T> Default for WaitingReads<K, T> {
     }
 }
 
+/// A read of [`WaitingReads`].
+type Read<T> = Box<dyn FnOnce() -> Result<T> + Send>;
+
 /// Where a read of [`WaitingReads`] answers, and what it runs: the latest
 /// request's reply and read while it waits in the queue, and nothing more
 /// once it has started.
 enum Reply<T> {
-    Waiting(
-        oneshot::Sender<Result<T>>,
-        Box<dyn FnOnce() -> Result<T> + Send>,
-    ),
+    Waiting(oneshot::Sender<Result<T>>, Read<T>),
     Started,
 }
 
 fn lock<T>(reply: &Mutex<Reply<T>>) -> std::sync::MutexGuard<'_, Reply<T>> {
     reply.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The name of the one thread that drops what [`drop_aside`] is handed.
+const DROPPER: &str = "gitturtle-dropper";
+
+/// What [`drop_aside`] drops.
+type Unwanted = Box<dyn Send>;
+
+/// Drops `unwanted` on one process-wide thread that does nothing else, in
+/// the order it is handed, each inside `catch_unwind` so that a panicking
+/// `Drop` cannot end it; the caller hands it over and goes on, waiting for
+/// nothing. A read a take-over replaced can hold the last clone of a
+/// repository's handle, whose drop stops that handle's `cat-file` process,
+/// waits for it and joins its threads ([`SerialExecutor::submit_read_once`]):
+/// that must run neither on the UI thread nor under a slot's lock, nor wait
+/// for the read it was replaced in, which a read that never ends ahead of
+/// it may keep from ever running. Where no thread could be started for it,
+/// `unwanted` drops here.
+fn drop_aside(unwanted: Unwanted) {
+    static DROPPER_QUEUE: std::sync::LazyLock<Option<mpsc::Sender<Unwanted>>> =
+        std::sync::LazyLock::new(|| {
+            let (sender, received) = mpsc::channel::<Unwanted>();
+            std::thread::Builder::new()
+                .name(DROPPER.into())
+                .spawn(move || {
+                    for unwanted in received {
+                        let _ = catch_unwind(AssertUnwindSafe(move || drop(unwanted)));
+                    }
+                })
+                .ok()
+                .map(|_| sender)
+        });
+    if let Some(queue) = &*DROPPER_QUEUE {
+        let _ = queue.send(unwanted);
+    }
 }
 
 /// How long a test waits on a thread of the app's own, an executor answering
@@ -346,14 +381,23 @@ impl SerialExecutor {
     /// as it runs, so a request made while one for the same key still
     /// waits in the queue takes over that read's slot instead of queuing
     /// behind it: the read that runs there is the request's own
-    /// `operation`, and the earlier request's reply and operation are
-    /// dropped, as replacing its task drops them. The earlier operation kept
-    /// what it was built with, the shown status read the handle of a
-    /// repository replaced since, whose label the newer request's reply then
-    /// carried. However often it is asked for meanwhile, `key` keeps at most
-    /// one slot of the bounded queue. A read that has started, which may
-    /// have read before the request, is not taken over: the request queues
-    /// a read of its own. Changes' status read is one
+    /// `operation`, and the earlier request's reply is dropped, as replacing
+    /// its task drops it. The earlier operation kept what it was built with,
+    /// the shown status read the handle of a repository replaced since,
+    /// whose label the newer request's reply then carried. It comes out of
+    /// the slot under its lock and, the lock let go, goes unrun to
+    /// [`drop_aside`]. Holding the last clone of a repository's handle, its
+    /// drop stops that handle's `cat-file` process, waits for it and joins
+    /// its threads: dropped in place, on the UI thread under the lock, it
+    /// held the executor reaching the read too, and kept beside the read
+    /// until that ran, which a read that never ends ahead of it may never
+    /// let happen, each take-over kept one more such process alive. A job
+    /// of its own on the executor to drop each would take the slots the
+    /// take-over keeps free, and wait behind that read too. However often
+    /// it is asked for meanwhile, `key` keeps at most one slot of the
+    /// bounded queue. A read that has started, which may have read before
+    /// the request, is not taken over: the request queues a read of its
+    /// own. Changes' status read is one
     /// (`GitTurtle::refresh_worktree`): each Refresh behind a read that
     /// never ends once queued another, each keeping its slot though the next
     /// dropped its reply, until one was refused as busy and Changes lost its
@@ -364,18 +408,27 @@ impl SerialExecutor {
         key: K,
         operation: impl FnOnce() -> Result<T> + Send + 'static,
     ) -> oneshot::Receiver<Result<T>> {
-        let (reply, response) = oneshot::channel();
+        let (mut reply, response) = oneshot::channel();
+        let mut operation: Read<T> = Box::new(operation);
         waiting
             .waiting
             .retain(|(_, read)| matches!(*lock(read), Reply::Waiting(..)));
-        if let Some((_, read)) = waiting.waiting.iter().find(|(read, _)| *read == key)
-            && let Reply::Waiting(earlier, earlier_operation) = &mut *lock(read)
-        {
-            *earlier = reply;
-            *earlier_operation = Box::new(operation);
-            return response;
+        if let Some((_, read)) = waiting.waiting.iter().find(|(read, _)| *read == key) {
+            let mut slot = lock(read);
+            if let Reply::Waiting(earlier, earlier_operation) = &mut *slot {
+                // The newer request's reply and read take the slot, and the
+                // earlier ones come out, to drop only once the lock is let go.
+                std::mem::swap(earlier, &mut reply);
+                std::mem::swap(earlier_operation, &mut operation);
+                drop(slot);
+                // The earlier request's reply ends at once, its read on the
+                // dropper.
+                drop(reply);
+                drop_aside(Box::new(operation));
+                return response;
+            }
         }
-        let read = Arc::new(Mutex::new(Reply::Waiting(reply, Box::new(operation))));
+        let read = Arc::new(Mutex::new(Reply::Waiting(reply, operation)));
         let answers = Arc::clone(&read);
         waiting.waiting.retain(|(read, _)| *read != key);
         waiting.waiting.push((key, read));
@@ -425,6 +478,10 @@ fn answer<T>(
     operation: impl FnOnce() -> Result<T>,
 ) {
     if skip_cancelled && reply.is_canceled() {
+        // What it captured is the caller's, and drops here unrun: a `Drop`
+        // that panics is caught as a panicking operation is, so that it
+        // cannot end the executor's thread.
+        let _ = catch_unwind(AssertUnwindSafe(move || drop(operation)));
         return;
     }
     let result = match admission {
@@ -740,6 +797,151 @@ mod tests {
         assert!(
             futures::executor::block_on(earlier).is_err(),
             "the earlier request's reply is dropped"
+        );
+    }
+
+    /// Owned by a request's operation, it records as that operation drops
+    /// which request it was, the dropping thread's name and whether the
+    /// lock of the read's slot, once named, was held then (`None` where the
+    /// slot was gone).
+    struct DropProbe {
+        request: usize,
+        slot: Arc<std::sync::OnceLock<std::sync::Weak<Mutex<Reply<&'static str>>>>>,
+        dropped: mpsc::Sender<(usize, Option<String>, Option<bool>)>,
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            let locked = (self.slot.get())
+                .and_then(std::sync::Weak::upgrade)
+                .map(|slot| slot.try_lock().is_err());
+            let thread = std::thread::current().name().map(str::to_owned);
+            let _ = self.dropped.send((self.request, thread, locked));
+        }
+    }
+
+    /// Each request that takes over a read waiting behind a held executor
+    /// hands the earlier request's operation, unrun, to the dropper thread,
+    /// which drops it while that read still waits, off the thread that
+    /// asked and the executor's, with the slot's lock let go: the operation
+    /// can hold the last clone of a repository's handle, whose drop stops
+    /// its `cat-file` process, waits for it and joins its threads. Kept
+    /// beside the read until the executor reached it, which a read that
+    /// never ends ahead of it may never let happen, each History Refresh
+    /// meanwhile kept one more of those processes alive.
+    #[test]
+    fn a_take_over_hands_the_earlier_operation_to_the_dropper_while_the_read_waits() {
+        let executor = SerialExecutor::new("operation-take-over-drop-test");
+        let mut waiting = WaitingReads::default();
+        let held = executor.hold();
+        let slot = Arc::new(std::sync::OnceLock::new());
+        let (dropped, drops) = mpsc::channel();
+        let request = |request: usize| {
+            let probe = DropProbe {
+                request,
+                slot: Arc::clone(&slot),
+                dropped: dropped.clone(),
+            };
+            move || {
+                let _probe = &probe;
+                Ok("read")
+            }
+        };
+        let mut replies = vec![executor.submit_read_once(&mut waiting, "shown", request(0))];
+        assert!(
+            slot.set(Arc::downgrade(&waiting.waiting[0].1)).is_ok(),
+            "the read's slot named once"
+        );
+        for newer in 1..=3 {
+            replies.push(executor.submit_read_once(&mut waiting, "shown", request(newer)));
+            let record = drops
+                .recv_timeout(test_wait())
+                .expect("the earlier request's operation is dropped while the read waits");
+            assert_eq!(
+                record,
+                (newer - 1, Some(DROPPER.into()), Some(false)),
+                "dropped on the dropper, neither the thread that asked nor the executor, with the slot's lock let go"
+            );
+        }
+        let mut latest = replies.pop().unwrap();
+        assert!(
+            matches!(latest.try_recv(), Ok(None)),
+            "the read still waits behind the held executor"
+        );
+        drop(held);
+        assert_eq!(
+            futures::executor::block_on(latest).unwrap().unwrap(),
+            "read"
+        );
+        for earlier in replies {
+            assert!(
+                futures::executor::block_on(earlier).is_err(),
+                "an earlier request's reply is dropped"
+            );
+        }
+        assert_eq!(
+            drops.recv_timeout(test_wait()).unwrap(),
+            (3, Some("operation-take-over-drop-test".into()), Some(false)),
+            "the latest request's operation runs, and ends, on the executor"
+        );
+    }
+
+    /// Owned by what is dropped, it panics as it drops.
+    struct PanicsOnDrop;
+
+    impl Drop for PanicsOnDrop {
+        fn drop(&mut self) {
+            panic!("fixture drop failure");
+        }
+    }
+
+    /// Owned by what is dropped, it records as it drops the dropping
+    /// thread's name and whether that thread was unwinding then.
+    struct ThreadProbe(mpsc::Sender<(Option<String>, bool)>);
+
+    impl Drop for ThreadProbe {
+        fn drop(&mut self) {
+            let thread = std::thread::current().name().map(str::to_owned);
+            let _ = self.0.send((thread, std::thread::panicking()));
+        }
+    }
+
+    /// A `Drop` that panics on the dropper is caught, and the dropper goes
+    /// on dropping what it is handed later, on its own thread: uncaught,
+    /// the panic ended it, and what came after dropped as it unwound, or
+    /// on the thread that handed it over.
+    #[test]
+    fn a_drop_that_panics_leaves_the_dropper_dropping() {
+        let (dropped, drops) = mpsc::channel();
+        drop_aside(Box::new(PanicsOnDrop));
+        drop_aside(Box::new(ThreadProbe(dropped)));
+        assert_eq!(
+            drops.recv_timeout(test_wait()).unwrap(),
+            (Some(DROPPER.into()), false),
+            "dropped on the dropper, which is not unwinding"
+        );
+    }
+
+    /// A read skipped because its reply was dropped is dropped unrun on
+    /// the executor, with what the caller gave it: a `Drop` there that
+    /// panics is caught, as a panicking read is, and the executor goes on
+    /// answering. Uncaught, it ended the executor's thread, and the jobs
+    /// behind it went unanswered.
+    #[test]
+    fn a_skipped_read_whose_drop_panics_leaves_the_executor_answering() {
+        let executor = SerialExecutor::new("operation-skip-drop-panic-test");
+        let held = executor.hold();
+        let panics = PanicsOnDrop;
+        drop(executor.submit_read(move || {
+            let _panics = &panics;
+            Ok(())
+        }));
+        let later = executor.submit(|| Ok(42));
+        drop(held);
+        assert_eq!(
+            futures::executor::block_on(later).unwrap().unwrap(),
+            42,
+            "the job behind the skipped read is answered"
         );
     }
 
