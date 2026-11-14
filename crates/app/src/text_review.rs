@@ -2742,6 +2742,749 @@ mod tests {
         assert!(cx.debug_bounds("partial-line-caret").is_some());
     }
 
+    /// The first hunk's Stage hunk (Unstage hunk in `area`) of notes.txt
+    /// edited to [`landing_notes`], in QA's 1480 × 973 window at 13 pt with
+    /// the text at its top and focus on the file list, pressed with the
+    /// operations executor held, `locked` with the index locked so the
+    /// write fails: returns the press's route, its hunk header's row and the
+    /// executor's hold.
+    async fn press_a_hunk(
+        cx: &mut gpui::TestAppContext,
+        area: gitturtle_core::ChangeArea,
+        locked: bool,
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<GitTurtle>,
+        &mut gpui::VisualTestContext,
+        Route,
+        usize,
+        crate::operations::Held,
+    ) {
+        press_the_hunk(cx, area, &landing_notes(), 0, locked).await
+    }
+
+    /// [`press_a_hunk`] on the `nth` hunk, counted from 0, of notes.txt
+    /// edited to `notes`.
+    async fn press_the_hunk<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        area: gitturtle_core::ChangeArea,
+        notes: &str,
+        nth: usize,
+        locked: bool,
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<GitTurtle>,
+        &'a mut gpui::VisualTestContext,
+        Route,
+        usize,
+        crate::operations::Held,
+    ) {
+        use crate::views::tests::{fixture_git, settle};
+        let (fixture, app, cx) = working_diff_edited(
+            cx,
+            &crate::views::tests::history_script(1, 40),
+            &[("notes.txt", notes)],
+        )
+        .await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        if area == gitturtle_core::ChangeArea::Staged {
+            fixture_git(&fixture.path().join("narrow"), &["add", "notes.txt"]);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            settle(&app, cx).await;
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.select_working(0, area, window, cx))
+            });
+            settle(&app, cx).await;
+        }
+        cx.simulate_resize(gpui::size(gpui::px(1480.), gpui::px(973.)));
+        crate::focus_ring::sweep::interface_size(cx, 13);
+        let (editor, view) = shown_diff(&app, cx);
+        editor.update(cx, |state, cx| {
+            state.set_scroll_offset(gpui::point(gpui::px(0.), gpui::px(0.)), cx)
+        });
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| window.focus(&list, cx));
+        crate::tags::tests::draw(cx);
+        let hunk = hunk_rows(&app, cx)[nth];
+        let (caret, scroll) = text_place(&editor, cx);
+        if locked {
+            std::fs::write(
+                fixture
+                    .path()
+                    .join("narrow")
+                    .join(".git")
+                    .join("index.lock"),
+                "",
+            )
+            .unwrap();
+        }
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        let stage = cx
+            .debug_bounds(format!("partial-hunk-{hunk}").leak())
+            .expect("the hunk's Stage hunk is drawn");
+        cx.simulate_click(stage.center(), gpui::Modifiers::default());
+        crate::tags::tests::draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_some()),
+            "the press starts the write"
+        );
+        (
+            fixture,
+            app,
+            cx,
+            Route {
+                editor,
+                view,
+                caret,
+                scroll,
+            },
+            hunk,
+            held,
+        )
+    }
+
+    /// The rows of the shown diff's hunk headers, each drawing its Stage
+    /// hunk.
+    fn hunk_rows(app: &gpui::Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) -> Vec<usize> {
+        use crate::partial_view::PartialRow;
+        app.read_with(cx, |app, _| {
+            let Some(Content::Text {
+                partial: Some(partial),
+                ..
+            }) = app.content.as_deref()
+            else {
+                panic!("the diff offers its partial actions");
+            };
+            partial
+                .rows
+                .iter()
+                .enumerate()
+                .filter_map(|(row, kind)| matches!(kind, PartialRow::Hunk(_)).then_some(row))
+                .collect()
+        })
+    }
+
+    /// A Stage hunk press focuses its button, as a pressed control takes
+    /// focus, here from the file list; the landing that takes its hunk away
+    /// gives that focus to the text, as from the bar's action or Clear,
+    /// never to the window frame. Unfocused, the press left focus on the
+    /// list, and the hunk's own write moved nothing to the text.
+    async fn a_hunk_press_lands_focus_in_the_text(
+        cx: &mut gpui::TestAppContext,
+        area: gitturtle_core::ChangeArea,
+    ) {
+        let (fixture, app, cx, route, _, held) = press_a_hunk(cx, area, false).await;
+        let hunk = route.view.read_with(cx, |view, _| view.hunk_focus_handle());
+        assert!(
+            cx.update(|window, _| hunk.is_focused(window)),
+            "{area:?}: the press focuses its button, not {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+        land_write(&app, cx, held).await;
+        let staged = staged_patch(&fixture);
+        assert_eq!(
+            staged.contains("+added one\n+added two\n"),
+            area == gitturtle_core::ChangeArea::Unstaged,
+            "{area:?}: the hunk's write landed: {staged}"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.patch_view.clone()),
+            Some(route.view.clone()),
+            "{area:?}: the view stays, with the tail's hunk"
+        );
+        assert!(
+            cx.update(|window, cx| route.view.read(cx).focus_handle(cx).is_focused(window)),
+            "{area:?}: focus goes to the text, not {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+    }
+
+    #[gpui::test]
+    async fn a_stage_hunk_press_lands_focus_in_the_text(cx: &mut gpui::TestAppContext) {
+        a_hunk_press_lands_focus_in_the_text(cx, gitturtle_core::ChangeArea::Unstaged).await;
+    }
+
+    #[gpui::test]
+    async fn an_unstage_hunk_press_lands_focus_in_the_text(cx: &mut gpui::TestAppContext) {
+        a_hunk_press_lands_focus_in_the_text(cx, gitturtle_core::ChangeArea::Staged).await;
+    }
+
+    /// The read of the diff after a Stage hunk's write that the reader
+    /// drops takes the view away with focus on that Stage hunk, which goes
+    /// to the list, as focus anywhere in the view does: it once fell to the
+    /// window frame with the button.
+    #[gpui::test]
+    async fn a_dropped_read_after_a_stage_hunk_press_focuses_the_list(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_fixture, app, cx, route, _, held) =
+            press_a_hunk(cx, gitturtle_core::ChangeArea::Unstaged, false).await;
+        let hunk = route.view.read_with(cx, |view, _| view.hunk_focus_handle());
+        assert!(
+            cx.update(|window, _| hunk.is_focused(window)),
+            "the press focuses it"
+        );
+        let reads = land_the_status_alone(&app, cx, held);
+        app.read_with(cx, |app, _| app.worker.cancel());
+        drop(reads);
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.patch_view.is_none()),
+            "the view went with its landing"
+        );
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus goes to the list, not to {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+    }
+
+    /// A Return held on the Stage hunk its press focused, through that
+    /// write, which fails and so keeps the view and focus there, starts no
+    /// write as it comes up, as a refused press stays refused for its whole
+    /// press. The next press acts, with the hunk scrolled out of view, where
+    /// its button stays built for the focus it holds: unbuilt, its focus
+    /// fell to the window frame and the press reached nothing.
+    #[gpui::test]
+    async fn a_return_held_on_a_pressed_stage_hunk_through_its_failed_write_starts_none(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, route, row, held) =
+            press_a_hunk(cx, gitturtle_core::ChangeArea::Unstaged, true).await;
+        let hunk = route.view.read_with(cx, |view, _| view.hunk_focus_handle());
+        cx.simulate_keystrokes("enter");
+        repeat_key(cx, "enter", Repeats::Held, 2);
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        std::fs::remove_file(
+            fixture
+                .path()
+                .join("narrow")
+                .join(".git")
+                .join("index.lock"),
+        )
+        .unwrap();
+        assert!(
+            app.read_with(cx, |app, _| app.operation_error.is_some()),
+            "the write failed"
+        );
+        assert!(
+            cx.update(|window, _| hunk.is_focused(window)),
+            "focus stays on the Stage hunk the failure keeps, not {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+        repeat_key(cx, "enter", Repeats::Held, 3);
+        release_key(cx, "enter");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            None,
+            "the key-up starts no write"
+        );
+        assert!(staged_patch(&fixture).is_empty(), "nothing staged");
+        route.editor.update(cx, |state, cx| {
+            let height = state.line_height().expect("the text is laid out");
+            state.set_scroll_offset(gpui::point(gpui::px(0.), -height * (row + 20) as f32), cx);
+        });
+        crate::tags::tests::draw(cx);
+        let text = route.editor.read_with(cx, |state, _| state.input_bounds());
+        let stage = cx
+            .debug_bounds(format!("partial-hunk-{row}").leak())
+            .expect("the focused Stage hunk stays built");
+        assert!(
+            stage.bottom() <= text.top(),
+            "its row is out of view: {stage:?} above {text:?}"
+        );
+        press(cx, "enter");
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        let staged = staged_patch(&fixture);
+        assert!(
+            staged.contains("+added one\n+added two\n") && staged.contains("+twelve"),
+            "the next Return stages the hunk: {staged}"
+        );
+    }
+
+    /// Once the window looks busy through a partial write, each control it
+    /// refuses says why in its tooltip, "Wait for the current Git operation
+    /// to finish", as DESIGN.md has a control that is unavailable say why:
+    /// the bar's action and Clear, a line's checkbox and Stage hunk. Through
+    /// the delay, and once the write lands, they say what they do. Dimmed,
+    /// they once said only what they did.
+    #[gpui::test]
+    async fn a_dimmed_partial_control_says_why_in_its_tooltip(cx: &mut gpui::TestAppContext) {
+        use crate::workspace::BUSY_REASON;
+        let (_fixture, app, cx, route, held) =
+            Route::press(cx, gitturtle_core::ChangeArea::Unstaged, &landing_notes()).await;
+        let (hunk, twelve) = route_controls(&app, &route, cx);
+        let keys = [
+            "apply-partial-selection".to_owned(),
+            "clear-partial-selection".to_owned(),
+            format!("partial-hunk-{hunk}"),
+            format!("partial-line-{twelve}"),
+        ];
+        let tooltip = |key: &str| {
+            crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(key).cloned())
+        };
+        let tooltips = |cx: &mut gpui::VisualTestContext| {
+            crate::tags::tests::draw(cx);
+            keys.iter()
+                .map(|key| tooltip(key).unwrap_or_else(|| panic!("{key} is drawn")))
+                .collect::<Vec<_>>()
+        };
+        let purposes = [
+            "For a replacement, select both the removed and added lines.".to_owned(),
+            "Clear line selection".to_owned(),
+            "Stage all 60 changed lines in this hunk".to_owned(),
+            format!(
+                "Select this changed line. {} selects a range.",
+                crate::shortcuts::SHIFT_CLICK
+            ),
+        ];
+        assert_eq!(tooltips(cx), purposes, "through the delay, what each does");
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        native_frames(cx);
+        assert_eq!(
+            tooltips(cx),
+            [BUSY_REASON; 4].map(str::to_owned),
+            "once the window looks busy, why each is unavailable"
+        );
+        land_write(&app, cx, held).await;
+        let twelve = patch_row(&route.editor, cx, "+twelve");
+        assert_eq!(
+            tooltip(&format!("partial-line-{twelve}")),
+            Some(purposes[3].clone()),
+            "landed, each says what it does again"
+        );
+    }
+
+    /// notes 1 to 40 with note 20 changed, hunk B, and note 35, hunk C,
+    /// and, where `a`, hunk A before them: note 5 changed, and note 6 with
+    /// it where `a_lines` is 2. Without A, as an edit outside the app
+    /// reverting it leaves the file, B and C move up by A's rows.
+    fn hunks_abc(a: bool, a_lines: usize) -> String {
+        (1..=40)
+            .map(|line| match line {
+                5 if a => "five\n".to_owned(),
+                6 if a && a_lines == 2 => "six\n".to_owned(),
+                20 => "twenty\n".to_owned(),
+                35 => "thirty-five\n".to_owned(),
+                _ => format!("note {line}\n"),
+            })
+            .collect()
+    }
+
+    /// [`landing_notes`] without its first hunk, as an edit outside the app
+    /// reverting that hunk leaves it: the tail's hunk heads that hunk's row.
+    fn tail_notes() -> String {
+        let mut text: String = (1..=40).map(|line| format!("note {line}\n")).collect();
+        for line in 0..60 {
+            text.push_str(&format!("tail {line}\n"));
+        }
+        text
+    }
+
+    /// Lets the held write run to its failure, the index locked, which
+    /// keeps the view, and focus on the Stage hunk pressed, then unlocks it.
+    async fn fail_held_write(
+        fixture: &tempfile::TempDir,
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        held: crate::operations::Held,
+    ) {
+        land_write(app, cx, held).await;
+        std::fs::remove_file(
+            fixture
+                .path()
+                .join("narrow")
+                .join(".git")
+                .join("index.lock"),
+        )
+        .unwrap();
+        assert!(
+            app.read_with(cx, |app, _| app.operation_error.is_some()),
+            "the write failed"
+        );
+    }
+
+    /// notes.txt written to `notes` outside the app, and the quiet read the
+    /// local watcher asks for landed, as it lands in place in the shown
+    /// view (`replace_quiet_preview`).
+    fn edit_outside(
+        fixture: &tempfile::TempDir,
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        notes: &str,
+    ) {
+        std::fs::write(fixture.path().join("narrow").join("notes.txt"), notes).unwrap();
+        // The watcher's subscription is made on the operation thread.
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.executor().run_until_parked();
+        app.update(cx, |app, _| {
+            app.automatic
+                .report_local_change(crate::local_refresh::LocalChange {
+                    worktree: true,
+                    ..Default::default()
+                })
+        });
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                crate::tags::tests::draw(cx);
+                return;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+        }
+        panic!("the quiet read never landed");
+    }
+
+    /// Asserts that `route`'s text holds focus, `when`.
+    fn assert_text_focused(route: &Route, cx: &mut gpui::VisualTestContext, when: &str) {
+        assert!(
+            cx.update(|window, cx| route.view.read(cx).focus_handle(cx).is_focused(window)),
+            "{when}: focus goes to the text, not {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+    }
+
+    /// A Stage hunk pressed on B, of hunks A, B and C, fails, which leaves
+    /// focus on its button; an edit outside the app reverts A, and its quiet
+    /// read lands in the view in place, moving B and C up by A's rows, so C
+    /// heads B's row. That read ends the press focus, which goes to the
+    /// text, as a landing gives it: `key` then presses nothing, and nothing
+    /// is staged. The pressed row kept its focus, so C's Stage hunk took it,
+    /// and Return or Space staged C, a hunk never pressed (FU45-A7's
+    /// security review).
+    async fn a_quiet_read_moving_the_pressed_row_ends_its_focus(
+        cx: &mut gpui::TestAppContext,
+        key: &str,
+    ) {
+        let (fixture, app, cx, route, row, held) = press_the_hunk(
+            cx,
+            gitturtle_core::ChangeArea::Unstaged,
+            &hunks_abc(true, 1),
+            1,
+            true,
+        )
+        .await;
+        fail_held_write(&fixture, &app, cx, held).await;
+        let hunk = route.view.read_with(cx, |view, _| view.hunk_focus_handle());
+        assert!(
+            cx.update(|window, _| hunk.is_focused(window)),
+            "the failure keeps focus on B's Stage hunk"
+        );
+        edit_outside(&fixture, &app, cx, &hunks_abc(false, 1));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.patch_view.clone()),
+            Some(route.view.clone()),
+            "the read lands in the view"
+        );
+        assert_eq!(
+            (
+                hunk_rows(&app, cx).contains(&row),
+                patch_row(&route.editor, cx, "+thirty-five")
+            ),
+            (true, row + 5),
+            "C's hunk heads B's row"
+        );
+        assert_text_focused(&route, cx, "the read moved the hunks");
+        press(cx, key);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            None,
+            "{key} starts no write"
+        );
+        assert!(staged_patch(&fixture).is_empty(), "{key} stages nothing");
+    }
+
+    #[gpui::test]
+    async fn a_quiet_read_moving_the_pressed_row_ends_its_focus_for_return(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_quiet_read_moving_the_pressed_row_ends_its_focus(cx, "enter").await;
+    }
+
+    #[gpui::test]
+    async fn a_quiet_read_moving_the_pressed_row_ends_its_focus_for_space(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_quiet_read_moving_the_pressed_row_ends_its_focus(cx, "space").await;
+    }
+
+    /// As above with A two lines long, so B's row lands on one of C's
+    /// context lines, which draws no Stage hunk: focus goes to the text,
+    /// and Return stages nothing. It rested on a handle no frame drew.
+    #[gpui::test]
+    async fn a_quiet_read_moving_the_pressed_row_onto_context_focuses_the_text(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, route, row, held) = press_the_hunk(
+            cx,
+            gitturtle_core::ChangeArea::Unstaged,
+            &hunks_abc(true, 2),
+            1,
+            true,
+        )
+        .await;
+        fail_held_write(&fixture, &app, cx, held).await;
+        edit_outside(&fixture, &app, cx, &hunks_abc(false, 2));
+        assert_eq!(
+            patch_row(&route.editor, cx, "+thirty-five"),
+            row + 3,
+            "B's row is C's second context line"
+        );
+        assert_eq!(
+            cx.debug_bounds(format!("partial-hunk-{row}").leak()),
+            None,
+            "a context line draws no Stage hunk"
+        );
+        assert_text_focused(&route, cx, "the read moved the hunks");
+        press(cx, "enter");
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        assert!(staged_patch(&fixture).is_empty(), "Return stages nothing");
+    }
+
+    /// The pressed hunk's write fails and an edit outside the app reverts
+    /// that hunk; its quiet read lands with the tail's hunk heading the
+    /// pressed row. Focus goes to the text, and Return stages nothing, nor
+    /// does it once that row is scrolled out of view, where no Stage hunk is
+    /// built for it. The tail's Stage hunk took the focus, built out of
+    /// view, and Return staged the tail there and in view.
+    #[gpui::test]
+    async fn a_quiet_read_reverting_the_pressed_hunk_stages_nothing_on_return(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, route, row, held) =
+            press_a_hunk(cx, gitturtle_core::ChangeArea::Unstaged, true).await;
+        fail_held_write(&fixture, &app, cx, held).await;
+        edit_outside(&fixture, &app, cx, &tail_notes());
+        assert_eq!(hunk_rows(&app, cx), [row], "the tail's hunk heads the row");
+        assert_text_focused(&route, cx, "the read took the pressed hunk away");
+        press(cx, "enter");
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        assert!(staged_patch(&fixture).is_empty(), "Return stages nothing");
+        route.editor.update(cx, |state, cx| {
+            let height = state.line_height().expect("the text is laid out");
+            state.set_scroll_offset(gpui::point(gpui::px(0.), -height * (row + 20) as f32), cx);
+        });
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            cx.debug_bounds(format!("partial-hunk-{row}").leak()),
+            None,
+            "out of view, no Stage hunk is built for the row"
+        );
+        press(cx, "enter");
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        assert!(
+            staged_patch(&fixture).is_empty(),
+            "Return out of view stages nothing"
+        );
+    }
+
+    /// A Return pressed on the Stage hunk a failed write left focused, held
+    /// while an edit outside the app reverts that hunk and its quiet read
+    /// lands, does nothing as it comes up: its press began before the read.
+    /// It came up on the tail's Stage hunk, which then held the focus, and
+    /// staged the tail.
+    #[gpui::test]
+    async fn a_return_held_across_a_quiet_read_does_nothing_as_it_comes_up(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, route, _, held) =
+            press_a_hunk(cx, gitturtle_core::ChangeArea::Unstaged, true).await;
+        fail_held_write(&fixture, &app, cx, held).await;
+        cx.simulate_keystrokes("enter");
+        edit_outside(&fixture, &app, cx, &tail_notes());
+        assert_text_focused(&route, cx, "the read came while Return was down");
+        release_key(cx, "enter");
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            None,
+            "the key-up starts no write"
+        );
+        assert!(staged_patch(&fixture).is_empty(), "nothing staged");
+    }
+
+    /// The Stage hunk a failed write left focused stays built as its row
+    /// scrolls out of view, for the focus it holds there, and goes once
+    /// focus leaves it, here for the file list. Built on, that one control
+    /// out of view lasted until the next landing that changed the text.
+    #[gpui::test]
+    async fn a_pressed_stage_hunk_out_of_view_goes_as_focus_leaves_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, route, row, held) =
+            press_a_hunk(cx, gitturtle_core::ChangeArea::Unstaged, true).await;
+        fail_held_write(&fixture, &app, cx, held).await;
+        route.editor.update(cx, |state, cx| {
+            let height = state.line_height().expect("the text is laid out");
+            state.set_scroll_offset(gpui::point(gpui::px(0.), -height * (row + 20) as f32), cx);
+        });
+        crate::tags::tests::draw(cx);
+        let selector: &'static str = format!("partial-hunk-{row}").leak();
+        assert!(
+            cx.debug_bounds(selector).is_some(),
+            "built out of view while it holds focus"
+        );
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| window.focus(&list, cx));
+        crate::tags::tests::draw(cx);
+        assert_eq!(cx.debug_bounds(selector), None, "gone once focus leaves it");
+    }
+
+    /// notes.txt's unstaged diff edited to [`landing_notes`] in QA's 1480 ×
+    /// 973 Midnight window at 13 pt, the text at its top: the fixture, its
+    /// window and the patch's editor.
+    async fn landing_diff_at_its_top(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<GitTurtle>,
+        &mut gpui::VisualTestContext,
+        gpui::Entity<gpui_kit::component::input::EditorState>,
+    ) {
+        let (fixture, app, cx) = working_diff_edited(
+            cx,
+            &crate::views::tests::history_script(1, 40),
+            &[("notes.txt", &landing_notes())],
+        )
+        .await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        cx.simulate_resize(gpui::size(gpui::px(1480.), gpui::px(973.)));
+        crate::focus_ring::sweep::interface_size(cx, 13);
+        let (editor, _) = shown_diff(&app, cx);
+        editor.update(cx, |state, cx| {
+            state.set_scroll_offset(gpui::point(gpui::px(0.), gpui::px(0.)), cx)
+        });
+        crate::tags::tests::draw(cx);
+        (fixture, app, cx, editor)
+    }
+
+    /// Starts a review of the shown diff with whitespace hidden, holding
+    /// the reader so that it stays prepared, until the hold is dropped.
+    fn prepare_a_review(
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> crate::worker::ReaderHeld {
+        let held = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(true);
+                app.set_text_review(
+                    Options {
+                        hide_whitespace: true,
+                        ..Options::default()
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+        crate::tags::tests::draw(cx);
+        held
+    }
+
+    /// A pointer resting on Stage hunk reads what it does, then, as a text
+    /// review of the diff is prepared, which dims it at once, why it is
+    /// unavailable, and once the review is released what it does again,
+    /// without moving: its tooltip reads the view each time it renders. The
+    /// kit kept the text from the pointer's entry, so it read what the
+    /// button did beside its dimmed look, and through a write the reason
+    /// after the write had ended.
+    #[gpui::test]
+    async fn a_pointer_resting_on_stage_hunk_reads_its_tooltip_change(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_fixture, app, cx, _) = landing_diff_at_its_top(cx).await;
+        let row = hunk_rows(&app, cx)[0];
+        let selector: &'static str = format!("partial-hunk-{row}").leak();
+        let stage = cx.debug_bounds(selector).expect("Stage hunk is drawn");
+        cx.simulate_mouse_move(stage.center(), None, gpui::Modifiers::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        crate::tags::tests::draw(cx);
+        let shows = |cx: &mut gpui::VisualTestContext, text: &str| {
+            cx.debug_bounds(format!("partial-hunk-{row}/tooltip/{text}").leak())
+                .is_some()
+        };
+        let purpose = "Stage all 4 changed lines in this hunk";
+        assert!(shows(cx, purpose), "at rest, what it does");
+        let held = prepare_a_review(&app, cx);
+        assert_eq!(
+            cx.debug_bounds(selector),
+            Some(stage),
+            "Stage hunk stays under the pointer"
+        );
+        assert!(
+            shows(cx, "Wait until the text review is ready"),
+            "while the review is prepared, why it is unavailable"
+        );
+        cx.update(|_, cx| app.update(cx, |app, cx| app.release_text_review(cx)));
+        crate::tags::tests::draw(cx);
+        assert!(shows(cx, purpose), "released, what it does again");
+        drop(held);
+        crate::views::tests::settle(&app, cx).await;
+    }
+
+    /// While a text review of the diff is prepared, which suspends the
+    /// partial actions and dims them at once, Stage hunk and a line's
+    /// checkbox say why in their tooltips, "Wait until the text review is
+    /// ready", rather than the Git operation's reason, which would name
+    /// work that is not running: they once said only what they did. Once
+    /// the review is released they say what they do again.
+    #[gpui::test]
+    async fn partial_controls_dimmed_for_a_text_review_say_why(cx: &mut gpui::TestAppContext) {
+        let (_fixture, app, cx, editor) = landing_diff_at_its_top(cx).await;
+        let hunk = hunk_rows(&app, cx)[0];
+        let twelve = patch_row(&editor, cx, "+twelve");
+        let keys = [
+            format!("partial-hunk-{hunk}"),
+            format!("partial-line-{twelve}"),
+        ];
+        let tooltips = |cx: &mut gpui::VisualTestContext| {
+            crate::tags::tests::draw(cx);
+            keys.iter()
+                .map(|key| {
+                    crate::views::CONTROL_TOOLTIPS
+                        .with(|tooltips| tooltips.borrow().get(key.as_str()).cloned())
+                        .unwrap_or_else(|| panic!("{key} is drawn"))
+                })
+                .collect::<Vec<_>>()
+        };
+        let purposes = [
+            "Stage all 4 changed lines in this hunk".to_owned(),
+            format!(
+                "Select this changed line. {} selects a range.",
+                crate::shortcuts::SHIFT_CLICK
+            ),
+        ];
+        assert_eq!(tooltips(cx), purposes, "at rest, what each does");
+        let held = prepare_a_review(&app, cx);
+        assert_eq!(
+            tooltips(cx),
+            ["Wait until the text review is ready"; 2].map(str::to_owned),
+            "while the review is prepared, why each is unavailable"
+        );
+        cx.update(|_, cx| app.update(cx, |app, cx| app.release_text_review(cx)));
+        assert_eq!(tooltips(cx), purposes, "released, what each does again");
+        drop(held);
+        crate::views::tests::settle(&app, cx).await;
+    }
+
     /// How a key held on a partial control repeats: marked held, as macOS
     /// and Wayland send a held key's repeats; as fresh presses with no
     /// key-up between, as GPUI's X11 client delivers them; or as a release
@@ -4606,10 +5349,10 @@ mod tests {
         let body = crate::native_accessibility::written::get("empty-state:Preview unavailable")
             .expect("the failure takes the view's place");
         assert!(
-            body.node
-                .value()
-                .is_some_and(|text| text.contains(crate::workspace::LANDING_INTERRUPTED)),
-            "and says why: {:?}",
+            body.node.value().is_some_and(
+                |text| text.contains("The diff could not be read again. Refresh to retry.")
+            ),
+            "and says why, under the heading that already says preview: {:?}",
             body.node.value()
         );
         let list = app.read_with(cx, |app, _| app.file_focus.clone());

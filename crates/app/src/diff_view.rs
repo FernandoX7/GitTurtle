@@ -97,6 +97,11 @@ pub struct DiffView {
     /// partial controls a write refuses wait for to look it
     /// ([`Self::dimmed`]).
     busy_look: bool,
+    /// Whether the partial actions are suspended for a text review being
+    /// prepared ([`Self::suspend_partial`]), which their tooltips name
+    /// ([`Self::refusal_reason`]), until the review's read lands or the
+    /// review ends ([`Self::refresh`]).
+    reviewing: bool,
     /// The Enter and Space presses going down in this view, and whether the
     /// partial controls refused each ([`Presses`]), with the number of the
     /// last key-up that released one, what ends them as focus leaves the
@@ -104,7 +109,7 @@ pub struct DiffView {
     /// window turns inactive ([`Presses::leave`]).
     presses: Presses,
     key_ups: u64,
-    _focus_moves: [Subscription; 3],
+    _focus_moves: [Subscription; 4],
     /// The control of Find's bar a press found focus on, whose focus moving
     /// out ends it too ([`Self::watch_find`]).
     find_focus: Option<(FocusHandle, Subscription)>,
@@ -121,6 +126,16 @@ pub struct DiffView {
     /// ([`Self::render_partial_selection`]).
     apply_focus: FocusHandle,
     clear_focus: FocusHandle,
+    /// The focus of the Stage hunk (Unstage hunk) last pressed, which the
+    /// button of the hunk header on `hunk_row` tracks: a press focuses it,
+    /// as a pressed control takes focus, and the landing that takes its hunk
+    /// away gives that focus to the text ([`Self::land`]). It is no Tab stop.
+    hunk_focus: FocusHandle,
+    hunk_row: Option<usize>,
+    /// The window the view is drawn in, where a read of another diff that
+    /// lands without it in hand moves focus off a Stage hunk it ends
+    /// ([`Self::end_hunk_press`]).
+    window: gpui_kit::AnyWindowHandle,
     /// The room that bar took in the last frame, so the text keeps the
     /// caret's line whole above it in the frame it comes, goes or changes
     /// height ([`BarRoom::keep_caret_line`]).
@@ -267,13 +282,14 @@ impl DiffView {
         self.busy_look = shown || (self.writing && self.busy_look);
     }
 
-    /// Whether focus is anywhere in this view: in its text, or on its
+    /// Whether focus is anywhere in this view: in its text, on its
     /// selection bar's action or Clear, which Tab reaches while a write
-    /// runs, before they look refused.
+    /// runs, before they look refused, or on the Stage hunk a press focused.
     pub(crate) fn holds_focus(&self, window: &Window, cx: &App) -> bool {
         self.focus_handle(cx).contains_focused(window, cx)
             || self.apply_focus.is_focused(window)
             || self.clear_focus.is_focused(window)
+            || self.hunk_focus.is_focused(window)
     }
 
     /// Whether the partial controls look refused: as they are suspended,
@@ -285,6 +301,75 @@ impl DiffView {
     /// every quick Stage flashed them disabled.
     fn dimmed(&self) -> bool {
         self.partial_busy && (!self.writing || self.busy_look)
+    }
+
+    /// Why the partial controls are unavailable, which their tooltips say
+    /// in place of what they do once they look refused ([`Self::dimmed`]):
+    /// through this view's write, the window's Git operation and the reads
+    /// after it ([`crate::workspace::BUSY_REASON`]); suspended while a text
+    /// review is prepared, that review ([`REVIEW_REASON`]), a read whose
+    /// wait the Git operation's reason would name as work that is not
+    /// running. Dimmed for the review, they once said only what they did.
+    fn refusal_reason(&self) -> Option<&'static str> {
+        if !self.dimmed() {
+            None
+        } else if self.writing {
+            Some(crate::workspace::BUSY_REASON)
+        } else {
+            self.reviewing.then_some(REVIEW_REASON)
+        }
+    }
+
+    /// `purpose`, what a partial control does, or where it looks refused,
+    /// why it is unavailable ([`Self::refusal_reason`]): its tooltip.
+    fn said(&self, purpose: &str) -> String {
+        self.refusal_reason().unwrap_or(purpose).to_owned()
+    }
+
+    /// What the Stage hunk (Unstage hunk) on `row` says in its tooltip:
+    /// what it does to the hunk that row heads, or why it is unavailable
+    /// ([`Self::said`]).
+    fn hunk_tooltip(&self, row: usize) -> String {
+        match self
+            .partial
+            .as_ref()
+            .and_then(|partial| partial.rows.get(row))
+        {
+            Some(PartialRow::Hunk(ids)) => self.said(&format!(
+                "{} all {} in this hunk",
+                self.action(),
+                crate::counted(ids.len(), "changed line", "changed lines")
+            )),
+            _ => String::new(),
+        }
+    }
+
+    /// The tooltip of the partial control `key`, saying what `text` reads
+    /// from this view each time the tooltip renders, drawn as the kit draws
+    /// a text tooltip with its text as `‹key›/tooltip/‹text›`
+    /// ([`crate::workspace::text_tooltip`]): a pointer resting on the
+    /// control reads why it is unavailable as it dims and what it does once
+    /// the write lands, as on Projects (`GitTurtle::refusing_with_reason`).
+    /// The kit keeps a text tooltip from the pointer's entry: resting on
+    /// Stage hunk read the reason after its write had failed, beside the
+    /// button it pressed again. Noted under `key` as built, for a test.
+    fn live_tooltip(
+        &self,
+        key: String,
+        text: impl Fn(&DiffView) -> String + 'static,
+        cx: &Context<Self>,
+    ) -> impl Fn(&mut Window, &mut App) -> gpui_kit::AnyView + 'static {
+        let key = SharedString::from(key);
+        #[cfg(test)]
+        crate::views::note_control_tooltip(&gpui_kit::ElementId::Name(key.clone()), &text(self));
+        let view = cx.entity().downgrade();
+        move |window, cx| {
+            let said = view
+                .upgrade()
+                .map(|view| text(view.read(cx)))
+                .unwrap_or_default();
+            crate::workspace::text_tooltip(key.clone(), said.into(), window, cx)
+        }
     }
 
     /// Ends the wait for the read after this view's partial write, as a
@@ -310,6 +395,12 @@ impl DiffView {
         self.clear_focus.clone()
     }
 
+    /// The focus of the Stage hunk a press focused.
+    #[cfg(test)]
+    pub(crate) fn hunk_focus_handle(&self) -> FocusHandle {
+        self.hunk_focus.clone()
+    }
+
     /// How many changed lines are selected.
     #[cfg(test)]
     pub(crate) fn selected_lines(&self) -> usize {
@@ -332,8 +423,11 @@ impl DiffView {
         }
     }
 
+    /// Suspends the partial actions while a text review of this diff is
+    /// prepared, which says why in their tooltips ([`Self::refusal_reason`]).
     pub fn suspend_partial(&mut self, cx: &mut Context<Self>) {
         self.partial_busy = true;
+        self.reviewing = true;
         self.selection = LineSelection::default();
         self.announcement = None;
         cx.notify();
@@ -482,8 +576,9 @@ impl DiffView {
     /// Ends the presses under way as focus leaves this view's controls for
     /// another control in its window, which their key-ups then come up on:
     /// the next press here is a fresh one. Focus moving among the text, the
-    /// bar's action and Clear, and Find's bar keeps them. A window turning
-    /// inactive keeps them, marked ([`Presses::leave`]): GPUI reports focus
+    /// bar's action and Clear, the Stage hunk a press focused, and Find's
+    /// bar keeps them. A window turning inactive keeps them, marked
+    /// ([`Presses::leave`]): GPUI reports focus
     /// leaving then too, but the window keeps its focus, still in this
     /// view. Under X11 another client's keyboard grab takes the window's
     /// focus and gives it back while the key is held, and its next repeat,
@@ -751,6 +846,9 @@ impl DiffView {
         };
         if !same {
             self.bar_room = Rc::default();
+            if !shows_same_diff(self.partial.as_deref(), partial.as_deref()) {
+                self.end_hunk_press(cx);
+            }
         }
         self.partial = partial;
         self.selection = LineSelection::default();
@@ -759,6 +857,38 @@ impl DiffView {
         self.writing = false;
         self.written = BTreeSet::new();
         self.busy_look = false;
+        self.reviewing = false;
+    }
+
+    /// Ends the press of the Stage hunk last pressed as another diff takes
+    /// the place of the one it was pressed on, as the quiet read of an edit
+    /// made outside the app, by the person's editor or a formatter, lands
+    /// in place (`replace_quiet_preview`), or a text review's read: the
+    /// button on its row may now be another hunk's, or that row a line, so
+    /// focus resting on it goes to the text, as a landing gives it
+    /// ([`Self::land`]). A write acts only on what the person pressed, and
+    /// focus never stays on a handle no frame draws. Kept after a press
+    /// whose write failed, the row's focus went to whichever Stage hunk the
+    /// new diff drew there, built out of view for it, and a Return or Space
+    /// there, or the key-up of one pressed before the read, wrote a hunk the
+    /// person never pressed; on a line it rested on a handle no frame drew.
+    /// Moved off the button, a key pressed before the read comes up in the
+    /// text, where it presses nothing.
+    fn end_hunk_press(&mut self, cx: &mut Context<Self>) {
+        if self.hunk_row.take().is_none() {
+            return;
+        }
+        let (hunk, text, window) = (self.hunk_focus.clone(), self.focus_handle(cx), self.window);
+        // These reads land without the window in hand, as does the text
+        // review's release that refreshes this view, so the move comes as
+        // the update they land in ends, before the window takes another key.
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, cx| {
+                if hunk.is_focused(window) {
+                    window.focus(&text, cx);
+                }
+            });
+        });
     }
 
     /// Lands a read of the diff this view shows in place, as the read after
@@ -776,7 +906,8 @@ impl DiffView {
     /// The line selection stays where the text has not changed, as after a
     /// write that failed, and otherwise goes with the lines it selected,
     /// which left the area, and its bar with it, whose action or Clear
-    /// gives focus to the text. Focus is otherwise left where it is. Rebuilt for the read
+    /// gives focus to the text, as does the Stage hunk a press focused,
+    /// whose hunk went with its write. Focus is otherwise left where it is. Rebuilt for the read
     /// instead, the view went for the write's whole length ("Choose a file"
     /// in its place, focus on the window frame) and came back with its
     /// caret, selection and scroll lost (QA-118 P3.10).
@@ -869,6 +1000,12 @@ impl DiffView {
         self.return_focus(&bar, window, cx);
         let clear = self.clear_focus.clone();
         self.return_focus(&clear, window, cx);
+        // So does focus on the Stage hunk the write was pressed on, whose
+        // hunk the landed text no longer shows: left there, it fell to the
+        // window frame with the button.
+        let hunk = self.hunk_focus.clone();
+        self.return_focus(&hunk, window, cx);
+        self.hunk_row = None;
         cx.notify();
     }
 
@@ -962,8 +1099,9 @@ pub fn new_numbered(
             }
         });
         let (apply_focus, clear_focus) = (cx.focus_handle(), cx.focus_handle());
+        let hunk_focus = cx.focus_handle();
         let text_focus = gpui_kit::Focusable::focus_handle(editor.read(cx), cx);
-        let focus_moves = [&text_focus, &apply_focus, &clear_focus].map(|focus| {
+        let focus_moves = [&text_focus, &apply_focus, &clear_focus, &hunk_focus].map(|focus| {
             cx.on_focus_out(focus, window, |this: &mut DiffView, _, window, cx| {
                 this.focus_moved(window, cx)
             })
@@ -987,6 +1125,7 @@ pub fn new_numbered(
             writing: false,
             written: BTreeSet::new(),
             busy_look: false,
+            reviewing: false,
             presses: Presses::default(),
             key_ups: 0,
             _focus_moves: focus_moves,
@@ -996,6 +1135,9 @@ pub fn new_numbered(
             announcements: 0,
             apply_focus,
             clear_focus,
+            hunk_focus,
+            hunk_row: None,
+            window: window.window_handle(),
             bar_room: Rc::default(),
             viewport,
             pending_scroll: Rc::default(),
@@ -1045,7 +1187,7 @@ impl Render for DiffView {
             self.bar_room.reveal(layout.height, &self.editor, cx);
             layout
         });
-        let controls = self.render_partial_controls(width, caret, cx);
+        let controls = self.render_partial_controls(width, caret, window, cx);
         let painted_room = Rc::clone(&self.bar_room);
         let find_partner = self.find_partner.clone();
         // The gutter and the partial actions stand beside the text under
@@ -1290,6 +1432,7 @@ impl DiffView {
         &self,
         width: f32,
         caret: Option<usize>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let Some(partial) = &self.partial else {
@@ -1336,13 +1479,31 @@ impl DiffView {
             .min(rows);
         let action = self.action();
         let (refused, dimmed) = (self.partial_busy, self.dimmed());
+        // The Stage hunk a press focused stays built while its row is out of
+        // view, clipped with the rows, so focus stays on it as the text
+        // scrolls: left unbuilt, its focus fell to the window frame. It goes
+        // as focus leaves it, where it once lasted until the next landing.
+        let held = self.hunk_focus.is_focused(window);
+        let pressed = self
+            .hunk_row
+            .filter(|row| held && !(first..end).contains(row) && *row < rows);
+        // Stage hunk stands inside the gutter, which clips the controls, by
+        // the room its focus ring takes, so the ring a press's focus draws
+        // is whole (DESIGN.md: a Button rings on any focus, a pointer's
+        // included). Inset 2 px, its sides were cut.
+        let ring = crate::appearance::button_ring_room(cx);
         let mut elements = Vec::new();
-        for row in first..end {
+        for row in (first..end).chain(pressed) {
             let y = top + line_height * row as f32;
             match &partial.rows[row] {
                 PartialRow::None => {}
                 PartialRow::Hunk(ids) => {
                     let ids = Arc::clone(ids);
+                    let tooltip = self.live_tooltip(
+                        format!("partial-hunk-{row}"),
+                        move |view| view.hunk_tooltip(row),
+                        cx,
+                    );
                     let stage = Button::new(("partial-hunk", row))
                         .debug_selector(move || format!("partial-hunk-{row}"))
                         .tab_stop(false)
@@ -1353,13 +1514,16 @@ impl DiffView {
                         .rounded(px(3.))
                         .text_size(crate::appearance::ui_text(10.))
                         .label(format!("{action} hunk"))
-                        .accessibility_label(format!("{action} hunk at patch line {}", row + 1));
+                        .accessibility_label(format!("{action} hunk at patch line {}", row + 1))
+                        .when(self.hunk_row == Some(row), |stage| {
+                            stage.track_focus(&self.hunk_focus)
+                        });
                     elements.push(
                         div()
                             .absolute()
                             .top(y + px(1.))
-                            .left(px(2.))
-                            .w(px(width - 4.))
+                            .left(ring)
+                            .w(px(width) - ring * 2.)
                             .h(line_height - px(2.))
                             .child(
                                 crate::workspace::refusing(
@@ -1368,15 +1532,18 @@ impl DiffView {
                                     refused,
                                     dimmed,
                                 )
-                                .tooltip(format!(
-                                    "{action} all {} in this hunk",
-                                    crate::counted(ids.len(), "changed line", "changed lines")
-                                ))
+                                .tooltip_view(tooltip)
                                 .on_click(cx.listener(
-                                    move |this, event, _, cx| {
+                                    move |this, event, window, cx| {
                                         if !this.refuses_click(event)
                                             && this.click_matches_row(event, row, cx)
                                         {
+                                            // The pressed control takes
+                                            // focus, as the bar's do, and
+                                            // gives it to the text as its
+                                            // hunk lands away ([`Self::land`]).
+                                            this.hunk_row = Some(row);
+                                            window.focus(&this.hunk_focus.clone(), cx);
                                             this.apply_partial(ids.to_vec(), cx);
                                         }
                                     },
@@ -1483,8 +1650,6 @@ impl DiffView {
             refused || dimmed,
             dimmed,
         );
-        #[cfg(not(test))]
-        let _ = row;
         Checkbox::new(("partial-line", id))
             .tab_stop(false)
             .small()
@@ -1496,9 +1661,15 @@ impl DiffView {
                 if added { "added" } else { "removed" },
                 self.action().to_lowercase()
             ))
-            .tooltip(format!(
-                "Select this changed line. {} selects a range.",
-                crate::shortcuts::SHIFT_CLICK
+            .tooltip(noted_tooltip(
+                format!("partial-line-{row}"),
+                self.refusal_reason(),
+                || {
+                    format!(
+                        "Select this changed line. {} selects a range.",
+                        crate::shortcuts::SHIFT_CLICK
+                    )
+                },
             ))
     }
 
@@ -1543,9 +1714,16 @@ impl DiffView {
         let palette = palette(cx);
         let (refused, dimmed) = (self.partial_busy, self.dimmed());
         // Refused, either press does nothing, focus included: they look
-        // refused only once the window looks busy ([`Self::dimmed`]).
+        // refused only once the window looks busy ([`Self::dimmed`]), and
+        // then say why.
         let action = crate::workspace::refusing(
-            partial_action(&layout.label).track_focus(&self.apply_focus),
+            partial_action(&layout.label)
+                .track_focus(&self.apply_focus)
+                .tooltip_view(self.live_tooltip(
+                    "apply-partial-selection".into(),
+                    |view| view.said(ACTION_TOOLTIP),
+                    cx,
+                )),
             || "apply-partial-selection".into(),
             refused,
             dimmed,
@@ -1574,7 +1752,13 @@ impl DiffView {
             .child(action)
             .child(
                 crate::workspace::refusing(
-                    clear_control(layout.icon).track_focus(&self.clear_focus),
+                    clear_control(layout.icon)
+                        .track_focus(&self.clear_focus)
+                        .tooltip_view(self.live_tooltip(
+                            "clear-partial-selection".into(),
+                            |view| view.said(CLEAR_NAME),
+                            cx,
+                        )),
                     || "clear-partial-selection".into(),
                     refused,
                     dimmed,
@@ -1677,7 +1861,48 @@ fn partial_action(label: &str) -> Button {
         .debug_selector(|| "apply-partial-selection".into())
         .primary()
         .accessibility_label(label.to_owned())
-        .tooltip("For a replacement, select both the removed and added lines.")
+}
+
+/// Whether `now`, the partial actions of a diff read again, show the diff
+/// `was` did: the same rows and hunks, as after a write that failed, or no
+/// actions either time. Another diff can head the row a Stage hunk was
+/// pressed on with another hunk ([`DiffView::end_hunk_press`]).
+fn shows_same_diff(was: Option<&PartialActions>, now: Option<&PartialActions>) -> bool {
+    match (was, now) {
+        (Some(was), Some(now)) => {
+            was.rows == now.rows
+                && was.diff.path == now.diff.path
+                && was.diff.area == now.diff.area
+                && was.diff.hunks == now.diff.hunks
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// The selection bar's action's tooltip while it can act.
+const ACTION_TOOLTIP: &str = "For a replacement, select both the removed and added lines.";
+
+/// What dimmed partial controls say while a text review of their diff is
+/// prepared, which suspends them ([`DiffView::refusal_reason`]).
+const REVIEW_REASON: &str = "Wait until the text review is ready";
+
+/// A line checkbox's tooltip, `key` its row's: what it does, from
+/// `purpose`, or, where it looks refused, `reason`, why it is unavailable,
+/// as DESIGN.md has a control say ([`DiffView::refusal_reason`]). Dimmed,
+/// they once said only what they did. The kit's Checkbox takes only a text
+/// tooltip, kept from the pointer's entry, so a pointer resting on one
+/// reads the text it came to until it moves (a kit change, not made), where
+/// Stage hunk and the bar's controls read theirs again as it renders
+/// ([`DiffView::live_tooltip`]). Noted under `key` for a test.
+fn noted_tooltip(
+    key: String,
+    reason: Option<&'static str>,
+    purpose: impl FnOnce() -> String,
+) -> String {
+    let tooltip = reason.map_or_else(purpose, str::to_owned);
+    crate::views::note_control_tooltip(&gpui_kit::ElementId::Name(key.into()), &tooltip);
+    tooltip
 }
 
 /// `button`, the selection bar's action ([`partial_action`]), as drawn,
@@ -1699,8 +1924,9 @@ fn described_action(
 }
 
 /// The selection bar's Clear, labelled, or where `icon`, the shared 28 px
-/// icon control, the close icon, named and tooltipped "Clear line
-/// selection" ([`bar_layout`]).
+/// icon control, the close icon, named "Clear line selection"
+/// ([`bar_layout`]), its tooltip as the bar draws it
+/// ([`DiffView::live_tooltip`]).
 fn clear_control(icon: bool) -> Button {
     let control = if icon {
         crate::views::compact_control_name(
@@ -1711,9 +1937,7 @@ fn clear_control(icon: bool) -> Button {
     } else {
         crate::button("clear-partial-selection", "Clear", "", false).accessibility_label("Clear")
     };
-    control
-        .debug_selector(|| "clear-partial-selection".into())
-        .tooltip(CLEAR_NAME)
+    control.debug_selector(|| "clear-partial-selection".into())
 }
 
 /// The room the selection bar takes under the text, read as each frame is
@@ -3045,6 +3269,91 @@ mod tests {
                 );
                 assert!(shown.text_focused(cx), "{at}: focus is back in the text");
             }
+        }
+
+        /// A pressed Stage hunk draws its focus ring whole inside the gutter
+        /// that clips the partial controls, after a pointer press and after
+        /// a key, at 13 and 18 pt and at scale 1 and 2, in QA's full window:
+        /// the press focuses it, and a Button rings on any focus, a
+        /// pointer's included (DESIGN.md), while its write failing, the
+        /// index locked, keeps focus there. Inset 2 px, its sides lost a
+        /// pixel of the ring to that clip.
+        #[gpui::test]
+        async fn a_pressed_stage_hunk_draws_its_ring_whole(cx: &mut gpui::TestAppContext) {
+            let (fixture, app, cx) = working(cx).await;
+            let accent: gpui::Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+            let lock = fixture
+                .path()
+                .join("narrow")
+                .join(".git")
+                .join("index.lock");
+            std::fs::write(&lock, "").unwrap();
+            for interface in [13, 18] {
+                for scale in [1., 2.] {
+                    let shown = Shown::at(&app, cx, (1480., 973., interface));
+                    // A resize takes the test display's scale, 2.
+                    cx.update(|window, _| window.set_scale_factor(scale));
+                    let drawn = cx.update(|window, _| window.scale_factor());
+                    assert_eq!(
+                        drawn, scale,
+                        "asked for scale {scale}, the window is at {drawn}"
+                    );
+                    let at = format!("{} at scale {scale}", shown.at);
+                    let row = shown
+                        .rows
+                        .iter()
+                        .position(|row| matches!(row, PartialRow::Hunk(_)))
+                        .expect("the hunk");
+                    let selector: &'static str = format!("partial-hunk-{row}").leak();
+                    let hunk = shown.view.read_with(cx, |view, _| view.hunk_focus.clone());
+                    for after in ["a pointer press", "a key"] {
+                        // Each press's own failure is read, not the last.
+                        app.update(cx, |app, cx| {
+                            app.operation_error = None;
+                            cx.notify();
+                        });
+                        crate::tags::tests::draw(cx);
+                        if after == "a key" {
+                            shown.press(cx, "enter");
+                        } else {
+                            let stage = cx.debug_bounds(selector).expect("Stage hunk is drawn");
+                            cx.simulate_click(stage.center(), Modifiers::default());
+                        }
+                        app.read_with(cx, |app, _| app.operations.drain());
+                        settle(&app, cx).await;
+                        crate::tags::tests::draw(cx);
+                        assert!(
+                            app.read_with(cx, |app, _| app.operation_error.is_some()),
+                            "{at}: {after} wrote, and the write failed"
+                        );
+                        assert!(
+                            cx.update(|window, _| hunk.is_focused(window)),
+                            "{at}: focus stays on Stage hunk after {after}, not {:?}",
+                            cx.update(|window, cx| window.focused(cx))
+                        );
+                        let button = cx.debug_bounds(selector).expect("Stage hunk is drawn");
+                        let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                            .into_iter()
+                            .filter(|ring| {
+                                ring.bounds.left() < button.left()
+                                    && ring.bounds.top() < button.top()
+                                    && ring.bounds.right() > button.right()
+                                    && ring.bounds.bottom() > button.bottom()
+                            })
+                            .collect();
+                        let [ring] = &rings[..] else {
+                            panic!(
+                                "{at}: one ring around Stage hunk {button:?} after {after}: {rings:?}"
+                            );
+                        };
+                        assert!(
+                            ring.whole,
+                            "{at}: after {after}, Stage hunk's ring is cut: {ring:?}"
+                        );
+                    }
+                }
+            }
+            std::fs::remove_file(&lock).unwrap();
         }
 
         /// The checkbox on the caret's line draws a 2 px accent mark at its

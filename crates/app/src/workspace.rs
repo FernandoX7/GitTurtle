@@ -1208,11 +1208,12 @@ pub(crate) type LfsView = (FileChange, WorkspaceMode, u64);
 /// ([`GitTurtle::busy_reason`]).
 pub(crate) const BUSY_REASON: &str = "Wait for the current Git operation to finish";
 
-/// What the Diff view's place says when the read of its diff after a partial
-/// write is dropped unanswered ([`GitTurtle::end_partial_landing`]): the view
-/// goes, as for a failed read, and once went with nothing said.
-pub(crate) const LANDING_INTERRUPTED: &str =
-    "File preview was interrupted. Refresh to read it again.";
+/// What the Diff view's place says under "Preview unavailable" when the read
+/// of its diff after a partial write is dropped unanswered
+/// ([`GitTurtle::end_partial_landing`]): the view goes, as for a failed read,
+/// and once went with nothing said; "File preview was interrupted" repeated
+/// the heading's "preview".
+pub(crate) const LANDING_INTERRUPTED: &str = "The diff could not be read again. Refresh to retry.";
 
 /// `control` as a busy spell leaves it: while `refused`, its own handler or
 /// `write_from` refuses a press at once, and assistive technology hears it
@@ -1266,6 +1267,26 @@ pub(crate) fn waiting_tooltip(control: Button, key: &'static str, tooltip: Strin
         })
         .build(window, cx)
     })
+}
+
+/// A tooltip saying `text`, drawn as the kit draws a text tooltip, its text
+/// drawn as `‹key›/tooltip/‹text›`, so a test reads the one shown under the
+/// pointer: what [`GitTurtle::refusing_with_reason`] and the Diff view's
+/// partial controls (`DiffView::live_tooltip`) build each time theirs
+/// renders, from the state then.
+pub(crate) fn text_tooltip(
+    key: SharedString,
+    text: SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyView {
+    Tooltip::element(move |_, _| {
+        let (key, probe) = (key.clone(), text.clone());
+        div()
+            .debug_selector(move || format!("{key}/tooltip/{probe}"))
+            .child(text.clone())
+    })
+    .build(window, cx)
 }
 
 /// What a control that waits for a running write says in its tooltip
@@ -1376,13 +1397,7 @@ impl GitTurtle {
                     tooltip(app).text(app.busy_reason())
                 },
             );
-            Tooltip::element(move |_, _| {
-                let probe = text.clone();
-                div()
-                    .debug_selector(move || format!("{key}/tooltip/{probe}"))
-                    .child(text.clone())
-            })
-            .build(window, cx)
+            text_tooltip(SharedString::new_static(key), text, window, cx)
         })
     }
 }
