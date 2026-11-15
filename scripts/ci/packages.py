@@ -32,10 +32,20 @@ Error = identity.PackageError
 TARGETS = {"x86_64-unknown-linux-gnu": "linux-x86_64", "aarch64-apple-darwin": "macos-arm64"}
 # This records C0's known gaps, not license exemptions. Any remaining gap blocks
 # upload; a new gap fails validation and requires explicit inventory review.
+# Linux has had none since the license review of 2026-11-15, so any gap there is new.
 KNOWN_GAPS = {
-    "x86_64-unknown-linux-gnu": {"mac-0.1.1", "ufbx-0.11.3"},
-    "aarch64-apple-darwin": {"mac-0.1.1", "ufbx-0.11.3", "block-0.1.6", "objc_exception-0.1.2", "leak-0.1.2", "leaky-cow-0.1.1"},
+    "x86_64-unknown-linux-gnu": set(),
+    "aarch64-apple-darwin": {"block-0.1.6", "objc_exception-0.1.2", "leak-0.1.2", "leaky-cow-0.1.1"},
 }
+# Held until distribution (phase 4) decides, with signing, what is published.
+# Off, a target with complete notices is still collected strictly, packaged
+# with --distribution and verified in its job, and nothing leaves the job.
+# Turning this on publishes, for every target whose notices are complete (Linux
+# today), a public Actions artifact kept seven days from every main push, manual
+# Quality run and product pull request: the release archive, its .sha256 and
+# .manifest.json, and ci-provenance.json. `prepare` then writes `eligible=true`,
+# which runs the upload, download and verify steps of quality.yml's release job.
+HOSTED_UPLOAD = False
 MAX_TREE = 2 * 1024**3
 MAX_ENTRIES = 30000
 MAX_LOG = 8 * 1024**2
@@ -359,6 +369,8 @@ def prepare(args):
                    "--require-complete", output / "strict-notices"], allowed=(0, 2))
     inventory = identity.read_json(output / "strict-notices/dependencies.json")
     complete = notice_state(code, inventory, args.target, lock)
+    # The one read of the hold: it decides the upload, never how the package is built or checked.
+    upload = complete and HOSTED_UPLOAD
     stem = f"GitTurtle-{version}-{revision[:12]}-{TARGETS[args.target]}-release"
     prepared = output / "prepared"
     prepared.mkdir()
@@ -383,7 +395,7 @@ def prepare(args):
                     cargo_lock_sha256=lock, input_binary_sha256=original, archive=archive.name,
                     archive_sha256=identity.digest(archive),
                     manifest_sha256=identity.digest(Path(str(archive) + ".manifest.json")),
-                    upload_eligible=complete, license_review_required=inventory["review_required"],
+                    upload_eligible=upload, license_review_required=inventory["review_required"],
                     artifact_name=f"{stem}-{trust}-{args.run_id}-{args.attempt}",
                     event=args.event, run_id=args.run_id, run_attempt=args.attempt,
                     release_input=False, native_smoke="not-performed", hosted_transfer="not-performed")
@@ -394,7 +406,7 @@ def prepare(args):
     write_json(output / "prepared.json", expected)
     if args.report:
         write_json(args.report, expected)
-    if complete:
+    if upload:
         publish = output / "publish"
         publish.mkdir()
         for suffix in ("", ".sha256", ".manifest.json"):
@@ -402,13 +414,16 @@ def prepare(args):
         write_json(publish / "ci-provenance.json", expected)
     if args.output:
         with args.output.open("a") as stream:
-            stream.write(f"eligible={str(complete).lower()}\nartifact-name={expected['artifact_name']}\n")
+            stream.write(f"eligible={str(upload).lower()}\nartifact-name={expected['artifact_name']}\n")
     summary = (f"### {TARGETS[args.target]} CI package\n\n"
                f"Source `{revision}`, version `{version}`, release profile. "
                f"Archive SHA-256 `{expected['archive_sha256']}`.\n\n"
                "Local archive/executable/package checks passed. Native desktop verification remains separate.\n\n")
-    if complete:
+    if upload:
         summary += "Complete notices verified. Upload and download verification follow; this is an early-development CI build, not a release.\n"
+    elif complete:
+        summary += "Complete notices verified. **Download unavailable: the hosted upload is held until distribution is decided; C3 hosted transfer remains open.** "
+        summary += "The verified complete-notice archive stays in this job and is not uploaded.\n"
     else:
         summary += "**Download unavailable: C0 license notices are incomplete; C3 hosted transfer remains open.** "
         summary += "The development archive is withheld from public upload. Verified strict refusal: " + ", ".join(f"`{item}`" for item in inventory["review_required"]) + ".\n"
@@ -421,7 +436,7 @@ def prepare(args):
 def verify(args):
     expected = identity.read_json(args.expected)
     if expected.get("format") != 1 or expected.get("upload_eligible") is not True or expected.get("release_input") is not False:
-        raise Error("Expected a prepared, complete-notice CI package; CI outputs cannot be release inputs")
+        raise Error("Expected a prepared, upload-eligible CI package; CI outputs cannot be release inputs")
     # Exact names prevent unrelated assets being silently treated as verified.
     names = {expected["archive"] + suffix for suffix in ("", ".sha256", ".manifest.json")} | {"ci-provenance.json"}
     if set(path.name for path in args.directory.iterdir()) != names:

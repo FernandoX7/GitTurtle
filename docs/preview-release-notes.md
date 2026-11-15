@@ -68,9 +68,11 @@ captures and frame-measurement limits. The [website guide](../website/README.md)
 records browser coverage and screenshot provenance. These records do not imply
 validation on another platform or compositor.
 
-Public Linux binaries remain blocked on the exact `mac` 0.1.1 and Rust `ufbx`
-0.11.3 [notice questions](licenses/linux-notice-review.md); other targets need
-their own notice review. Before publication, attach final executable/archive
+The Linux [notice questions](licenses/linux-notice-review.md) for `mac` 0.1.1
+and the Rust `ufbx` wrapper are resolved; macOS still needs its own notice
+review. No Linux binary is published by that: the CI package's upload is
+[held](ci-artifacts.md#license-boundary-and-availability) by `HOSTED_UPLOAD` in
+`scripts/ci/packages.py` until distribution is decided. Before publication, attach final executable/archive
 identities and validation to the release, complete the
 [release gates](public-launch.md#before-a-public-binary-release), and approve the
 publication. Website publication was separately approved and completed on

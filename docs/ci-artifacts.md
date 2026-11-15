@@ -28,23 +28,49 @@ the trusted caches.
 ## License boundary and availability
 
 Every run executes target-specific license collection with `--require-complete`.
-Only exit 0 with a matching target/lock inventory and no missing notices permits a
-public binary upload. The current documented C0 gaps are `mac-0.1.1` and
-`ufbx-0.11.3` on Linux; macOS additionally has `block-0.1.6`,
-`objc_exception-0.1.2`, `leak-0.1.2` and `leaky-cow-0.1.1`.
+Only exit 0 with a matching target/lock inventory and no missing notices lets a
+job take the complete-notice path. Linux has no documented C0 gap since the
+[license review](licenses/linux-notice-review.md) of November 15, 2026, so its
+job takes that path and any missing notice there fails it.
+The documented C0 gaps are on macOS: `block-0.1.6`, `objc_exception-0.1.2`,
+`leak-0.1.2` and `leaky-cow-0.1.1`.
 
-While these known gaps remain, exit 2 is checked against that exact inventory,
+Complete notices do not upload anything yet. The project owner decided on
+November 15, 2026 that the hosted upload stays off until distribution (phase 4)
+decides, with signing, what is published. `HOSTED_UPLOAD` in
+`scripts/ci/packages.py` is that hold, and it is off. A complete-notice job
+still collects strictly, packages with `--distribution` and verifies the
+archive, the executable and the installed package inside the job. It then
+writes `eligible=false`, records `upload_eligible: false` and makes no `publish/`
+directory, so the workflow's upload, download and verify steps are skipped, and
+the Actions summary says **Download unavailable: the hosted upload is held until
+distribution is decided; C3 hosted transfer remains open**. The verifier refuses
+a prepared record that is not upload-eligible. Turning the switch on is a
+reviewed change of its own: from then on every main push, manual run and product
+pull request whose target has complete notices uploads the artifact described
+[below](#find-and-verify-a-download).
+
+The hold covers this workflow's CI package only. The explicitly dispatched
+[release workflow](releases.md) does not read it: its Linux build required
+complete notices, which it now has. A dispatch on `main` with an existing tag
+and a successful Quality run of that commit uploads its three-day build
+artifacts; only its GitHub Release also waits for `publish` and the
+`gitturtle-release` environment, which is not set up yet.
+
+While the macOS known gaps remain, exit 2 is checked against that exact inventory,
 a development package is created and verified locally, and the Actions summary
 says **Download unavailable; C0 incomplete and C3 open**. The archive is withheld;
 it is never included in the diagnostics artifact. A newly missing notice, malformed
 inventory or any other collector failure fails the package job. This allowance is
 not license clearance and does not mark hosted transfer or the initiative complete.
 When authoritative notices are supplied, the same code takes the strict
-complete-notice path automatically.
+complete-notice path automatically; its upload is held as above.
 
 ## Find and verify a download
 
-After C0 is cleared, successful eligible jobs upload a seven-day Actions artifact
+No Quality job uploads a package today: macOS's notices are incomplete and the
+hosted upload is held. Once `HOSTED_UPLOAD` is turned on, a successful job whose
+notices are complete uploads a seven-day Actions artifact
 named with version, source SHA, platform, release profile, event trust label, run
 ID and attempt. It contains exactly:
 
@@ -77,7 +103,7 @@ checks app identity, resources, plist and the extracted ad-hoc signature.
 
 Successful downloaded-package verification is recorded in
 `package-transfer.json` in the separate three-day diagnostics artifact. The
-prepared identity and C0 state are in `package-prepared.json`; commands also use
+prepared identity, C0 state and `upload_eligible` are in `package-prepared.json`; commands also use
 existing sanitized CI measurement logs. An upload, download, checksum or package
 check failure fails the required release lane. A no-display check is not a native
 GUI test: actual installation and desktop interaction on each supported platform

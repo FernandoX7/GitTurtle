@@ -131,10 +131,13 @@ instructions. Website publication does not clear or authorize a binary release.
   Local packages retain available notices and report unresolved attribution;
   they do not establish completed license clearance. See the
   [notice inventory and source requirements](../THIRD_PARTY_NOTICES.md).
-  Linux currently requires the complete notices for `mac` 0.1.1 and the Rust
-  `ufbx` 0.11.3 wrapper. The [exact-source review](licenses/linux-notice-review.md)
-  records evidence and prepared, unsent maintainer follow-ups. Other targets
-  have additional records; a Linux pass would not clear them.
+  Linux strict collection passes since November 15, 2026: the
+  [exact-source review](licenses/linux-notice-review.md) records the evidence
+  and how the `mac` 0.1.1 and Rust `ufbx` wrapper notices were resolved. macOS
+  has four undecided records; the Linux pass does not clear them. The pass
+  publishes nothing: the Linux CI package is built and verified in its job, and
+  its upload is held by `HOSTED_UPLOAD` in `scripts/ci/packages.py` until
+  distribution is decided ([CI package downloads](ci-artifacts.md#license-boundary-and-availability)).
 - [ ] Build and test the exact release source/target, record the executable and
   archive hashes, and include the generated licenses and any required sources.
   Establish the source identity separately when using `--no-build`. Compare

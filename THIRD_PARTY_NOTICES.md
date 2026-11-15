@@ -67,17 +67,20 @@ decode both formats with ImageIO.
   AVIF decoder also calls it directly.
 
 Some published crates omit their license files. [Supplemental notices](docs/licenses/README.md)
-preserve inspected upstream texts with immutable source URLs and hashes. Five
-wrappers/libraries still require attribution review: `block`, `objc_exception`,
-`mac`, `leak` and `leaky-cow`. Their Cargo manifests
+preserve inspected upstream texts with immutable source URLs and hashes. Four
+macOS-only wrappers/libraries still require attribution review: `block`,
+`objc_exception`, `leak` and `leaky-cow`. Their Cargo manifests
 declare licenses; a declaration alone does not establish that every required
 notice has been collected. The [native ufbx notice](docs/licenses/assets/ufbx-native-LICENSE)
 is retained separately. The target-specific `REVIEW_REQUIRED.md` lists only the
 affected packages actually selected for that package.
 The [Linux notice review](docs/licenses/linux-notice-review.md) ties `mac` 0.1.1
-to its exact upstream source and records the remaining attribution question and
-prepared maintainer follow-up, and how the Rust `ufbx` wrapper's notice was
-resolved by its 0.11.5 release.
+to its exact upstream source, which has no license file, and records the project
+owner's license review of November 15, 2026: `mac` is distributed under its MIT
+option with the standard MIT text and the copyright line
+`Copyright (c) Jonathan Reem`, a notice the project composed and records as
+such, and the Rust `ufbx` wrapper, whose upstream `LICENSE` its 0.11.5 release
+revision supplied, under its Unlicense option.
 
 Local development packages include this report and remain unpublished. Before
 a public binary release, resolve those notices and run the collector with

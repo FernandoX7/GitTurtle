@@ -397,6 +397,22 @@
     ]
   },
   {
+    "name": "mac",
+    "version": "0.1.1",
+    "license": "MIT/Apache-2.0",
+    "repository": "spdx/license-list-data",
+    "revision": "16f3aa6c3bdd62e50f8b1cf618f32d2a510250ee",
+    "note": "The published crate and its upstream release (reem/rust-mac at 66afc663b68a65633ea165c742b5a9c6734581c2) declare MIT/Apache-2.0 and contain no license file. GitTurtle distributes it under the MIT option, as the project owner's license review decided on 2026-11-15.",
+    "files": [
+      {
+        "path": "texts/8a188924d8a3867afab78b11af96d1e10e6658ec82b7f9260d439d035b9fcff6.txt",
+        "sha256": "8a188924d8a3867afab78b11af96d1e10e6658ec82b7f9260d439d035b9fcff6",
+        "standard_text": "https://raw.githubusercontent.com/spdx/license-list-data/16f3aa6c3bdd62e50f8b1cf618f32d2a510250ee/text/MIT.txt",
+        "composed": "Composed by the GitTurtle project, not fetched from upstream: the standard MIT License text of the SPDX license dataset (SHA-256 b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5) with its one placeholder line \"Copyright (c) <year> <copyright holders>\" filled in as \"Copyright (c) Jonathan Reem\", the author the crate's metadata and the upstream README name. No other byte differs. The project owner's license review decided this notice on 2026-11-15."
+      }
+    ]
+  },
+  {
     "name": "malloc_buf",
     "version": "0.0.6",
     "license": "MIT",
@@ -1090,6 +1106,7 @@
     "license": "MIT OR Unlicense",
     "repository": "ufbx/ufbx-rust",
     "revision": "856c76840977cd504f053bf17ab4948b675b981a",
+    "note": "GitTurtle distributes it under the Unlicense option, which requires no attribution, as the project owner's license review decided on 2026-11-15. The upstream LICENSE, which offers MIT or the Unlicense, ships unchanged.",
     "files": [
       {
         "path": "texts/0dd48ebadf52273c736256325c8f078c03c8bb4facee22a4122de0ad3f615391.txt",
