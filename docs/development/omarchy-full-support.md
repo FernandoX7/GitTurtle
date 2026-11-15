@@ -903,7 +903,13 @@ cover current upstream x86-64 Omarchy.
    - **Audit status of phases 1 to 3 (2026-11-08, at `1e2ad7da`).** Phase 1 is done: first launch, its defaults and its documentation hold as written (`docs/linux.md`, `README.md:82`). Phase 2 is done: list Copy, the selectable message and the opt-out rule hold, and its sentence "only Blame handles it" is out of date (`crates/app/src/working_selection.rs:558`, `crates/app/src/file_history.rs:1726`, `crates/app/src/commit_message/selection.rs:512`). Phase 3's parts 3.3 to 3.7 are done (the `omarchy font set` route, IBM Plex, the theme fixes, the editor and terminal handoffs, the README section); 3.8's "awaiting native evidence" goes to the QA parts. Its older findings hold about 140 done, 3 stale (the entry that System preview is hidden on Linux, which now offers a passive open; the `local-workspaces-error` alert, now `refusal_line`; the commit menu's edge, measured later), 8 still open (moved into the queue above) and about 80 that only a native run can settle: the QA parts confirm or retire those, and about 65 entries were not judged (mostly pixel measurements recorded for past rounds). The plan's parity gaps stay open as written in `README.md:128`: office, audio and video previews (deferred), full Orca and input-method coverage (partly done). **Phases 4 to 7 need what only the owner can give, to be raised when reached and not before:** the license review of `mac` and `ufbx` (phase 4), an x86-64 Omarchy machine (phase 5), Developer ID signing and gitturtle.com (phase 4), and the live GitHub account check.
 4. **Distribution.** Publish versioned release bundles (x86-64 and AArch64, checksums,
    build identity). Resolve the two dependencies the packager flags for license review
-   (`mac`, `ufbx`) before distributing. Then add an AUR package (`gitturtle-bin`) and
+   (`mac`, `ufbx`) before distributing. Owner decision, 2026-11-15: `ufbx` 0.11.5 is
+   distributed under its Unlicense option (it declares MIT OR Unlicense), which needs no
+   attribution, and the native ufbx library's notice (`assets/ufbx-native-LICENSE`) still
+   ships; `mac` 0.1.1 (declares MIT/Apache-2.0) ships the standard MIT text with
+   "Copyright (c) Jonathan Reem" (its Cargo authors, repository `reem/rust-mac`) as its
+   notice; both recorded as supplements in `scripts/collect-third-party-licenses.py` so the
+   packager stops flagging them. Then add an AUR package (`gitturtle-bin`) and
    later propose GitTurtle to `omacom/omarchy-pkgs`, so `omarchy pkg add gitturtle`
    works. The owner also plans macOS downloads from gitturtle.com, signed with the
    owner's Developer ID ([release workflow](../releases.md#macos-developer-id-signing-component)
