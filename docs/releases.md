@@ -10,8 +10,12 @@ are mandatory for every public binary, including temporary Actions artifacts.
 
 [`release.yml`](../.github/workflows/release.yml) is an explicitly dispatched
 workflow. Ordinary PR, main and tag pushes cannot publish. It supports exactly
-`x86_64-unknown-linux-gnu` and `aarch64-apple-darwin`; choose `linux`, `macos` or
-`linux,macos`. Linux-only runs allocate no macOS runner or Apple credentials.
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`;
+choose `linux`, `macos` or `linux,macos`. `linux` always means both Linux targets:
+no selection, and no release context, names one of them alone. Each target is
+built natively on its own runner, `ubuntu-24.04` for x86-64, `ubuntu-24.04-arm`
+for AArch64 and `macos-26` for macOS; nothing is cross-compiled. Linux-only runs
+allocate no macOS runner or Apple credentials.
 
 The release owner chooses the existing tag, exact tag object, workspace version,
 full source commit, supported platform set and successful full Quality run.
@@ -29,8 +33,12 @@ trusted-ref policy. It never creates or moves a tag.
    bytes. It also checks the remote tag and current main revision. The declared
    Quality run must be a successful `push` or `workflow_dispatch` run from this
    repository at that source. Actual successful jobs must include formatting,
-   both platform test jobs, both platform Clippy jobs, both platform release jobs
-   and the Quality gate. Skipped product validation is insufficient. A changed Quality attempt
+   both platform test jobs, both platform Clippy jobs, the three release jobs
+   (`Rust release · macos-26`, `Rust release · ubuntu-24.04` and
+   `Rust release · ubuntu-24.04-arm`) and the Quality gate, whichever platforms
+   the release selects. A Quality run without the AArch64 Linux release job,
+   which is every run from before Quality built that target, is refused.
+   Skipped product validation is insufficient. A changed Quality attempt
    requires a newly reviewed context.
 2. **Read-only build jobs** compile the selected explicit targets from clean
    source. They use the pinned compiler and existing dependency cache, with cache
@@ -54,7 +62,9 @@ trusted-ref policy. It never creates or moves a tag.
    credentials and cleanup; no signing step builds Rust or runs PR code.
 4. **Assembly** downloads same-run packages with artifact digest mismatch set to
    `error`, then independently checks package bytes and every inventory notice
-   digest. Missing or extra promised platforms fail. Cross-platform assembly
+   digest. Missing or extra promised platforms fail: a Linux release needs both
+   Linux archives, so one without the other fails, and so does an archive that
+   the selection did not promise. Cross-platform assembly
    parses and hashes archives; it does not execute downloaded binaries. A signed
    Mac package additionally needs the accepted signing report, selected
    certificate/Team ID, final executable digest and final archive digest.
@@ -145,7 +155,20 @@ version number.
 
 Assembly contains the selected `.tar.gz` and/or `.zip` files, each detached
 `.sha256` and `.manifest.json`, `SHA256SUMS`, `RELEASE_NOTES.md` and
-`release-manifest.json`. The release manifest binds the context, platform/signing
+`release-manifest.json`. A Linux release holds two archives that differ by their
+target only, where `COMMIT12` is the first twelve characters of the source commit:
+
+- `GitTurtle-VERSION-COMMIT12-linux-x86_64-release.tar.gz` for `x86_64-unknown-linux-gnu`
+- `GitTurtle-VERSION-COMMIT12-linux-aarch64-release.tar.gz` for `aarch64-unknown-linux-gnu`
+
+Each extracts to one directory named after the archive without `.tar.gz`. The
+ad-hoc macOS archive is `GitTurtle-VERSION-COMMIT12-macos-arm64-release.zip`; the
+notarized name is given under the signing component below. `SHA256SUMS`,
+`RELEASE_NOTES.md` and the release manifest list every selected archive. The
+target labels come from `TARGETS` in [`packages.py`](../scripts/ci/packages.py),
+which names Quality's CI archives the same way.
+
+The release manifest binds the context, platform/signing
 labels and all other asset hashes. The manifest's own hash is recorded in the
 workflow summary and publication report. Each archive contains complete license
 notices and its format-2 package identity. macOS keeps `build-info.json` outside

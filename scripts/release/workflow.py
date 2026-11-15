@@ -37,8 +37,13 @@ packages = load("release_packages", ROOT / "scripts/ci/packages.py")
 package_id = packages.identity
 Error = github.Error
 MAC = "aarch64-apple-darwin"
-LINUX = "x86_64-unknown-linux-gnu"
-PLATFORMS = {"linux": [LINUX], "macos": [MAC], "linux,macos": [LINUX, MAC]}
+LINUX_X86 = "x86_64-unknown-linux-gnu"
+LINUX_ARM = "aarch64-unknown-linux-gnu"
+LINUX_TARGETS = (LINUX_X86, LINUX_ARM)
+# Each target builds natively on its own runner; nothing is cross-compiled.
+RUNNERS = {MAC: "macos-26", LINUX_X86: "ubuntu-24.04", LINUX_ARM: "ubuntu-24.04-arm"}
+# One Linux promise: `linux` is always both Linux targets, never one of them.
+PLATFORMS = {"linux": [*LINUX_TARGETS], "macos": [MAC], "linux,macos": [*LINUX_TARGETS, MAC]}
 
 
 def write_json(path, value):
@@ -73,6 +78,9 @@ def context_from_env(environ=None):
     if value.get("approval_sha256") != hashlib.sha256(github.canonical(approved)).hexdigest():
         raise Error("Release context approval identity is inconsistent")
     github.validate_context(value, env)
+    # Only a set a dispatch can select: one Linux target is never promised alone.
+    if value["identity"]["platforms"] not in [sorted(targets) for targets in PLATFORMS.values()]:
+        raise Error("Release context promises a platform set that no selection offers")
     return value
 
 
@@ -120,9 +128,9 @@ def preflight(args):
     # This output is bounded JSON, never a workflow expression or shell command.
     with Path(env["GITHUB_OUTPUT"]).open("a") as output:
         output.write("context=" + github.canonical(context).decode().strip() + "\n")
-        output.write("linux=" + str(LINUX in values).lower() + "\n")
+        output.write("linux=" + str(set(LINUX_TARGETS) <= set(values)).lower() + "\n")
         output.write("macos=" + str(MAC in values).lower() + "\n")
-        matrix = {"include": [{"target": target, "os": "macos-26" if target == MAC else "ubuntu-24.04"} for target in values]}
+        matrix = {"include": [{"target": target, "os": RUNNERS[target]} for target in values]}
         output.write("matrix=" + github.canonical(matrix).decode().strip() + "\n")
     print("Release context approval SHA-256: " + context["approval_sha256"])
     print("Source preflight passed; package, signing and publication evidence remain separate.")
@@ -155,6 +163,16 @@ def local_identity(context):
         raise Error("Source checkout no longer matches the captured release context")
 
 
+def archive_stem(context, target):
+    """The one name a fresh package of this target carries, before its archive suffix."""
+    return (f"GitTurtle-{context['identity']['version']}-{context['identity']['commit'][:12]}-"
+            f"{packages.TARGETS[target]}-release")
+
+
+def archive_name(context, target):
+    return archive_stem(context, target) + (".tar.gz" if target in LINUX_TARGETS else ".zip")
+
+
 def prepare(args, context):
     """Package this job's fresh release build; strict notices fail before upload."""
     local_identity(context)
@@ -165,9 +183,8 @@ def prepare(args, context):
     output.mkdir(mode=0o700)
     binary = ROOT / "target" / args.target / "release/gitturtle"
     original = package_id.digest(binary)
-    stem = (f"GitTurtle-{context['identity']['version']}-{context['identity']['commit'][:12]}-"
-            f"{packages.TARGETS[args.target]}-release")
-    command = [ROOT / f"scripts/package-{'linux' if args.target == LINUX else 'macos'}.sh",
+    stem = archive_stem(context, args.target)
+    command = [ROOT / f"scripts/package-{'linux' if args.target in LINUX_TARGETS else 'macos'}.sh",
                "--no-build", "--binary", binary, "--distribution",
                "--expected-revision", context["identity"]["commit"],
                "--expected-version", context["identity"]["version"], "--expected-sha256", original]
@@ -176,7 +193,7 @@ def prepare(args, context):
     else:
         command.append(args.directory / stem)
     packages.run(command, timeout=900)
-    if args.target == LINUX:
+    if args.target in LINUX_TARGETS:
         for suffix in (".tar.gz", ".tar.gz.sha256", ".tar.gz.manifest.json"):
             shutil.move(str(args.directory / (stem + suffix)), output)
     expected = expected_package(output, context, args.target)
@@ -363,6 +380,13 @@ def assemble(args, context):
         artifact = ("release-signed-" if signed else "release-package-") + target
         directory = args.directory / f"{artifact}-{context['run_id']}-{context['run_attempt']}"
         record = receipt(directory, context, target, signed=signed)
+        archive = record["expected"]["archive"]
+        # A fresh package carries exactly its own target's name. The notarized one
+        # keeps the signing helper's name, which its report binds below, and may
+        # never carry the name of another target's package.
+        if archive != archive_name(context, target) and (not signed or archive in {
+                archive_name(context, other) for other in (MAC, *LINUX_TARGETS)}):
+            raise Error("Platform archive is not named for its target")
         validator = None
         if signed:
             report_file = directory / "signing-result.json"
@@ -380,6 +404,8 @@ def assemble(args, context):
                                  "native_interaction": record["native_interaction"]})
         names = [record["expected"]["archive"] + suffix for suffix in ("", ".sha256", ".manifest.json")]
         for name in names:
+            if (args.output / name).exists():
+                raise Error("Two platform packages produce the same release asset name")
             shutil.copyfile(directory / name, args.output / name)
         if signed:
             shutil.copyfile(directory / "signing-result.json", args.output / "macos-signing-result.json")
@@ -418,7 +444,7 @@ def main():
     sub.add_parser("preflight")
     sub.add_parser("select-xcode")
     p = sub.add_parser("prepare")
-    p.add_argument("--target", choices=(MAC, LINUX), required=True)
+    p.add_argument("--target", choices=(MAC, *LINUX_TARGETS), required=True)
     p.add_argument("--directory", type=Path, required=True)
     p = sub.add_parser("signing-input")
     p.add_argument("--directory", type=Path, required=True)

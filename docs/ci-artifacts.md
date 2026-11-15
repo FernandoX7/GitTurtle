@@ -76,7 +76,8 @@ The upload set covers this workflow's CI package only. The explicitly dispatched
 [release workflow](releases.md) does not read it: its Linux build required
 complete notices, which it now has. A dispatch on `main` with an existing tag
 and a successful Quality run of that commit uploads its three-day build
-artifacts; only its GitHub Release also waits for `publish` and the
+artifacts, for `linux` one package for each Linux target (x86-64 and AArch64)
+and their assembly; only its GitHub Release also waits for `publish` and the
 `gitturtle-release` environment, which is not set up yet.
 
 While the macOS known gaps remain, exit 2 is checked against that exact inventory,

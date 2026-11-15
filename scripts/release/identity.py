@@ -32,7 +32,7 @@ import json
 from collections.abc import Sequence
 
 
-SUPPORTED_PLATFORMS = ("aarch64-apple-darwin", "x86_64-unknown-linux-gnu")
+SUPPORTED_PLATFORMS = ("aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu")
 MEMBERS = {
     "crates/app": "gitturtle",
     "crates/git-core": "gitturtle-core",
@@ -75,7 +75,7 @@ def _platforms(values: Sequence[str], label: str) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise IdentityError(f"{label} must be an explicit platform list")
     if not values or len(values) > len(SUPPORTED_PLATFORMS):
-        raise IdentityError(f"{label} must contain one or two supported platforms")
+        raise IdentityError(f"{label} must contain one to {len(SUPPORTED_PLATFORMS)} supported platforms")
     if any(not isinstance(value, str) or value not in SUPPORTED_PLATFORMS for value in values):
         raise IdentityError(f"{label} contains an unsupported platform")
     if len(set(values)) != len(values):

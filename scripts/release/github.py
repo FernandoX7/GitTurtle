@@ -223,7 +223,8 @@ def quality_evidence(api, commit, run_id):
     jobs = api.pages(prefix + f"/attempts/{attempt}/jobs", "jobs")
     required = {"Quality gate", "Rust formatting", "Rust tests · macos-15", "Rust tests · ubuntu-24.04",
                 "Rust Clippy · macos-15", "Rust Clippy · ubuntu-24.04",
-                "Rust release · macos-26", "Rust release · ubuntu-24.04"}
+                "Rust release · macos-26", "Rust release · ubuntu-24.04",
+                "Rust release · ubuntu-24.04-arm"}
     for name in required:
         matches = [job for job in jobs if job.get("name") == name]
         if (len(matches) != 1 or matches[0].get("head_sha") != commit

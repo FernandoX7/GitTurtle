@@ -26,6 +26,7 @@ identity = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = identity
 SPEC.loader.exec_module(identity)
 LINUX = "x86_64-unknown-linux-gnu"
+LINUX_ARM = "aarch64-unknown-linux-gnu"
 MACOS = "aarch64-apple-darwin"
 
 
@@ -346,8 +347,46 @@ class Repository(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
         self.assertIn("missing=['aarch64-apple-darwin']", error.getvalue())
 
+    def test_both_linux_targets_are_one_sorted_promise(self):
+        self.assertEqual(self.verify(platforms=[LINUX, LINUX_ARM]).platforms, (LINUX_ARM, LINUX))
+        self.assertEqual(self.verify(platforms=[LINUX, MACOS, LINUX_ARM]).platforms, (MACOS, LINUX_ARM, LINUX))
+
+    def test_cli_requires_both_linux_archives_once_both_are_declared(self):
+        args = ["--repo", str(self.repo), "--tag", "v0.1.0", "--version", "0.1.0", "--commit", self.commit,
+                "--platform", LINUX, "--platform", LINUX_ARM]
+        for available, status, refusal in (
+                ([LINUX, LINUX_ARM], 0, ""),
+                ([LINUX], 2, "missing=['aarch64-unknown-linux-gnu'], unexpected=[]"),
+                ([LINUX_ARM], 2, "missing=['x86_64-unknown-linux-gnu'], unexpected=[]"),
+                ([LINUX, LINUX_ARM, MACOS], 2, "missing=[], unexpected=['aarch64-apple-darwin']")):
+            with self.subTest(available=available):
+                output, error = io.StringIO(), io.StringIO()
+                with redirect_stdout(output), redirect_stderr(error):
+                    result = identity.main(args + [item for target in available for item in ("--available-platform", target)])
+                self.assertEqual(result, status)
+                self.assertEqual(bool(output.getvalue()), status == 0)
+                self.assertIn(refusal, error.getvalue())
+
 
 class InputsAndBounds(unittest.TestCase):
+    def test_supported_platforms_are_exactly_the_three_release_targets(self):
+        self.assertEqual(sorted(identity.SUPPORTED_PLATFORMS), sorted([MACOS, LINUX_ARM, LINUX]))
+
+    def test_both_linux_archives_are_required_and_a_third_is_refused(self):
+        both = [LINUX, LINUX_ARM]
+        for expected, available, refusal in (
+                (both, [LINUX], "missing=['aarch64-unknown-linux-gnu'], unexpected=[]"),
+                (both, [LINUX_ARM], "missing=['x86_64-unknown-linux-gnu'], unexpected=[]"),
+                (both, [*both, MACOS], "missing=[], unexpected=['aarch64-apple-darwin']"),
+                ([MACOS], [MACOS, LINUX_ARM], "missing=[], unexpected=['aarch64-unknown-linux-gnu']"),
+                ([*both, MACOS], both, "missing=['aarch64-apple-darwin'], unexpected=[]")):
+            with self.subTest(expected=expected, available=available):
+                with self.assertRaises(identity.IdentityError) as refused:
+                    identity.require_complete_platforms(expected, available)
+                self.assertEqual(str(refused.exception), "platform set mismatch: " + refusal)
+        identity.require_complete_platforms(both, [LINUX_ARM, LINUX])
+        identity.require_complete_platforms([*both, MACOS], [MACOS, LINUX, LINUX_ARM])
+
     def test_missing_duplicate_extra_and_unknown_platforms_are_refused(self):
         for expected, available in (([LINUX, MACOS], [LINUX]), ([LINUX], [LINUX, MACOS]),
                                     ([], [LINUX]), ([LINUX], []), ([LINUX], [LINUX, LINUX]),
