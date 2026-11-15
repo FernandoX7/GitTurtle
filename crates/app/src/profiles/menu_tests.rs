@@ -3,7 +3,9 @@
 //! (`menu-item: <label> · <role>`), and each label's drawn style.
 use super::*;
 use crate::native_accessibility::menu_tests::menu_label_style;
-use crate::views::tests::{draw, history_window, hold_quiet_reads_for_test, settle};
+use crate::views::tests::{
+    draw, fixture_git, fixture_repository, history_window, hold_quiet_reads_for_test, settle,
+};
 use core::prelude::v1::test;
 use gitturtle_core::GitProfile;
 
@@ -849,11 +851,25 @@ async fn settings_identity_fields_and_line_say_the_mark(cx: &mut TestAppContext)
         app.repository_tabs.tabs[index].error = None;
     });
     assert_eq!(fields(cx), [(true, false); 2], "offered as the mark clears");
+    assert!(page_bounds(&app, cx, marked).is_none(), "the mark is gone");
+    // Cleared in place, as by a Refresh's snapshot, the tab holds only what
+    // was read before the mark until a read lands: the line names no
+    // identity until one does.
+    assert!(
+        page_bounds(&app, cx, current).is_none()
+            && page_bounds(&app, cx, IDENTITY_NOT_LOADED).is_some(),
+        "no identity until a read after the mark lands"
+    );
+    land_identity(
+        &app,
+        cx,
+        ("Fixture Person", "person@example.invalid"),
+        false,
+    );
     assert!(
         page_bounds(&app, cx, current).is_some(),
         "the identity again"
     );
-    assert!(page_bounds(&app, cx, marked).is_none(), "the mark is gone");
 }
 
 /// Marks the shown tab, as a read that cannot open its repository does,
@@ -1496,6 +1512,891 @@ async fn settings_identity_shown_through_an_in_place_clear_waits_for_its_read(
     );
 }
 
+const SAVE_IDENTITY: &str = "save-repository-identity";
+const RESET_IDENTITY: &str = "use-current-identity";
+/// What Settings' identity line and signing line read with no identity
+/// loaded, and the two notes on where a save goes, neither drawn then.
+const IDENTITY_NOT_LOADED: &str = "settings-identity-line: Git identity has not been loaded yet.";
+const SIGNING_NOT_LOADED: &str =
+    "settings-signing-line: Signing follows your existing Git configuration.";
+const IDENTITY_NOTES: [&str; 2] = [
+    "settings-identity-note: Name and email are saved to repository Git configuration shared by \
+     linked worktrees. Global identity is preserved.",
+    "settings-identity-note: Name and email are saved only to this worktree’s existing private \
+     Git configuration.",
+];
+
+/// The local `user.name` and `user.email` in the configuration of the
+/// repository at `root`, as Git reads them.
+fn configured_identity(root: &std::path::Path) -> (String, String) {
+    let get = |key: &str| {
+        let output = std::process::Command::new("git")
+            .args(["config", "--local", "--get", key])
+            .current_dir(root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    (get("user.name"), get("user.email"))
+}
+
+/// Counts the identity writes the window asks for while the returned
+/// subscription lives, each as it is asked, before the operation executor
+/// runs it.
+fn identity_writes(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+) -> (std::rc::Rc<std::cell::Cell<usize>>, gpui::Subscription) {
+    let writes = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let counting = cx.update(|_, cx| {
+        let writes = writes.clone();
+        let mut was = false;
+        cx.observe(app, move |app, cx| {
+            let now = app.read(cx).operation_busy == Some("Saving repository identity…");
+            writes.set(writes.get() + usize::from(now && !was));
+            was = now;
+        })
+    });
+    (writes, counting)
+}
+
+/// What Settings' Name and Email hold.
+fn identity_values(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> (String, String) {
+    app.read_with(cx, |app, cx| {
+        (
+            app.identity_name.read(cx).value().to_string(),
+            app.identity_email.read(cx).value().to_string(),
+        )
+    })
+}
+
+/// Types `text` into `field`, focused, as a person types.
+fn type_into(cx: &mut VisualTestContext, field: &Entity<InputState>, text: &str) {
+    cx.update(|window, cx| field.read(cx).focus_handle(cx).focus(window, cx));
+    draw(cx);
+    cx.simulate_input(text);
+    draw(cx);
+}
+
+/// Shows Settings and draws, awaiting no read: a status read a test holds
+/// on the operation executor never lands for `settle`.
+fn show_settings_held(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    draw(cx);
+}
+
+/// Lands the reads the window awaits as its own task, an Open's snapshot
+/// and the changed files it goes on to, leaving the status read to
+/// whatever holds the operation executor.
+async fn land_window_reads(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    for _ in 0..8 {
+        cx.executor().run_until_parked();
+        let Some(task) = cx.update(|_, cx| app.update(cx, |app, _| app.task.take())) else {
+            break;
+        };
+        task.await;
+    }
+    draw(cx);
+}
+
+/// Lets the quiet reads asked for run and land on the repository page,
+/// then holds them again.
+fn land_quiet_reads(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.automatic.hold_quiet_reads(false);
+            app.try_automatic_refresh(window, cx);
+        })
+    });
+    for _ in 0..16 {
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+        if app.read_with(cx, |app, _| {
+            !app.automatic.quiet_read_requested() && app.automatic.replies_landed()
+        }) {
+            break;
+        }
+    }
+    hold_quiet_reads_for_test(app, cx);
+    assert!(
+        !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()),
+        "the quiet reads landed"
+    );
+    draw(cx);
+}
+
+/// Asserts Settings shows no identity loaded, `at`: the identity line
+/// names none, the signing line claims nothing, no note says where a save
+/// goes, and Save repository identity and Reset edits are refused and
+/// dimmed with `reason` in their tooltips and accessible names, as Fetch
+/// gives it.
+fn assert_no_identity_loaded(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    reason: &str,
+    at: &str,
+) {
+    use crate::workspace::refusals::{self, Refusal};
+    crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow_mut().clear());
+    assert!(
+        page_bounds(app, cx, IDENTITY_NOT_LOADED).is_some(),
+        "{at}: the identity line names none"
+    );
+    assert!(
+        page_bounds(app, cx, SIGNING_NOT_LOADED).is_some(),
+        "{at}: the signing line claims nothing"
+    );
+    for note in IDENTITY_NOTES {
+        assert!(page_bounds(app, cx, note).is_none(), "{at}: no {note}");
+    }
+    for (key, label, purpose) in [
+        (
+            SAVE_IDENTITY,
+            "Save repository identity",
+            "Save repository identity",
+        ),
+        (
+            RESET_IDENTITY,
+            "Reset edits",
+            "Restore the repository’s current name and email",
+        ),
+    ] {
+        assert_eq!(
+            refusals::get(key),
+            Some(Refusal {
+                announced: true,
+                dimmed: true,
+            }),
+            "{at}: {key} refused and dimmed"
+        );
+        assert_eq!(
+            crate::views::CONTROL_TOOLTIPS
+                .with(|tooltips| tooltips.borrow().get(key).cloned())
+                .as_deref(),
+            Some(format!("{purpose} · {reason}").as_str()),
+            "{at}: {key}'s tooltip says why"
+        );
+        assert_eq!(
+            drawn_button(key),
+            Some((Some(format!("{label}: {reason}")), true)),
+            "{at}: {key} drawn unavailable, its accessible name saying why"
+        );
+    }
+}
+
+/// Presses Save repository identity and Reset edits where the page shows
+/// them, then calls each handler as a key or a stale press reaches it.
+/// Nothing here waits on the operation executor, which a test may hold.
+fn press_identity_actions(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    for key in [SAVE_IDENTITY, RESET_IDENTITY] {
+        let control = wheeled_into_view(app, cx, key);
+        cx.simulate_click(control.center(), gpui::Modifiers::default());
+        draw(cx);
+    }
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.save_identity(window, cx);
+            app.reset_identity_edits(window, cx);
+        })
+    });
+    draw(cx);
+}
+
+/// Clicks Save repository identity where the page shows it and lands the
+/// write it asks for.
+async fn save_identity_by_click(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    let save = wheeled_into_view(app, cx, SAVE_IDENTITY);
+    cx.simulate_click(save.center(), gpui::Modifiers::default());
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(app, cx).await;
+}
+
+/// Marks the shown tab as its repository's own read does: its `.git` moved
+/// to `away`, and the read that finds it gone.
+async fn mark_for_real(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    root: &std::path::Path,
+    away: &std::path::Path,
+) {
+    std::fs::rename(root.join(".git"), away).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "the read that finds the repository gone marks the tab"
+    );
+}
+
+/// A Refresh of the shown, marked tab whose snapshot lands and clears the
+/// mark in place while its status read waits behind a hold of the operation
+/// executor, which the caller keeps.
+async fn refresh_to_its_snapshot(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    land_window_reads(app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| !app.shown_tab_unavailable()
+            && app.status_task.is_some()),
+        "the snapshot clears the mark, its status read still to land"
+    );
+}
+
+/// A window with two tabs, quiet reads held: the fixture, whose identity is
+/// "Fixture", shown, and another repository, "Other Name", retained.
+/// Returns the fixture's root and the other's.
+async fn two_identities(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<GitTurtle>,
+    &mut VisualTestContext,
+    [std::path::PathBuf; 2],
+) {
+    let (fixture, app, cx) = history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let other = other_identity(&fixture);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(other.clone(), window, cx)
+        })
+    });
+    settle(&app, cx).await;
+    settle(&app, cx).await;
+    switch_tab(&app, cx, 0).await;
+    hold_quiet_reads_for_test(&app, cx);
+    draw(cx);
+    (fixture, app, cx, [root, other])
+}
+
+/// Another repository beside the fixture's, its identity "Other Name".
+fn other_identity(fixture: &tempfile::TempDir) -> std::path::PathBuf {
+    let other = fixture_repository(fixture.path().join("other"))
+        .path()
+        .to_owned();
+    fixture_git(&other, &["config", "user.name", "Other Name"]);
+    fixture_git(&other, &["config", "user.email", "other@example.invalid"]);
+    other
+}
+
+async fn switch_tab(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, index: usize) {
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(index, window, cx)));
+    settle(app, cx).await;
+}
+
+/// Settings on a tab whose repository has loaded but whose identity has not
+/// been read yet shows none, and nothing of the repository shown before:
+/// with Settings shown on one repository, a Name typed there, and another
+/// opened in a new tab, its status read held, Name and Email are empty with
+/// their placeholders, the identity line and the signing line read their
+/// not-loaded sentences, no note says where a save goes, and Save
+/// repository identity and Reset edits are refused, "Reading the working
+/// tree…" in their tooltips and accessible names, by a click and by their
+/// handlers. The fields kept the first repository's Name and Email, and
+/// Save, offered whenever no identity was held, wrote them into the
+/// repository shown (decided 2026-11-15: Settings has no identity until one
+/// is read for the repository shown). As the read lands, the fields take
+/// its identity; where it fails (`read_fails`) they stay empty and the
+/// actions say "Working tree not read · Refresh". Nothing is written to the
+/// repository's configuration either way.
+async fn settings_identity_waits_on_a_cold_tab(cx: &mut TestAppContext, read_fails: bool) {
+    use crate::workspace::{NOT_READ_REASON, READING_WORKING_TREE};
+    let (fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    let other = other_identity(&fixture);
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    type_into(cx, &fields[0], " Typed");
+    assert_eq!(
+        identity_values(&app, cx),
+        ("Fixture Typed".into(), "fixture@example.invalid".into()),
+        "the first repository's identity, its Name edited"
+    );
+
+    if read_fails {
+        std::fs::write(other.join(".git").join("index"), b"not an index").unwrap();
+    }
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(other.clone(), window, cx)
+        })
+    });
+    land_window_reads(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.repository.is_some()
+            && app.status_task.is_some()),
+        "the other repository is shown, its status read still to land"
+    );
+    show_settings_held(&app, cx);
+    let (writes, _counting) = identity_writes(&app, cx);
+    let empty = [("Name", "Your name"), ("Email", "you@example.com")].map(|(name, placeholder)| {
+        (
+            Some(name.to_owned()),
+            String::new(),
+            Some(placeholder.to_owned()),
+            (true, false),
+        )
+    });
+    assert_eq!(
+        drawn_fields(cx, &fields),
+        empty,
+        "empty with their placeholders, nothing of the repository shown before"
+    );
+    assert_no_identity_loaded(&app, cx, READING_WORKING_TREE, "while its status is read");
+    press_identity_actions(&app, cx);
+    assert_eq!(writes.get(), 0, "no press asks for a write");
+    assert_eq!(
+        identity_values(&app, cx),
+        (String::new(), String::new()),
+        "Reset edits restores nothing"
+    );
+
+    drop(held);
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    if read_fails {
+        // The quiet reads the watcher asked for meanwhile fail as the
+        // status read did; with none left to run, nothing reads.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        land_quiet_reads(&app, cx);
+        show_settings_held(&app, cx);
+        assert_eq!(drawn_fields(cx, &fields), empty, "empty for good");
+        assert_no_identity_loaded(&app, cx, NOT_READ_REASON, "after its read failed");
+    } else {
+        assert_eq!(
+            identity_values(&app, cx),
+            ("Other Name".into(), "other@example.invalid".into()),
+            "the read's identity fills the empty fields"
+        );
+        assert!(
+            page_bounds(
+                &app,
+                cx,
+                "settings-identity-line: Current identity: Other Name <other@example.invalid>"
+            )
+            .is_some(),
+            "and the identity line names it"
+        );
+        assert!(
+            page_bounds(&app, cx, IDENTITY_NOTES[0]).is_some(),
+            "with the note on where a save goes"
+        );
+    }
+    press_identity_actions(&app, cx);
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    assert_eq!(writes.get(), 0, "nothing to save");
+    assert_eq!(
+        configured_identity(&other),
+        ("Other Name".into(), "other@example.invalid".into()),
+        "the repository's configuration is as it was"
+    );
+}
+
+#[gpui::test]
+async fn settings_identity_on_a_cold_tab_waits_for_its_read(cx: &mut TestAppContext) {
+    settings_identity_waits_on_a_cold_tab(cx, false).await;
+}
+
+#[gpui::test]
+async fn settings_identity_on_a_cold_tab_whose_read_fails_stays_unloaded(cx: &mut TestAppContext) {
+    settings_identity_waits_on_a_cold_tab(cx, true).await;
+}
+
+/// How a tab is left and come back to while it waits for the read after
+/// its mark (`settings_identity_waits_through_a_tab_switch`).
+#[derive(Clone, Copy, Default)]
+struct TabSwitch {
+    /// Settings drew the identity read before the mark.
+    opened_before: bool,
+    /// Settings is shown on the other tab meanwhile.
+    settings_on_other: bool,
+    /// Reset edits is pressed once back.
+    reset: bool,
+    /// The read the tab asks for as it is shown again fails.
+    read_fails: bool,
+}
+
+/// A tab left while it waits for the read after its mark, and come back
+/// to, still has no identity loaded: marked, its `.git` back with another
+/// address configured, a Refresh's snapshot clears the mark in place, and
+/// another tab is shown before the status read lands, which drops that
+/// read. Shown again, the tab holds what it read before the mark until the
+/// read it asks for lands, so Settings draws Name and Email empty, says
+/// "Reading the working tree…" on Save repository identity and Reset
+/// edits, and a Name typed there, Reset edits and Save write nothing. The
+/// note of the mark went with Settings' fields as the other repository was
+/// shown, while the tab kept the identity read before the mark: the fields
+/// drew it again, and Save wrote the typed Name with the address read
+/// before the mark over the one configured since (the security re-check of
+/// FU44-D10, S1, S2B and S2C; where Settings had drawn the identity before
+/// and was not opened on the other tab the fields stayed empty for good,
+/// S2A). As the read lands, Email takes the address it finds, the typed
+/// Name stays, and Save writes those; where it fails (`read_fails`, S1F)
+/// the fields stay as they are and the actions say "Working tree not read ·
+/// Refresh".
+async fn settings_identity_waits_through_a_tab_switch(cx: &mut TestAppContext, route: TabSwitch) {
+    use crate::workspace::{NOT_READ_REASON, READING_WORKING_TREE};
+    let (fixture, app, cx, [root, _other]) = two_identities(cx).await;
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    if route.opened_before {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(
+            identity_values(&app, cx),
+            ("Fixture".into(), "fixture@example.invalid".into()),
+            "the identity read before the mark"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        settle(&app, cx).await;
+    }
+    let away = fixture.path().join("git-away");
+    mark_for_real(&app, cx, &root, &away).await;
+    std::fs::rename(&away, root.join(".git")).unwrap();
+    fixture_git(&root, &["config", "user.email", "changed@example.invalid"]);
+    let on_disk = ("Fixture".to_owned(), "changed@example.invalid".to_owned());
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    refresh_to_its_snapshot(&app, cx).await;
+    switch_tab(&app, cx, 1).await;
+    drop(held);
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    if route.settings_on_other {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(
+            identity_values(&app, cx),
+            ("Other Name".into(), "other@example.invalid".into()),
+            "the other tab's identity"
+        );
+    }
+    if route.read_fails {
+        std::fs::write(root.join(".git").join("index"), b"not an index").unwrap();
+    }
+    switch_tab(&app, cx, 0).await;
+    if route.read_fails {
+        land_quiet_reads(&app, cx);
+    }
+    let reason = if route.read_fails {
+        NOT_READ_REASON
+    } else {
+        READING_WORKING_TREE
+    };
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let (writes, _counting) = identity_writes(&app, cx);
+    assert_eq!(
+        identity_values(&app, cx),
+        (String::new(), String::new()),
+        "nothing read before the mark, nor of the other tab"
+    );
+    assert_no_identity_loaded(&app, cx, reason, "back on the tab");
+    if route.reset {
+        let reset = wheeled_into_view(&app, cx, RESET_IDENTITY);
+        cx.simulate_click(reset.center(), gpui::Modifiers::default());
+        settle(&app, cx).await;
+        assert_eq!(
+            identity_values(&app, cx),
+            (String::new(), String::new()),
+            "Reset edits restores nothing read before the mark"
+        );
+    }
+    type_into(cx, &fields[0], "Typed Name");
+    assert_no_identity_loaded(&app, cx, reason, "a Name typed");
+    press_identity_actions(&app, cx);
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    assert_eq!(writes.get(), 0, "no press asks for a write");
+    assert_eq!(
+        identity_values(&app, cx),
+        ("Typed Name".into(), String::new()),
+        "the typing as typed, Email still waiting"
+    );
+    assert_eq!(
+        configured_identity(&root),
+        on_disk,
+        "the repository's configuration is as it was"
+    );
+    if route.read_fails {
+        return;
+    }
+
+    // The read the tab asked for as it was shown again lands.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+    land_quiet_reads(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    assert_eq!(
+        identity_values(&app, cx),
+        ("Typed Name".into(), "changed@example.invalid".into()),
+        "Email takes what the read finds, the typed Name stays"
+    );
+    save_identity_by_click(&app, cx).await;
+    assert_eq!(writes.get(), 1, "Save asks for one identity write");
+    assert_eq!(
+        configured_identity(&root),
+        ("Typed Name".into(), "changed@example.invalid".into()),
+        "the typing and the address read since the mark"
+    );
+}
+
+#[gpui::test]
+async fn settings_identity_after_a_tab_switch_shows_nothing_read_before_the_mark(
+    cx: &mut TestAppContext,
+) {
+    let route = TabSwitch {
+        settings_on_other: true,
+        ..TabSwitch::default()
+    };
+    settings_identity_waits_through_a_tab_switch(cx, route).await;
+}
+
+#[gpui::test]
+async fn settings_identity_after_a_tab_switch_stays_unloaded_where_its_read_fails(
+    cx: &mut TestAppContext,
+) {
+    let route = TabSwitch {
+        settings_on_other: true,
+        read_fails: true,
+        ..TabSwitch::default()
+    };
+    settings_identity_waits_through_a_tab_switch(cx, route).await;
+}
+
+#[gpui::test]
+async fn settings_identity_shown_before_a_tab_switch_fills_as_its_read_lands(
+    cx: &mut TestAppContext,
+) {
+    let route = TabSwitch {
+        opened_before: true,
+        ..TabSwitch::default()
+    };
+    settings_identity_waits_through_a_tab_switch(cx, route).await;
+}
+
+#[gpui::test]
+async fn settings_identity_first_shown_after_a_tab_switch_waits_for_its_read(
+    cx: &mut TestAppContext,
+) {
+    settings_identity_waits_through_a_tab_switch(cx, TabSwitch::default()).await;
+}
+
+#[gpui::test]
+async fn settings_identity_reset_after_a_tab_switch_restores_nothing_read_before_the_mark(
+    cx: &mut TestAppContext,
+) {
+    let route = TabSwitch {
+        opened_before: true,
+        reset: true,
+        ..TabSwitch::default()
+    };
+    settings_identity_waits_through_a_tab_switch(cx, route).await;
+}
+
+/// Between a Refresh's snapshot clearing the tab's mark in place and its
+/// status read landing, Settings shows no identity: the identity line and
+/// the signing line read their not-loaded sentences, no note says where a
+/// save goes, and Save repository identity and Reset edits are refused,
+/// "Reading the working tree…" in their tooltips and accessible names, by a
+/// click and by their handlers, whatever is typed meanwhile, the identity
+/// read before the mark typed again included (`typed`; the security
+/// re-check of FU44-D10, S3). The line, the signing line and the note
+/// showed the read from before the mark, Reset edits was offered to
+/// "Restore the repository's current name and email" and emptied both
+/// fields, and Save was offered (FU44-D10's design re-check, finding A). As
+/// the read lands, the lines show what it finds, a field left empty takes
+/// its value, the typing stays, and Save writes those.
+async fn settings_identity_waits_through_the_read_after_the_mark(
+    cx: &mut TestAppContext,
+    typed: (&str, &str),
+) {
+    use crate::workspace::READING_WORKING_TREE;
+    let (fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        page_bounds(
+            &app,
+            cx,
+            "settings-identity-line: Current identity: Fixture <fixture@example.invalid>"
+        )
+        .is_some(),
+        "the identity read before the mark"
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+    settle(&app, cx).await;
+    let away = fixture.path().join("git-away");
+    mark_for_real(&app, cx, &root, &away).await;
+    std::fs::rename(&away, root.join(".git")).unwrap();
+    fixture_git(&root, &["config", "user.email", "changed@example.invalid"]);
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    refresh_to_its_snapshot(&app, cx).await;
+    show_settings_held(&app, cx);
+    let (writes, _counting) = identity_writes(&app, cx);
+    assert_eq!(
+        identity_values(&app, cx),
+        (String::new(), String::new()),
+        "nothing read before the mark"
+    );
+    assert_no_identity_loaded(&app, cx, READING_WORKING_TREE, "while the status is read");
+    press_identity_actions(&app, cx);
+    for (field, text) in fields.iter().zip([typed.0, typed.1]) {
+        if !text.is_empty() {
+            type_into(cx, field, text);
+        }
+    }
+    assert_no_identity_loaded(&app, cx, READING_WORKING_TREE, "typed into");
+    press_identity_actions(&app, cx);
+    assert_eq!(writes.get(), 0, "no press asks for a write");
+    assert_eq!(
+        identity_values(&app, cx),
+        (typed.0.to_owned(), typed.1.to_owned()),
+        "the typing as typed, Reset edits restoring nothing"
+    );
+
+    drop(held);
+    app.read_with(cx, |app, _| app.operations.drain());
+    settle(&app, cx).await;
+    let email = if typed.1.is_empty() {
+        "changed@example.invalid"
+    } else {
+        typed.1
+    };
+    assert_eq!(
+        identity_values(&app, cx),
+        (typed.0.to_owned(), email.to_owned()),
+        "the typing stays, a field left empty takes what the read finds"
+    );
+    for line in [
+        "settings-identity-line: Current identity: Fixture <changed@example.invalid>",
+        "settings-signing-line: Commit signing is off in Git. Your existing Git signing \
+         configuration is preserved.",
+        IDENTITY_NOTES[0],
+    ] {
+        assert!(
+            page_bounds(&app, cx, line).is_some(),
+            "what the read finds: {line}"
+        );
+    }
+    assert_eq!(writes.get(), 0, "nothing written meanwhile");
+    save_identity_by_click(&app, cx).await;
+    assert_eq!(writes.get(), 1, "Save asks for one identity write");
+    assert_eq!(
+        configured_identity(&root),
+        (typed.0.to_owned(), email.to_owned()),
+        "what the person typed, with what the read after the mark found"
+    );
+}
+
+#[gpui::test]
+async fn settings_identity_waits_for_the_read_after_a_refresh_clears_the_mark(
+    cx: &mut TestAppContext,
+) {
+    settings_identity_waits_through_the_read_after_the_mark(cx, ("Typed", "")).await;
+}
+
+#[gpui::test]
+async fn settings_identity_typed_as_before_the_mark_waits_for_the_read_after_it(
+    cx: &mut TestAppContext,
+) {
+    let before = ("Fixture", "fixture@example.invalid");
+    settings_identity_waits_through_the_read_after_the_mark(cx, before).await;
+}
+
+/// What Settings' fields held for another repository, its identity or a
+/// Name typed for it (`typed`), never follows to the tab shown next: with
+/// Settings shown on one tab and then the other shown, marked, and read
+/// again once its `.git` is back, Settings draws that tab's own identity,
+/// Save is not offered, and a click on it writes nothing. Settings' fields,
+/// not shown since the other tab, still held the other repository's text as
+/// the mark landed, which took it for the person's typing and kept it
+/// through the mark, so Save wrote the other repository's identity into
+/// this one (the security re-check of FU44-D10, X1 and X2).
+async fn settings_identity_of_another_tab_never_follows_into_a_marked_one(
+    cx: &mut TestAppContext,
+    typed: bool,
+) {
+    use crate::workspace::refusals::{self, Refusal};
+    let (fixture, app, cx, [root, _other]) = two_identities(cx).await;
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    switch_tab(&app, cx, 1).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    if typed {
+        type_into(cx, &fields[0], " Typed");
+    }
+    assert_eq!(
+        identity_values(&app, cx),
+        (
+            if typed {
+                "Other Name Typed"
+            } else {
+                "Other Name"
+            }
+            .to_owned(),
+            "other@example.invalid".to_owned()
+        ),
+        "the other tab's identity"
+    );
+    switch_tab(&app, cx, 0).await;
+    let away = fixture.path().join("git-away");
+    mark_for_real(&app, cx, &root, &away).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    assert_eq!(
+        identity_values(&app, cx),
+        (String::new(), String::new()),
+        "the marked tab draws nothing of the other"
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+    settle(&app, cx).await;
+    std::fs::rename(&away, root.join(".git")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle(&app, cx).await;
+    settle(&app, cx).await;
+    assert!(
+        !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "the Refresh clears the mark"
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let own = ("Fixture".to_owned(), "fixture@example.invalid".to_owned());
+    assert_eq!(identity_values(&app, cx), own, "the tab's own identity");
+    page_bounds(&app, cx, SAVE_IDENTITY);
+    assert_eq!(
+        refusals::get(SAVE_IDENTITY),
+        Some(Refusal {
+            announced: true,
+            dimmed: true,
+        }),
+        "Save not offered for what the read finds"
+    );
+    let (writes, _counting) = identity_writes(&app, cx);
+    save_identity_by_click(&app, cx).await;
+    assert_eq!(writes.get(), 0, "a click on Save asks for no write");
+    assert_eq!(
+        configured_identity(&root),
+        own,
+        "the repository's configuration is as it was"
+    );
+}
+
+#[gpui::test]
+async fn settings_identity_read_for_another_tab_never_follows_into_a_marked_one(
+    cx: &mut TestAppContext,
+) {
+    settings_identity_of_another_tab_never_follows_into_a_marked_one(cx, false).await;
+}
+
+#[gpui::test]
+async fn settings_identity_typed_for_another_tab_never_follows_into_a_marked_one(
+    cx: &mut TestAppContext,
+) {
+    settings_identity_of_another_tab_never_follows_into_a_marked_one(cx, true).await;
+}
+
+/// A field the person typed in before the tab's mark brings back nothing
+/// read before it, whichever page shows as the mark and the read after it
+/// land: with a Name typed in Settings and left unsaved (`typed` 0; an Email
+/// for 1), History shown, the tab marked there, its `.git` back with the
+/// other value changed on disk and a Refresh landing in History, Settings
+/// shows the typing and, in the other field, what that read found, and
+/// Save writes those. The field the read had filled was emptied at the
+/// mark only while Settings showed, so it kept the value read before the
+/// mark, taken with the typing for one unfinished edit as the read landed,
+/// and Save wrote it over the one configured since (the code re-check of
+/// FU44-D11).
+async fn settings_identity_typed_before_a_mark_behind_history(
+    cx: &mut TestAppContext,
+    typed: usize,
+) {
+    let (fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name.clone(), app.identity_email.clone()]
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    type_into(cx, &fields[typed], "x");
+    let mut expected = ["Fixturex", "fixture@example.invalid"];
+    if typed == 1 {
+        expected = ["Fixture", "fixture@example.invalidx"];
+    }
+    assert_eq!(
+        identity_values(&app, cx),
+        (expected[0].to_owned(), expected[1].to_owned()),
+        "the identity read, one field typed in"
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+    settle(&app, cx).await;
+
+    // In History: the mark, the other field's value changed on disk, and
+    // the Refresh whose reads land.
+    let away = fixture.path().join("git-away");
+    mark_for_real(&app, cx, &root, &away).await;
+    std::fs::rename(&away, root.join(".git")).unwrap();
+    let (key, changed) = [
+        ("user.email", "changed@example.invalid"),
+        ("user.name", "Changed Name"),
+    ][typed];
+    fixture_git(&root, &["config", key, changed]);
+    expected[1 - typed] = changed;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle(&app, cx).await;
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| !app.shown_tab_unavailable()
+            && app.page == AppPage::Repository),
+        "the Refresh clears the mark, History still shown"
+    );
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let expected = (expected[0].to_owned(), expected[1].to_owned());
+    assert_eq!(
+        identity_values(&app, cx),
+        expected,
+        "the typing as typed, the other field what the read after the mark found"
+    );
+    let (writes, _counting) = identity_writes(&app, cx);
+    save_identity_by_click(&app, cx).await;
+    assert_eq!(writes.get(), 1, "Save asks for one identity write");
+    assert_eq!(
+        configured_identity(&root),
+        expected,
+        "the typing with what the read after the mark found"
+    );
+}
+
+#[gpui::test]
+async fn settings_identity_name_typed_before_a_mark_behind_history_keeps_no_email_from_before(
+    cx: &mut TestAppContext,
+) {
+    settings_identity_typed_before_a_mark_behind_history(cx, 0).await;
+}
+
+#[gpui::test]
+async fn settings_identity_email_typed_before_a_mark_behind_history_keeps_no_name_from_before(
+    cx: &mut TestAppContext,
+) {
+    settings_identity_typed_before_a_mark_behind_history(cx, 1).await;
+}
+
 /// On a marked tab Settings' dimmed Name and Email leave the Tab order, as
 /// the dimmed buttons after them do: a disabled field draws no focus ring,
 /// so Tab stopped on them with nothing drawn to show where focus was
@@ -1820,7 +2721,8 @@ async fn settings_identity_save_pressed_before_the_mark_writes_nothing(cx: &mut 
         "the repository's identity is as it was"
     );
 
-    mark(&app, cx, None);
+    // The mark clears with a read, which Save waits for.
+    land_identity(&app, cx, ("Read Again", "again@example.invalid"), true);
     let center = page_bounds(&app, cx, SAVE).expect("Save").center();
     cx.simulate_mouse_down(center, left, gpui::Modifiers::default());
     cx.simulate_mouse_up(center, left, gpui::Modifiers::default());

@@ -179,7 +179,12 @@ struct RowFill {
 /// Baselines distinguish a saved value moving externally from an unfinished edit.
 pub(super) struct DraftState {
     branch: String,
-    identity: Option<(PathBuf, (String, String))>,
+    /// The repository Name and Email hold text for, and the identity they
+    /// were last filled with there: `None` while they wait for one to be
+    /// read ([`GitTurtle::loaded_identity`]), empty with their placeholders
+    /// but for what the person typed for that repository
+    /// ([`GitTurtle::sync_identity_fields`]).
+    identity: Option<(PathBuf, Option<(String, String)>)>,
     /// The settings whose save last failed, in use and not on disk, until a
     /// save of the settings in use succeeds: Return in Default branch saves
     /// them again, as Retry save does (`GitTurtle::save_default_branch`),
@@ -187,53 +192,6 @@ pub(super) struct DraftState {
     /// line's text, the failure was forgotten once another operation's
     /// error replaced it, and Return in the field saved nothing.
     failed_save: Option<AppSettings>,
-    /// Settings' Name and Email from the moment the shown tab is seen
-    /// marked, on any page, until a read landing after the mark gives them
-    /// what it finds ([`Withheld`]).
-    withheld: Option<Withheld>,
-}
-
-/// Settings' Name and Email through a mark of the shown tab
-/// ([`DraftState::withheld`]; `GitTurtle::withhold_through_the_mark`): each
-/// holding a value read from the repository is drawn empty with its
-/// placeholder, so nothing read before the mark is drawn, while text the
-/// person typed and has not saved stays as typed (decided 2026-11-14: the
-/// dimmed fields drew the identity read before the mark). Once the mark has
-/// cleared, each still empty takes only what a read landing after the mark
-/// finds, and waits empty with its placeholder until one lands, typing
-/// meanwhile kept as typed (decided 2026-11-14 night: nothing from before
-/// the mark). Given back the value read before the mark, as an unread
-/// value, it was taken for an unsaved edit after a read on the marked tab
-/// that found no identity, and given the identity the window held as the
-/// mark cleared, it drew the one read before the mark wherever a Refresh's
-/// snapshot cleared the mark in place, which keeps what was read until its
-/// status read lands (`GitTurtle::tab_snapshot_accepted`): in either, Save
-/// wrote that identity back.
-pub(super) struct Withheld {
-    /// The repository the marked tab showed.
-    path: PathBuf,
-    /// The working state the window held as the mark was seen, read with
-    /// the identity it held then, from before the mark: each read that
-    /// lands replaces it with its own (`GitTurtle::apply_worktree_state`),
-    /// so another, or one where there was none, landed after the mark. Weak,
-    /// so the status it names is not kept, while no later status can take
-    /// its address.
-    before: Option<std::sync::Weak<gitturtle_core::RepositoryStatus>>,
-    /// Which of Name and Email wait for that read: each emptied as the mark
-    /// was seen, or empty then.
-    fields: [bool; 2],
-}
-
-impl Withheld {
-    /// Whether `held`, the working state the window holds, is a read that
-    /// landed after the mark ([`Self::before`]).
-    fn read_after(&self, held: Option<&Arc<gitturtle_core::RepositoryStatus>>) -> bool {
-        held.is_some_and(|held| {
-            self.before
-                .as_ref()
-                .is_none_or(|before| !std::ptr::eq(before.as_ptr(), Arc::as_ptr(held)))
-        })
-    }
 }
 
 impl DraftState {
@@ -242,7 +200,6 @@ impl DraftState {
             branch,
             identity: None,
             failed_save: None,
-            withheld: None,
         }
     }
     fn branch_update(&mut self, saved: &str, edited: &str) -> Option<String> {
@@ -258,37 +215,32 @@ impl DraftState {
         effective: &(String, String),
         edited: &(String, String),
     ) -> Option<(String, String)> {
-        if let Some((scope, baseline)) = &self.identity
+        if let Some((scope, Some(baseline))) = &self.identity
             && scope == path
             && edited != baseline
             && edited != effective
         {
             return None;
         }
-        self.identity = Some((path.to_owned(), effective.clone()));
+        self.identity = Some((path.to_owned(), Some(effective.clone())));
         (edited != effective).then(|| effective.clone())
     }
     fn reset_identity(&mut self, path: Option<&Path>, effective: (String, String)) {
-        self.identity = path.map(|path| (path.to_owned(), effective));
+        self.identity = path.map(|path| (path.to_owned(), Some(effective)));
     }
     /// Whether `value`, the text of field `index` (Name, then Email), is
-    /// one read from the repository at `path` rather than typed: the
-    /// identity read, `read`, or the one the fields were last filled with
-    /// there, which an unsaved edit of the other field keeps.
+    /// one read from the repository rather than typed: the identity the
+    /// window holds, `read`, or the one the fields were last filled with,
+    /// `baseline`, which an unsaved edit of the other field keeps.
     fn was_read(
-        &self,
-        path: &Path,
+        baseline: &(String, String),
         read: Option<&(String, String)>,
         index: usize,
         value: &str,
     ) -> bool {
         let holds =
             |(name, email): &(String, String)| *value == *if index == 0 { name } else { email };
-        read.is_some_and(holds)
-            || self
-                .identity
-                .as_ref()
-                .is_some_and(|(scope, baseline)| scope == path && holds(baseline))
+        read.is_some_and(holds) || holds(baseline)
     }
 }
 
@@ -477,6 +429,8 @@ impl GitTurtle {
             looks_busy: self.operation_shown().is_some(),
             status: self.status.clone(),
             profile: self.profile.clone(),
+            identity_loaded: self.loaded_identity().is_some(),
+            identity_wait: self.identity_wait(),
             repository: self.repository.as_ref().map(|repository| {
                 let path = repository.path();
                 (path.to_owned(), self.project_name(path))
@@ -554,33 +508,85 @@ impl GitTurtle {
         }
     }
 
-    fn fill_identity_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Until a read lands after the shown tab's mark, the identity the
-        // window holds is the one read before it, which Reset edits put back
-        // into both fields to be kept as an edit: both wait for that read
-        // instead ([`Withheld`]).
-        if let Some(withheld) = &mut self.settings_drafts.withheld {
-            withheld.fields = [true; 2];
-            for input in [&self.identity_name, &self.identity_email] {
-                input.update(cx, |input, cx| input.set_value("", window, cx));
-            }
+    /// The Git identity Settings has loaded, the one answer its fields'
+    /// fill, Save repository identity, Reset edits, their handlers, the
+    /// identity line, the signing line and the note all ask: the identity
+    /// read for the repository the tab now shows, and since its mark where
+    /// it was marked ([`Self::read_since_the_mark`]). The window's identity
+    /// goes as another repository is shown (`forget_repository_state`, a
+    /// warm tab's own restored), so one held is the shown repository's. Until
+    /// such a read lands Settings has none (decided 2026-11-15: a write acts
+    /// only on the captured repository and on values read from it, and
+    /// nothing from before the mark): on a cold tab until its status read
+    /// lands, for good where that read fails, on a marked tab, after a
+    /// Refresh's snapshot has cleared the mark in place, and in a tab left
+    /// meanwhile and come back to. Each asked the window's identity alone,
+    /// or nothing: Save, offered whenever none was held, wrote the Name and
+    /// Email another repository's read had left in the fields into the one
+    /// shown, and after a mark the ones read before it.
+    pub(super) fn loaded_identity(&self) -> Option<&gitturtle_core::GitProfile> {
+        (self.profile.as_ref()).filter(|_| self.repository.is_some() && self.read_since_the_mark())
+    }
+
+    /// Why Save repository identity and Reset edits are refused where no
+    /// identity is loaded ([`Self::loaded_identity`]), in the words the
+    /// bar's Fetch, Pull and Push give for the same two states of the same
+    /// read: "Reading the working tree…" while the working state, which
+    /// brings the identity, is read or waits to be
+    /// (`working_read_pending`), "Working tree not read · Refresh" where
+    /// none is, as after a read that failed. `None` where one is loaded,
+    /// with no repository shown, and on a marked tab, whose own words win.
+    fn identity_wait(&self) -> Option<&'static str> {
+        if self.repository.is_none()
+            || self.shown_tab_unavailable()
+            || self.loaded_identity().is_some()
+        {
+            return None;
+        }
+        Some(if self.working_read_pending() {
+            crate::workspace::READING_WORKING_TREE
+        } else {
+            crate::workspace::NOT_READ_REASON
+        })
+    }
+
+    /// Reset edits: Name and Email take the loaded identity again, which
+    /// becomes what they were last filled with. Refused while a write runs
+    /// and where no identity is loaded ([`Self::loaded_identity`]), as its
+    /// Button is, so a press that reaches it there restores nothing: it
+    /// put the identity read before the mark back into both fields, to be
+    /// kept as an edit and saved.
+    pub(super) fn reset_identity_edits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.operation_busy.is_some() {
             return;
         }
-        let profile = self.profile.clone().unwrap_or_default();
-        self.settings_drafts.reset_identity(
-            self.repository.as_ref().map(|repository| repository.path()),
-            (profile.name.clone(), profile.email.clone()),
-        );
-        self.identity_name
-            .update(cx, |input, cx| input.set_value(profile.name, window, cx));
-        self.identity_email
-            .update(cx, |input, cx| input.set_value(profile.email, window, cx));
+        let Some(path) = self
+            .repository
+            .as_ref()
+            .map(|repository| repository.path().to_owned())
+        else {
+            return;
+        };
+        let Some(read) = self
+            .loaded_identity()
+            .map(|profile| (profile.name.clone(), profile.email.clone()))
+        else {
+            return;
+        };
+        for (input, value) in [
+            (&self.identity_name, &read.0),
+            (&self.identity_email, &read.1),
+        ] {
+            input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+        }
+        self.settings_drafts.reset_identity(Some(&path), read);
     }
 
     fn sync_settings_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // On every page, so that Settings opened once the mark has cleared
-        // finds the fields as the mark left them.
-        self.withhold_through_the_mark(window, cx);
+        // On every page: a mark comes and goes behind any of them, and what
+        // a read left in the fields goes with it.
+        self.note_the_mark();
+        self.withhold_identity_fields(window, cx);
         if self.page != AppPage::Settings {
             return;
         }
@@ -591,38 +597,118 @@ impl GitTurtle {
             self.settings_branch
                 .update(cx, |input, cx| input.set_value(value, window, cx));
         }
-        // While the fields are withheld the mark stands, or the identity the
-        // window holds is the one read before it: nothing to reconcile them
-        // with until a read lands after it.
-        if self.settings_drafts.withheld.is_some() {
+        self.sync_identity_fields(window, cx);
+    }
+
+    /// With no identity loaded for the repository Name and Email hold text
+    /// for ([`Self::loaded_identity`]), empties each holding a value read
+    /// from it (`DraftState::was_read`), to wait with its placeholder for
+    /// the read that loads one, while text the person typed and has not
+    /// saved is theirs and stays as typed (decided 2026-11-14). On every
+    /// page, as the app notifies: a field's text is the person's only if
+    /// they typed it, whichever page shows as the mark or the read lands.
+    /// Done only while Settings showed, a Name typed there and left unsaved
+    /// kept the Email read before a mark that came and went behind History,
+    /// both taken for one unfinished edit as the read after the mark landed,
+    /// and Save wrote that Email over the one configured since (the code
+    /// re-check of FU44-D11).
+    fn withhold_identity_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.repository.as_ref().map(|repository| repository.path()) else {
+            return;
+        };
+        if self.loaded_identity().is_some() {
             return;
         }
-        let Some(path) = self
-            .repository
-            .as_ref()
-            .map(|repository| repository.path().to_owned())
+        let Some(baseline) = (self.settings_drafts.identity.as_mut())
+            .filter(|(scope, _)| scope.as_path() == path)
+            .and_then(|(_, filled)| filled.take())
         else {
             return;
         };
-        let Some(effective) = self
+        // What the window holds, where it holds one, is not loaded: read
+        // before the mark, as the baseline was.
+        let read = self
             .profile
             .as_ref()
-            .map(|profile| (profile.name.clone(), profile.email.clone()))
-        else {
+            .map(|profile| (profile.name.clone(), profile.email.clone()));
+        for (index, field) in [&self.identity_name, &self.identity_email]
+            .into_iter()
+            .enumerate()
+        {
+            let value = field.read(cx).value();
+            if !value.is_empty() && DraftState::was_read(&baseline, read.as_ref(), index, &value) {
+                field.update(cx, |input, cx| input.set_value("", window, cx));
+            }
+        }
+    }
+
+    /// Brings Name and Email to the repository shown and the identity loaded
+    /// for it ([`Self::loaded_identity`]), as Settings is shown, as the app
+    /// notifies while it is, and before Save reads them:
+    ///
+    /// - Holding text for another repository, read or typed, both take the
+    ///   loaded identity, or wait empty: nothing of another repository
+    ///   follows to this one. Left as they were while none was loaded, they
+    ///   kept the other's Name and Email for Save to write here, and as the
+    ///   tab was marked they were taken for the person's typing and kept
+    ///   through the mark (the security re-check of FU44-D10, X1 and X2).
+    /// - With none loaded, each holding a value read from the repository
+    ///   waits empty ([`Self::withhold_identity_fields`]).
+    /// - As one is loaded after such a wait, each still empty takes what it
+    ///   found, which is what the fields were last filled with, so typing
+    ///   meanwhile stays an edit.
+    /// - Loaded before and now, they follow the read unless they hold an
+    ///   unfinished edit (`DraftState::identity_update`).
+    fn sync_identity_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.withhold_identity_fields(window, cx);
+        let Some(path) = self.repository.as_ref().map(|repository| repository.path()) else {
             return;
         };
-        let edited = (
-            self.identity_name.read(cx).value().to_string(),
-            self.identity_email.read(cx).value().to_string(),
-        );
-        if let Some((name, email)) = self
-            .settings_drafts
-            .identity_update(&path, &effective, &edited)
-        {
-            self.identity_name
-                .update(cx, |input, cx| input.set_value(name, window, cx));
-            self.identity_email
-                .update(cx, |input, cx| input.set_value(email, window, cx));
+        let loaded = self
+            .loaded_identity()
+            .map(|profile| (profile.name.clone(), profile.email.clone()));
+        let fields = [&self.identity_name, &self.identity_email];
+        // A field given the value it holds would only draw the window again.
+        let set = |index: usize, value: &str, window: &mut Window, cx: &mut Context<Self>| {
+            if fields[index].read(cx).value().as_ref() != value {
+                fields[index].update(cx, |input, cx| {
+                    input.set_value(value.to_owned(), window, cx)
+                });
+            }
+        };
+        let filled = match &mut self.settings_drafts.identity {
+            Some((scope, filled)) if scope.as_path() == path => filled,
+            held => {
+                let (name, email) = loaded.clone().unwrap_or_default();
+                set(0, &name, window, cx);
+                set(1, &email, window, cx);
+                *held = Some((path.to_owned(), loaded));
+                return;
+            }
+        };
+        match (filled.as_mut(), loaded) {
+            // Emptied already of what a read left, and waiting.
+            (_, None) => {}
+            (None, Some(read)) => {
+                for (index, value) in [&read.0, &read.1].into_iter().enumerate() {
+                    if fields[index].read(cx).value().is_empty() {
+                        set(index, value, window, cx);
+                    }
+                }
+                *filled = Some(read);
+            }
+            (Some(_), Some(read)) => {
+                let edited = (
+                    fields[0].read(cx).value().to_string(),
+                    fields[1].read(cx).value().to_string(),
+                );
+                if let Some((name, email)) =
+                    self.settings_drafts.identity_update(path, &read, &edited)
+                {
+                    set(0, &name, window, cx);
+                    set(1, &email, window, cx);
+                }
+            }
         }
     }
 
@@ -631,78 +717,6 @@ impl GitTurtle {
         [&self.identity_name, &self.identity_email]
             .into_iter()
             .any(|field| field.focus_handle(cx).is_focused(window))
-    }
-
-    /// Settings' Name and Email through a mark of the shown tab
-    /// ([`Withheld`]), on every page: as the mark is first seen, each
-    /// holding a value read from the repository at its path
-    /// (`DraftState::was_read`) is emptied and waits, as does one empty
-    /// then, while text the person typed and has not saved is theirs and
-    /// stays as typed; once the mark has cleared, the first read landing
-    /// after it gives each still empty what it finds, and is what the
-    /// fields were last filled with, so typing meanwhile stays an edit.
-    /// Another repository shown ends the wait, its own read filling the
-    /// fields (`DraftState::identity_update`); with none shown, as a fresh
-    /// capture's Open forgets the one read before
-    /// (`GitTurtle::forget_repository_state`), they wait.
-    fn withhold_through_the_mark(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let marked = self.shown_tab_unavailable();
-        if !marked && self.settings_drafts.withheld.is_none() {
-            return;
-        }
-        let Some(path) = self.repository.as_ref().map(|repository| repository.path()) else {
-            return;
-        };
-        let drafts = &mut self.settings_drafts;
-        drafts.withheld.take_if(|withheld| withheld.path != path);
-        if let Some(withheld) = &drafts.withheld {
-            // The read the fields wait for: one landed after the mark, with
-            // an identity found.
-            let Some(profile) = self
-                .profile
-                .as_ref()
-                .filter(|_| !marked && withheld.read_after(self.work_status.as_ref()))
-            else {
-                return;
-            };
-            let read = (profile.name.clone(), profile.email.clone());
-            for ((input, value), waits) in [
-                (&self.identity_name, &read.0),
-                (&self.identity_email, &read.1),
-            ]
-            .into_iter()
-            .zip(withheld.fields)
-            {
-                if waits && input.read(cx).value().is_empty() {
-                    input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
-                }
-            }
-            drafts.reset_identity(Some(path), read);
-            drafts.withheld = None;
-        } else if marked {
-            let read = self
-                .profile
-                .as_ref()
-                .map(|profile| (profile.name.clone(), profile.email.clone()));
-            let mut fields = [false; 2];
-            for (index, input) in [&self.identity_name, &self.identity_email]
-                .into_iter()
-                .enumerate()
-            {
-                let value = input.read(cx).value();
-                if value.is_empty() {
-                    fields[index] = true;
-                } else if drafts.was_read(path, read.as_ref(), index, &value) {
-                    input.update(cx, |input, cx| input.set_value("", window, cx));
-                    fields[index] = true;
-                }
-            }
-            drafts.withheld = Some(Withheld {
-                path: path.to_owned(),
-                before: self.work_status.as_ref().map(Arc::downgrade),
-                fields,
-            });
-        }
     }
 
     /// This method never replaces current UI settings with an older disk reply.
@@ -1473,26 +1487,31 @@ impl GitTurtle {
     /// read before the mark: where its `.git` came back before a read, the
     /// save wrote `user.name` and `user.email` there (security re-check of
     /// FU44-D3; decided 2026-11-11: an entry is offered only where it can
-    /// act), as Apply profile… is refused there.
-    fn save_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.repository.is_none()
-            || self.operation_busy.is_some()
-            || self.shown_tab_unavailable()
-        {
+    /// act), as Apply profile… is refused there. Refused too wherever no
+    /// identity is loaded for the repository shown
+    /// ([`Self::loaded_identity`]), by Return in a field or a stale press as
+    /// by the Button, and the fields are brought to that repository before
+    /// they are read ([`Self::sync_identity_fields`]), so what is written
+    /// was typed for it or read from it since its mark.
+    pub(super) fn save_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.operation_busy.is_some() {
             return;
         }
+        self.sync_identity_fields(window, cx);
         let name = self.identity_name.read(cx).value().trim().to_owned();
         let email = self.identity_email.read(cx).value().trim().to_owned();
+        let Some(unchanged) = self
+            .loaded_identity()
+            .map(|loaded| loaded.name == name && loaded.email == email)
+        else {
+            return;
+        };
         if name.is_empty() || email.is_empty() {
             self.operation_error = Some("Enter both your Git name and email address.".into());
             cx.notify();
             return;
         }
-        if self
-            .profile
-            .as_ref()
-            .is_some_and(|profile| profile.name == name && profile.email == email)
-        {
+        if unchanged {
             return;
         }
         self.write(
@@ -2682,10 +2701,23 @@ impl GitTurtle {
         };
         let branch_edited =
             self.settings_branch.read(cx).value().as_ref() != self.settings.default_branch.as_str();
-        let identity_edited = self.profile.as_ref().is_none_or(|profile| {
-            self.identity_name.read(cx).value().trim() != profile.name
-                || self.identity_email.read(cx).value().trim() != profile.email
-        });
+        // Against the identity loaded for the repository shown: with none
+        // loaded there is no edit to save or reset, whatever the fields
+        // hold. Asked of the window's identity alone, every field counted
+        // as edited while none was held, and Save was offered for another
+        // repository's Name and Email.
+        let loaded = self.loaded_identity();
+        // Both fields are read at every build, with or without an identity
+        // loaded, as they were whenever one was held: read only once one was
+        // loaded, the frame that first drew the card built the page twice,
+        // Name and Email notifying it after that frame
+        // (`theme_editor::tests::state_from_other_features_builds_the_page_through_the_reconciler`).
+        let (name, email) = (
+            self.identity_name.read(cx).value(),
+            self.identity_email.read(cx).value(),
+        );
+        let identity_edited = loaded
+            .is_some_and(|profile| name.trim() != profile.name || email.trim() != profile.email);
         let repository_name = self
             .repository
             .as_ref()
@@ -2970,7 +3002,7 @@ impl GitTurtle {
             // identity read before the mark read as the repository's own, and
             // nothing on the page said why its fields and actions were refused
             // (decided 2026-11-12).
-            let line: SharedString = match &self.profile {
+            let line: SharedString = match loaded {
                 _ if marked => format!(
                     "{} · {}",
                     crate::branch_actions::UNAVAILABLE_REASON,
@@ -2986,7 +3018,17 @@ impl GitTurtle {
             // The repository card, Name, Email, the signing line, the save
             // buttons, the note and Manage named profiles…; on a marked tab
             // neither the signing line nor the note, both chosen from the
-            // identity read before the mark (decided 2026-11-14).
+            // identity read before the mark (decided 2026-11-14), and with
+            // no identity loaded no note, which says where a save goes as
+            // only that read decides (decided 2026-11-15).
+            let noted = !marked && loaded.is_some();
+            // Why Save and Reset edits are refused: the mark's reason, or
+            // with no identity loaded the read's (`identity_wait`).
+            let refusal = if marked {
+                Some(crate::branch_actions::UNAVAILABLE_REASON)
+            } else {
+                self.identity_wait()
+            };
             let mut kept = vec![
                 None,
                 Some(self.identity_name.focus_handle(cx)),
@@ -2994,7 +3036,7 @@ impl GitTurtle {
             ];
             kept.extend((!marked).then_some(None));
             kept.push(None);
-            kept.extend((!marked).then_some(None));
+            kept.extend(noted.then_some(None));
             kept.push(Some(manage_profiles.clone()));
             div()
                 .on_children_prepainted(self.keep_in_view(kept, cx))
@@ -3040,12 +3082,12 @@ impl GitTurtle {
                 // dimmed, so nothing typed there waits for a save no route
                 // makes: they took a Name and Email the dimmed Save could not
                 // write (decided 2026-11-12). There they draw no value read
-                // before the mark (`withhold_through_the_mark`), say why as the
+                // before the mark (`sync_identity_fields`), say why as the
                 // line does and leave the Tab order (decided 2026-11-14).
                 .child(settings_field("Name", &self.identity_name, (busy || marked, looks_busy || marked), marked.then(|| line.clone()), cx))
                 .child(settings_field("Email", &self.identity_email, (busy || marked, looks_busy || marked), marked.then(|| line.clone()), cx))
                 .when(!marked, |card| {
-                    let signing = match self.profile.as_ref() {
+                    let signing = match loaded {
                         Some(profile) if profile.signing => "Commit signing is enabled in Git. GitTurtle uses your configured signer.",
                         Some(_) => "Commit signing is off in Git. Your existing Git signing configuration is preserved.",
                         None => "Signing follows your existing Git configuration.",
@@ -3085,7 +3127,7 @@ impl GitTurtle {
                                 .map(|save| {
                                     let unavailable = !identity_edited || marked;
                                     let save = crate::workspace::refusing(save, || "save-repository-identity".into(), busy || unavailable, looks_busy || unavailable);
-                                    says_the_mark(save, "save-repository-identity", "Save repository identity", None, marked)
+                                    says_why(save, "save-repository-identity", "Save repository identity", None, refusal)
                                 })
                                 .on_click(cx.listener(|this, _, window, cx| this.save_identity(window, cx)))
                                 .node_recorded(),
@@ -3096,20 +3138,22 @@ impl GitTurtle {
                                 .debug_selector(|| "use-current-identity".into())
                                 .ml(-pull)
                                 .map(|reset| {
-                                    let unavailable = self.profile.is_none() || !identity_edited || marked;
+                                    let unavailable = !identity_edited || marked;
                                     let reset = crate::workspace::refusing(reset, || "use-current-identity".into(), busy || unavailable, looks_busy || unavailable);
-                                    says_the_mark(reset, "use-current-identity", "Reset edits", Some("Restore the repository’s current name and email"), marked)
+                                    says_why(reset, "use-current-identity", "Reset edits", Some("Restore the repository’s current name and email"), refusal)
                                 })
-                                // Refused at once while a write runs, and on a
-                                // marked tab.
-                                .on_click(cx.listener(|this, _, window, cx| if this.operation_busy.is_none() && !this.shown_tab_unavailable() { this.fill_identity_inputs(window, cx) }))
+                                // Refused at once while a write runs, on a
+                                // marked tab and with no identity loaded.
+                                .on_click(cx.listener(|this, _, window, cx| this.reset_identity_edits(window, cx)))
                                 .node_recorded(),
                         ),
                 )
                 // Where a save goes, which the identity read chose: on a
-                // marked tab it is not drawn, as the signing line is not.
-                .when(!marked, |card| {
-                    let note = if self.profile.as_ref().is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." };
+                // marked tab it is not drawn, as the signing line is not,
+                // nor with no identity loaded, where it claimed the shared
+                // configuration before any read had said so.
+                .when(noted, |card| {
+                    let note = if loaded.is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." };
                     card.child(div().debug_selector(move || format!("settings-identity-note: {note}")).text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(note))
                 })
                 // A ghost Button at the card's text edge: its icon on the
@@ -3123,7 +3167,7 @@ impl GitTurtle {
                 // nothing and said nothing.
                 .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).track_focus(&manage_profiles).debug_selector(|| "settings-manage-profiles".into()).self_start().ml(-pull).map(|manage| {
                     let manage = crate::workspace::refusing(manage, || "settings-manage-profiles".into(), busy || marked, looks_busy || marked);
-                    says_the_mark(manage, "settings-manage-profiles", "Manage named profiles…", None, marked)
+                    says_why(manage, "settings-manage-profiles", "Manage named profiles…", None, marked.then_some(crate::branch_actions::UNAVAILABLE_REASON))
                 }).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))).node_recorded())
                 .into_any_element()
         } else {
@@ -3340,6 +3384,11 @@ struct PageKey {
     looks_busy: bool,
     status: String,
     profile: Option<gitturtle_core::GitProfile>,
+    /// Whether that identity is loaded for the repository shown
+    /// (`GitTurtle::loaded_identity`), and why none is
+    /// (`GitTurtle::identity_wait`).
+    identity_loaded: bool,
+    identity_wait: Option<&'static str>,
     repository: Option<(PathBuf, String)>,
     /// Whether the shown tab is marked, which refuses Manage named
     /// profiles… with the mark's reason.
@@ -5443,29 +5492,30 @@ fn setting_text<E: Styled + ParentElement>(
 }
 
 /// `control`, an action of the Git identity card with element ID `id` and
-/// label `label`, which a marked tab refuses (`marked`) with the mark's
-/// reason, as Fetch is refused there (decided 2026-11-11: an entry is
-/// offered only where it can act): its tooltip what it does, `purpose` or
-/// its label, then "Repository unavailable", and its accessible name its
-/// label and the reason, as Fetch's is, since a refused control leaves the
-/// Tab order and its tooltip shows only under the pointer. Offered, it keeps
-/// `purpose` as its tooltip, where it has one. Formatted only on a marked
-/// tab, as the cached page is built again.
-fn says_the_mark(
+/// label `label`, refused for `reason`: on a marked tab the mark's, as Fetch
+/// is refused there (decided 2026-11-11: an entry is offered only where it
+/// can act), and for Save repository identity and Reset edits with no
+/// identity loaded the read's, as Fetch gives it (`GitTurtle::identity_wait`;
+/// decided 2026-11-15). Its tooltip is what it does, `purpose` or its
+/// label, then the reason, and its accessible name its label and the
+/// reason, as Fetch's is, since a refused control leaves the Tab order and
+/// its tooltip shows only under the pointer. With no reason it keeps
+/// `purpose` as its tooltip, where it has one. Formatted only where there
+/// is a reason, as the cached page is built again.
+fn says_why(
     control: Button,
     id: &'static str,
     label: &'static str,
     purpose: Option<&'static str>,
-    marked: bool,
+    reason: Option<&'static str>,
 ) -> Button {
-    let reason = crate::branch_actions::UNAVAILABLE_REASON;
-    let name: Option<SharedString> = marked.then(|| format!("{label}: {reason}").into());
-    let Some(name) = name else {
+    let Some(reason) = reason else {
         return match purpose {
             Some(purpose) => control.tooltip(purpose),
             None => control,
         };
     };
+    let name: SharedString = format!("{label}: {reason}").into();
     let tooltip = format!("{} · {reason}", purpose.unwrap_or(label));
     crate::views::note_control_tooltip(&id.into(), &tooltip);
     control.tooltip(tooltip).accessibility_label(name)

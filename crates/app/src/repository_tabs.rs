@@ -424,6 +424,15 @@ pub struct Tab {
     saved: Bookmark,
     warm: Option<WarmTab>,
     pub error: Option<String>,
+    /// The working state the window held as this tab was last seen marked,
+    /// the one read before the mark or behind it, kept until another lands
+    /// with the mark cleared ([`GitTurtle::note_the_mark`]): until then what
+    /// the tab holds of its repository, shown or retained while another tab
+    /// is, its Git identity with it, is not read since the mark
+    /// ([`GitTurtle::read_since_the_mark`]). Dangling where no state was
+    /// held. Weak, so the status it names is not kept, while no later
+    /// status can take its address.
+    before_mark: Option<std::sync::Weak<gitturtle_core::RepositoryStatus>>,
 }
 /// Why a session save did not finish: a full queue refused it, which only
 /// asks again, or it really failed, which the window reports.
@@ -783,6 +792,7 @@ impl State {
                     saved: tab.bookmark,
                     warm: None,
                     error: None,
+                    before_mark: None,
                 })
                 .collect(),
             active,
@@ -1297,6 +1307,7 @@ impl GitTurtle {
                 saved: Bookmark::default(),
                 warm: None,
                 error: None,
+                before_mark: None,
             });
             self.repository_tabs.tabs.len() - 1
         };
@@ -1939,6 +1950,7 @@ impl GitTurtle {
             saved: Bookmark::default(),
             warm: None,
             error: None,
+            before_mark: None,
         });
         self.repository_tabs.active = Some(index);
         self.clear_tab_inputs(window, cx);
@@ -2053,10 +2065,64 @@ impl GitTurtle {
             } else {
                 let landed = tab.error.is_none() && self.error.is_some();
                 tab.error = self.error.clone();
+                // What the window holds is from before the mark from here.
+                self.note_the_mark();
                 return landed;
             }
         }
         false
+    }
+    /// Follows the shown tab's mark for [`Self::read_since_the_mark`], as
+    /// the mark lands and each time the app notifies, on every page: while
+    /// the tab is marked, the working state the window holds, read before
+    /// the mark or landed behind it, is noted as the tab's
+    /// ([`Tab::before_mark`]), and the note goes once another has landed
+    /// with the mark cleared. Kept on the tab, it stays through a switch to
+    /// another tab and back: kept with Settings' fields, it went as another
+    /// repository was shown, while the tab kept the identity read before the
+    /// mark, and Settings showed that identity again and saved it (the
+    /// security re-check of FU44-D10, S1).
+    pub(super) fn note_the_mark(&mut self) {
+        let held = self.work_status.as_ref();
+        let Some(tab) = self
+            .repository_tabs
+            .active
+            .and_then(|index| self.repository_tabs.tabs.get_mut(index))
+        else {
+            return;
+        };
+        let same = |before: &std::sync::Weak<gitturtle_core::RepositoryStatus>| {
+            held.is_none_or(|held| std::ptr::eq(before.as_ptr(), Arc::as_ptr(held)))
+        };
+        if tab.error.is_some() {
+            if !tab.before_mark.as_ref().is_some_and(same) {
+                tab.before_mark = Some(held.map(Arc::downgrade).unwrap_or_default());
+            }
+        } else if tab.before_mark.as_ref().is_some_and(|before| !same(before)) {
+            tab.before_mark = None;
+        }
+    }
+    /// Whether what the window holds of the shown tab's repository, its Git
+    /// identity with it, was read since the tab's mark: the tab is not
+    /// marked, and where it was, a working state has landed with the mark
+    /// cleared ([`Self::note_the_mark`]). A Refresh's snapshot clears a mark
+    /// in place before its status read lands, an Open in place keeping what
+    /// it read (`tab_snapshot_accepted`), and that read may fail or be
+    /// dropped as another tab is shown, so the mark's end alone says nothing
+    /// of what the window holds.
+    pub(super) fn read_since_the_mark(&self) -> bool {
+        let Some(tab) = self
+            .repository_tabs
+            .active
+            .and_then(|index| self.repository_tabs.tabs.get(index))
+        else {
+            return true;
+        };
+        tab.error.is_none()
+            && tab.before_mark.as_ref().is_none_or(|before| {
+                (self.work_status.as_ref())
+                    .is_some_and(|held| !std::ptr::eq(before.as_ptr(), Arc::as_ptr(held)))
+            })
     }
     /// Notes, as an Open of the shown tab begins, what holds keyboard focus
     /// ([`State::open_focus`]), a menu, the mark's way back or Settings' Name
@@ -3487,6 +3553,7 @@ impl GitTurtle {
                 saved: Bookmark::default(),
                 warm: None,
                 error: None,
+                before_mark: None,
             });
         }
         // The project's name and the path are the user's, either of which
@@ -3659,6 +3726,7 @@ impl GitTurtle {
                     saved: Bookmark::default(),
                     warm: None,
                     error: None,
+                    before_mark: None,
                 });
             }
         }
@@ -8743,6 +8811,7 @@ pub(crate) mod tests {
                 saved: Bookmark::default(),
                 warm: None,
                 error: None,
+                before_mark: None,
             });
             app.repository_tabs.tabs.len() - 1
         });
@@ -13268,6 +13337,7 @@ pub(crate) mod tests {
                 saved: Bookmark::default(),
                 warm: None,
                 error: None,
+                before_mark: None,
             });
         }
     }
@@ -13953,6 +14023,7 @@ pub(crate) mod tests {
                     saved: Bookmark::default(),
                     warm: None,
                     error: None,
+                    before_mark: None,
                 });
             }
         });
@@ -14125,6 +14196,7 @@ pub(crate) mod tests {
                     saved: bookmark.clone(),
                     warm: None,
                     error: None,
+                    before_mark: None,
                 }],
                 restoring: Some(bookmark.clone()),
                 document_restore: Some(bookmark),
