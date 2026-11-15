@@ -8,12 +8,14 @@ This review establishes package provenance and records the missing information;
 it does not assert that a public binary has completed license review. No upstream
 message was sent during this investigation.
 
-Completing the notices publishes no Linux binary. The owner decided on
-November 15, 2026 that the notices land and the CI archive's upload stays off
-until distribution (phase 4) decides, with signing, what is published.
-`HOSTED_UPLOAD` in `scripts/ci/packages.py` is that hold: the Linux job collects
-strictly, fails on any missing notice, builds and verifies the complete-notice
-package, and uploads nothing
+Completing the notices did not by itself publish a Linux binary: the notices
+landed with the CI archive's upload held. Later on November 15, 2026 the owner
+decided that the hosted upload is on for the Linux archives.
+`HOSTED_UPLOAD_PLATFORMS` in `scripts/ci/packages.py` lists Linux: the Linux job
+collects strictly, fails on any missing notice, builds and verifies the
+complete-notice package, and uploads it as a seven-day Actions artifact. That
+artifact is a CI build, not a release (GitHub Releases is the release channel),
+and macOS archives stay held
 ([CI package downloads](../ci-artifacts.md#license-boundary-and-availability)).
 
 ## `mac` 0.1.1

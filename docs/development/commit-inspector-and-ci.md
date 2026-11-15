@@ -186,9 +186,11 @@ release guide after integration; do not relabel local fixtures as hosted results
   Linux strict collection is complete since the license review of November 15,
   2026 (mac 0.1.1 by that review, the Rust ufbx wrapper by its 0.11.5 release);
   macOS still documents block 0.1.6, objc_exception 0.1.2, leak 0.1.2 and
-  leaky-cow 0.1.1. Complete Linux notices do not upload the CI package: the
-  owner's decision of the same day holds the upload until distribution, by
-  `HOSTED_UPLOAD` in `scripts/ci/packages.py`
+  leaky-cow 0.1.1. Complete notices alone do not upload a CI package: its
+  platform must be listed in `HOSTED_UPLOAD_PLATFORMS` in
+  `scripts/ci/packages.py`. The owner's decision of the same day lists Linux, so
+  Quality uploads the verified Linux archive as a seven-day Actions artifact (a
+  CI build, not a release), and macOS stays held
   ([CI package downloads](../ci-artifacts.md#license-boundary-and-availability)).
 - Preserve authoritative, version-matched full notices and immutable
   URL/revision/checksum provenance in the existing supplements. A Cargo license
@@ -240,8 +242,10 @@ scanning. The original conditions follow for the record.
 ### C3 — Download and installation
 
 - Complete C0 before enabling public binary artifact uploads. C0 is complete
-  for Linux and the upload is still off: turning on `HOSTED_UPLOAD` in
-  `scripts/ci/packages.py` is the distribution decision, not a consequence of C0.
+  for Linux, and the owner's distribution decision of November 15, 2026 turned
+  its upload on: `HOSTED_UPLOAD_PLATFORMS` in `scripts/ci/packages.py` lists
+  Linux. macOS is not listed; listing it is the macOS distribution decision, not
+  a consequence of completing its C0.
 - Download artifacts from the actual hosted run; independently verify archive
   checksums, source/version/target, executable identity and complete licenses.
 - Extract/install into disposable locations and perform the affected native smoke

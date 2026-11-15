@@ -70,9 +70,11 @@ validation on another platform or compositor.
 
 The Linux [notice questions](licenses/linux-notice-review.md) for `mac` 0.1.1
 and the Rust `ufbx` wrapper are resolved; macOS still needs its own notice
-review. No Linux binary is published by that: the CI package's upload is
-[held](ci-artifacts.md#license-boundary-and-availability) by `HOSTED_UPLOAD` in
-`scripts/ci/packages.py` until distribution is decided. Before publication, attach final executable/archive
+review. No Linux release is published by that: Quality
+[uploads](ci-artifacts.md#license-boundary-and-availability) the verified Linux
+CI archive as a seven-day Actions artifact, which is a CI build, not a release,
+and macOS archives stay held (`HOSTED_UPLOAD_PLATFORMS` in
+`scripts/ci/packages.py`). Before publication, attach final executable/archive
 identities and validation to the release, complete the
 [release gates](public-launch.md#before-a-public-binary-release), and approve the
 publication. Website publication was separately approved and completed on

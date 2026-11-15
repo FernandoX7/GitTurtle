@@ -69,7 +69,9 @@ owner's license review. The four macOS-only packages (`block`,
 `objc_exception`, `leak` and `leaky-cow`) are not decided and stay
 review-required.
 
-Complete Linux notices publish nothing by themselves. The CI job builds and
-verifies the complete-notice package, and its upload is held by `HOSTED_UPLOAD`
-in `scripts/ci/packages.py` until distribution is decided; see
+Complete notices do not upload a CI package by themselves: its platform must
+also be listed in `HOSTED_UPLOAD_PLATFORMS` in `scripts/ci/packages.py`. Linux
+is listed, so Quality uploads the verified complete-notice Linux archive as a
+seven-day Actions artifact, which is a CI build, not a release. macOS is not
+listed and stays held until macOS distribution is decided; see
 [CI package downloads](../ci-artifacts.md#license-boundary-and-availability).

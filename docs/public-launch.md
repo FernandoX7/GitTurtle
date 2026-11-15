@@ -135,9 +135,11 @@ instructions. Website publication does not clear or authorize a binary release.
   [exact-source review](licenses/linux-notice-review.md) records the evidence
   and how the `mac` 0.1.1 and Rust `ufbx` wrapper notices were resolved. macOS
   has four undecided records; the Linux pass does not clear them. The pass
-  publishes nothing: the Linux CI package is built and verified in its job, and
-  its upload is held by `HOSTED_UPLOAD` in `scripts/ci/packages.py` until
-  distribution is decided ([CI package downloads](ci-artifacts.md#license-boundary-and-availability)).
+  is not a release: by the owner's decision of the same day, Quality uploads
+  the verified Linux CI archive as a seven-day Actions artifact, which is a CI
+  build (GitHub Releases is the release channel), and macOS archives stay held
+  until macOS distribution is decided (`HOSTED_UPLOAD_PLATFORMS` in
+  `scripts/ci/packages.py`; [CI package downloads](ci-artifacts.md#license-boundary-and-availability)).
 - [ ] Build and test the exact release source/target, record the executable and
   archive hashes, and include the generated licenses and any required sources.
   Establish the source identity separately when using `--no-build`. Compare

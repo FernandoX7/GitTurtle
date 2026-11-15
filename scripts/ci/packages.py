@@ -37,15 +37,26 @@ KNOWN_GAPS = {
     "x86_64-unknown-linux-gnu": set(),
     "aarch64-apple-darwin": {"block-0.1.6", "objc_exception-0.1.2", "leak-0.1.2", "leaky-cow-0.1.1"},
 }
-# Held until distribution (phase 4) decides, with signing, what is published.
-# Off, a target with complete notices is still collected strictly, packaged
-# with --distribution and verified in its job, and nothing leaves the job.
-# Turning this on publishes, for every target whose notices are complete (Linux
-# today), a public Actions artifact kept seven days from every main push, manual
-# Quality run and product pull request: the release archive, its .sha256 and
-# .manifest.json, and ci-provenance.json. `prepare` then writes `eligible=true`,
-# which runs the upload, download and verify steps of quality.yml's release job.
-HOSTED_UPLOAD = False
+# The platforms whose verified complete-notice archive Quality uploads. Being
+# listed here is the only way a platform uploads: no flag, environment variable
+# or workflow input adds one, and a listed platform whose notices are incomplete
+# uploads nothing either.
+# Linux is listed (the owner's decision of 2026-11-15). Every main push, manual
+# Quality run and product pull request therefore publishes, for each Linux
+# target, a public Actions artifact kept UPLOAD_RETENTION_DAYS days: the release
+# archive, its .sha256 and .manifest.json, and ci-provenance.json. It is a CI
+# build, not a release. `prepare` writes `eligible=true`, which runs the upload,
+# download and verify steps of quality.yml's release job.
+# macOS is not listed, so its archive never leaves the job, whatever its
+# notices: it is still collected strictly, packaged and verified there. Adding
+# "macos" would publish an ad-hoc signed, not notarized macOS archive as the
+# same public artifact from the same events, from the day its notices are
+# complete. That entry waits for the macOS distribution decision, which is made
+# with signing.
+HOSTED_UPLOAD_PLATFORMS = frozenset({"linux"})
+PLATFORM_NAMES = {"linux": "Linux", "macos": "macOS"}
+# What quality.yml's upload step asks of Actions; the step summary states it.
+UPLOAD_RETENTION_DAYS = 7
 MAX_TREE = 2 * 1024**3
 MAX_ENTRIES = 30000
 MAX_LOG = 8 * 1024**2
@@ -88,6 +99,15 @@ def run(command, *, cwd=ROOT, env=None, allowed=(0,), timeout=600):
             except ProcessLookupError:
                 pass
             child.wait()
+
+
+def platform_of(target):
+    """The platform a declared target is packaged for: "linux" or "macos"."""
+    if target in TARGETS and target in identity.LINUX_TARGETS:
+        return "linux"
+    if target in TARGETS and target.endswith("-apple-darwin"):
+        return "macos"
+    raise Error("Target has no declared package platform")
 
 
 def notice_state(code, inventory, target, lock):
@@ -369,8 +389,10 @@ def prepare(args):
                    "--require-complete", output / "strict-notices"], allowed=(0, 2))
     inventory = identity.read_json(output / "strict-notices/dependencies.json")
     complete = notice_state(code, inventory, args.target, lock)
-    # The one read of the hold: it decides the upload, never how the package is built or checked.
-    upload = complete and HOSTED_UPLOAD
+    # The one read of the upload set: it decides the upload, never how the package is built or checked.
+    platform = platform_of(args.target)
+    listed = platform in HOSTED_UPLOAD_PLATFORMS
+    upload = complete and listed
     stem = f"GitTurtle-{version}-{revision[:12]}-{TARGETS[args.target]}-release"
     prepared = output / "prepared"
     prepared.mkdir()
@@ -419,14 +441,19 @@ def prepare(args):
                f"Source `{revision}`, version `{version}`, release profile. "
                f"Archive SHA-256 `{expected['archive_sha256']}`.\n\n"
                "Local archive/executable/package checks passed. Native desktop verification remains separate.\n\n")
+    held = f"the {PLATFORM_NAMES[platform]} upload is held until {PLATFORM_NAMES[platform]} distribution is decided"
     if upload:
-        summary += "Complete notices verified. Upload and download verification follow; this is an early-development CI build, not a release.\n"
+        summary += (f"Complete notices verified. This job uploads the archive next as the Actions artifact "
+                    f"`{expected['artifact_name']}`, kept {UPLOAD_RETENTION_DAYS} days, then downloads and verifies "
+                    "that artifact. It is an early-development CI build, not a release.\n")
     elif complete:
-        summary += "Complete notices verified. **Download unavailable: the hosted upload is held until distribution is decided; C3 hosted transfer remains open.** "
+        summary += f"Complete notices verified. **Download unavailable: {held}; C3 hosted transfer remains open.** "
         summary += "The verified complete-notice archive stays in this job and is not uploaded.\n"
     else:
         summary += "**Download unavailable: C0 license notices are incomplete; C3 hosted transfer remains open.** "
-        summary += "The development archive is withheld from public upload. Verified strict refusal: " + ", ".join(f"`{item}`" for item in inventory["review_required"]) + ".\n"
+        summary += "The development archive is withheld from public upload. Verified strict refusal: " + ", ".join(f"`{item}`" for item in inventory["review_required"]) + "."
+        # Completing the notices alone would not change this for a platform that is not listed.
+        summary += "\n" if listed else f" Separately, {held}.\n"
     if args.summary:
         with args.summary.open("a") as stream:
             stream.write(summary)

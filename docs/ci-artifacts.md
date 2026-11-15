@@ -35,22 +35,32 @@ job takes that path and any missing notice there fails it.
 The documented C0 gaps are on macOS: `block-0.1.6`, `objc_exception-0.1.2`,
 `leak-0.1.2` and `leaky-cow-0.1.1`.
 
-Complete notices do not upload anything yet. The project owner decided on
-November 15, 2026 that the hosted upload stays off until distribution (phase 4)
-decides, with signing, what is published. `HOSTED_UPLOAD` in
-`scripts/ci/packages.py` is that hold, and it is off. A complete-notice job
-still collects strictly, packages with `--distribution` and verifies the
-archive, the executable and the installed package inside the job. It then
-writes `eligible=false`, records `upload_eligible: false` and makes no `publish/`
-directory, so the workflow's upload, download and verify steps are skipped, and
-the Actions summary says **Download unavailable: the hosted upload is held until
-distribution is decided; C3 hosted transfer remains open**. The verifier refuses
-a prepared record that is not upload-eligible. Turning the switch on is a
-reviewed change of its own: from then on every main push, manual run and product
-pull request whose target has complete notices uploads the artifact described
-[below](#find-and-verify-a-download).
+Complete notices alone do not upload a package: its platform must also be
+listed in `HOSTED_UPLOAD_PLATFORMS` in `scripts/ci/packages.py`. The project
+owner decided on November 15, 2026 that the hosted upload is on for the Linux
+archives, so the constant lists Linux and nothing else. A Linux job with
+complete notices collects strictly, packages with `--distribution` and verifies
+the archive, the executable and the installed package inside the job. It then
+writes `eligible=true`, records `upload_eligible: true` and fills its `publish/`
+directory, and the workflow uploads that directory as the artifact described
+[below](#find-and-verify-a-download), downloads it again and verifies it. Every
+main push, manual run and product pull request does this. The artifact is a CI
+build, not a release: [GitHub Releases](releases.md) is the release channel.
 
-The hold covers this workflow's CI package only. The explicitly dispatched
+macOS is not listed, so a macOS archive never leaves its job, whatever its
+notices. With complete notices its job would still collect strictly, package
+with `--distribution` and verify; it would then write `eligible=false`, record
+`upload_eligible: false` and make no `publish/` directory, so the workflow's
+upload, download and verify steps are skipped, and the Actions summary would say
+**Download unavailable: the macOS upload is held until macOS distribution is
+decided; C3 hosted transfer remains open**. Listing macOS would publish an
+ad-hoc signed, not notarized archive as the same seven-day artifact from the
+same events. That entry waits for the macOS distribution decision, which is made
+with signing, and is a reviewed change of its own. Nothing else turns an upload
+on: the helper reads no flag, environment variable or workflow input for it, and
+the verifier refuses a prepared record that is not upload-eligible.
+
+The upload set covers this workflow's CI package only. The explicitly dispatched
 [release workflow](releases.md) does not read it: its Linux build required
 complete notices, which it now has. A dispatch on `main` with an existing tag
 and a successful Quality run of that commit uploads its three-day build
@@ -59,28 +69,32 @@ artifacts; only its GitHub Release also waits for `publish` and the
 
 While the macOS known gaps remain, exit 2 is checked against that exact inventory,
 a development package is created and verified locally, and the Actions summary
-says **Download unavailable; C0 incomplete and C3 open**. The archive is withheld;
+says **Download unavailable; C0 incomplete and C3 open**, and that the macOS
+upload is separately held. The archive is withheld;
 it is never included in the diagnostics artifact. A newly missing notice, malformed
 inventory or any other collector failure fails the package job. This allowance is
 not license clearance and does not mark hosted transfer or the initiative complete.
 When authoritative notices are supplied, the same code takes the strict
-complete-notice path automatically; its upload is held as above.
+complete-notice path automatically; the macOS upload stays held as above.
 
 ## Find and verify a download
 
-No Quality job uploads a package today: macOS's notices are incomplete and the
-hosted upload is held. Once `HOSTED_UPLOAD` is turned on, a successful job whose
-notices are complete uploads a seven-day Actions artifact
-named with version, source SHA, platform, release profile, event trust label, run
-ID and attempt. It contains exactly:
+A successful Linux release job uploads a seven-day Actions artifact named with
+version, source SHA, platform, release profile, event trust label, run ID and
+attempt, such as
+`GitTurtle-<version>-<source SHA, 12 characters>-linux-x86_64-release-ci-build-<run ID>-<attempt>`.
+The job's step summary names it, and the run's summary page lists it under
+Artifacts for anyone who can read the repository's Actions runs. No macOS job
+uploads a package. The artifact contains exactly:
 
-- The Linux `.tar.gz` or macOS `.zip` package.
+- The Linux `.tar.gz` package.
 - The archive's `.sha256` checksum and `.manifest.json` provenance sidecar.
 - `ci-provenance.json`, tying the package to this run and its local validation.
 
 The Linux archive includes the per-user installer, complete notices, executable
-and format-2 package identity. macOS includes `GitTurtle.app` and a detached
-`build-info.json` outside the app's signature seal. Linux binaries are unsigned;
+and format-2 package identity. The macOS `.zip`, which stays in its job, holds
+`GitTurtle.app` and a detached `build-info.json` outside the app's signature
+seal. Linux binaries are unsigned;
 macOS CI apps are ad-hoc signed and **not notarized**. These are early-development
 builds, not published releases or a promise of production support.
 
@@ -134,7 +148,8 @@ The download is bound to the current run's returned artifact ID, and its
 
 Source tests and workflow lint establish the helper's refusal and routing behavior.
 They do not establish a successful Actions upload/download, a complete license
-inventory, or native desktop behavior. Before closing C3, record the actual run and
+inventory, or native desktop behavior. The Linux upload is on in source since
+November 15, 2026; no hosted run with it on is recorded here. Before closing C3, record the actual run and
 artifact IDs, archive hashes, source commit, OS/architecture, signing state, transfer
 report and native installation/session evidence. macOS native verification is
 currently assigned separately to the project owner.
