@@ -132,6 +132,16 @@ pub struct DiffView {
     /// away gives that focus to the text ([`Self::land`]). It is no Tab stop.
     hunk_focus: FocusHandle,
     hunk_row: Option<usize>,
+    /// The partial control the pointer's button last went down on, in the
+    /// diff shown now and drawn by the frame it went down on, until its
+    /// click takes it or its press ends ([`Pressed`]).
+    pointer_press: Option<Pressed>,
+    /// Whether the view still shows the diff that the frame under the
+    /// pointer's last first press drew, a press the platform counts 1,
+    /// wherever in the window it went down ([`Self::note_first_press`]):
+    /// the later presses of that multi-click act on a Stage hunk only
+    /// while it does ([`Self::hunk_went_down`]).
+    first_press_shown: bool,
     /// The window the view is drawn in, where a read of another diff that
     /// lands without it in hand moves focus off a Stage hunk it ends
     /// ([`Self::end_hunk_press`]).
@@ -187,6 +197,15 @@ impl Presses {
             .any(|press| press.refused && press.released.is_some())
     }
 
+    /// Whether a press has just come up, its key-up's click still to come
+    /// or gone: a click that comes then is that key's, not a pointer's.
+    fn coming_up(&self) -> bool {
+        self.keys
+            .iter()
+            .flatten()
+            .any(|press| press.released.is_some())
+    }
+
     /// Whether any press is under way.
     fn any(&self) -> bool {
         self.keys.iter().any(Option::is_some)
@@ -234,6 +253,32 @@ struct KeyPress {
     /// though that key's repeats leave it, so a key-up lost costs one press
     /// at most.
     left: bool,
+}
+
+/// A partial control keyed by its place in the diff that the pointer's
+/// button went down on: what the pointer's press began on, which its click
+/// must still find ([`DiffView::pointer_began_on`]). A pointer press acts
+/// only on what it began on, as a key's does (decided 2026-11-15: a write
+/// acts only on what the person pressed), so a read of another diff in the
+/// view's place, or a landing that changes the text, ends it
+/// ([`DiffView::refresh`], [`DiffView::land`]) and its release does nothing,
+/// while a read of the same diff, as after a write that failed, keeps it.
+/// GPUI keeps a control's pending press by its element, which is its row or
+/// its line's place among the changed lines, and clicks whatever that
+/// element is as the button comes up over it: a press on one hunk's Stage
+/// hunk, a quiet read of an edit made outside the app that drew another
+/// hunk's on that row, and the release staged that other hunk, which nobody
+/// pressed; on a line's checkbox it selected the line that took the pressed
+/// one's place, for the bar's action to stage (FU45-A8's security re-check,
+/// F1). What it began on is what the frame under the pointer drew, so a
+/// press is recorded, and a click acts, only while the view still shows the
+/// diff that frame drew ([`DiffView::still_shows`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pressed {
+    /// The Stage hunk (Unstage hunk) of the hunk header on this row.
+    Hunk(usize),
+    /// The checkbox of the changed line with this id.
+    Line(usize),
 }
 
 /// Whether `keystroke` is Enter or Space, which GPUI clicks a focused
@@ -646,6 +691,82 @@ impl DiffView {
         self.partial_busy || (matches!(event, ClickEvent::Keyboard(_)) && self.refuses_key_up())
     }
 
+    /// Whether `event`, a click on the partial control `control`, is a
+    /// key's, or the pointer's whose press went down on that control in the
+    /// diff shown now ([`Pressed`]), which it ends: a pointer's click after
+    /// its press ended, on whatever the new diff drew under it, acts on
+    /// nothing.
+    fn pointer_began_on(&mut self, event: &ClickEvent, control: Pressed) -> bool {
+        !matches!(event, ClickEvent::Mouse(_)) || self.pointer_press.take() == Some(control)
+    }
+
+    /// Whether the view still shows `drawn`, the diff a frame drew its
+    /// partial controls for: that very read, or a later read of the same
+    /// diff ([`shows_same_diff`]). A press acts only on what the person
+    /// pressed, which is what the frame under the pointer drew, not what
+    /// the view holds an instant later (decided 2026-11-15). A read lands
+    /// in the view at once and is drawn only by the next frame, so until
+    /// then the window shows the controls of the diff before it, each
+    /// handler naming a row and line ids of that diff: a click that came
+    /// then on one hunk's Stage hunk applied its lines' ids to the diff
+    /// read, where they were another hunk's or a part of one, and staged
+    /// two added lines without the lines they replaced; a press that went
+    /// down then was recorded on its row and released, after the frame, on
+    /// the hunk drawn there (PTR-B's security re-check, G1).
+    fn still_shows(&self, drawn: &Arc<PartialActions>) -> bool {
+        self.partial
+            .as_ref()
+            .is_some_and(|now| Arc::ptr_eq(now, drawn) || shows_same_diff(Some(drawn), Some(now)))
+    }
+
+    /// Records what the pointer's press begins on, `control` of the frame
+    /// that drew `drawn`, as its button goes down there, for its click to
+    /// find ([`Pressed`]): nothing where the view shows another diff by
+    /// then ([`Self::still_shows`]), so its release does nothing either,
+    /// whatever the next frame draws under it.
+    fn pointer_went_down(&mut self, control: Pressed, drawn: &Arc<PartialActions>) {
+        self.pointer_press = self.still_shows(drawn).then_some(control);
+    }
+
+    /// Notes a multi-click's first press, `event` counted 1 by the platform,
+    /// wherever in the window it goes down: whether the view shows `drawn`,
+    /// the diff of the frame it went down on, which is what the person saw
+    /// as the multi-click began. A read of another diff ends it
+    /// ([`Self::refresh`]), until the next first press.
+    fn note_first_press(&mut self, event: &gpui_kit::MouseDownEvent, drawn: &Arc<PartialActions>) {
+        if event.click_count <= 1 {
+            self.first_press_shown = self.still_shows(drawn);
+        }
+    }
+
+    /// Records the pointer's press on the Stage hunk (Unstage hunk) of the
+    /// hunk header on `row`, drawn by the frame of `drawn`, as its button
+    /// goes down ([`Self::pointer_went_down`]), unless it is a
+    /// multi-click's second or later press, counted above 1 by the
+    /// platform, and another diff has taken the place of the one that
+    /// multi-click's first press found: its release then does nothing
+    /// (decided 2026-11-15, as the Working list's own double-click rule of
+    /// 2026-11-08: an accidental double-click is a write nobody asked
+    /// for). A double-click's first press wrote its hunk, the write and
+    /// its reads landed inside the double-click time, 270 to 450 ms after
+    /// the press on the development host against the platform's 400 ms,
+    /// and the second press wrote the hunk then drawn under the still
+    /// pointer (PTR-B's security re-check, F2). Where the diff is the
+    /// same, as after a write that failed, the press acts, and so does a
+    /// single click on the button that arrived, which names its hunk.
+    fn hunk_went_down(
+        &mut self,
+        event: &gpui_kit::MouseDownEvent,
+        row: usize,
+        drawn: &Arc<PartialActions>,
+    ) {
+        if event.click_count > 1 && !self.first_press_shown {
+            self.pointer_press = None;
+        } else {
+            self.pointer_went_down(Pressed::Hunk(row), drawn);
+        }
+    }
+
     /// Toggles every changed line the text selection draws, from its first
     /// row to its last, the caret's row alone where nothing is selected:
     /// all selected where any is not, else all cleared, as clicks on their
@@ -847,6 +968,11 @@ impl DiffView {
         if !same {
             self.bar_room = Rc::default();
             if !shows_same_diff(self.partial.as_deref(), partial.as_deref()) {
+                // Another diff: the pointer's press ends as a key's does,
+                // and the multi-click under way acts no more
+                // ([`Self::hunk_went_down`]).
+                self.pointer_press = None;
+                self.first_press_shown = false;
                 self.end_hunk_press(cx);
             }
         }
@@ -1006,6 +1132,9 @@ impl DiffView {
         let hunk = self.hunk_focus.clone();
         self.return_focus(&hunk, window, cx);
         self.hunk_row = None;
+        // And the pointer's press on a partial control ends with the text
+        // it went down over ([`Pressed`]).
+        self.pointer_press = None;
         cx.notify();
     }
 
@@ -1137,6 +1266,8 @@ pub fn new_numbered(
             clear_focus,
             hunk_focus,
             hunk_row: None,
+            pointer_press: None,
+            first_press_shown: false,
             window: window.window_handle(),
             bar_room: Rc::default(),
             viewport,
@@ -1317,13 +1448,18 @@ impl Render for DiffView {
             .relative()
             .flex()
             .flex_col()
-            .when(self.partial.is_some(), |el| {
+            .when_some(self.partial.clone(), |el, drawn| {
                 // The view's foot, recorded before the text column reads it,
                 // and its width, which the bar lays out across: a width that
                 // changed under the bar asks for the frame that lays the bar
                 // out across the new one (`Window::refresh` is ignored while
                 // a frame draws, and the old form stayed).
                 let (room, shown) = (Rc::clone(&self.bar_room), bar.is_some());
+                // Each multi-click's first press, wherever in the window
+                // it goes down, with the diff this frame draws
+                // ([`Self::note_first_press`]).
+                let first_press =
+                    cx.listener(move |this, event, _, _| this.note_first_press(event, &drawn));
                 el.capture_key_down(cx.listener(Self::note_key_down))
                     .capture_key_up(cx.listener(Self::note_key_up))
                     .on_key_down(cx.listener(Self::line_key))
@@ -1336,7 +1472,15 @@ impl Render for DiffView {
                                     window.request_animation_frame();
                                 }
                             },
-                            |_, _, _, _| {},
+                            move |_, _, window, _| {
+                                window.on_mouse_event(
+                                    move |event: &gpui_kit::MouseDownEvent, phase, window, cx| {
+                                        if phase == gpui_kit::DispatchPhase::Capture {
+                                            first_press(event, window, cx);
+                                        }
+                                    },
+                                );
+                            },
                         )
                         .absolute()
                         .size_full(),
@@ -1499,6 +1643,10 @@ impl DiffView {
                 PartialRow::None => {}
                 PartialRow::Hunk(ids) => {
                     let ids = Arc::clone(ids);
+                    // The diff this frame draws, which each handler acts
+                    // on only while the view still shows it
+                    // ([`Self::still_shows`]).
+                    let (went_down, clicked) = (Arc::clone(partial), Arc::clone(partial));
                     let tooltip = self.live_tooltip(
                         format!("partial-hunk-{row}"),
                         move |view| view.hunk_tooltip(row),
@@ -1533,9 +1681,19 @@ impl DiffView {
                                     dimmed,
                                 )
                                 .tooltip_view(tooltip)
+                                // What the pointer's press begins on, for
+                                // its click to find ([`Pressed`]).
+                                .on_mouse_down(
+                                    gpui_kit::MouseButton::Left,
+                                    cx.listener(move |this, event, _, _| {
+                                        this.hunk_went_down(event, row, &went_down);
+                                    }),
+                                )
                                 .on_click(cx.listener(
                                     move |this, event, window, cx| {
-                                        if !this.refuses_click(event)
+                                        if this.still_shows(&clicked)
+                                            && this.pointer_began_on(event, Pressed::Hunk(row))
+                                            && !this.refuses_click(event)
                                             && this.click_matches_row(event, row, cx)
                                         {
                                             // The pressed control takes
@@ -1554,6 +1712,7 @@ impl DiffView {
                 }
                 PartialRow::Change { id, added, line } => {
                     let id = *id;
+                    let (went_down, clicked) = (Arc::clone(partial), Arc::clone(partial));
                     // The caret's mark: a 2 px bar in the ring's accent at
                     // the checkbox's leading side, as tall as its box, a
                     // mark rather than a ring, since focus stays in the
@@ -1587,12 +1746,41 @@ impl DiffView {
                             .child(
                                 div().relative().flex().children(mark).child(
                                     self.line_checkbox(row, id, *added, *line, refused, dimmed)
+                                        .on_mouse_down(
+                                            gpui_kit::MouseButton::Left,
+                                            cx.listener(move |this, _, _, _| {
+                                                this.pointer_went_down(
+                                                    Pressed::Line(id),
+                                                    &went_down,
+                                                );
+                                            }),
+                                        )
                                         .on_click(cx.listener(move |this, checked, window, cx| {
                                             // No Tab stop, it takes no key's
                                             // click; refused as one comes up
                                             // all the same, while a pointer's
                                             // click acts.
                                             if this.partial_busy || this.presses.refused_coming_up()
+                                            {
+                                                return;
+                                            }
+                                            // Its line is one of the diff
+                                            // this frame drew: on another,
+                                            // the id names another line
+                                            // ([`Self::still_shows`]).
+                                            if !this.still_shows(&clicked) {
+                                                return;
+                                            }
+                                            // A pointer's, for the press that
+                                            // went down on this line's
+                                            // checkbox in the diff shown now
+                                            // ([`Pressed`]): the kit's
+                                            // Checkbox passes no event, so a
+                                            // key's click is one that comes
+                                            // as its key-up does.
+                                            if !this.presses.coming_up()
+                                                && this.pointer_press.take()
+                                                    != Some(Pressed::Line(id))
                                             {
                                                 return;
                                             }

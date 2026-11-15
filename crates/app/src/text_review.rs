@@ -2779,6 +2779,45 @@ mod tests {
         usize,
         crate::operations::Held,
     ) {
+        let (fixture, app, cx, route) = hunks_shown(cx, area, notes).await;
+        let hunk = hunk_rows(&app, cx)[nth];
+        if locked {
+            std::fs::write(
+                fixture
+                    .path()
+                    .join("narrow")
+                    .join(".git")
+                    .join("index.lock"),
+                "",
+            )
+            .unwrap();
+        }
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        let stage = cx
+            .debug_bounds(format!("partial-hunk-{hunk}").leak())
+            .expect("the hunk's Stage hunk is drawn");
+        cx.simulate_click(stage.center(), gpui::Modifiers::default());
+        crate::tags::tests::draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_some()),
+            "the press starts the write"
+        );
+        (fixture, app, cx, route, hunk, held)
+    }
+
+    /// notes.txt edited to `notes`, its diff in `area` shown in QA's 1480 ×
+    /// 973 window at 13 pt, the text at its top and focus on the file list,
+    /// nothing pressed yet: the fixture, its window and the route.
+    async fn hunks_shown<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        area: gitturtle_core::ChangeArea,
+        notes: &str,
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<GitTurtle>,
+        &'a mut gpui::VisualTestContext,
+        Route,
+    ) {
         use crate::views::tests::{fixture_git, settle};
         let (fixture, app, cx) = working_diff_edited(
             cx,
@@ -2805,42 +2844,14 @@ mod tests {
         let list = app.read_with(cx, |app, _| app.file_focus.clone());
         cx.update(|window, cx| window.focus(&list, cx));
         crate::tags::tests::draw(cx);
-        let hunk = hunk_rows(&app, cx)[nth];
         let (caret, scroll) = text_place(&editor, cx);
-        if locked {
-            std::fs::write(
-                fixture
-                    .path()
-                    .join("narrow")
-                    .join(".git")
-                    .join("index.lock"),
-                "",
-            )
-            .unwrap();
-        }
-        let held = app.read_with(cx, |app, _| app.operations.hold());
-        let stage = cx
-            .debug_bounds(format!("partial-hunk-{hunk}").leak())
-            .expect("the hunk's Stage hunk is drawn");
-        cx.simulate_click(stage.center(), gpui::Modifiers::default());
-        crate::tags::tests::draw(cx);
-        assert!(
-            app.read_with(cx, |app, _| app.operation_busy.is_some()),
-            "the press starts the write"
-        );
-        (
-            fixture,
-            app,
-            cx,
-            Route {
-                editor,
-                view,
-                caret,
-                scroll,
-            },
-            hunk,
-            held,
-        )
+        let route = Route {
+            editor,
+            view,
+            caret,
+            scroll,
+        };
+        (fixture, app, cx, route)
     }
 
     /// The rows of the shown diff's hunk headers, each drawing its Stage
@@ -3121,6 +3132,16 @@ mod tests {
         notes: &str,
     ) {
         std::fs::write(fixture.path().join("narrow").join("notes.txt"), notes).unwrap();
+        quiet_read_lands(app, cx, false);
+    }
+
+    /// The quiet read the local watcher asks for after a change made outside
+    /// the app, to the worktree, and where `git` to the index too, landed.
+    fn quiet_read_lands(
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        git: bool,
+    ) {
         // The watcher's subscription is made on the operation thread.
         app.read_with(cx, |app, _| app.operations.drain());
         cx.executor().run_until_parked();
@@ -3128,6 +3149,7 @@ mod tests {
             app.automatic
                 .report_local_change(crate::local_refresh::LocalChange {
                     worktree: true,
+                    git,
                     ..Default::default()
                 })
         });
@@ -3314,6 +3336,929 @@ mod tests {
             "the key-up starts no write"
         );
         assert!(staged_patch(&fixture).is_empty(), "nothing staged");
+    }
+
+    /// notes 1 to 40 with each of hunks A (note 5), B (note 14), C (note 23)
+    /// and D (note 32) that `hunks` names changed: each hunk takes nine
+    /// rows, so reverting or staging one moves those after it up by nine,
+    /// the next hunk's header onto its row.
+    fn hunks_named(hunks: &str) -> String {
+        (1..=40)
+            .map(
+                |line| match HUNKS.iter().find(|(_, note, _)| *note == line) {
+                    Some((name, _, text)) if hunks.contains(*name) => format!("{text}\n"),
+                    _ => format!("note {line}\n"),
+                },
+            )
+            .collect()
+    }
+
+    /// [`hunks_named`]'s hunks: each one's name, the note it changes and
+    /// the text it changes it to.
+    const HUNKS: [(char, usize, &str); 4] = [
+        ('A', 5, "five"),
+        ('B', 14, "fourteen"),
+        ('C', 23, "twenty-three"),
+        ('D', 32, "thirty-two"),
+    ];
+
+    /// Which of [`hunks_named`]'s hunks the fixture's index holds staged,
+    /// as "AC".
+    fn staged_hunks(fixture: &tempfile::TempDir) -> String {
+        let staged = staged_patch(fixture);
+        HUNKS
+            .iter()
+            .filter(|(_, _, text)| staged.contains(&format!("+{text}\n")))
+            .map(|(name, _, _)| *name)
+            .collect()
+    }
+
+    /// notes.txt written to `notes` outside the app, and staged there too
+    /// in the staged `area`, as `git add` in a terminal does, and the quiet
+    /// read of it landed in the shown view ([`edit_outside`]).
+    fn change_outside(
+        fixture: &tempfile::TempDir,
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        area: gitturtle_core::ChangeArea,
+        notes: &str,
+    ) {
+        let root = fixture.path().join("narrow");
+        std::fs::write(root.join("notes.txt"), notes).unwrap();
+        let staged = area == gitturtle_core::ChangeArea::Staged;
+        if staged {
+            crate::views::tests::fixture_git(&root, &["add", "notes.txt"]);
+        }
+        quiet_read_lands(app, cx, staged);
+    }
+
+    /// Where the window draws the Stage hunk (Unstage hunk) of the hunk
+    /// header on `row`.
+    fn drawn_stage_hunk(
+        cx: &mut gpui::VisualTestContext,
+        row: usize,
+    ) -> gpui::Bounds<gpui::Pixels> {
+        cx.debug_bounds(format!("partial-hunk-{row}").leak())
+            .unwrap_or_else(|| panic!("row {row} draws its Stage hunk"))
+    }
+
+    /// The pointer's button goes down at `at`, and the window draws the
+    /// frame that asks for.
+    fn pointer_down(cx: &mut gpui::VisualTestContext, at: gpui::Point<gpui::Pixels>) {
+        cx.simulate_mouse_down(at, gpui::MouseButton::Left, gpui::Modifiers::default());
+        crate::tags::tests::draw(cx);
+    }
+
+    /// The pointer's button comes up at `at`, with the operations executor
+    /// held across it so that a write it starts is still waiting as it is
+    /// read ([`press_drawn_stage`]): returns that write's label, if it
+    /// started one, once it has run and its reads have landed.
+    async fn pointer_up(
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        at: gpui::Point<gpui::Pixels>,
+    ) -> Option<&'static str> {
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::default());
+        let started = app.read_with(cx, |app, _| app.operation_busy);
+        land_write(app, cx, held).await;
+        started
+    }
+
+    /// The pointer goes down on the Stage hunk (Unstage hunk in `area`) of
+    /// B, of hunks A, B and C, and comes up there only after a change made
+    /// outside the app left `left` of them and its quiet read landed in the
+    /// view: another diff in the pressed one's place. That read ends the
+    /// pointer's press, as it ends a key's, so the button coming up starts
+    /// no write, whichever hunk's button the read drew under it: C's where A
+    /// or B went, B's own where C went. A complete click after it acts on
+    /// the hunk it presses. GPUI keeps a button's pending press by its
+    /// element, which is the button's row, so the press outlived the read
+    /// and its release wrote the hunk then on that row: C, which nobody
+    /// pressed (FU45-A8's security re-check, F1).
+    async fn a_pointer_press_ends_with_a_read_of_another_diff(
+        cx: &mut gpui::TestAppContext,
+        area: gitturtle_core::ChangeArea,
+        left: &str,
+    ) {
+        let (fixture, app, cx, route) = hunks_shown(cx, area, &hunks_named("ABC")).await;
+        let row = hunk_rows(&app, cx)[1];
+        let stage = drawn_stage_hunk(cx, row);
+        let at = stage.center();
+        pointer_down(cx, at);
+        change_outside(&fixture, &app, cx, area, &hunks_named(left));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.patch_view.clone()),
+            Some(route.view.clone()),
+            "{area:?} {left}: the read lands in the view"
+        );
+        assert_eq!(
+            (hunk_rows(&app, cx).len(), drawn_stage_hunk(cx, row)),
+            (2, stage),
+            "{area:?} {left}: a hunk's button stands under the pointer still"
+        );
+        let unpressed = staged_hunks(&fixture);
+        assert_eq!(
+            (pointer_up(&app, cx, at).await, staged_hunks(&fixture)),
+            (None, unpressed.clone()),
+            "{area:?} {left}: the press ended with the read, and its release writes nothing"
+        );
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "{area:?} {left}: focus stays on the list, not {:?}",
+            cx.update(|window, cx| window.focused(cx))
+        );
+        // The hunk that heads the pressed row now, which a fresh click
+        // presses: staged from the unstaged area, unstaged from the staged.
+        let under = &left[1..];
+        let written = if area == gitturtle_core::ChangeArea::Staged {
+            unpressed.replace(under, "")
+        } else {
+            under.to_owned()
+        };
+        pointer_down(cx, at);
+        assert!(
+            pointer_up(&app, cx, at).await.is_some(),
+            "{area:?} {left}: a fresh click starts its write"
+        );
+        assert_eq!(
+            staged_hunks(&fixture),
+            written,
+            "{area:?} {left}: and writes the hunk it pressed, {under}"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_pointer_press_on_stage_hunk_ends_as_a_read_moves_another_hunk_under_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        a_pointer_press_ends_with_a_read_of_another_diff(cx, area, "BC").await;
+    }
+
+    #[gpui::test]
+    async fn a_pointer_press_on_stage_hunk_ends_as_a_read_reverts_its_hunk(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        a_pointer_press_ends_with_a_read_of_another_diff(cx, area, "AC").await;
+    }
+
+    #[gpui::test]
+    async fn a_pointer_press_on_stage_hunk_ends_as_a_read_reverts_a_later_hunk(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        a_pointer_press_ends_with_a_read_of_another_diff(cx, area, "AB").await;
+    }
+
+    #[gpui::test]
+    async fn a_pointer_press_on_unstage_hunk_ends_as_a_read_moves_another_hunk_under_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Staged;
+        a_pointer_press_ends_with_a_read_of_another_diff(cx, area, "BC").await;
+    }
+
+    #[gpui::test]
+    async fn a_pointer_press_on_unstage_hunk_ends_as_a_read_reverts_its_hunk(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Staged;
+        a_pointer_press_ends_with_a_read_of_another_diff(cx, area, "AC").await;
+    }
+
+    /// The pointer goes down on B's Stage hunk, leaves the button for the
+    /// text with its button held, and comes back before it comes up: the
+    /// press is the one that went down, as on any button, so a read of
+    /// another diff meanwhile ends it and its release writes nothing, and
+    /// with no read between, as on the click after, it writes the hunk it
+    /// went down on.
+    #[gpui::test]
+    async fn a_pointer_press_that_leaves_stage_hunk_and_comes_back_is_the_same_press(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        let (fixture, app, cx, _route) = hunks_shown(cx, area, &hunks_named("ABC")).await;
+        let row = hunk_rows(&app, cx)[1];
+        let stage = drawn_stage_hunk(cx, row);
+        let (at, away) = (
+            stage.center(),
+            gpui::point(
+                stage.right() + gpui::px(240.),
+                stage.bottom() + gpui::px(60.),
+            ),
+        );
+        let leave_and_return = |cx: &mut gpui::VisualTestContext| {
+            let held = Some(gpui::MouseButton::Left);
+            cx.simulate_mouse_move(away, held, gpui::Modifiers::default());
+            crate::tags::tests::draw(cx);
+            cx.simulate_mouse_move(at, held, gpui::Modifiers::default());
+            crate::tags::tests::draw(cx);
+        };
+        pointer_down(cx, at);
+        cx.simulate_mouse_move(
+            away,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        change_outside(&fixture, &app, cx, area, &hunks_named("BC"));
+        assert_eq!(
+            drawn_stage_hunk(cx, row),
+            stage,
+            "C's button takes B's place"
+        );
+        cx.simulate_mouse_move(
+            at,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            (pointer_up(&app, cx, at).await, staged_hunks(&fixture)),
+            (None, String::new()),
+            "back on the button after the read, the release writes nothing"
+        );
+        pointer_down(cx, at);
+        leave_and_return(cx);
+        assert!(
+            pointer_up(&app, cx, at).await.is_some(),
+            "a press that left and came back with no read between starts its write"
+        );
+        assert_eq!(staged_hunks(&fixture), "C", "of the hunk it went down on");
+    }
+
+    /// The pointer goes down on B's Stage hunk and comes up there after a
+    /// change made outside the app, to a line far from every hunk, in the
+    /// index and the worktree alike, and its quiet read landed: a read of
+    /// the same diff, hunk for hunk, in other text. It keeps the press, as
+    /// it keeps a key's, so the release stages B, the hunk pressed, alone.
+    #[gpui::test]
+    async fn a_pointer_press_on_stage_hunk_outlasts_a_read_of_the_same_diff(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        let (fixture, app, cx, route) = hunks_shown(cx, area, &hunks_named("ABC")).await;
+        let row = hunk_rows(&app, cx)[1];
+        let stage = drawn_stage_hunk(cx, row);
+        pointer_down(cx, stage.center());
+        let root = fixture.path().join("narrow");
+        let far = |notes: String| notes.replace("note 40\n", "forty\n");
+        std::fs::write(root.join("notes.txt"), far(hunks_named(""))).unwrap();
+        crate::views::tests::fixture_git(&root, &["add", "notes.txt"]);
+        std::fs::write(root.join("notes.txt"), far(hunks_named("ABC"))).unwrap();
+        quiet_read_lands(&app, cx, true);
+        let read = app.read_with(cx, |app, _| match app.content.as_deref() {
+            Some(Content::Text { new, .. }) => new.contains("forty\n"),
+            _ => false,
+        });
+        assert_eq!(
+            (
+                read,
+                app.read_with(cx, |app, _| app.patch_view.clone()),
+                hunk_rows(&app, cx).len(),
+                drawn_stage_hunk(cx, row),
+                staged_hunks(&fixture)
+            ),
+            (true, Some(route.view.clone()), 3, stage, String::new()),
+            "the read landed in the view with the same hunks on the same rows"
+        );
+        assert!(
+            pointer_up(&app, cx, stage.center()).await.is_some(),
+            "the press outlasts that read, and its release starts a write"
+        );
+        assert_eq!(staged_hunks(&fixture), "B", "of B alone");
+    }
+
+    /// The pointer goes down on B's Stage hunk while a write of A, pressed
+    /// just before, still runs, and comes up after that write has landed:
+    /// its landing changed the text, B's hunk moving up to A's row and C's
+    /// button onto the pressed row, and ended the press, so the release
+    /// stages nothing more. The window says the write's result in a row
+    /// above the text, which draws the rows lower, so the pointer, its
+    /// button still held, follows the pressed row's button down before it
+    /// comes up. A click after it stages C, which it presses.
+    #[gpui::test]
+    async fn a_pointer_press_on_stage_hunk_ends_as_another_write_lands(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx, route, _, held) = press_the_hunk(
+            cx,
+            gitturtle_core::ChangeArea::Unstaged,
+            &hunks_named("ABC"),
+            0,
+            false,
+        )
+        .await;
+        let row = hunk_rows(&app, cx)[1];
+        let pressed = drawn_stage_hunk(cx, row);
+        pointer_down(cx, pressed.center());
+        land_write(&app, cx, held).await;
+        let stage = drawn_stage_hunk(cx, row);
+        assert_eq!(
+            (
+                app.read_with(cx, |app, _| app.patch_view.clone()),
+                staged_hunks(&fixture),
+                patch_row(&route.editor, cx, "+twenty-three"),
+                stage.origin.x,
+                stage.top() > pressed.top()
+            ),
+            (
+                Some(route.view.clone()),
+                "A".to_owned(),
+                row + 5,
+                pressed.origin.x,
+                true
+            ),
+            "A's write landed in the view: C's button heads the pressed row, drawn lower"
+        );
+        cx.simulate_mouse_move(
+            stage.center(),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            (
+                pointer_up(&app, cx, stage.center()).await,
+                staged_hunks(&fixture)
+            ),
+            (None, "A".to_owned()),
+            "the press ended with the landing, and its release writes nothing"
+        );
+        pointer_down(cx, stage.center());
+        assert!(
+            pointer_up(&app, cx, stage.center()).await.is_some(),
+            "a fresh click starts its write"
+        );
+        assert_eq!(staged_hunks(&fixture), "AC", "of C, which it pressed");
+    }
+
+    /// The pointer goes down on the checkbox of B's removed line and comes
+    /// up there after a change made outside the app reverted A and its
+    /// quiet read landed: C's removed line then stands under it, with the
+    /// same place among the changed lines, which names its checkbox. That
+    /// read ends the press, so the release selects nothing: it selected C's
+    /// line, which nobody pressed, for the bar's action to stage. A click
+    /// after it selects the line it presses.
+    #[gpui::test]
+    async fn a_pointer_press_on_a_line_checkbox_ends_with_a_read_of_another_diff(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        let (fixture, app, cx, route) = hunks_shown(cx, area, &hunks_named("ABC")).await;
+        let row = patch_row(&route.editor, cx, "-note 14");
+        let selector: &'static str = format!("partial-line-{row}").leak();
+        let checkbox = cx.debug_bounds(selector).expect("the line's checkbox");
+        pointer_down(cx, checkbox.center());
+        change_outside(&fixture, &app, cx, area, &hunks_named("BC"));
+        assert_eq!(
+            (
+                patch_row(&route.editor, cx, "-note 23"),
+                cx.debug_bounds(selector)
+            ),
+            (row, Some(checkbox)),
+            "C's removed line takes the pressed line's row and checkbox"
+        );
+        assert_eq!(
+            (
+                pointer_up(&app, cx, checkbox.center()).await,
+                route.view.read_with(cx, |view, _| view.selected_lines()),
+                cx.debug_bounds("apply-partial-selection")
+            ),
+            (None, 0, None),
+            "the press ended with the read, and its release selects no line"
+        );
+        cx.simulate_click(checkbox.center(), gpui::Modifiers::default());
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            route.view.read_with(cx, |view, _| view.selected_lines()),
+            1,
+            "a fresh click selects the line it presses"
+        );
+    }
+
+    /// The diff whose partial actions the window's content holds.
+    fn partial_held(app: &GitTurtle) -> Option<Arc<crate::partial_view::PartialActions>> {
+        match app.content.as_deref() {
+            Some(Content::Text { partial, .. }) => partial.clone(),
+            _ => None,
+        }
+    }
+
+    /// The pointer's left button going down at `at` and coming up there,
+    /// each counted `count` by the platform, as it counts the presses of a
+    /// multi-click made within its double-click time and distance:
+    /// `simulate_click` always counts one.
+    fn click_events(at: gpui::Point<gpui::Pixels>, count: usize) -> [gpui::PlatformInput; 2] {
+        let (button, modifiers) = (gpui::MouseButton::Left, gpui::Modifiers::default());
+        [
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                button,
+                position: at,
+                modifiers,
+                click_count: count,
+                first_mouse: false,
+            }),
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                button,
+                position: at,
+                modifiers,
+                click_count: count,
+            }),
+        ]
+    }
+
+    /// A change made outside the app leaves notes.txt as `notes`, staged
+    /// there too in the staged `area` ([`change_outside`]), and `events`
+    /// reach the window as its quiet read lands in the view, before the
+    /// window draws the frame that shows it: the window still shows the
+    /// frame drawn before the read, whose controls take them, while the
+    /// view already holds the diff read. They are dispatched as the update
+    /// the read lands in is flushed, on the app's first notification with
+    /// the diff read, and the window draws only after them.
+    fn as_the_read_lands(
+        fixture: &tempfile::TempDir,
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        area: gitturtle_core::ChangeArea,
+        notes: &str,
+        events: Vec<gpui::PlatformInput>,
+    ) {
+        use std::{cell::Cell, rc::Rc};
+        let before = app.read_with(cx, |app, _| partial_held(app));
+        let window = cx.update(|window, _| window.window_handle());
+        let sent = Rc::new(Cell::new(false));
+        let subscription = cx.update(|_, cx| {
+            let (sent, mut events) = (sent.clone(), Some(events));
+            cx.observe(app, move |app, cx| {
+                let read = match (&before, partial_held(app.read(cx))) {
+                    (Some(before), Some(now)) => !Arc::ptr_eq(before, &now),
+                    (None, None) => false,
+                    _ => true,
+                };
+                let Some(events) = events.take_if(|_| read) else {
+                    return;
+                };
+                window
+                    .update(cx, |_, window, cx| {
+                        for event in events {
+                            window.dispatch_event(event, cx);
+                        }
+                    })
+                    .expect("the window takes the events");
+                sent.set(true);
+            })
+        });
+        change_outside(fixture, app, cx, area, notes);
+        drop(subscription);
+        assert!(sent.get(), "the events arrived as the read landed");
+    }
+
+    /// The window shows hunks A, B and C with B's Stage hunk (Unstage hunk
+    /// in `area`) under the pointer, a change made outside the app reverts
+    /// A, and its quiet read lands: the view holds B and C, C's hunk on the
+    /// row B's button was drawn on, while the window still shows the frame
+    /// drawn before the read. Before the next frame the pointer clicks
+    /// there, down and up, as a tap or an assistive technology's click
+    /// does, or where `held` its button goes down there and comes up after
+    /// that frame, as a hand's does. Either is a press on B's button, which
+    /// belongs to a diff the view no longer shows, so nothing is written:
+    /// the click applied B's lines' places among the changed lines to the
+    /// diff read, where they are C's, and wrote C; the press was recorded
+    /// on the row, which the next frame drew C's button on, and its release
+    /// wrote C (PTR-B's security re-check, G1). A click once the frame is
+    /// drawn acts on the hunk it presses.
+    async fn a_press_before_the_frame_of_a_read_writes_nothing(
+        cx: &mut gpui::TestAppContext,
+        area: gitturtle_core::ChangeArea,
+        held: bool,
+    ) {
+        let (fixture, app, cx, route) = hunks_shown(cx, area, &hunks_named("ABC")).await;
+        let row = hunk_rows(&app, cx)[1];
+        let stage = drawn_stage_hunk(cx, row);
+        let at = stage.center();
+        let [down, up] = click_events(at, 1);
+        let events = if held { vec![down] } else { vec![down, up] };
+        as_the_read_lands(&fixture, &app, cx, area, &hunks_named("BC"), events);
+        let staged = area == gitturtle_core::ChangeArea::Staged;
+        let unpressed = if staged { "BC" } else { "" };
+        // A write the click started has run before the index is read.
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            staged_hunks(&fixture),
+            unpressed,
+            "{area:?}: a press on a frame of another diff writes nothing"
+        );
+        assert_eq!(
+            (
+                app.read_with(cx, |app, _| app.patch_view.clone()),
+                hunk_rows(&app, cx).len(),
+                drawn_stage_hunk(cx, row)
+            ),
+            (Some(route.view.clone()), 2, stage),
+            "{area:?}: the read landed in the view, and the frame after it draws C's button there"
+        );
+        if held {
+            assert_eq!(
+                (pointer_up(&app, cx, at).await, staged_hunks(&fixture)),
+                (None, unpressed.to_owned()),
+                "{area:?}: the press went down on a frame of another diff, and its release writes nothing"
+            );
+        }
+        pointer_down(cx, at);
+        assert!(
+            pointer_up(&app, cx, at).await.is_some(),
+            "{area:?}: a click on the frame drawn after the read starts its write"
+        );
+        assert_eq!(
+            staged_hunks(&fixture),
+            if staged { "B" } else { "C" },
+            "{area:?}: of C, which it presses"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_click_on_stage_hunk_before_the_frame_of_a_read_stages_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        a_press_before_the_frame_of_a_read_writes_nothing(cx, area, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_press_on_stage_hunk_before_the_frame_of_a_read_stages_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        a_press_before_the_frame_of_a_read_writes_nothing(cx, area, true).await;
+    }
+
+    #[gpui::test]
+    async fn a_click_on_unstage_hunk_before_the_frame_of_a_read_unstages_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Staged;
+        a_press_before_the_frame_of_a_read_writes_nothing(cx, area, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_press_on_unstage_hunk_before_the_frame_of_a_read_unstages_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Staged;
+        a_press_before_the_frame_of_a_read_writes_nothing(cx, area, true).await;
+    }
+
+    /// As above with the change outside the app also growing B by a second
+    /// replaced line: the click before the frame stages no part of a hunk.
+    /// B's two lines' places among the changed lines of the diff drawn are
+    /// its two added lines' in the diff read, and the click staged
+    /// "+fourteen" and "+fifteen" without the lines they replace.
+    #[gpui::test]
+    async fn a_click_on_stage_hunk_before_the_frame_of_a_read_stages_no_part_of_a_hunk(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        let (fixture, app, cx, route) = hunks_shown(cx, area, &hunks_named("ABC")).await;
+        let row = hunk_rows(&app, cx)[1];
+        let at = drawn_stage_hunk(cx, row).center();
+        let grown = hunks_named("BC").replace("note 15\n", "fifteen\n");
+        as_the_read_lands(&fixture, &app, cx, area, &grown, click_events(at, 1).into());
+        assert_eq!(
+            (
+                app.read_with(cx, |app, _| app.patch_view.clone()),
+                patch_row(&route.editor, cx, "+fifteen") > 0
+            ),
+            (Some(route.view.clone()), true),
+            "the read landed in the view with B grown"
+        );
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(
+            staged_patch(&fixture),
+            "",
+            "the click, on a frame of another diff, stages nothing"
+        );
+    }
+
+    /// The checkbox of B's removed line stands under the pointer, a change
+    /// made outside the app reverts A, and its quiet read lands, C's
+    /// removed line taking that line's row and place among the changed
+    /// lines. Before the next frame the pointer clicks there, or where
+    /// `held` goes down there and comes up after that frame: a press on a
+    /// checkbox of a diff the view no longer shows, which selects nothing.
+    /// It selected C's removed line, for the bar's action to stage. A click
+    /// once the frame is drawn selects the line it presses.
+    async fn a_press_on_a_line_checkbox_before_the_frame_of_a_read_selects_nothing(
+        cx: &mut gpui::TestAppContext,
+        held: bool,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        let (fixture, app, cx, route) = hunks_shown(cx, area, &hunks_named("ABC")).await;
+        let row = patch_row(&route.editor, cx, "-note 14");
+        let selector: &'static str = format!("partial-line-{row}").leak();
+        let checkbox = cx.debug_bounds(selector).expect("the line's checkbox");
+        let at = checkbox.center();
+        let [down, up] = click_events(at, 1);
+        let events = if held { vec![down] } else { vec![down, up] };
+        as_the_read_lands(&fixture, &app, cx, area, &hunks_named("BC"), events);
+        assert_eq!(
+            (
+                patch_row(&route.editor, cx, "-note 23"),
+                cx.debug_bounds(selector)
+            ),
+            (row, Some(checkbox)),
+            "C's removed line takes the pressed line's row and checkbox"
+        );
+        if held {
+            assert_eq!(pointer_up(&app, cx, at).await, None, "no write");
+        }
+        assert_eq!(
+            (
+                route.view.read_with(cx, |view, _| view.selected_lines()),
+                cx.debug_bounds("apply-partial-selection")
+            ),
+            (0, None),
+            "a press on a frame of another diff selects no line"
+        );
+        cx.simulate_click(at, gpui::Modifiers::default());
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            route.view.read_with(cx, |view, _| view.selected_lines()),
+            1,
+            "a click on the frame drawn after the read selects the line it presses"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_click_on_a_line_checkbox_before_the_frame_of_a_read_selects_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_press_on_a_line_checkbox_before_the_frame_of_a_read_selects_nothing(cx, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_press_held_on_a_line_checkbox_before_the_frame_of_a_read_selects_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_press_on_a_line_checkbox_before_the_frame_of_a_read_selects_nothing(cx, true).await;
+    }
+
+    /// The pointer's left button goes down at `at` and comes up there, each
+    /// counted `count` by the platform ([`click_events`]), the window
+    /// drawing between them, with the operations executor held across the
+    /// release ([`pointer_up`]): returns the label of the write it started,
+    /// if it started one, once that has run and its reads have landed.
+    async fn counted_click(
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        at: gpui::Point<gpui::Pixels>,
+        count: usize,
+    ) -> Option<&'static str> {
+        let [down, up] = click_events(at, count);
+        cx.update(|window, cx| {
+            window.dispatch_event(down, cx);
+        });
+        crate::tags::tests::draw(cx);
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            window.dispatch_event(up, cx);
+        });
+        cx.run_until_parked();
+        let started = app.read_with(cx, |app, _| app.operation_busy);
+        land_write(app, cx, held).await;
+        started
+    }
+
+    /// A double-click on B's Stage hunk (Unstage hunk in `area`), of hunks
+    /// A, B, C and D, after a click wrote A, whose result the window says
+    /// in a row above the text that stays through the next write. The first
+    /// press writes B, and that write and the reads after it land before
+    /// the second: C's hunk then heads the pressed row, its button under
+    /// the still pointer, as the second press arrives, counted 2 by the
+    /// platform. Another diff took the place of the one the double-click
+    /// began on, so that press writes nothing, nor does a third: it wrote
+    /// C, which nobody aimed at (PTR-B's security re-check, F2). Focus
+    /// stays in the text, where B's landing left it. A click counted 1, as
+    /// one made after the double-click time is, writes C, the hunk its
+    /// button names.
+    async fn a_double_click_writes_its_hunk_once(
+        cx: &mut gpui::TestAppContext,
+        area: gitturtle_core::ChangeArea,
+    ) {
+        let (fixture, app, cx, route) = hunks_shown(cx, area, &hunks_named("ABCD")).await;
+        // What the index holds staged once `written` have been pressed.
+        let staged = area == gitturtle_core::ChangeArea::Staged;
+        let after = |written: &str| -> String {
+            "ABCD"
+                .chars()
+                .filter(|hunk| written.contains(*hunk) != staged)
+                .collect()
+        };
+        let row = hunk_rows(&app, cx)[0];
+        let first = drawn_stage_hunk(cx, row).center();
+        assert!(
+            counted_click(&app, cx, first, 1).await.is_some(),
+            "{area:?}: a click on A starts its write"
+        );
+        let stage = drawn_stage_hunk(cx, row);
+        let at = stage.center();
+        assert_eq!(staged_hunks(&fixture), after("A"), "{area:?}: A is written");
+        assert!(
+            counted_click(&app, cx, at, 1).await.is_some(),
+            "{area:?}: the double-click's first press starts B's write"
+        );
+        assert_eq!(
+            (
+                app.read_with(cx, |app, _| app.patch_view.clone()),
+                staged_hunks(&fixture),
+                hunk_rows(&app, cx).len(),
+                drawn_stage_hunk(cx, row)
+            ),
+            (Some(route.view.clone()), after("AB"), 2, stage),
+            "{area:?}: B's write landed in the view, C's button under the still pointer"
+        );
+        assert_text_focused(&route, cx, "B's hunk landed away");
+        for count in [2, 3] {
+            assert_eq!(
+                (
+                    counted_click(&app, cx, at, count).await,
+                    staged_hunks(&fixture)
+                ),
+                (None, after("AB")),
+                "{area:?}: press {count} of the double-click writes nothing"
+            );
+            assert_text_focused(&route, cx, "a press that does nothing");
+        }
+        assert!(
+            counted_click(&app, cx, at, 1).await.is_some(),
+            "{area:?}: a click of its own starts its write"
+        );
+        assert_eq!(
+            staged_hunks(&fixture),
+            after("ABC"),
+            "{area:?}: of C, which its button names"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_double_click_on_stage_hunk_stages_its_hunk_once(cx: &mut gpui::TestAppContext) {
+        a_double_click_writes_its_hunk_once(cx, gitturtle_core::ChangeArea::Unstaged).await;
+    }
+
+    #[gpui::test]
+    async fn a_double_click_on_unstage_hunk_unstages_its_hunk_once(cx: &mut gpui::TestAppContext) {
+        a_double_click_writes_its_hunk_once(cx, gitturtle_core::ChangeArea::Staged).await;
+    }
+
+    /// A double-click on B's Stage hunk whose first press starts a write
+    /// that fails, the index locked as it was for the click before it,
+    /// whose failure the window already says in a row above the text: the
+    /// failure reads the same diff back, B's button under the still pointer
+    /// names B still, and the second press, counted 2, stages it, as it did
+    /// before the rule. Only another diff in the first press's place ends a
+    /// double-click.
+    #[gpui::test]
+    async fn a_double_click_whose_first_write_failed_stages_its_hunk_on_the_second_press(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        let (fixture, app, cx, route) = hunks_shown(cx, area, &hunks_named("ABC")).await;
+        let row = hunk_rows(&app, cx)[1];
+        let lock = fixture
+            .path()
+            .join("narrow")
+            .join(".git")
+            .join("index.lock");
+        std::fs::write(&lock, "").unwrap();
+        let first = drawn_stage_hunk(cx, row).center();
+        assert!(
+            counted_click(&app, cx, first, 1).await.is_some(),
+            "a click on B starts a write"
+        );
+        let stage = drawn_stage_hunk(cx, row);
+        let at = stage.center();
+        assert!(
+            counted_click(&app, cx, at, 1).await.is_some(),
+            "the double-click's first press starts a write"
+        );
+        std::fs::remove_file(&lock).unwrap();
+        assert_eq!(
+            (
+                app.read_with(cx, |app, _| app.operation_error.is_some()),
+                app.read_with(cx, |app, _| app.patch_view.clone()),
+                staged_hunks(&fixture),
+                hunk_rows(&app, cx).len(),
+                drawn_stage_hunk(cx, row)
+            ),
+            (true, Some(route.view.clone()), String::new(), 3, stage),
+            "that write failed too: the same diff, B's button under the still pointer"
+        );
+        assert!(
+            counted_click(&app, cx, at, 2).await.is_some(),
+            "the second press starts a write"
+        );
+        assert_eq!(
+            staged_hunks(&fixture),
+            "B",
+            "of B, which both presses named"
+        );
+    }
+
+    /// A double-click on B's Stage hunk whose first press arrives before
+    /// the frame of a read that reverted A
+    /// ([`a_press_before_the_frame_of_a_read_writes_nothing`]): that press
+    /// went down on B's button, of a diff the view no longer shows, and the
+    /// second, counted 2, on C's, which the frame after drew there. Neither
+    /// stages anything: the diff shown changed since the double-click's
+    /// first press, which the frame it went down on dates, not the view.
+    #[gpui::test]
+    async fn a_double_click_begun_before_the_frame_of_a_read_stages_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        let (fixture, app, cx, _route) = hunks_shown(cx, area, &hunks_named("ABC")).await;
+        let row = hunk_rows(&app, cx)[1];
+        let stage = drawn_stage_hunk(cx, row);
+        let at = stage.center();
+        let first = click_events(at, 1).into();
+        as_the_read_lands(&fixture, &app, cx, area, &hunks_named("BC"), first);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            (staged_hunks(&fixture), drawn_stage_hunk(cx, row)),
+            (String::new(), stage),
+            "the first press stages nothing, and the frame after draws C's button there"
+        );
+        assert_eq!(
+            (counted_click(&app, cx, at, 2).await, staged_hunks(&fixture)),
+            (None, String::new()),
+            "the second press stages nothing"
+        );
+        assert!(
+            counted_click(&app, cx, at, 1).await.is_some(),
+            "a click of its own starts its write"
+        );
+        assert_eq!(staged_hunks(&fixture), "C", "of C, which its button names");
+    }
+
+    /// A double-click on the Stage hunk of the last unstaged hunk, B, after
+    /// a click staged A: the first press stages B, the file leaves Unstaged
+    /// and the selection follows it to Staged, whose diff a view built for
+    /// it shows, A's Unstage hunk where B's Stage hunk stood, under the
+    /// still pointer. The second press, counted 2, unstages nothing: that
+    /// view saw no first press of this double-click, which began on another
+    /// diff. It unstaged A, which nobody aimed at. A click of its own
+    /// unstages A.
+    #[gpui::test]
+    async fn a_double_click_on_the_last_hunks_stage_hunk_unstages_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let area = gitturtle_core::ChangeArea::Unstaged;
+        let (fixture, app, cx, route) = hunks_shown(cx, area, &hunks_named("AB")).await;
+        let row = hunk_rows(&app, cx)[0];
+        let first = drawn_stage_hunk(cx, row).center();
+        assert!(
+            counted_click(&app, cx, first, 1).await.is_some(),
+            "a click on A starts its write"
+        );
+        let stage = drawn_stage_hunk(cx, row);
+        let at = stage.center();
+        assert!(
+            counted_click(&app, cx, at, 1).await.is_some(),
+            "the double-click's first press starts B's write"
+        );
+        assert_eq!(
+            (
+                app.read_with(cx, |app, _| app.patch_view.clone()) == Some(route.view.clone()),
+                app.read_with(cx, |app, _| partial_held(app)
+                    .map(|partial| partial.diff.area)),
+                staged_hunks(&fixture),
+                drawn_stage_hunk(cx, row)
+            ),
+            (
+                false,
+                Some(gitturtle_core::ChangeArea::Staged),
+                "AB".to_owned(),
+                stage
+            ),
+            "B's write landed: another view shows the staged diff, A's Unstage hunk under the still pointer"
+        );
+        assert_eq!(
+            (counted_click(&app, cx, at, 2).await, staged_hunks(&fixture)),
+            (None, "AB".to_owned()),
+            "the second press of the double-click unstages nothing"
+        );
+        assert!(
+            counted_click(&app, cx, at, 1).await.is_some(),
+            "a click of its own starts its write"
+        );
+        assert_eq!(staged_hunks(&fixture), "B", "unstaging A, which it presses");
     }
 
     /// The Stage hunk a failed write left focused stays built as its row
