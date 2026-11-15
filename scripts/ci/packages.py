@@ -29,12 +29,17 @@ _spec = importlib.util.spec_from_file_location("ci_package_identity", ROOT / "sc
 identity = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(identity)
 Error = identity.PackageError
-TARGETS = {"x86_64-unknown-linux-gnu": "linux-x86_64", "aarch64-apple-darwin": "macos-arm64"}
+# Each declared target and the platform-architecture label in its archive and
+# artifact names; the two Linux labels keep the two Linux legs' names apart.
+TARGETS = {"x86_64-unknown-linux-gnu": "linux-x86_64", "aarch64-unknown-linux-gnu": "linux-aarch64",
+           "aarch64-apple-darwin": "macos-arm64"}
 # This records C0's known gaps, not license exemptions. Any remaining gap blocks
 # upload; a new gap fails validation and requires explicit inventory review.
-# Linux has had none since the license review of 2026-11-15, so any gap there is new.
+# Linux has had none since the license review of 2026-11-15, so any gap on
+# either Linux target is new.
 KNOWN_GAPS = {
     "x86_64-unknown-linux-gnu": set(),
+    "aarch64-unknown-linux-gnu": set(),
     "aarch64-apple-darwin": {"block-0.1.6", "objc_exception-0.1.2", "leak-0.1.2", "leaky-cow-0.1.1"},
 }
 # The platforms whose verified complete-notice archive Quality uploads. Being
@@ -314,7 +319,7 @@ def verify_payload(directory, expected, *, complete, probe=True, manifest_valida
     unpacked = directory / "extracted"
     extract(archive, unpacked)
     target = expected["target"]
-    if target == "x86_64-unknown-linux-gnu":
+    if platform_of(target) == "linux":
         payload = unpacked / archive.name.removesuffix(".tar.gz")
         if set(p.name for p in unpacked.iterdir()) != {payload.name}:
             raise Error("Unexpected Linux archive root")
@@ -347,7 +352,7 @@ def verify_payload(directory, expected, *, complete, probe=True, manifest_valida
 
 
 def platform_checks(payload, binary, package, directory):
-    if package["target"] == "x86_64-unknown-linux-gnu":
+    if platform_of(package["target"]) == "linux":
         run([sys.executable, ROOT / "scripts/test-install-linux.py", "--bundle", payload])
         home = directory / "install-home"
         home.mkdir()
@@ -396,12 +401,12 @@ def prepare(args):
     stem = f"GitTurtle-{version}-{revision[:12]}-{TARGETS[args.target]}-release"
     prepared = output / "prepared"
     prepared.mkdir()
-    command = [ROOT / f"scripts/package-{'linux' if args.target.endswith('linux-gnu') else 'macos'}.sh",
+    command = [ROOT / f"scripts/package-{platform}.sh",
                "--no-build", "--binary", binary, "--expected-revision", revision,
                "--expected-version", version, "--expected-sha256", original]
     if complete:
         command.append("--distribution")
-    if args.target.endswith("linux-gnu"):
+    if platform == "linux":
         command.append(prepared / stem)
         archive = prepared / (stem + ".tar.gz")
     else:

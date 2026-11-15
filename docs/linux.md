@@ -346,8 +346,12 @@ executable, History and image comparison were checked, on a temporary
 1480 × 800 headless output at scale 1; see the
 [AArch64 record](validation.md#october-25-linux-aarch64-on-omarchy-on-asahi-linux).
 Not yet checked on AArch64: the folder picker, Git writes and network actions,
-fractional scaling, the Omarchy theme and the command palette. No CI job builds
-for AArch64 Linux, other ARM hardware and distributions have no recorded
+fractional scaling, the Omarchy theme and the command palette. Quality's
+`Rust release · ubuntu-24.04-arm` job builds, packages and checks the AArch64
+release bundle on a hosted Ubuntu 24.04 ARM64 runner
+([CI package downloads](ci-artifacts.md)); that runner has no display, so the
+job is a build and package check, not a desktop check, and no hosted run of it
+is recorded here yet. Other ARM hardware and distributions have no recorded
 check, and a bundle built on AArch64 installs only on AArch64.
 
 ## Launch, state and troubleshooting

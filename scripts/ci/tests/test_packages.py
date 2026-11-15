@@ -210,13 +210,13 @@ class NoticeTests(unittest.TestCase):
                 packages.notice_state(code, value, target, "a" * 64)
 
     def test_linux_has_no_known_gap_so_any_missing_notice_fails(self):
-        target = "x86_64-unknown-linux-gnu"
-        value = dict(target=target, cargo_lock_sha256="a" * 64, dependencies=[{}], review_required=[])
-        self.assertTrue(packages.notice_state(0, value, target, "a" * 64))
-        for missing in (["mac-0.1.1"], ["ufbx-0.11.3"], ["block-0.1.6"]):
-            value["review_required"] = missing
-            with self.subTest(missing=missing), self.assertRaises(packages.Error):
-                packages.notice_state(2, value, target, "a" * 64)
+        for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
+            value = dict(target=target, cargo_lock_sha256="a" * 64, dependencies=[{}], review_required=[])
+            self.assertTrue(packages.notice_state(0, value, target, "a" * 64))
+            for missing in (["mac-0.1.1"], ["ufbx-0.11.3"], ["block-0.1.6"]):
+                value["review_required"] = missing
+                with self.subTest(target=target, missing=missing), self.assertRaisesRegex(packages.Error, "new gaps"):
+                    packages.notice_state(2, value, target, "a" * 64)
 
     def test_strict_inventory_target_lock_and_dependency_failure(self):
         value = dict(target="x86_64-unknown-linux-gnu", cargo_lock_sha256="a" * 64,
@@ -227,20 +227,23 @@ class NoticeTests(unittest.TestCase):
 
 
 class PayloadTests(unittest.TestCase):
+    # The Linux bundle under test: its target, the label in its name and its ELF machine (EM_X86_64).
+    TARGET, LABEL, ELF_MACHINE = "x86_64-unknown-linux-gnu", "linux-x86_64", 62
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.stem = "GitTurtle-0.1.0-aaaaaaaaaaaa-linux-x86_64-release"
+        self.stem = f"GitTurtle-0.1.0-aaaaaaaaaaaa-{self.LABEL}-release"
         self.payload = self.root / "source" / self.stem
         (self.payload / "licenses").mkdir(parents=True)
         header = bytearray(32)
         header[:6] = b"\x7fELF\x02\x01"
-        header[18:20] = (62).to_bytes(2, "little")
+        header[18:20] = self.ELF_MACHINE.to_bytes(2, "little")
         self.binary = bytes(header) + b"unit-test fixture, not an executable"
         (self.payload / "bin").mkdir()
         (self.payload / "bin/gitturtle").write_bytes(self.binary)
         self.compiled = dict(application="GitTurtle", source_revision="a" * 40, version="0.1.0",
-                             target="x86_64-unknown-linux-gnu", profile="release", source_tree="clean",
+                             target=self.TARGET, profile="release", source_tree="clean",
                              rustc="rustc fixture", build_unix_seconds="1")
         self.inventory = dict(target=self.compiled["target"], cargo_lock_sha256="b" * 64, review_required=[],
                               dependencies=[dict(name="fixture", notices=[dict(path="fixture-LICENSE", sha256=sha(b"full notice"))])])
@@ -275,8 +278,12 @@ class PayloadTests(unittest.TestCase):
     def test_roundtrip_checks_real_archive_and_explicit_cross_platform_no_probe(self):
         with patch.object(packages.identity, "probe", return_value=self.compiled) as probe:
             payload, binary, package = packages.verify_payload(self.root, self.expected, complete=True)
+            # A Linux bundle: one root directory named as the archive, the executable under bin/.
+            self.assertEqual(payload, self.root / "extracted" / self.stem)
+            self.assertEqual(binary, payload / "bin/gitturtle")
             self.assertEqual(binary.read_bytes(), self.binary)
             self.assertEqual(package, self.package)
+            self.assertEqual(package["target"], self.TARGET)
             probe.assert_called_once_with(binary)
         shutil.rmtree(self.root / "extracted")
         with patch.object(packages.identity, "probe", side_effect=AssertionError("must not execute foreign binary")):
@@ -340,8 +347,38 @@ class PayloadTests(unittest.TestCase):
             packages.verify_payload(self.root, self.expected, complete=True, probe=False)
 
 
+class ArmLinuxPayloadTests(PayloadTests):
+    """Every payload check again for the AArch64 Linux bundle (EM_AARCH64), which is a Linux bundle too."""
+    TARGET, LABEL, ELF_MACHINE = "aarch64-unknown-linux-gnu", "linux-aarch64", 183
+
+
+class PlatformCheckTests(unittest.TestCase):
+    def test_both_linux_targets_get_the_install_checks_of_a_linux_bundle(self):
+        self.assertEqual(packages.identity.LINUX_TARGETS, ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"))
+        for target in packages.identity.LINUX_TARGETS:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                payload = directory / "bundle"
+                package = {"target": target, "compiled_identity": {"version": "0.1.0"}}
+                tools = []
+                def command(command, **kwargs):
+                    names = [Path(str(argument)).name for argument in command]
+                    tools.append(names[1] if names[0] == Path(os.sys.executable).name else names[0])
+                    if kwargs.get("allowed") == (1,):
+                        return 1, "GitTurtle needs a Wayland or X11 desktop session"
+                    return 0, ""
+                with patch.object(packages, "run", side_effect=command), \
+                        patch.object(packages.identity, "digest", return_value="d" * 64), \
+                        patch.object(packages.identity, "probe", return_value=package["compiled_identity"]):
+                    packages.platform_checks(payload, payload / "bin/gitturtle", package, directory)
+                # The installer fixtures, an installation, its desktop entry and libraries, and a no-display start.
+                self.assertEqual(tools, ["test-install-linux.py", "install.py", "desktop-file-validate", "ldd",
+                                         "gitturtle"])
+
+
 class PrepareTests(unittest.TestCase):
-    LINUX, MAC = "x86_64-unknown-linux-gnu", "aarch64-apple-darwin"
+    LINUX, ARM, MAC = "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin"
+    LINUX_LABELS = {LINUX: "linux-x86_64", ARM: "linux-aarch64"}
     NOBODY, EVERYBODY = frozenset(), frozenset({"linux", "macos"})
     MAC_HELD = "the macOS upload is held until macOS distribution is decided"
     INCOMPLETE = ("**Download unavailable: C0 license notices are incomplete; C3 hosted transfer remains open.** "
@@ -443,35 +480,51 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(packages.HOSTED_UPLOAD_PLATFORMS, frozenset({"linux"}))
         # Every declared target has exactly one platform, so none can upload unlisted.
         self.assertEqual({target: packages.platform_of(target) for target in packages.TARGETS},
-                         {self.LINUX: "linux", self.MAC: "macos"})
+                         {self.LINUX: "linux", self.ARM: "linux", self.MAC: "macos"})
         self.assertEqual(set(packages.PLATFORM_NAMES), self.EVERYBODY)
-        # A target the packager knows but this helper does not declare has no platform here either.
-        self.assertIn("aarch64-unknown-linux-gnu", packages.identity.LINUX_TARGETS)
-        for undeclared in ("aarch64-unknown-linux-gnu", "riscv64gc-unknown-linux-gnu", "x86_64-apple-darwin",
-                           "x86_64-pc-windows-msvc", "linux", ""):
+        for undeclared in ("riscv64gc-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "linux", ""):
             with self.subTest(target=undeclared), self.assertRaisesRegex(packages.Error, "no declared package platform"):
                 packages.platform_of(undeclared)
 
+    def test_both_linux_architectures_are_declared_under_their_own_labels(self):
+        # The label is in the archive's and the artifact's names, and the release assets read it too.
+        self.assertEqual(packages.TARGETS, {**self.LINUX_LABELS, self.MAC: "macos-arm64"})
+        self.assertEqual(len(set(packages.TARGETS.values())), len(packages.TARGETS))
+        # Every Linux target the packager can build is declared here, and nothing else is Linux.
+        self.assertEqual({target for target in packages.TARGETS if packages.platform_of(target) == "linux"},
+                         set(packages.identity.LINUX_TARGETS))
+        self.assertEqual(set(packages.KNOWN_GAPS), set(packages.TARGETS))
+
     def test_as_shipped_complete_linux_notices_upload_the_verified_archive(self):
-        for event, trust in (("pull_request", "untrusted-pr"), ("push", "ci-build"), ("workflow_dispatch", "ci-build")):
-            with self.subTest(event=event):
-                root, calls, verify, checks = self.prepare(self.LINUX, [], event=event)
+        cases = [(target, event, trust) for target in self.LINUX_LABELS
+                 for event, trust in (("pull_request", "untrusted-pr"), ("push", "ci-build"),
+                                      ("workflow_dispatch", "ci-build"))]
+        names = set()
+        for target, event, trust in cases:
+            with self.subTest(target=target, event=event):
+                root, calls, verify, checks = self.prepare(target, [], event=event)
                 # The upload follows the same strict collection, complete-notice package and checks.
                 self.assertEqual(len(calls), 2)
                 self.assertIn("--require-complete", calls[0])
+                self.assertEqual(calls[0][calls[0].index("--target") + 1], target)
+                self.assertEqual(calls[1][0], "ROOT/scripts/package-linux.sh")
                 self.assertIn("--distribution", calls[1])
                 self.assertIs(verify.call_args.kwargs["complete"], True)
                 checks.assert_called_once()
                 report, output, summary = self.left_behind(root)
                 self.assertIs(report["upload_eligible"], True)
                 self.assertIs(report["release_input"], False)
+                self.assertEqual(report["target"], target)
                 self.assertEqual(report["license_review_required"], [])
                 self.assertEqual(report["local_archive_checks"], "passed")
                 self.assertEqual(report["hosted_transfer"], "not-performed")
                 # A pull request's artifact, a fork's included, says so in its name.
-                self.assertEqual(report["artifact_name"],
-                                 f"GitTurtle-0.1.0-aaaaaaaaaaaa-linux-x86_64-release-{trust}-123-2")
+                stem = f"GitTurtle-0.1.0-aaaaaaaaaaaa-{self.LINUX_LABELS[target]}-release"
+                self.assertEqual(report["archive"], stem + ".tar.gz")
+                self.assertEqual(report["artifact_name"], f"{stem}-{trust}-123-2")
+                names.add(report["artifact_name"])
                 self.assertEqual(output, f"eligible=true\nartifact-name={report['artifact_name']}\n")
+                self.assertTrue(summary.startswith(f"### {self.LINUX_LABELS[target]} CI package\n"), summary)
                 self.assertTrue(summary.endswith(self.uploaded(report)), summary)
                 self.assertNotIn("Download unavailable", summary)
                 # The upload directory holds the three archive files and the record, and nothing else.
@@ -480,6 +533,8 @@ class PrepareTests(unittest.TestCase):
                                  published | {"ci-provenance.json"})
                 self.assertEqual(json.loads((root / "work/publish/ci-provenance.json").read_text()), report)
                 self.assertEqual(json.loads((root / "work/prepared.json").read_text()), report)
+        # In one run the two Linux legs share the event, run and attempt: only the label keeps their artifacts apart.
+        self.assertEqual(len(names), 4)
 
     def test_as_shipped_macos_stays_held_even_with_complete_notices(self):
         # macOS's notices are not complete today; this is the day they are.
@@ -511,6 +566,7 @@ class PrepareTests(unittest.TestCase):
     def test_its_entry_in_the_set_alone_separates_a_held_platform_from_an_uploading_one(self):
         # Each platform's shipped state beside the other one: Linux unlisted, macOS listed.
         for target, platform, unlisted, listed in ((self.LINUX, "Linux", self.NOBODY, None),
+                                                   (self.ARM, "Linux", self.NOBODY, None),
                                                    (self.MAC, "macOS", None, self.EVERYBODY)):
             with self.subTest(target=target):
                 held_root, held_calls, held_verify, _ = self.prepare(target, [], uploads=unlisted)
@@ -542,10 +598,11 @@ class PrepareTests(unittest.TestCase):
                 self.assertFalse((held_root / "work/publish").exists())
 
     def test_missing_linux_notice_fails_whatever_the_upload_set_lists(self):
-        for uploads in (None, self.NOBODY, self.EVERYBODY):
+        for target, uploads in ((target, uploads) for target in self.LINUX_LABELS
+                                for uploads in (None, self.NOBODY, self.EVERYBODY)):
             for missing in (["mac-0.1.1"], ["new-gap-1.0"]):
-                with self.subTest(uploads=uploads, missing=missing):
-                    root, calls, verify, checks = self.prepare(self.LINUX, missing, uploads=uploads, refusal="new gaps")
+                with self.subTest(target=target, uploads=uploads, missing=missing):
+                    root, calls, verify, checks = self.prepare(target, missing, uploads=uploads, refusal="new gaps")
                     self.assertEqual(len(calls), 1)  # the strict collector; nothing is packaged
                     self.assertIn("--require-complete", calls[0])
                     verify.assert_not_called()
@@ -610,6 +667,35 @@ class QualityUploadTests(unittest.TestCase):
         self.assertEqual(sorted(set(re.findall(r"--[a-z-]+", package.split("packages.py prepare", 1)[1]))),
                          ["--attempt", "--directory", "--event", "--output", "--report", "--revision", "--run-id",
                           "--summary", "--target"])
+
+    def test_every_declared_target_has_one_release_leg_on_its_own_architecture(self):
+        release, _ = self.steps()
+        self.assertIn("\n    name: Rust release · ${{ matrix.os }}\n    runs-on: ${{ matrix.os }}\n", "\n" + release)
+        legs = re.findall(r"^          - os: (\S+)\n            target: (\S+)$", release, re.M)
+        self.assertEqual(legs, [("macos-26", "aarch64-apple-darwin"), ("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
+                                ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu")])
+        # The names the release preflight requires of a Quality run.
+        self.assertEqual([f"Rust release · {runner}" for runner, _ in legs],
+                         ["Rust release · macos-26", "Rust release · ubuntu-24.04", "Rust release · ubuntu-24.04-arm"])
+        # One leg per declared target: none is packaged twice and none is left out.
+        self.assertEqual(sorted(target for _, target in legs), sorted(packages.TARGETS))
+        # A failed leg keeps the others' results, and no leg waits for another.
+        self.assertIn("\n      fail-fast: false\n", release)
+        self.assertEqual(re.findall(r"^      max-parallel: (\d+)$", release, re.M), [str(len(legs))])
+        # Each leg builds, packages and bounds the cache of its own matrix target.
+        self.assertEqual(release.count("PACKAGE_TARGET: ${{ matrix.target }}"), 3)
+        self.assertEqual(re.findall(r"^          target: (.*)$", release, re.M), ["${{ matrix.target }}"])
+        # Nothing but the Xcode selection depends on the runner, so the AArch64 Linux leg skips no step that
+        # the x86-64 one runs: the same setup, build, strict notices, package, upload and verification.
+        self.assertEqual(sorted(set(re.findall(r"^        if: (.*)$", release, re.M))),
+                         ["always()", "runner.os == 'macOS'", "steps.package.outputs.eligible == 'true'"])
+        for selector in ("runner.arch ==", "runner.arch !=", "matrix.os ==", "matrix.os !=", "matrix.target ==",
+                         "matrix.target !=", "contains(matrix.", "startsWith(matrix."):
+            self.assertNotIn(selector, release)
+        # The two Linux legs share a job id and an OS: only the architecture keeps their diagnostics apart.
+        self.assertEqual(re.findall(r"^          name: (ci-diagnostics-.*)$", release, re.M),
+                         ["ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-"
+                          "${{ github.run_id }}-${{ github.run_attempt }}"])
 
 
 class CommandTests(unittest.TestCase):

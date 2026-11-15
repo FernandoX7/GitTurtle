@@ -1,7 +1,19 @@
 # CI package downloads
 
-Quality builds one optimized executable per declared native target:
-`aarch64-apple-darwin` on standard ARM64 macOS 26 and `x86_64-unknown-linux-gnu` on Ubuntu 24.04.
+Quality builds one optimized executable per declared native target, each in its
+own leg of the `rust-release` matrix and on a runner of its own architecture:
+
+| Job | Runner | Target | Package label |
+| --- | --- | --- | --- |
+| `Rust release · macos-26` | standard ARM64 macOS 26 | `aarch64-apple-darwin` | `macos-arm64` |
+| `Rust release · ubuntu-24.04` | Ubuntu 24.04, x86-64 | `x86_64-unknown-linux-gnu` | `linux-x86_64` |
+| `Rust release · ubuntu-24.04-arm` | Ubuntu 24.04, ARM64 | `aarch64-unknown-linux-gnu` | `linux-aarch64` |
+
+The two Linux legs run the same steps: the pinned toolchain and their own cache
+entry (the key takes the compiler's host triple and the installed packages with
+their architecture), the build, strict notice collection, the `--distribution`
+package, the local checks and the upload with its verification. The three legs
+may run at once.
 The same job passes `target/<target>/release/gitturtle`, its SHA-256, source commit
 and version to the platform packager with `--no-build`. No second release build
 or implicit target-path lookup is used. CI selects and verifies installed Xcode
@@ -19,7 +31,7 @@ deployment target, artwork and package acceptance requirements are unchanged.
 Package creation, local archive checks, upload, download and installed-package
 checks precede release cache cleanup. Cache accounting covers the entire target
 root, including the explicit target subdirectory. The stable Quality gate requires
-both release matrix jobs. Product, package, native asset, workflow and
+all three release matrix jobs. Product, package, native asset, workflow and
 `scripts/ci/packages.py` changes run those jobs; documentation-only PR routing remains
 inexpensive. Every main push and manual run requires full coverage, including
 documentation-, website- and tooling-only changes, to verify packages and seed
@@ -31,7 +43,7 @@ Every run executes target-specific license collection with `--require-complete`.
 Only exit 0 with a matching target/lock inventory and no missing notices lets a
 job take the complete-notice path. Linux has no documented C0 gap since the
 [license review](licenses/linux-notice-review.md) of November 15, 2026, so its
-job takes that path and any missing notice there fails it.
+jobs, x86-64 and AArch64, take that path and any missing notice there fails them.
 The documented C0 gaps are on macOS: `block-0.1.6`, `objc_exception-0.1.2`,
 `leak-0.1.2` and `leaky-cow-0.1.1`.
 
@@ -79,13 +91,17 @@ complete-notice path automatically; the macOS upload stays held as above.
 
 ## Find and verify a download
 
-A successful Linux release job uploads a seven-day Actions artifact named with
-version, source SHA, platform, release profile, event trust label, run ID and
-attempt, such as
-`GitTurtle-<version>-<source SHA, 12 characters>-linux-x86_64-release-ci-build-<run ID>-<attempt>`.
-The job's step summary names it, and the run's summary page lists it under
-Artifacts for anyone who can read the repository's Actions runs. No macOS job
-uploads a package. The artifact contains exactly:
+Each successful Linux release job uploads a seven-day Actions artifact named
+with version, source SHA, package label, release profile, event trust label, run
+ID and attempt, so a run has two:
+`GitTurtle-<version>-<source SHA, 12 characters>-linux-x86_64-release-ci-build-<run ID>-<attempt>`
+and the same name with `linux-aarch64`. The trust label is `untrusted-pr` on a
+pull request. Each job's step summary names its artifact, and the run's summary
+page lists both under Artifacts for anyone who can read the repository's Actions
+runs. No macOS job uploads a package. The upload comes before the downloaded copy is
+verified, so a job that fails or is cancelled after it can leave its artifact for the
+seven days: only a green job's artifact has passed the download check. Each artifact
+contains exactly:
 
 - The Linux `.tar.gz` package.
 - The archive's `.sha256` checksum and `.manifest.json` provenance sidecar.
@@ -148,8 +164,10 @@ The download is bound to the current run's returned artifact ID, and its
 
 Source tests and workflow lint establish the helper's refusal and routing behavior.
 They do not establish a successful Actions upload/download, a complete license
-inventory, or native desktop behavior. The Linux upload is on in source since
-November 15, 2026; no hosted run with it on is recorded here. Before closing C3, record the actual run and
+inventory, or native desktop behavior. The Linux upload and the AArch64 Linux
+leg are in source since November 15, 2026; no hosted run with either is recorded
+here. The hosted Linux runners have no display, so neither Linux leg is a
+desktop check of its build. Before closing C3, record the actual run and
 artifact IDs, archive hashes, source commit, OS/architecture, signing state, transfer
 report and native installation/session evidence. macOS native verification is
 currently assigned separately to the project owner.

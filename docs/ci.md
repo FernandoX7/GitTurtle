@@ -226,12 +226,14 @@ After classification, the selected jobs have no build dependencies on each other
   `cargo clippy --locked --workspace --all-targets --timings -- -D warnings`. It
   never saves: it has no `finish` phase, so the test job remains the only writer of
   that entry (see [Why separate test and Clippy jobs](#why-separate-test-and-clippy-jobs)).
-- `Rust release · macos-26` and `· ubuntu-24.04` each restore the **release** cache
+- `Rust release · macos-26`, `· ubuntu-24.04` and `· ubuntu-24.04-arm` each restore
+  the **release** cache
   and build `gitturtle` with `--release --locked --timings` and an explicit platform
   target. Each job packages that executable without rebuilding it. Linux checks
   archive extraction, isolated installation, installed bytes, notices, desktop
   entry, dynamic libraries and the expected no-display launch failure; macOS
-  checks bundle identity and ad-hoc signatures. Complete license notices enable
+  checks bundle identity and ad-hoc signatures. Complete license notices on a
+  platform in the upload set (Linux; the macOS upload is held) enable
   a same-run artifact upload/download and independent payload verification. Known
   C0 notice gaps explicitly withhold public binaries while development package
   checks continue; other collection or verification errors fail the job. See the
@@ -420,7 +422,9 @@ log before calling the sets different. The dated
 [nextest record](benchmarks/2026-09-27-ci-nextest-tests.md) holds the hosted
 before/after durations and the test-list comparison.
 
-Each Rust matrix has two fixed OS entries, `fail-fast: false` and `max-parallel: 2`.
+The test and Clippy matrices have two fixed OS entries and `max-parallel: 2`; the release
+matrix has three (macOS 26, Ubuntu 24.04 and Ubuntu 24.04 on ARM) and `max-parallel: 3`.
+All use `fail-fast: false`.
 The test jobs, the [Arch Linux job](#arch-linux-container-job) among them, are
 bounded at 60 minutes, and the Clippy and release jobs at 45. A test job's limit
 only backs up a hung step, since the profile above terminates any test after
@@ -431,7 +435,7 @@ met a macOS runner 1.8 times slower at the median: at that pace the Arch job's
 [Why separate test and Clippy jobs](#why-separate-test-and-clippy-jobs)). A
 workflow policy test in `scripts/ci/tests/test_nextest.py` holds the Ubuntu and
 macOS test matrix and the Arch Linux job at 60 minutes. With the
-single Arch Linux job, at most seven compilation runners (three on macOS) are
+single Arch Linux job, at most eight compilation runners (three on macOS) are
 requested per Quality run, plus the independent inexpensive checks. Formatting is bounded
 at five minutes, policy and the final gate at five, and tooling at ten.
 GitHub may queue those jobs under the repository's existing concurrency
@@ -1294,7 +1298,9 @@ show it. The debug limit therefore became 7 GiB (7.52 GB). At the observed ratio
 extra 1.07 GB of payload costs at most about 0.25 GB of archive, so one generation
 stays under about 4.4 GB of the 10 GB quota; the macOS debug lane is far below
 either limit. The helper is part of every lane's cache identity, so the first `main`
-run after the change seeds all four lanes cold.
+run after the change seeds all four lanes cold. The AArch64 Linux release leg added on
+2026-11-15 saves an entry of its own from `main` pushes; its size has not been measured
+against the quota.
 
 The helper projects only the extracted registry package directories that pinned
 [rust-cache registry cleanup](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/cleanup.ts)
