@@ -251,6 +251,9 @@ creating, switching and deleting a branch, and fetch, pull and push over
 [Git writes record](validation.md#september-30-git-writes-and-network-actions-on-omarchy).
 More than one monitor and a physical HiDPI panel have no recorded check yet; see
 the [validation record](validation.md#september-27-omarchy-and-hyprland).
+Omarchy 4.5 on x86-64 has no recorded check yet;
+[Omarchy on Apple Silicon](#omarchy-on-apple-silicon-aarch64) says what has
+run on Omarchy 4.5.
 
 Under XWayland (launched with `env -u WAYLAND_DISPLAY`), History, Compare,
 Settings with the Omarchy theme, the command palette, shortcuts and typing
@@ -336,29 +339,55 @@ On Hyprland:
   selects. The first open after login took about four seconds while that
   backend started.
 
-### AArch64 and Asahi Linux
+### Omarchy on Apple Silicon (AArch64)
 
-Checked on 2026-10-25 on an Apple Silicon MacBook running Omarchy 4.0.4 on
-Asahi Linux (Arch Linux ARM; Hyprland 0.56.2 on native Wayland; Mesa's Asahi
-Vulkan driver; a 3456 × 2160 panel at scale 2). The packager builds
-`aarch64-unknown-linux-gnu` there and writes `dist/gitturtle-linux-aarch64/`;
-the Omarchy steps above apply unchanged. Omarchy on Asahi already had every
-native library and `clang`. That check installed Rust and cmake through mise
-and Pillow into mise's Python instead of the pacman packages; either works, as
-long as the `python3` on `PATH` can import Pillow.
+Since version 4.5, Omarchy supports Apple Silicon MacBooks natively;
+[omarchy.org](https://omarchy.org/) lists the models and covers the
+installation. The Omarchy steps above apply unchanged: the packager builds
+`aarch64-unknown-linux-gnu` there and writes `dist/gitturtle-linux-aarch64/`.
 
-The native release build, packaging, installation, launch from the installed
-executable, History and image comparison were checked, on a temporary
+GitTurtle's Linux work is done and checked on one: an Apple MacBook Pro
+(16-inch, M2 Pro, 2023) that has run Omarchy 4.5 since 2026-11-08. It reports
+Arch Linux ARM in `/etc/os-release`, and GitTurtle runs there as a native
+Wayland client under Hyprland 0.56.2, with Mesa's Asahi Vulkan driver
+(`vulkan-asahi`), on a 3456 × 2234 panel at scale 2.
+
+On Omarchy 4.5, the AArch64 archive built by Quality's release job was
+downloaded, verified, installed with its own `install.py` and run on this
+MacBook on 2026-11-15: a first launch that took the Omarchy theme, History, a
+commit from Changes, and PNG, AVIF and rendered Markdown previews. The
+[validation record](validation.md) has that run under November 15.
+
+The dated AArch64 records there were made on this MacBook before that, when it
+ran Omarchy Mac 4.0.4 on Asahi Linux, and they name that system. The first, on
+2026-10-25, covered the native release build, packaging, installation, launch
+from the installed executable, History and image comparison, on a temporary
 1480 × 800 headless output at scale 1; see the
 [AArch64 record](validation.md#october-25-linux-aarch64-on-omarchy-on-asahi-linux).
-Not yet checked on AArch64: the folder picker, Git writes and network actions,
-fractional scaling, the Omarchy theme and the command palette. Quality's
-`Rust release · ubuntu-24.04-arm` job builds, packages and checks the AArch64
-release bundle on a hosted Ubuntu 24.04 ARM64 runner
-([CI package downloads](ci-artifacts.md)); that runner has no display, so the
-job is a build and package check, not a desktop check, and no hosted run of it
-is recorded here yet. Other ARM hardware and distributions have no recorded
-check, and a bundle built on AArch64 installs only on AArch64.
+The system already had every native library and `clang`. That check installed
+Rust and cmake through mise and Pillow into mise's Python instead of the pacman
+packages; either works, as long as the `python3` on `PATH` can import Pillow.
+
+That first check left open the folder picker, Git writes and network actions,
+fractional scaling, the Omarchy theme and the command palette. Later records on
+the same MacBook cover a
+[first launch that matches the desktop](validation.md#october-26-a-first-launch-on-omarchy-matches-the-desktop),
+[`omarchy font set`](validation.md#october-26-omarchy-font-set-reaches-code-text-at-once),
+the [editor and terminal handoffs](validation.md#october-26-omarchy-editor-default-terminal-and-a-launch-or-focus-binding),
+[every stock Omarchy theme](validation.md#october-27-every-stock-omarchy-theme-after-the-contrast-fixes)
+in History, Compare, Changes, Settings, the command palette and the menu, and
+[Stage all and Fetch](validation.md#october-29-keyboard-menus-clear-the-status-bar-capped-menus-keep-whole-rows-and-fetch-says-when-nothing-is-new),
+among many checks of single changes. The rest of that list (the folder picker,
+pull and push, and fractional scaling) has no AArch64 record of its own.
+
+Quality's `Rust release · ubuntu-24.04-arm` job builds, packages and checks the
+AArch64 release bundle on a hosted Ubuntu 24.04 ARM64 runner and keeps the
+archive as a seven-day artifact ([CI package downloads](ci-artifacts.md)). That
+runner has no display, so the job is a build and package check, not a desktop
+check. Its first hosted run passed on 2026-11-15, in
+[quality run 43738958820](https://github.com/FernandoX7/GitTurtle/actions/runs/43738958820)
+at `7782c581`. Other ARM hardware and distributions have no recorded check, and
+a bundle built on AArch64 installs only on AArch64.
 
 ## Launch, state and troubleshooting
 
@@ -464,16 +493,22 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   app exits. Pages and images share at most two helpers at a time, and an
   image comes back at most 1,600 pixels on its longer edge.
   **It needs a kernel with seccomp filters** (`CONFIG_SECCOMP_FILTER`, on in
-  every mainstream distribution kernel, Asahi's included): without them the
+  every mainstream distribution kernel, including Omarchy's on Apple
+  Silicon): without them the
   helper refuses to start, every page says “The PDF renderer could not
   start.” and every AVIF or JPEG 2000 image says “The image decoder could not
   start.” A running helper is named `gitturtle-pdf` for pages and images
   alike. Other architectures keep PDF metadata and an unavailable result, and
   decode neither AVIF nor JPEG 2000. The confinement's tests ran on AArch64
-  (Asahi) and, for PDF pages, on x86-64 in the hosted
+  (the Apple Silicon MacBook above) and on x86-64 in hosted runs: for PDF
+  pages in
   [quality run 41480657885](https://github.com/FernandoX7/GitTurtle/actions/runs/41480657885)
-  ("Rust tests and Clippy · ubuntu-24.04", all 21 helper tests at `66add2e6`);
-  the image tests have not yet run on x86-64.
+  ("Rust tests and Clippy · ubuntu-24.04", all 21 helper tests at `66add2e6`),
+  and for images in
+  [quality run 41757534359](https://github.com/FernandoX7/GitTurtle/actions/runs/41757534359)
+  (the Ubuntu 24.04 tests job and the Arch container, the 17 tests of
+  `tests/image_helper.rs` at `36d977aa`; see the
+  [record](validation.md#november-3-night-the-linux-avif-and-jpeg-2000-view-passes-its-x86-64-run-and-a-slow-macos-runner-reaches-the-jobs-time-limit)).
 - **libdav1d is a hard runtime dependency.** The executable links the
   distribution's `libdav1d.so.7` (Arch `dav1d`, Ubuntu `libdav1d7`), so
   GitTurtle does not start without it, even when no AVIF is ever opened.
