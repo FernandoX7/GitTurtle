@@ -915,7 +915,22 @@ cover current upstream x86-64 Omarchy.
    and moved here from the post-launch list); and the decision whether to turn on the Linux
    CI archive's upload, held since LIC-B by `HOSTED_UPLOAD` in `scripts/ci/packages.py` (the
    manually dispatched release workflow does not read it: with the notices complete its
-   Linux build passes, and its `gitturtle-release` environment is not set up yet). Then add
+   Linux build passes, and its `gitturtle-release` environment is not set up yet). Owner
+   decisions, 2026-11-15 (afternoon, each with its reason): the branch reaches `main` as
+   one squashed pull request under the repository's rule, opened once phase 4's rounds have
+   landed, with the branch kept or tagged so its atomic history stays reachable (the
+   release workflow runs only from `main`); the hosted upload is turned on for the Linux
+   archives, as a small commit with a security re-read (it gives phase 5's machines the
+   CI-built archive before any tag exists, and the release workflow never moves a tag, so a
+   rehearsal that found a defect would burn the version); macOS archives stay held by their
+   own switch until macOS distribution is decided with signing (the coordinator's reading
+   of the answer, which named the Linux archive); `aarch64-unknown-linux-gnu` is added to
+   Quality's release job and to the release workflow on the hosted ARM runner before the
+   first tag, with a security review (no workflow built it, while this plan and the README
+   promise it), and `linux` in the release workflow then means both Linux targets; the
+   `gitturtle-bin` PKGBUILD is drafted and tested with `makepkg` now, and the owner pushes
+   it to the AUR once the GitHub Release exists. Still the owner's: the first release's
+   tag, environment and dispatch, the four macOS packages, and the token check. Then add
    an AUR package (`gitturtle-bin`) and
    later propose GitTurtle to `omacom/omarchy-pkgs`, so `omarchy pkg add gitturtle`
    works. The owner also plans macOS downloads from gitturtle.com, signed with the
