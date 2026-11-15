@@ -51,6 +51,12 @@ python3 gitturtle-linux-x86_64/install.py
 A bundle packaged on an AArch64 machine is named `gitturtle-linux-aarch64`
 instead. The installer refuses a bundle built for another architecture.
 
+An archive built by CI (a Quality run's artifact, or a GitHub release once one is
+published) is named
+`GitTurtle-<version>-<source commit, 12 characters>-linux-x86_64-release.tar.gz`,
+or the same with `linux-aarch64`, and unpacks to a folder of that name without
+`.tar.gz`: use those names in the three commands above.
+
 Run the installer **without sudo**. It checks the required payload hashes,
 package/compiled identity, license inventory, linked libraries and desktop-entry
 syntax before installation, then atomically replaces the
