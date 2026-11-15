@@ -175,9 +175,12 @@ contract; the CI CLI always uses the standard unsigned/ad-hoc validator and exec
 the native identity probe. Neither option turns arbitrary CI outputs into trusted
 release inputs.
 
-Action pins were verified against the official repositories on September 15, 2026:
-[upload-artifact v7.0.1](https://github.com/actions/upload-artifact/releases/tag/v7.0.1)
-and [download-artifact v8.0.1](https://github.com/actions/download-artifact/releases/tag/v8.0.1).
+Action pins were verified against the official repositories on November 15, 2026:
+[upload-artifact v7.0.2](https://github.com/actions/upload-artifact/releases/tag/v7.0.2)
+(`cf430e030ddbb5b0abf93d22962f4752f3646cd9`) and
+[download-artifact v8.0.2](https://github.com/actions/download-artifact/releases/tag/v8.0.2)
+(`9000827ccba6bdab643e8b6fd33ac0654aef8333`); each tag resolves to the commit
+the workflows pin.
 Every download attempt is bound to the current run's returned artifact ID, and
 its `digest-mismatch: error` input is explicit.
 

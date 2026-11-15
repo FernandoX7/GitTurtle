@@ -844,8 +844,8 @@ Cargo build), doctests, Clippy and release builds request Cargo `--timings`. The
 as sanitized plain text, for example `tests-timing.txt`, instead of retaining an
 executable HTML artifact. Missing or oversized timing artifacts remain unavailable.
 The uploaded diagnostic artifact expires after **three days**. Quality uses
-the pinned [upload-artifact v7.0.1 action](https://github.com/actions/upload-artifact/releases/tag/v7.0.1);
-its [inputs](https://github.com/actions/upload-artifact/blob/043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/action.yml)
+the pinned [upload-artifact v7.0.2 action](https://github.com/actions/upload-artifact/releases/tag/v7.0.2);
+its [inputs](https://github.com/actions/upload-artifact/blob/cf430e030ddbb5b0abf93d22962f4752f3646cd9/action.yml)
 support the explicit retention and exclusion of hidden files used here.
 Each command's JSON captures the run, commit, event and runner context alongside
 its measurements. In PR jobs, `GITHUB_SHA` can identify the tested merge commit;
