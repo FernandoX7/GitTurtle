@@ -234,7 +234,12 @@ After classification, the selected jobs have no build dependencies on each other
   entry, dynamic libraries and the expected no-display launch failure; macOS
   checks bundle identity and ad-hoc signatures. Complete license notices on a
   platform in the upload set (Linux; the macOS upload is held) enable
-  a same-run artifact upload/download and independent payload verification. Known
+  a same-run artifact upload/download and independent payload verification. The
+  download asks for the uploaded artifact's exact ID up to three times (at once,
+  then about 15 s and about 45 s more after a failure), because the run's
+  artifact listing can lag the upload; the first two attempts may fail without
+  failing the job, the third fails it, and the verification still requires the
+  downloaded files. Known
   C0 notice gaps explicitly withhold public binaries while development package
   checks continue; other collection or verification errors fail the job. See the
   [artifact runbook](ci-artifacts.md) for exact gates and evidence requirements.

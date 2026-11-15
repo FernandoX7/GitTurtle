@@ -637,24 +637,50 @@ class PrepareTests(unittest.TestCase):
 class QualityUploadTests(unittest.TestCase):
     """What quality.yml does with `prepare`'s answer; read as text (no YAML dependency)."""
 
+    ELIGIBLE = "steps.package.outputs.eligible == 'true'"
+    # A step's own `outcome` is its result before `continue-on-error` hides a failure from the job.
+    AFTER_FIRST = f"{ELIGIBLE} && steps.download-first.outcome == 'failure'"
+    AFTER_BOTH = f"{AFTER_FIRST} && steps.download-second.outcome == 'failure'"
+    CHAIN = ["Upload verified early-development CI package",
+             "Download this exact uploaded artifact from Actions",
+             "Wait about 15 s for the run's artifact listing and empty the download directory",
+             "Download this exact uploaded artifact from Actions, second attempt",
+             "Wait about 45 s more for the run's artifact listing and empty the download directory",
+             "Download this exact uploaded artifact from Actions, third and last attempt",
+             "Verify downloaded bytes and installation"]
+
     def steps(self):
         text = (packages.ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
         job = re.split(r"^  ([a-z][a-z0-9-]*):\n", text.split("\njobs:\n", 1)[1], flags=re.M)
         release = dict(zip(job[1::2], job[2::2]))["rust-release"]
         return release, release.split("\n    steps:\n", 1)[1].split("\n      - ")
 
+    def chain(self):
+        """The steps from the upload to the verification, in the job's order: each one's own keys, then the
+        lines of its `with:`, `env:` and `run:` blocks. Comments are not read."""
+        release, steps = self.steps()
+        names = [step.splitlines()[0] for step in steps]
+        steps = steps[names.index(f"name: {self.CHAIN[0]}"):names.index(f"name: {self.CHAIN[-1]}") + 1]
+        read = []
+        for step in steps:
+            lines = [line for line in ("        " + step).splitlines() if not line.lstrip().startswith("#")]
+            own = dict(re.fullmatch(r"        ([a-z-]+):(?: (.*))?", line).groups() for line in lines if line[8:9].strip())
+            read.append((own, [line.strip() for line in lines if line.startswith("          ")]))
+        return release, read
+
     def test_only_prepare_decides_the_upload_and_its_summary_states_the_real_retention(self):
         release, steps = self.steps()
         gated = [step for step in steps if "outputs.eligible" in step]
         self.assertEqual(release.count("eligible =="), len(gated))
-        self.assertEqual([step.splitlines()[0] for step in gated],
-                         ["name: Upload verified early-development CI package",
-                          "name: Download this exact uploaded artifact from Actions",
-                          "name: Verify downloaded bytes and installation"])
+        # The upload, then the download with its retries, then the verification: nothing else reads the answer.
+        self.assertEqual([step.splitlines()[0] for step in gated], [f"name: {name}" for name in self.CHAIN])
         for step in gated:
             with self.subTest(step=step.splitlines()[0]):
-                self.assertEqual(re.findall(r"^ +if: (.*)$", step, re.M), ["steps.package.outputs.eligible == 'true'"])
+                # Every one of them needs the answer; a retry also needs the earlier attempts' failures.
+                condition, = re.findall(r"^ +if: (.*)$", step, re.M)
+                self.assertIn(condition, (self.ELIGIBLE, self.AFTER_FIRST, self.AFTER_BOTH))
         upload = gated[0]
+        self.assertEqual(re.findall(r"^ +if: (.*)$", upload, re.M), [self.ELIGIBLE])
         self.assertIn("\n          name: ${{ steps.package.outputs.artifact-name }}\n", upload)
         # Only the directory `prepare` fills for an eligible package is ever uploaded as a package.
         self.assertEqual(re.findall(r"^ +path: (.*)$", upload, re.M), ["${{ runner.temp }}/ci-package/publish/*"])
@@ -687,8 +713,9 @@ class QualityUploadTests(unittest.TestCase):
         self.assertEqual(re.findall(r"^          target: (.*)$", release, re.M), ["${{ matrix.target }}"])
         # Nothing but the Xcode selection depends on the runner, so the AArch64 Linux leg skips no step that
         # the x86-64 one runs: the same setup, build, strict notices, package, upload and verification.
+        # The download's retries wait on that download's own failures, which no runner is named in.
         self.assertEqual(sorted(set(re.findall(r"^        if: (.*)$", release, re.M))),
-                         ["always()", "runner.os == 'macOS'", "steps.package.outputs.eligible == 'true'"])
+                         ["always()", "runner.os == 'macOS'", self.ELIGIBLE, self.AFTER_FIRST, self.AFTER_BOTH])
         for selector in ("runner.arch ==", "runner.arch !=", "matrix.os ==", "matrix.os !=", "matrix.target ==",
                          "matrix.target !=", "contains(matrix.", "startsWith(matrix."):
             self.assertNotIn(selector, release)
@@ -696,6 +723,84 @@ class QualityUploadTests(unittest.TestCase):
         self.assertEqual(re.findall(r"^          name: (ci-diagnostics-.*)$", release, re.M),
                          ["ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-"
                           "${{ github.run_id }}-${{ github.run_attempt }}"])
+
+    def test_every_download_attempt_takes_the_uploaded_id_alone_with_the_same_pinned_action(self):
+        release, chain = self.chain()
+        self.assertEqual([own["name"] for own, _ in chain], self.CHAIN)
+        attempts = [(own, inputs) for own, inputs in chain if "uses" in own][1:]
+        self.assertEqual([own["name"] for own, _ in attempts], self.CHAIN[1::2])
+        for own, inputs in attempts:
+            with self.subTest(step=own["name"]):
+                self.assertEqual(own["uses"],
+                                 "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2")
+                # One exact ID and a refused digest mismatch on every attempt; no name, pattern, run or token input.
+                self.assertEqual(inputs, ["artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}",
+                                          "path: ${{ runner.temp }}/ci-package-download",
+                                          "merge-multiple: true", "digest-mismatch: error"])
+        # That ID is the output of this job's one upload, and nothing else in the job downloads an artifact.
+        upload, _ = chain[0]
+        self.assertEqual((upload["id"], upload["uses"]),
+                         ("uploaded", "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2"))
+        ids = re.findall(r"^        id: (.*)$", release, re.M)
+        self.assertEqual(sorted(ids), sorted(set(ids)))
+        self.assertEqual(len(re.findall(r"^ +(?:- )?uses: .*download-artifact", release, re.M)), len(attempts))
+
+    def test_a_later_download_attempt_follows_only_failures_its_wait_and_an_emptied_directory(self):
+        _, chain = self.chain()
+        self.assertEqual([own["name"] for own, _ in chain], self.CHAIN)
+        # At once; the second only after the first failed; the third only after both did. A wait runs with
+        # the attempt it precedes, and the conditions name the two attempts whose failure they read.
+        self.assertEqual([own["if"] for own, _ in chain[1:6]],
+                         [self.ELIGIBLE, self.AFTER_FIRST, self.AFTER_FIRST, self.AFTER_BOTH, self.AFTER_BOTH])
+        self.assertEqual([own.get("id") for own, _ in chain[1:6]], ["download-first", None, "download-second", None, None])
+        # About 15 s, then about 45 s more. Each wait also removes the directory that every attempt downloads
+        # into and the verification reads, so a failed attempt leaves nothing for the next one or for the verifier.
+        for (own, script), seconds in ((chain[2], 15), (chain[4], 45)):
+            with self.subTest(step=own["name"]):
+                self.assertEqual(sorted(own), ["if", "name", "run"])
+                self.assertEqual(script, [f"sleep {seconds}", 'rm -rf -- "$RUNNER_TEMP/ci-package-download"'])
+        for own, inputs in chain[1:6:2]:
+            self.assertIn("path: ${{ runner.temp }}/ci-package-download", inputs)
+        self.assertIn('--directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \\', chain[6][1])
+
+    def test_only_the_last_download_attempt_can_fail_the_job_and_the_verification_is_unchanged(self):
+        release, chain = self.chain()
+        self.assertEqual([own["name"] for own, _ in chain], self.CHAIN)
+        # The first two attempts may fail; the upload, both waits, the last attempt and the verification may not.
+        self.assertEqual([own.get("continue-on-error") for own, _ in chain], [None, "true", None, "true", None, None, None])
+        # Nothing else in the job tolerates a failure, and the job itself does not.
+        self.assertEqual(len(re.findall(r"^ +continue-on-error:", release, re.M)), 2)
+        # The verification runs on the answer alone, so on every eligible job that no step failed, and its
+        # command is the one that ran before the download had retries.
+        own, lines = chain[6]
+        self.assertEqual(own, {"name": self.CHAIN[6], "if": self.ELIGIBLE, "env": None, "run": "|"})
+        self.assertEqual(lines, [
+            "PACKAGE_ARTIFACT_ID: ${{ steps.uploaded.outputs.artifact-id }}",
+            'python3 scripts/ci/metrics.py measure --name artifact-download-checks --directory "$RUNNER_TEMP/ci-metrics" -- \\',
+            'python3 scripts/ci/packages.py verify --expected "$RUNNER_TEMP/ci-package/prepared.json" \\',
+            '--directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \\',
+            '--report "$RUNNER_TEMP/ci-metrics/reports/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY"'])
+
+    def test_the_verification_fails_on_a_download_directory_no_attempt_filled(self):
+        # What stands behind the tolerated attempts: the verify command exits non-zero by itself when the
+        # directory is absent, empty or partly filled, and records no transfer.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = "GitTurtle-0.1.0-aaaaaaaaaaaa-linux-x86_64-release.tar.gz"
+            expected = dict(format=1, upload_eligible=True, release_input=False, archive=archive)
+            (root / "prepared.json").write_text(json.dumps(expected))
+            (root / "empty").mkdir()
+            (root / "partial").mkdir()
+            (root / "partial/ci-provenance.json").write_text(json.dumps(expected))
+            for directory in ("absent", "empty", "partial"):
+                with self.subTest(directory=directory):
+                    status, diagnostic = packages.run(
+                        [os.sys.executable, "-B", packages.ROOT / "scripts/ci/packages.py", "verify",
+                         "--expected", root / "prepared.json", "--directory", root / directory,
+                         "--artifact-id", "1", "--report", root / "transfer.json"], allowed=(1,))
+                    self.assertEqual(status, 1)
+                    self.assertTrue(diagnostic.startswith("CI package verification failed: "), diagnostic)
+                    self.assertFalse((root / "transfer.json").exists())
 
 
 class CommandTests(unittest.TestCase):

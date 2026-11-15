@@ -122,6 +122,25 @@ pre-upload record. The verifier checks the detached checksum, inner/outer packag
 identity, source/version/target/profile, original executable digest, Cargo.lock,
 all inventoried notice bytes and the actual extracted executable's `--build-info`.
 
+The download is attempted up to three times, because the run's artifact listing
+can lag the upload. The download action finds an ID by listing the run's
+artifacts. In the x86-64 job of Quality run 43747610529 (November 15, 2026)
+that listing came back 0.45 s after the upload was finalized, with seven
+artifacts and without the new ID, and the step failed with
+`None of the provided artifact IDs were found`, although the package had been
+built, verified and uploaded. The first attempt therefore runs at once, a
+second about 15 s after a failure and a third about 45 s after that. Each
+attempt is the same pinned action with the same single ID, the same directory
+and `digest-mismatch: error`; none downloads by name or pattern, so no other
+artifact can take the uploaded one's place. A
+later attempt runs only when every earlier one failed, and the download
+directory is removed before it, so nothing a failed attempt left reaches the
+next attempt or the verifier. The first two attempts may fail without failing
+the job, and their failures stay in its log; the third fails it. No job passes
+without the download: the verification runs in every upload-eligible job in
+which no step has failed, and it refuses an absent, empty or incomplete
+directory itself.
+
 Extraction permits only bounded regular files and directories in a new private
 destination; traversal, symlinks, hard links, special/sparse files, duplicate paths,
 case-insensitive collisions and oversized content fail. ZIP64, inconsistent directory
@@ -135,8 +154,9 @@ checks app identity, resources, plist and the extracted ad-hoc signature.
 Successful downloaded-package verification is recorded in
 `package-transfer.json` in the separate three-day diagnostics artifact. The
 prepared identity, C0 state and `upload_eligible` are in `package-prepared.json`; commands also use
-existing sanitized CI measurement logs. An upload, download, checksum or package
-check failure fails the required release lane. A no-display check is not a native
+existing sanitized CI measurement logs. An upload, checksum or package check
+failure, or a download that fails on all three attempts, fails the required
+release lane. A no-display check is not a native
 GUI test: actual installation and desktop interaction on each supported platform
 remain separate C3 evidence.
 
@@ -158,8 +178,8 @@ release inputs.
 Action pins were verified against the official repositories on September 15, 2026:
 [upload-artifact v7.0.1](https://github.com/actions/upload-artifact/releases/tag/v7.0.1)
 and [download-artifact v8.0.1](https://github.com/actions/download-artifact/releases/tag/v8.0.1).
-The download is bound to the current run's returned artifact ID, and its
-`digest-mismatch: error` input is explicit.
+Every download attempt is bound to the current run's returned artifact ID, and
+its `digest-mismatch: error` input is explicit.
 
 ## Evidence still required
 
@@ -167,8 +187,11 @@ Source tests and workflow lint establish the helper's refusal and routing behavi
 They do not establish a successful Actions upload/download, a complete license
 inventory, or native desktop behavior. The Linux upload and the AArch64 Linux
 leg are in source since November 15, 2026; no hosted run with either is recorded
-here. The hosted Linux runners have no display, so neither Linux leg is a
-desktop check of its build. Before closing C3, record the actual run and
+here. The download's retries are in source since the same day; no hosted run
+with them is recorded here either, and the run named
+[above](#find-and-verify-a-download) is the failure that led to them, not
+evidence for them. The hosted Linux runners have no display, so neither Linux
+leg is a desktop check of its build. Before closing C3, record the actual run and
 artifact IDs, archive hashes, source commit, OS/architecture, signing state, transfer
 report and native installation/session evidence. macOS native verification is
 currently assigned separately to the project owner.

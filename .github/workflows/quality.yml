@@ -377,14 +377,55 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           include-hidden-files: false
+      # The run's artifact listing can lag the upload: in Quality run
+      # 43747610529 the listing this download reads came back 0.45 s after the
+      # upload was finalized, without the new ID, and the step failed. The same
+      # download, by the same exact ID, is therefore attempted up to three
+      # times: at once, about 15 s later and about 45 s after that. A later
+      # attempt runs only when every earlier one failed, and starts without the
+      # download directory, as the first does. The first two may fail without
+      # failing the job; the last one fails it. No attempt downloads by name or
+      # pattern, so no other artifact can stand in for the uploaded one.
       - name: Download this exact uploaded artifact from Actions
+        id: download-first
         if: steps.package.outputs.eligible == 'true'
+        continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
           path: ${{ runner.temp }}/ci-package-download
           merge-multiple: true
           digest-mismatch: error
+      - name: Wait about 15 s for the run's artifact listing and empty the download directory
+        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure'
+        run: |
+          sleep 15
+          rm -rf -- "$RUNNER_TEMP/ci-package-download"
+      - name: Download this exact uploaded artifact from Actions, second attempt
+        id: download-second
+        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
+          path: ${{ runner.temp }}/ci-package-download
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Wait about 45 s more for the run's artifact listing and empty the download directory
+        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure' && steps.download-second.outcome == 'failure'
+        run: |
+          sleep 45
+          rm -rf -- "$RUNNER_TEMP/ci-package-download"
+      - name: Download this exact uploaded artifact from Actions, third and last attempt
+        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure' && steps.download-second.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
+          path: ${{ runner.temp }}/ci-package-download
+          merge-multiple: true
+          digest-mismatch: error
+      # Reached only when no step above failed the job, so only after one
+      # attempt succeeded; it refuses a missing or incomplete directory itself.
       - name: Verify downloaded bytes and installation
         if: steps.package.outputs.eligible == 'true'
         env:
