@@ -964,6 +964,12 @@ async fn stage_all_brings_its_heading_into_view_beside_the_selected_file(cx: &mu
     // Staged heading, every file and the Unstaged heading, last.
     let stage_all = |cx: &mut VisualTestContext| {
         assert_eq!(inside(cx, "stage-all"), Some(true), "Stage all is pressed");
+        // The pointer moves onto it before each press, from more than the
+        // 5 px within which it has not moved: back where it stood under a
+        // pointer that has not moved since the last one, it takes no press
+        // (`GitTurtle::passes_over_press`).
+        let beside = bounds(cx, "stage-all").center() + point(px(6.), px(0.));
+        cx.simulate_mouse_move(beside, None, Modifiers::default());
         click(cx, "stage-all");
         finish(&app, cx, "Stage all's rows", |cx| {
             app.read_with(cx, |app, _| {

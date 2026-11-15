@@ -87,8 +87,11 @@ pub(crate) struct Flight {
 /// put another row, or a heading, where the pressed row stood, and its
 /// control would light up under the still pointer and show its tooltip
 /// though the person never moved to it. Once they do, what arrived there
-/// shows neither until the pointer moves.
+/// shows neither, and takes no press from the pointer
+/// ([`GitTurtle::passes_over_press`]), until the pointer moves
+/// ([`StillPointer::moved_to`]).
 pub(crate) struct StillPointer {
+    /// Where the pointer came to rest.
     at: Point<Pixels>,
     /// The pressed row: its place in the list, its path, which a heading
     /// does not have, and its group.
@@ -97,6 +100,41 @@ pub(crate) struct StillPointer {
     area: ChangeArea,
     /// The list's new rows put something else under the pointer.
     moved: bool,
+}
+
+/// How far along either axis, in logical pixels, a pointer may be from where
+/// it came to rest and still not have moved ([`StillPointer::moved_to`]): the
+/// same at every display scale and text size. A second click in place is
+/// never on the same pixel, since a hand drifts a pixel between two clicks
+/// and Wayland reports fractions of one, so a rule that any change of place
+/// ends would not protect the person it was written for. The square this
+/// reaches is the Linux platform's own click-distance square,
+/// `DOUBLE_CLICK_DISTANCE` in the vendored `gpui-pre-linux`
+/// (`src/linux/platform.rs`, private to that crate): a press it counts into
+/// a multi-click is at most 5 px along each axis from the one before, so "in
+/// place" for this rule and "the same click" for the platform are one
+/// region, and a double-click's second press is always a press in place.
+/// Measured in a straight line, such a press 4 px along and 4 px up was
+/// 5.7 px away, counted as moved and pressed the Stage all that had arrived
+/// (decided 2026-11-15, DESIGN.md's Motion).
+pub(crate) const STILL_POINTER_REACH: Pixels = px(5.);
+
+impl StillPointer {
+    /// Whether a pointer at `position` has moved: it is more than
+    /// [`STILL_POINTER_REACH`] along either axis from where it came to rest,
+    /// not from where its last event left it, so a drift adds up. The one
+    /// answer for all
+    /// that ask, so a control lights exactly when it takes a press: the rows
+    /// as they land, which decide what the hover shows
+    /// ([`GitTurtle::rows_moved_under_pointer`]), the list's pointer-move
+    /// handler ([`GitTurtle::pointer_moved`]) and a press's own place
+    /// ([`GitTurtle::passes_over_press`]). Any change of place at all once
+    /// counted, so a second click 1 px from a row's Stage pressed the Stage
+    /// all that had taken the row's place and staged every file.
+    fn moved_to(&self, position: Point<Pixels>) -> bool {
+        let away = position - self.at;
+        away.x.abs() > STILL_POINTER_REACH || away.y.abs() > STILL_POINTER_REACH
+    }
 }
 
 /// The landing slot's bounds and the list's clip, recorded while the list is
@@ -212,14 +250,18 @@ impl GitTurtle {
 
     /// Remembers the pointer where the control of the row at `position`, a
     /// file's Stage or Unstage or a heading's Stage all or Unstage all, was
-    /// pressed and accepted.
+    /// pressed and accepted. The row is named from the rows as drawn, which
+    /// the press was aimed at: a row's control still takes a press while the
+    /// rows a write produced are prepared, and named from the rows that act
+    /// (`actionable_working_rows`, none then) that press forgot the pointer
+    /// the write's own press had held, so the Stage all the new rows then
+    /// put under it lit up and a third click staged every file.
     pub(super) fn hold_still_pointer(&mut self, position: usize, window: &Window) {
         self.still_pointer = None;
-        let (path, area) = match self.actionable_working_rows().get(position) {
+        let (path, area) = match self.working_rows.get(position) {
             Some(&workspace::WorkingRow::File(index, area)) => {
                 let Some(entry) = self
-                    .work_status
-                    .as_ref()
+                    .shown_working_status()
                     .and_then(|status| status.entries.get(index))
                 else {
                     return;
@@ -245,15 +287,15 @@ impl GitTurtle {
     /// it: the window's tooltip keeps a request until its control's hover
     /// ends, which a control no longer drawn never reports, so "Stage
     /// gamma.txt" once showed over epsilon's row a second after the press.
-    /// A pointer that has left its place, onto a control outside the list
-    /// whose own moves the list does not see, is no longer still: what it
-    /// rests on keeps its hover and its tooltip, which hiding the window's
-    /// tooltip here once cancelled for good.
+    /// A pointer that has left its place ([`StillPointer::moved_to`]), onto
+    /// a control outside the list whose own moves the list does not see, is
+    /// no longer still: what it rests on keeps its hover and its tooltip,
+    /// which hiding the window's tooltip here once cancelled for good.
     pub(super) fn rows_moved_under_pointer(&mut self, window: &Window, cx: &mut App) {
         if self
             .still_pointer
             .as_ref()
-            .is_some_and(|still| still.at != window.mouse_position())
+            .is_some_and(|still| still.moved_to(window.mouse_position()))
         {
             self.still_pointer = None;
         }
@@ -284,10 +326,11 @@ impl GitTurtle {
 
     /// The pointer is at `position`: once it has moved, controls under it
     /// light up again. A frame's synthetic move, at the same place, does not
-    /// count.
+    /// count, nor does a hand's drift within [`STILL_POINTER_REACH`] of
+    /// where the pointer came to rest ([`StillPointer::moved_to`]).
     pub(super) fn pointer_moved(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
         if let Some(still) = &self.still_pointer
-            && still.at != position
+            && still.moved_to(position)
         {
             let moved = still.moved;
             self.still_pointer = None;
@@ -302,6 +345,35 @@ impl GitTurtle {
     /// Unstage all.
     pub(super) fn still_over_moved_rows(&self) -> bool {
         self.still_pointer.as_ref().is_some_and(|still| still.moved)
+    }
+
+    /// Whether `press` on a control of the list that starts a write, a
+    /// row's Stage or Unstage or a heading's Stage all or Unstage all, is
+    /// passed over: a pointer's press on what the rows moved under a pointer
+    /// that has not moved since, whatever the click's count. The press asks
+    /// what the hover asks ([`Self::still_over_moved_rows`]), so a control
+    /// takes a pointer's press exactly when the list lights it: the person
+    /// aimed at what stood there before, and what arrived writes nothing
+    /// until the pointer moves. Passed over only as a double-click's second
+    /// press, a second click half a second after a row's Stage, past the
+    /// double-click interval, pressed the Stage all that had taken the row's
+    /// place and staged every file. A press says where the pointer is, as a
+    /// move does ([`Self::pointer_moved`], and by the same distance,
+    /// [`StillPointer::moved_to`]): one made more than
+    /// [`STILL_POINTER_REACH`] from where the pointer rested comes from a
+    /// pointer that has moved, whether or not the list saw it move, and is
+    /// taken, and one nearer is a click in place, passed over as a press on
+    /// the very pixel is. Enter and Space aim at the
+    /// control holding focus, wherever the pointer rests, and are never
+    /// passed over, nor is an assistive technology's Click, which names its
+    /// control and reaches these handlers as the keyboard's click
+    /// (`workspace::PressedThrough`).
+    pub(super) fn passes_over_press(&mut self, press: &ClickEvent, cx: &mut Context<Self>) -> bool {
+        if press.is_keyboard() {
+            return false;
+        }
+        self.pointer_moved(press.position(), cx);
+        self.still_over_moved_rows()
     }
 
     /// The departed row the next rows should look for, in this repository.
@@ -962,6 +1034,49 @@ mod tests {
         advance(cx, ROW_TRAVEL.as_millis() as u64);
     }
 
+    /// The files staged in the fixture's index, as `git diff --cached
+    /// --name-only` lists them.
+    fn staged_files(fixture: &tempfile::TempDir) -> Vec<String> {
+        let output = crate::views::tests::fixture_git_output(
+            &fixture.path().join("narrow"),
+            &["diff", "--cached", "--name-only"],
+        );
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// A left press and release at `pointer`, click number `count` of a run,
+    /// in the frame as drawn. Returns whether the press started a write,
+    /// read with the operation executor held across the press; then that
+    /// write, its rows and its flight land ([`press_lands`]).
+    async fn press_writes(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        pointer: Point<Pixels>,
+        count: usize,
+    ) -> bool {
+        draw(cx);
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        counted_click(cx, pointer, count);
+        let started = app.read_with(cx, |app, _| app.operation_busy.is_some());
+        drop(held);
+        press_lands(app, cx).await;
+        started
+    }
+
+    /// The pointer moves 6 px to the left, past the 5 px within which it has
+    /// not moved, as a hand that was still does before it aims again. Returns
+    /// where it rests.
+    fn nudge(cx: &mut VisualTestContext, pointer: Point<Pixels>) -> Point<Pixels> {
+        let moved = pointer - point(px(6.), px(0.));
+        cx.simulate_mouse_move(moved, None, Modifiers::default());
+        draw(cx);
+        moved
+    }
+
     /// The travelling copy of a row in flight is a picture of the row: it
     /// takes no click and offers assistive technology nothing. A
     /// double-click's second press, on epsilon's place, finds the copy of
@@ -1009,30 +1124,40 @@ mod tests {
     }
 
     /// A lone click at the same place, not a double-click's second press,
-    /// still acts on what the rows moved under the still pointer: delta's
-    /// Stage, beneath the copy.
+    /// writes nothing either: delta's Stage, beneath the copy, arrived under
+    /// a pointer that has not moved, and what the still pointer does not
+    /// light it does not press, whatever the click's count (DESIGN.md,
+    /// "Motion"). Once the pointer has moved, the same click stages delta.
+    /// A lone click there acted on delta, which nobody aimed at.
     #[gpui::test]
-    async fn a_single_click_under_a_still_pointer_still_acts_on_the_row_beneath(
+    async fn a_lone_click_under_a_still_pointer_writes_nothing_to_the_row_beneath(
         cx: &mut TestAppContext,
     ) {
-        let (_fixture, app, cx) = six_files(cx).await;
+        let (fixture, app, cx) = six_files(cx).await;
         let pointer = epsilon_in_flight(&app, cx).await;
         draw(cx);
         assert!(
             app.read_with(cx, |app, _| app.still_over_moved_rows()),
             "the rows moved under the still pointer"
         );
-        counted_click(cx, pointer, 1);
-        press_lands(&app, cx).await;
-        assert_eq!(
-            staged_and_unstaged(&app, cx, "delta.txt"),
-            Some((true, false)),
-            "the click staged delta beneath the copy"
+        assert!(
+            !press_writes(&app, cx, pointer, 1).await,
+            "the click under the still pointer started a write"
         );
         assert_eq!(
-            staged_and_unstaged(&app, cx, "epsilon.txt"),
-            Some((true, false)),
-            "epsilon stays staged"
+            staged_files(&fixture),
+            ["alpha.txt", "beta.txt", "epsilon.txt"],
+            "delta, beneath the copy, stays unstaged and epsilon staged"
+        );
+        let moved = nudge(cx, pointer);
+        assert!(
+            press_writes(&app, cx, moved, 1).await,
+            "the moved pointer's click acts on the Stage it rests on"
+        );
+        assert_eq!(
+            staged_files(&fixture),
+            ["alpha.txt", "beta.txt", "delta.txt", "epsilon.txt"],
+            "the moved pointer's click staged delta"
         );
     }
 
@@ -1193,34 +1318,1220 @@ mod tests {
         }
     }
 
-    /// A lone click at the same place, not a double-click's second press,
-    /// still acts on the Stage all the rows moved under the still pointer.
+    /// A second click in place half a second after delta's Stage, past the
+    /// double-click interval and so a lone click, lands on the Stage all the
+    /// Unstaged heading brought under the pointer and writes nothing: the
+    /// pointer has not moved, so the person aimed at delta's Stage. It
+    /// staged every remaining file, any deliberate partial staging gone with
+    /// it. Once the pointer has moved, the same click stages them.
     #[gpui::test]
-    async fn a_single_click_on_stage_all_under_a_still_pointer_still_acts(cx: &mut TestAppContext) {
-        let (_fixture, app, cx) = six_files(cx).await;
+    async fn a_lone_click_on_stage_all_under_a_still_pointer_writes_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = six_files(cx).await;
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
         let pointer = heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
-        counted_click(cx, pointer, 1);
-        press_lands(&app, cx).await;
-        for file in ["epsilon.txt", "gamma.txt", "zeta.txt"] {
+        // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma, zeta]
+        assert!(
+            !press_writes(&app, cx, pointer, 1).await,
+            "the click on the Stage all that arrived started a write"
+        );
+        assert_eq!(
+            staged_files(&fixture),
+            ["alpha.txt", "beta.txt", "delta.txt"],
+            "the click staged files nobody aimed at"
+        );
+        let moved = nudge(cx, pointer);
+        assert_eq!(control_under(cx, moved).0, "stage-all");
+        assert!(
+            press_writes(&app, cx, moved, 1).await,
+            "the moved pointer's click presses Stage all"
+        );
+        assert_eq!(
+            staged_files(&fixture),
+            [
+                "alpha.txt",
+                "beta.txt",
+                "delta.txt",
+                "epsilon.txt",
+                "gamma.txt",
+                "zeta.txt"
+            ],
+            "the moved pointer's click staged every file"
+        );
+    }
+
+    /// The mirror of it: a lone click in place after Stage all lands on the
+    /// Unstage of the row that took the heading's place and writes nothing,
+    /// and once the pointer has moved the same click unstages that file.
+    #[gpui::test]
+    async fn a_lone_click_on_a_rows_unstage_under_a_still_pointer_writes_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = six_files(cx).await;
+        cx.simulate_resize(size(px(1480.), px(1400.)));
+        draw(cx);
+        let stage_all = cx.debug_bounds("stage-all").expect("Stage all");
+        let pointer = point(stage_all.right() - px(3.), stage_all.center().y);
+        let file = unstage_under_a_still_pointer(&app, cx, pointer).await;
+        let every = staged_files(&fixture);
+        assert_eq!(every.len(), 6, "Stage all staged every file: {every:?}");
+        assert!(
+            !press_writes(&app, cx, pointer, 1).await,
+            "the click on the Unstage that arrived started a write"
+        );
+        assert_eq!(
+            staged_files(&fixture),
+            every,
+            "the click unstaged {file}, which nobody aimed at"
+        );
+        let moved = nudge(cx, pointer);
+        assert!(
+            press_writes(&app, cx, moved, 1).await,
+            "the moved pointer's click presses the Unstage"
+        );
+        let rest: Vec<_> = every
+            .iter()
+            .filter(|name| **name != file)
+            .cloned()
+            .collect();
+        assert_eq!(
+            staged_files(&fixture),
+            rest,
+            "the moved pointer's click unstaged {file}"
+        );
+    }
+
+    /// And of the heading's: Unstage all, which only a list that moves
+    /// brings under a still pointer
+    /// ([`a_double_clicks_second_press_on_unstage_all_writes_nothing`]),
+    /// takes no lone click there, and once the pointer has moved the same
+    /// click unstages every file.
+    #[gpui::test]
+    async fn a_lone_click_on_unstage_all_under_a_still_pointer_writes_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        // [Staged 2, f00, f01, Unstaged 60, f02…f61]
+        let (fixture, app, cx) = long_list(cx, 2, 60).await;
+        scroll_list(&app, cx, 4);
+        let cursor_row = row(cx, 4).center();
+        cx.simulate_click(cursor_row, Modifiers::default());
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        let pointer = heading_action_under_a_still_pointer(&app, cx, 4, "unstage-all").await;
+        // [Staged 3, f00, f01, f02, Unstaged 59, f03…f61]
+        assert!(
+            !press_writes(&app, cx, pointer, 1).await,
+            "the click on the Unstage all that arrived started a write"
+        );
+        assert_eq!(
+            staged_files(&fixture),
+            ["f00.txt", "f01.txt", "f02.txt"],
+            "the click unstaged files nobody aimed at"
+        );
+        let moved = nudge(cx, pointer);
+        assert_eq!(control_under(cx, moved).0, "unstage-all");
+        assert!(
+            press_writes(&app, cx, moved, 1).await,
+            "the moved pointer's click presses Unstage all"
+        );
+        assert_eq!(
+            staged_files(&fixture),
+            Vec::<String>::new(),
+            "the moved pointer's click unstaged every file"
+        );
+    }
+
+    /// What a write's rows put under the pointer that pressed for it
+    /// ([`arrived_under_a_still_pointer`]).
+    #[derive(Clone, Copy, Debug)]
+    enum Arrived {
+        /// Stage all, where delta's row stood as its Stage was pressed.
+        StageAll,
+        /// Delta's Stage, where epsilon's row stood as its Stage was pressed.
+        ARowsStage,
+        /// A row's Unstage, where Stage all stood as it was pressed.
+        ARowsUnstage,
+        /// Unstage all, where the top row of a scrolled list stood as its
+        /// Stage was pressed
+        /// ([`a_double_clicks_second_press_on_unstage_all_writes_nothing`]).
+        UnstageAll,
+    }
+
+    /// A 1480 × 1400 window at display scale `scale` in which one press
+    /// started a write whose rows put `arrived` under the pointer, which has
+    /// not moved since. Returns where the pointer rests and the selector of
+    /// the control that arrived there.
+    async fn arrived_under_a_still_pointer(
+        cx: &mut TestAppContext,
+        arrived: Arrived,
+        scale: f32,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        Point<Pixels>,
+        &'static str,
+    ) {
+        let (fixture, app, cx) = match arrived {
+            Arrived::UnstageAll => long_list(cx, 2, 60).await,
+            _ => six_files(cx).await,
+        };
+        let (_, palette) = crate::appearance::test_palettes().remove(0);
+        cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+        // Tall enough that six files' rows are all in view. A resize takes
+        // the test display's scale, so the scale is set after it.
+        cx.simulate_resize(size(px(1480.), px(1400.)));
+        cx.update(|window, _| window.set_scale_factor(scale));
+        draw(cx);
+        assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
+        let pointer = match arrived {
+            // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+            Arrived::StageAll => {
+                heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await
+            }
+            Arrived::ARowsStage => {
+                let pointer = cx
+                    .debug_bounds("working-stage-5")
+                    .expect("epsilon's Stage")
+                    .center();
+                counted_click(cx, pointer, 1);
+                press_lands(&app, cx).await;
+                pointer
+            }
+            Arrived::ARowsUnstage => {
+                // Near the right end of the labelled Stage all, where the
+                // row's narrower Unstage arrives, with room around it.
+                let stage_all = cx.debug_bounds("stage-all").expect("Stage all");
+                let pointer = point(stage_all.right() - px(10.), stage_all.center().y);
+                unstage_under_a_still_pointer(&app, cx, pointer).await;
+                pointer
+            }
+            // [Staged 2, f00, f01, Unstaged 60, f02…f61]
+            Arrived::UnstageAll => {
+                scroll_list(&app, cx, 4);
+                let cursor_row = row(cx, 4).center();
+                cx.simulate_click(cursor_row, Modifiers::default());
+                rows_arrived(&app, cx).await;
+                draw(cx);
+                heading_action_under_a_still_pointer(&app, cx, 4, "unstage-all").await
+            }
+        };
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.still_over_moved_rows()),
+            "{arrived:?}: the rows moved under the still pointer"
+        );
+        let (selector, _) = control_under(cx, pointer);
+        (fixture, app, cx, pointer, selector)
+    }
+
+    /// Whether the write control drawn under `pointer`, which is `selector`,
+    /// is lit: it draws a fill in the frame drawn now, as its hover does.
+    fn lit_under(
+        cx: &mut VisualTestContext,
+        pointer: Point<Pixels>,
+        selector: &str,
+        at: &str,
+    ) -> bool {
+        draw(cx);
+        let (under, control) = control_under(cx, pointer);
+        assert_eq!(under, selector, "{at}: the control under {pointer:?}");
+        !crate::appearance::painted_button(cx, control).0.is_empty()
+    }
+
+    /// The left button goes down, or comes up, at `position`, as click
+    /// number `count` of a run.
+    fn counted_button(
+        cx: &mut VisualTestContext,
+        position: Point<Pixels>,
+        down: bool,
+        count: usize,
+    ) {
+        cx.update(|window, cx| {
+            let (button, modifiers) = (gpui::MouseButton::Left, Modifiers::default());
+            let event = if down {
+                PlatformInput::MouseDown(MouseDownEvent {
+                    position,
+                    modifiers,
+                    button,
+                    click_count: count,
+                    first_mouse: false,
+                })
+            } else {
+                PlatformInput::MouseUp(MouseUpEvent {
+                    position,
+                    modifiers,
+                    button,
+                    click_count: count,
+                })
+            };
+            window.dispatch_event(event, cx);
+        });
+    }
+
+    /// How a hand makes a second press a little away from where its pointer
+    /// came to rest ([`press_away_writes`]).
+    #[derive(Clone, Copy, Debug)]
+    enum Way {
+        /// The press alone at its place, no move seen before it.
+        PressAlone,
+        /// A move to its place, a frame, then the press.
+        MoveThenPress,
+        /// The button down where the pointer rests and up at its place, no
+        /// move seen between.
+        DownAtRestUpAway,
+        /// The same, dragged there in four moves with the button down.
+        DraggedThere,
+    }
+
+    /// A press, click number `count` of a run, made `(x, y)` px from `rest`
+    /// in the given `way`. Returns whether it started a write, read with the
+    /// operation executor held across it; then that write, its rows and its
+    /// flight land ([`press_lands`]).
+    async fn press_away_writes(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        rest: Point<Pixels>,
+        (x, y): (f32, f32),
+        way: Way,
+        count: usize,
+    ) -> bool {
+        let away = rest + point(px(x), px(y));
+        draw(cx);
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        match way {
+            Way::PressAlone => counted_click(cx, away, count),
+            Way::MoveThenPress => {
+                cx.simulate_mouse_move(away, None, Modifiers::default());
+                draw(cx);
+                counted_click(cx, away, count);
+            }
+            Way::DownAtRestUpAway | Way::DraggedThere => {
+                counted_button(cx, rest, true, count);
+                if matches!(way, Way::DraggedThere) {
+                    for step in 1..=4 {
+                        let part = step as f32 / 4.;
+                        cx.simulate_mouse_move(
+                            rest + point(px(x * part), px(y * part)),
+                            Some(gpui::MouseButton::Left),
+                            Modifiers::default(),
+                        );
+                    }
+                }
+                counted_button(cx, away, false, count);
+            }
+        }
+        let started = app.read_with(cx, |app, _| app.operation_busy.is_some());
+        drop(held);
+        press_lands(app, cx).await;
+        started
+    }
+
+    /// A second click in place is never on the first's pixel: a hand drifts
+    /// a pixel or so between two clicks, and Wayland reports fractions of
+    /// one. Up to 5 px along either axis from where the pointer came to rest,
+    /// the square in which the platform still counts it the same click, out
+    /// to its corners (4 px along and 4 px up, 5 px and 5 px), and at either
+    /// display scale, the click is still a click in place: what the rows
+    /// moved there is not lit and takes no press, however the hand makes it
+    /// ([`Way`]) and whatever its count. A press more than 5 px away along
+    /// an axis is a press somewhere else, and acts. Any change
+    /// of place at all counted as a move, so a second click 1 px, or a
+    /// quarter of one, from a row's Stage pressed the Stage all that had
+    /// taken the row's place and staged every file.
+    #[gpui::test]
+    async fn a_second_click_within_five_pixels_of_the_first_writes_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        for scale in [1., 2.] {
+            for arrived in [
+                Arrived::StageAll,
+                Arrived::ARowsStage,
+                Arrived::ARowsUnstage,
+                Arrived::UnstageAll,
+            ] {
+                let (fixture, app, cx, pointer, selector) =
+                    arrived_under_a_still_pointer(cx, arrived, scale).await;
+                let staged = staged_files(&fixture);
+                for (x, y, way, count) in [
+                    (0.25, 0., Way::PressAlone, 1),
+                    (1., 0., Way::PressAlone, 2),
+                    (0.25, 0., Way::MoveThenPress, 1),
+                    (3., 0., Way::MoveThenPress, 2),
+                    (0., -0.25, Way::DownAtRestUpAway, 1),
+                    (0., -3., Way::DownAtRestUpAway, 1),
+                    (-0.25, 0., Way::DraggedThere, 1),
+                    (3., 0., Way::DraggedThere, 1),
+                    (5., 0., Way::PressAlone, 1),
+                    (0., 5., Way::MoveThenPress, 1),
+                    (-5., 0., Way::DownAtRestUpAway, 1),
+                    (-3., 4., Way::DraggedThere, 1),
+                    (4., -4., Way::PressAlone, 2),
+                    (5., 5., Way::MoveThenPress, 1),
+                    (-5., 5., Way::DownAtRestUpAway, 2),
+                ] {
+                    let at = format!(
+                        "{arrived:?} at {scale}×, click {count} ({x}, {y}) px from the first, {way:?}"
+                    );
+                    let away = pointer + point(px(x), px(y));
+                    assert_eq!(control_under(cx, away).0, selector, "{at}");
+                    let wrote = press_away_writes(&app, cx, pointer, (x, y), way, count).await;
+                    assert_eq!(
+                        (wrote, staged_files(&fixture)),
+                        (false, staged.clone()),
+                        "{at}: whether the click started a write, and the files staged after it"
+                    );
+                    assert!(
+                        !lit_under(cx, away, selector, &at),
+                        "{at}: {selector} is lit after the click"
+                    );
+                }
+                let at = format!("{arrived:?} at {scale}×, a click 6 px from the first");
+                let away = pointer + point(px(6.), px(0.));
+                assert_eq!(control_under(cx, away).0, selector, "{at}");
+                assert!(
+                    press_away_writes(&app, cx, pointer, (6., 0.), Way::PressAlone, 1).await,
+                    "{at}: a press somewhere else is taken"
+                );
+                assert_ne!(staged_files(&fixture), staged, "{at}: it wrote");
+            }
+        }
+    }
+
+    /// A double-click's second press lands a pixel from its first, as a
+    /// hand's does, on the Stage all the first brought there: it writes
+    /// nothing, whether a move said where the pointer is before it or the
+    /// press is the first the list hears of it. With no move seen it was
+    /// passed over while only a double-click's second press was; with any
+    /// change of place counted as a move it staged every remaining file,
+    /// which nobody aimed at
+    /// ([`a_double_clicks_second_press_on_stage_all_writes_nothing`]).
+    #[gpui::test]
+    async fn a_double_clicks_second_press_a_pixel_away_writes_nothing(cx: &mut TestAppContext) {
+        for way in [Way::PressAlone, Way::MoveThenPress] {
+            let (fixture, app, cx) = six_files(cx).await;
+            // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+            let pointer = heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
+            // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma, zeta]
+            let away = pointer + point(px(1.), px(0.));
+            assert_eq!(control_under(cx, away).0, "stage-all", "{way:?}");
+            let wrote = press_away_writes(&app, cx, pointer, (1., 0.), way, 2).await;
             assert_eq!(
-                staged_and_unstaged(&app, cx, file),
-                Some((true, false)),
-                "the click staged {file}"
+                staged_files(&fixture),
+                ["alpha.txt", "beta.txt", "delta.txt"],
+                "{way:?}: the second press staged files nobody aimed at"
+            );
+            assert!(!wrote, "{way:?}: the second press started a write");
+        }
+    }
+
+    /// A pointer that moves a quarter of a pixel, or one, or three, or five,
+    /// with no button pressed has not moved either: what arrived under it
+    /// stays unlit, a heading's control and a row's alike and at either
+    /// display scale. Back where it rested and then 6 px from there in one
+    /// event, it has moved: the control lights, and a click presses it.
+    #[gpui::test]
+    async fn a_pointer_lights_what_arrived_once_it_is_more_than_five_pixels_away(
+        cx: &mut TestAppContext,
+    ) {
+        for scale in [1., 2.] {
+            for arrived in [Arrived::StageAll, Arrived::ARowsStage] {
+                let (fixture, app, cx, pointer, selector) =
+                    arrived_under_a_still_pointer(cx, arrived, scale).await;
+                let staged = staged_files(&fixture);
+                for (x, y) in [
+                    (0.25, 0.),
+                    (1., 0.),
+                    (3., 0.),
+                    (0., 3.),
+                    (-5., 0.),
+                    (4., -4.),
+                    (5., 5.),
+                    (0., 0.),
+                ] {
+                    let at = format!("{arrived:?} at {scale}×, moved ({x}, {y}) px");
+                    let away = pointer + point(px(x), px(y));
+                    cx.simulate_mouse_move(away, None, Modifiers::default());
+                    assert!(
+                        !lit_under(cx, away, selector, &at),
+                        "{at}: {selector} is lit"
+                    );
+                }
+                let at = format!("{arrived:?} at {scale}×, moved 6 px");
+                let away = pointer + point(px(6.), px(0.));
+                cx.simulate_mouse_move(away, None, Modifiers::default());
+                assert!(
+                    lit_under(cx, away, selector, &at),
+                    "{at}: {selector} is not lit"
+                );
+                assert!(
+                    press_writes(&app, cx, away, 1).await,
+                    "{at}: the click of a pointer that moved presses {selector}"
+                );
+                assert_ne!(staged_files(&fixture), staged, "{at}: it wrote");
+            }
+        }
+    }
+
+    /// The distance is from where the pointer came to rest, not from where
+    /// the last event left it. A pointer that wanders within 5 px of its
+    /// resting place, 6 px and more from one event to the next, has not
+    /// moved; one that drifts 3 px and then 4 px more the same way, never
+    /// more than 4 px in one event, is 7 px from where it rested and has:
+    /// Stage all lights and a click presses it. At either display scale.
+    #[gpui::test]
+    async fn a_drift_counts_from_where_the_pointer_came_to_rest(cx: &mut TestAppContext) {
+        for scale in [1., 2.] {
+            let (fixture, app, cx, pointer, selector) =
+                arrived_under_a_still_pointer(cx, Arrived::StageAll, scale).await;
+            for (x, y) in [(3., 0.), (-3., 0.), (0., 4.5), (0., -4.5), (3., 0.)] {
+                let at = format!("at {scale}×, wandered to ({x}, {y}) px");
+                let away = pointer + point(px(x), px(y));
+                cx.simulate_mouse_move(away, None, Modifiers::default());
+                assert!(
+                    !lit_under(cx, away, selector, &at),
+                    "{at}: {selector} is lit"
+                );
+            }
+            let at = format!("at {scale}×, drifted 3 px and 4 px more");
+            let away = pointer + point(px(7.), px(0.));
+            cx.simulate_mouse_move(away, None, Modifiers::default());
+            assert!(
+                lit_under(cx, away, selector, &at),
+                "{at}: {selector} is not lit"
+            );
+            assert!(
+                press_writes(&app, cx, away, 1).await,
+                "{at}: the click presses Stage all"
+            );
+            assert_eq!(staged_files(&fixture).len(), 6, "{at}: every file staged");
+        }
+    }
+
+    /// A hand drifts between its press and the rows the write produces, too,
+    /// as the write runs or as its rows are prepared: a pointer up to 5 px
+    /// from where it pressed delta's Stage as the rows land has not moved, so
+    /// the Stage all they bring there is not lit and takes no press. One
+    /// that went 6 px meanwhile has moved, as one that left the list has,
+    /// and Stage all lights under it.
+    #[gpui::test]
+    async fn a_pointer_that_drifts_before_the_rows_land_has_not_moved(cx: &mut TestAppContext) {
+        for (x, y, writing, still) in [
+            (0.25, 0., true, true),
+            (1., 0., false, true),
+            (0., 3., true, true),
+            (-5., 0., false, true),
+            (6., 0., true, false),
+            (6., 0., false, false),
+        ] {
+            let at = format!(
+                "({x}, {y}) px from the press as {}",
+                if writing {
+                    "the write runs"
+                } else {
+                    "its rows are prepared"
+                }
+            );
+            let (fixture, app, cx) = six_files(cx).await;
+            let (_, palette) = crate::appearance::test_palettes().remove(0);
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            draw(cx);
+            let away;
+            if writing {
+                // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+                let pointer = cx
+                    .debug_bounds("working-stage-4")
+                    .expect("delta's Stage")
+                    .center();
+                away = pointer + point(px(x), px(y));
+                let held = app.read_with(cx, |app, _| app.operations.hold());
+                counted_click(cx, pointer, 1);
+                cx.simulate_mouse_move(away, None, Modifiers::default());
+                draw(cx);
+                drop(held);
+            } else {
+                let (pointer, rows) = delta_staged_with_its_rows_held(&app, cx).await;
+                away = pointer + point(px(x), px(y));
+                cx.simulate_mouse_move(away, None, Modifiers::default());
+                draw(cx);
+                drop(rows);
+            }
+            presses_land(&app, cx).await;
+            // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma, zeta]
+            assert_eq!(
+                app.read_with(cx, |app, _| app.still_over_moved_rows()),
+                still,
+                "{at}: whether the pointer is still over the rows that moved"
+            );
+            assert_eq!(lit_under(cx, away, "stage-all", &at), !still, "{at}");
+            assert_eq!(
+                press_writes(&app, cx, away, 1).await,
+                !still,
+                "{at}: Stage all takes a press exactly when it is lit"
+            );
+            assert_eq!(
+                staged_files(&fixture).len(),
+                if still { 3 } else { 6 },
+                "{at}: the files staged"
             );
         }
     }
 
-    /// A double-click on Stage all at `pointer`: every file joins Staged, a
+    /// The other presses a hand can make where its pointer rests, on what a
+    /// write's rows put there, write nothing either: a triple-click's third
+    /// press; the left button after the right or the middle one; a click
+    /// after the pointer left the window and came back to its place with no
+    /// move seen over the list; a press begun while the first write ran and
+    /// ended once its rows had landed, and the click after it; clicks on the
+    /// row's Stage that arrived, after the right button opened that row's
+    /// menu beside it; and a lone click after a row menu's Unstage brought
+    /// Stage all under the pointer
+    /// ([`a_double_click_on_a_row_menus_item_writes_once`], whose second
+    /// press is a double-click's).
+    #[gpui::test]
+    async fn no_other_press_in_place_reaches_the_stage_all_that_arrived(cx: &mut TestAppContext) {
+        let mut failures = Vec::new();
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta],
+        // and once delta's Stage is pressed
+        // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma, zeta].
+        let delta_staged = ["alpha.txt", "beta.txt", "delta.txt"];
+        {
+            let (fixture, app, cx) = six_files(cx).await;
+            let pointer = heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
+            for count in [3, 1] {
+                if press_writes(&app, cx, pointer, count).await {
+                    failures.push(format!("click {count} of a triple-click started a write"));
+                }
+            }
+            if staged_files(&fixture) != delta_staged {
+                failures.push("a triple-click staged files nobody aimed at".to_owned());
+            }
+        }
+        {
+            let (fixture, app, cx) = six_files(cx).await;
+            let pointer = heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
+            for button in [gpui::MouseButton::Right, gpui::MouseButton::Middle] {
+                cx.simulate_mouse_down(pointer, button, Modifiers::default());
+                cx.simulate_mouse_up(pointer, button, Modifiers::default());
+                presses_land(&app, cx).await;
+            }
+            if press_writes(&app, cx, pointer, 1).await || staged_files(&fixture) != delta_staged {
+                failures.push("the left button after the right and the middle wrote".to_owned());
+            }
+        }
+        {
+            let (fixture, app, cx) = six_files(cx).await;
+            let pointer = heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
+            let outside = point(px(5.), px(5.));
+            cx.simulate_mouse_move(outside, None, Modifiers::default());
+            cx.simulate_event(gpui::MouseExitEvent {
+                position: outside,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            });
+            draw(cx);
+            cx.simulate_mouse_move(pointer, None, Modifiers::default());
+            draw(cx);
+            if press_writes(&app, cx, pointer, 1).await || staged_files(&fixture) != delta_staged {
+                failures.push(
+                    "a click after the pointer left the window and came back wrote".to_owned(),
+                );
+            }
+        }
+        {
+            let (fixture, app, cx) = six_files(cx).await;
+            let pointer = cx
+                .debug_bounds("working-stage-4")
+                .expect("delta's Stage")
+                .center();
+            let held = app.read_with(cx, |app, _| app.operations.hold());
+            counted_click(cx, pointer, 1);
+            draw(cx);
+            counted_click(cx, pointer, 1);
+            draw(cx);
+            counted_button(cx, pointer, true, 1);
+            draw(cx);
+            drop(held);
+            presses_land(&app, cx).await;
+            assert_eq!(control_under(cx, pointer).0, "stage-all");
+            let held = app.read_with(cx, |app, _| app.operations.hold());
+            counted_button(cx, pointer, false, 1);
+            let started = app.read_with(cx, |app, _| app.operation_busy.is_some());
+            drop(held);
+            presses_land(&app, cx).await;
+            if started || staged_files(&fixture) != delta_staged {
+                failures
+                    .push("a press begun while the first write ran wrote as it ended".to_owned());
+            }
+            if press_writes(&app, cx, pointer, 1).await || staged_files(&fixture) != delta_staged {
+                failures.push(
+                    "the click after a press begun while the first write ran wrote".to_owned(),
+                );
+            }
+        }
+        {
+            // [Staged 3, alpha, beta, epsilon, Unstaged 3, delta, gamma, zeta]
+            let (fixture, app, cx) = six_files(cx).await;
+            let pointer = cx
+                .debug_bounds("working-stage-5")
+                .expect("epsilon's Stage")
+                .center();
+            counted_click(cx, pointer, 1);
+            presses_land(&app, cx).await;
+            assert_eq!(control_under(cx, pointer).0, "working-stage-5");
+            cx.simulate_mouse_down(pointer, gpui::MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(pointer, gpui::MouseButton::Right, Modifiers::default());
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            next_frame(cx);
+            for click in 1..=2 {
+                let wrote = press_writes(&app, cx, pointer, 1).await;
+                next_frame(cx);
+                if wrote || staged_files(&fixture) != ["alpha.txt", "beta.txt", "epsilon.txt"] {
+                    failures.push(format!(
+                        "click {click} in place after the right button on the row that arrived wrote"
+                    ));
+                }
+            }
+        }
+        {
+            let (fixture, app, cx) = six_files(cx).await;
+            cx.update(|_, cx| cx.set_reduce_motion(true));
+            cx.simulate_resize(size(px(1480.), px(973.)));
+            draw(cx);
+            // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+            let alpha = cx.debug_bounds("working-row-1").expect("alpha's row");
+            let column = cx
+                .debug_bounds("stage-all")
+                .expect("the Unstaged heading's Stage all")
+                .center()
+                .x;
+            // Low in the row, so the menu's first item reaches the heading's row.
+            let pressed = point(column - px(24.), alpha.bottom() - px(3.));
+            cx.simulate_mouse_move(pressed, None, Modifiers::default());
+            cx.simulate_mouse_down(pressed, gpui::MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(pressed, gpui::MouseButton::Right, Modifiers::default());
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            next_frame(cx);
+            let item = cx
+                .debug_bounds("menu-item: Unstage · MenuItem")
+                .expect("alpha's menu leads with Unstage");
+            // The foot of the item, where the heading's control arrives.
+            let pointer = point(column, item.bottom() - px(3.));
+            cx.simulate_mouse_move(pointer, None, Modifiers::default());
+            next_frame(cx);
+            counted_click(cx, pointer, 1);
+            presses_land(&app, cx).await;
+            assert_eq!(control_under(cx, pointer).0, "stage-all");
+            assert_eq!(
+                staged_files(&fixture),
+                ["beta.txt"],
+                "the menu's item unstaged alpha"
+            );
+            if press_writes(&app, cx, pointer, 1).await || staged_files(&fixture) != ["beta.txt"] {
+                failures.push("a lone click in place after a row menu's Unstage wrote".to_owned());
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// The write control of the Working list drawn under `pointer`, a
+    /// heading's Stage all or Unstage all or a row's Stage or Unstage: its
+    /// selector and its bounds.
+    fn control_under(
+        cx: &mut VisualTestContext,
+        pointer: Point<Pixels>,
+    ) -> (&'static str, Bounds<Pixels>) {
+        ["stage-all".to_owned(), "unstage-all".to_owned()]
+            .into_iter()
+            .chain((0..64).map(|position| format!("working-stage-{position}")))
+            .find_map(|selector| {
+                let selector: &'static str = selector.leak();
+                cx.debug_bounds(selector)
+                    .filter(|control| control.contains(&pointer))
+                    .map(|control| (selector, control))
+            })
+            .unwrap_or_else(|| panic!("no write control is drawn under {pointer:?}"))
+    }
+
+    /// Waits for the status read a write asked for; its rows are then
+    /// prepared on the path filter's thread.
+    async fn status_read(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..4 {
+            cx.executor().run_until_parked();
+            let tasks = app.update(cx, |app, _| {
+                [app.task.take(), app.status_task.take()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+            });
+            if tasks.is_empty() {
+                break;
+            }
+            for task in tasks {
+                task.await;
+            }
+        }
+        cx.executor().run_until_parked();
+    }
+
+    /// [`press_lands`] until nothing runs: a second write a press started,
+    /// and the reads and rows after each.
+    async fn presses_land(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..4 {
+            press_lands(app, cx).await;
+            let settled = app.read_with(cx, |app, _| {
+                app.operation_busy.is_none()
+                    && app.status_task.is_none()
+                    && !app.working_paths.pending
+            });
+            if settled {
+                draw(cx);
+                return;
+            }
+        }
+        panic!("the writes and their rows never settled");
+    }
+
+    /// Delta's Stage is pressed and its write ends with the rows it produces
+    /// held back, still being prepared: the list draws its rows as they
+    /// were, delta's Stage under the pointer, which has not moved. Returns
+    /// that pointer and what holds the rows back.
+    async fn delta_staged_with_its_rows_held(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> (Point<Pixels>, crate::operations::Held) {
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+        let pointer = cx
+            .debug_bounds("working-stage-4")
+            .expect("delta's Stage")
+            .center();
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        counted_click(cx, pointer, 1);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        status_read(app, cx).await;
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_none()
+                && app.working_paths.pending),
+            "the write ended and its rows are being prepared"
+        );
+        assert_eq!(control_under(cx, pointer).0, "working-stage-4");
+        (pointer, rows)
+    }
+
+    /// A second click in place after delta's Stage never presses the Stage
+    /// all its rows bring under the pointer, whenever it arrives and however
+    /// it is counted. Before the rows land it finds delta's own Stage, still
+    /// drawn, and a click after them finds Stage all, which arrived under a
+    /// pointer that has not moved; once they have landed the second click
+    /// itself finds Stage all. Delta alone is staged. A click as the rows
+    /// were prepared once forgot the pointer the first had held, so Stage
+    /// all lit up as it arrived and the next click staged every file.
+    #[gpui::test]
+    async fn a_second_click_in_place_never_presses_the_stage_all_that_arrives(
+        cx: &mut TestAppContext,
+    ) {
+        for (landed, count) in [(false, 1), (false, 2), (true, 1), (true, 2)] {
+            let at = format!(
+                "click {count} {} the rows land",
+                if landed { "after" } else { "before" }
+            );
+            let (fixture, app, cx) = six_files(cx).await;
+            let (pointer, rows) = delta_staged_with_its_rows_held(&app, cx).await;
+            let mut rows = Some(rows);
+            if landed {
+                drop(rows.take());
+                presses_land(&app, cx).await;
+            }
+            assert_eq!(
+                app.read_with(cx, |app, _| app.still_over_moved_rows()),
+                landed,
+                "{at}"
+            );
+            counted_click(cx, pointer, count);
+            drop(rows.take());
+            presses_land(&app, cx).await;
+            // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma, zeta]
+            assert_eq!(control_under(cx, pointer).0, "stage-all", "{at}");
+            assert_eq!(
+                staged_files(&fixture),
+                ["alpha.txt", "beta.txt", "delta.txt"],
+                "{at}: the second click staged files nobody aimed at"
+            );
+            assert!(
+                !press_writes(&app, cx, pointer, 1).await,
+                "{at}: a click on the Stage all that arrived started a write"
+            );
+            assert_eq!(
+                staged_files(&fixture),
+                ["alpha.txt", "beta.txt", "delta.txt"],
+                "{at}: a later click staged files nobody aimed at"
+            );
+        }
+    }
+
+    /// A press whose button went down on delta's Stage as the rows its
+    /// first write produced were prepared, and came up once they had landed,
+    /// writes nothing. Where the window drew the new rows first, the release
+    /// finds the Stage all they put under the pointer, which never saw the
+    /// button go down. Where it comes after the rows landed and before the
+    /// window draws them, as between two frames, it finds delta's own Stage,
+    /// still drawn, which asks where the rows now stand and passes the press
+    /// over; that release ran `git add` on delta again.
+    #[gpui::test]
+    async fn a_press_that_went_down_before_the_rows_moved_writes_nothing(cx: &mut TestAppContext) {
+        for drawn in [true, false] {
+            let at = if drawn {
+                "released on the rows as landed"
+            } else {
+                "released before the landed rows are drawn"
+            };
+            let (fixture, app, cx) = six_files(cx).await;
+            let (pointer, rows) = delta_staged_with_its_rows_held(&app, cx).await;
+            cx.update(|window, cx| {
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        position: pointer,
+                        modifiers: Modifiers::default(),
+                        button: gpui::MouseButton::Left,
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+            });
+            draw(cx);
+            let release = move |window: &mut Window, cx: &mut App| {
+                window.dispatch_event(
+                    PlatformInput::MouseUp(MouseUpEvent {
+                        position: pointer,
+                        modifiers: Modifiers::default(),
+                        button: gpui::MouseButton::Left,
+                        click_count: 1,
+                    }),
+                    cx,
+                );
+            };
+            // The window draws a frame as each update ends, so a release
+            // between the rows' landing and the frame that draws them comes
+            // from an observer of that landing, which runs before the frame.
+            let released = Rc::new(Cell::new(false));
+            let _between_frames = (!drawn).then(|| {
+                cx.update(|window, cx| {
+                    let window = window.window_handle();
+                    let released = released.clone();
+                    cx.observe(&app, move |app, cx| {
+                        if released.get() || !app.read(cx).still_over_moved_rows() {
+                            return;
+                        }
+                        released.set(true);
+                        window
+                            .update(cx, |_, window, cx| release(window, cx))
+                            .expect("the window");
+                    })
+                })
+            });
+            let held = app.read_with(cx, |app, _| app.operations.hold());
+            drop(rows);
+            rows_arrived(&app, cx).await;
+            if drawn {
+                draw(cx);
+                assert_eq!(control_under(cx, pointer).0, "stage-all", "{at}");
+                cx.update(|window, cx| release(window, cx));
+                released.set(true);
+            }
+            assert!(released.get(), "{at}: the button came up");
+            let started = app.read_with(cx, |app, _| app.operation_busy.is_some());
+            drop(held);
+            presses_land(&app, cx).await;
+            assert!(!started, "{at}: the press started a write");
+            assert_eq!(
+                staged_files(&fixture),
+                ["alpha.txt", "beta.txt", "delta.txt"],
+                "{at}"
+            );
+        }
+    }
+
+    /// A pointer that leaves the Stage all a row's Stage brought under it
+    /// and comes back to rest there aimed at it: the control lights and a
+    /// click presses it, staging every file. The rule passes over only what
+    /// arrived under a pointer that has not moved.
+    #[gpui::test]
+    async fn a_pointer_that_comes_to_rest_on_stage_all_after_the_rows_landed_presses_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = six_files(cx).await;
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+        let pointer = heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
+        // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma, zeta]
+        let beta = row(cx, 2).center();
+        cx.simulate_mouse_move(beta, None, Modifiers::default());
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(control_under(cx, pointer).0, "stage-all");
+        assert!(
+            press_writes(&app, cx, pointer, 1).await,
+            "the click of a pointer that came to rest on Stage all presses it"
+        );
+        assert_eq!(staged_files(&fixture).len(), 6, "every file is staged");
+    }
+
+    /// Where the pointer stands as a control of the Working list is pressed
+    /// ([`a_working_control_takes_a_press_exactly_when_it_is_lit`]).
+    #[derive(Clone, Copy, Debug)]
+    enum Aim {
+        /// Moved onto delta's Stage, nothing pressed before.
+        MovedOntoARowsStage,
+        /// Still since it pressed delta's Stage, whose row the Unstaged
+        /// heading replaced: on Stage all.
+        StillOnStageAllThatArrived,
+        /// The same, then moved past the 5 px within which it has not moved
+        /// ([`nudge`]).
+        MovedOnStageAllThatArrived,
+        /// The same, then moved to each of these places in turn, in pixels
+        /// from where it rested.
+        AwayOnStageAllThatArrived(&'static [(f32, f32)]),
+        /// The same, then gone to another row and back.
+        BackOnStageAllThatArrived,
+        /// Still since it pressed epsilon's Stage, whose row delta's
+        /// replaced: on delta's Stage.
+        StillOnARowsStageThatArrived,
+        /// Still since it pressed Stage all, which a row replaced: on that
+        /// row's Unstage.
+        StillOnARowsUnstageThatArrived,
+        /// The same, then moved past the 5 px within which it has not moved
+        /// ([`nudge`]).
+        MovedOnARowsUnstageThatArrived,
+        /// The same, then moved to each of these places in turn, in pixels
+        /// from where it rested.
+        AwayOnARowsUnstageThatArrived(&'static [(f32, f32)]),
+    }
+
+    /// A control of the Working list that starts a write, a row's Stage or
+    /// Unstage or a heading's Stage all or Unstage all, takes a pointer's
+    /// press exactly when it is lit: the hover fill it draws under the
+    /// pointer and the press ask one question (`still_over_moved_rows`), so
+    /// what arrived under a pointer that has not moved shows no hover and
+    /// starts no write, whatever the click's count, and what the pointer
+    /// moved onto shows it and starts one. The pointer has moved once it is
+    /// more than 5 px along either axis from where it came to rest, not from
+    /// where its last event left it: at 1, 3 and exactly 5 px it lights
+    /// nothing and presses nothing, nor in that square's corners, 4 px along
+    /// and 4 px up or 5 px and 5 px, where the platform still counts a
+    /// double-click's second press; 5.5 px or 6 px along one axis is moved,
+    /// whatever the other, and so is a drift of 3 px and 4 px more.
+    #[gpui::test]
+    async fn a_working_control_takes_a_press_exactly_when_it_is_lit(cx: &mut TestAppContext) {
+        for (aim, count, lights) in [
+            (Aim::MovedOntoARowsStage, 1, true),
+            (Aim::StillOnStageAllThatArrived, 1, false),
+            (Aim::StillOnStageAllThatArrived, 2, false),
+            (Aim::MovedOnStageAllThatArrived, 1, true),
+            (Aim::AwayOnStageAllThatArrived(&[(1., 0.)]), 1, false),
+            (Aim::AwayOnStageAllThatArrived(&[(3., 0.)]), 2, false),
+            (Aim::AwayOnStageAllThatArrived(&[(0., 5.)]), 1, false),
+            (Aim::AwayOnStageAllThatArrived(&[(-3., 4.)]), 1, false),
+            (Aim::AwayOnStageAllThatArrived(&[(4., -4.)]), 1, false),
+            (Aim::AwayOnStageAllThatArrived(&[(5., 5.)]), 2, false),
+            (Aim::AwayOnStageAllThatArrived(&[(-5., 5.)]), 1, false),
+            (Aim::AwayOnStageAllThatArrived(&[(6., 0.)]), 1, true),
+            (Aim::AwayOnStageAllThatArrived(&[(0., 6.)]), 1, true),
+            (Aim::AwayOnStageAllThatArrived(&[(5.5, 0.)]), 1, true),
+            (Aim::AwayOnStageAllThatArrived(&[(-6., 3.)]), 1, true),
+            (
+                Aim::AwayOnStageAllThatArrived(&[(3., 0.), (7., 0.)]),
+                1,
+                true,
+            ),
+            (Aim::BackOnStageAllThatArrived, 1, true),
+            (Aim::BackOnStageAllThatArrived, 2, true),
+            (Aim::StillOnARowsStageThatArrived, 1, false),
+            (Aim::StillOnARowsStageThatArrived, 2, false),
+            (Aim::StillOnARowsUnstageThatArrived, 1, false),
+            (Aim::StillOnARowsUnstageThatArrived, 2, false),
+            (Aim::MovedOnARowsUnstageThatArrived, 1, true),
+            (Aim::AwayOnARowsUnstageThatArrived(&[(-1., 0.)]), 1, false),
+            (Aim::AwayOnARowsUnstageThatArrived(&[(-5., 0.)]), 1, false),
+            (Aim::AwayOnARowsUnstageThatArrived(&[(-6., 0.)]), 1, true),
+        ] {
+            let at = format!("{aim:?}, click {count}");
+            let (fixture, app, cx) = six_files(cx).await;
+            let (_, palette) = crate::appearance::test_palettes().remove(0);
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            // Tall enough that every row is in view.
+            cx.simulate_resize(size(px(1480.), px(1400.)));
+            draw(cx);
+            // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+            let stage = |cx: &mut VisualTestContext, position: usize| {
+                let selector: &'static str = format!("working-stage-{position}").leak();
+                cx.debug_bounds(selector).expect(selector).center()
+            };
+            // The pointer moves to each of `places` in turn, in pixels from
+            // where it rests. Returns where it ends.
+            let wander =
+                |cx: &mut VisualTestContext, rest: Point<Pixels>, places: &[(f32, f32)]| {
+                    let mut pointer = rest;
+                    for (x, y) in places {
+                        pointer = rest + point(px(*x), px(*y));
+                        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+                        draw(cx);
+                    }
+                    pointer
+                };
+            let pointer = match aim {
+                Aim::MovedOntoARowsStage => {
+                    let pointer = stage(cx, 4);
+                    cx.simulate_mouse_move(pointer, None, Modifiers::default());
+                    pointer
+                }
+                Aim::StillOnStageAllThatArrived
+                | Aim::MovedOnStageAllThatArrived
+                | Aim::AwayOnStageAllThatArrived(_)
+                | Aim::BackOnStageAllThatArrived => {
+                    let pointer =
+                        heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
+                    match aim {
+                        Aim::MovedOnStageAllThatArrived => nudge(cx, pointer),
+                        Aim::AwayOnStageAllThatArrived(places) => wander(cx, pointer, places),
+                        Aim::BackOnStageAllThatArrived => {
+                            let beta = row(cx, 2).center();
+                            cx.simulate_mouse_move(beta, None, Modifiers::default());
+                            cx.simulate_mouse_move(pointer, None, Modifiers::default());
+                            pointer
+                        }
+                        _ => pointer,
+                    }
+                }
+                Aim::StillOnARowsStageThatArrived => {
+                    let pointer = stage(cx, 5);
+                    counted_click(cx, pointer, 1);
+                    press_lands(&app, cx).await;
+                    pointer
+                }
+                Aim::StillOnARowsUnstageThatArrived
+                | Aim::MovedOnARowsUnstageThatArrived
+                | Aim::AwayOnARowsUnstageThatArrived(_) => {
+                    let stage_all = cx.debug_bounds("stage-all").expect("Stage all");
+                    let pointer = point(stage_all.right() - px(3.), stage_all.center().y);
+                    unstage_under_a_still_pointer(&app, cx, pointer).await;
+                    match aim {
+                        Aim::MovedOnARowsUnstageThatArrived => nudge(cx, pointer),
+                        Aim::AwayOnARowsUnstageThatArrived(places) => wander(cx, pointer, places),
+                        _ => pointer,
+                    }
+                }
+            };
+            draw(cx);
+            let (selector, control) = control_under(cx, pointer);
+            let lit = !crate::appearance::painted_button(cx, control).0.is_empty();
+            let staged = staged_files(&fixture);
+            let pressed = press_writes(&app, cx, pointer, count).await;
+            assert_eq!(lit, lights, "{at}: whether {selector} is lit");
+            assert_eq!(
+                pressed, lit,
+                "{at}: {selector} takes a press exactly when it is lit"
+            );
+            assert_eq!(
+                staged_files(&fixture) != staged,
+                pressed,
+                "{at}: the index changes exactly when the press is taken"
+            );
+        }
+    }
+
+    /// Enter and Space act on the control holding focus while the pointer
+    /// rests, still, on what the rows moved under it: the keyboard aims at
+    /// the focused control, wherever the pointer is, so the rule that passes
+    /// a pointer's press over leaves every key alone. Zeta's Stage, then the
+    /// heading's Stage all.
+    #[gpui::test]
+    async fn enter_and_space_act_on_a_focused_control_under_a_still_pointer(
+        cx: &mut TestAppContext,
+    ) {
+        for key in ["enter", "space"] {
+            let (fixture, app, cx) = six_files(cx).await;
+            crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+            cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+            // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+            heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
+            // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma, zeta]
+            let press = |cx: &mut VisualTestContext| {
+                let key = gpui::Keystroke::parse(key).unwrap();
+                cx.simulate_event(gpui::KeyDownEvent {
+                    keystroke: key.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                });
+                cx.simulate_event(gpui::KeyUpEvent { keystroke: key });
+            };
+            // The list is one Tab stop, and Tab from it reaches the selected
+            // row's control and then each heading's.
+            let zeta = position_of(&app, cx, "zeta.txt", ChangeArea::Unstaged);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    let workspace::WorkingRow::File(index, area) = app.working_rows[zeta] else {
+                        panic!("row {zeta} is a file's");
+                    };
+                    app.choose_working_selection(index, area, false, false, window, cx);
+                    window.focus(&app.file_focus, cx);
+                    app.focus_ring.mark(window);
+                })
+            });
+            crate::views::tests::settle(&app, cx).await;
+            let tab_to = |cx: &mut VisualTestContext, stop: &str| {
+                for _ in 0..6 {
+                    if crate::views::tests::working_stop(&app, cx) == stop {
+                        break;
+                    }
+                    cx.simulate_keystrokes("tab");
+                    draw(cx);
+                }
+                assert_eq!(crate::views::tests::working_stop(&app, cx), stop, "{key}");
+            };
+            tab_to(cx, format!("working-stage-{zeta}").as_str());
+            assert!(
+                app.read_with(cx, |app, _| app.still_over_moved_rows()),
+                "{key}: the pointer is still over the rows that moved"
+            );
+            press(cx);
+            presses_land(&app, cx).await;
+            assert_eq!(
+                staged_files(&fixture),
+                ["alpha.txt", "beta.txt", "delta.txt", "zeta.txt"],
+                "{key} on zeta's Stage stages zeta"
+            );
+            tab_to(cx, "stage-all");
+            assert!(
+                app.read_with(cx, |app, _| app.still_over_moved_rows()),
+                "{key}: the pointer is still over the rows that moved"
+            );
+            press(cx);
+            presses_land(&app, cx).await;
+            assert_eq!(
+                staged_files(&fixture).len(),
+                6,
+                "{key} on Stage all stages every file"
+            );
+        }
+    }
+
+    /// One press of Stage all at `pointer`: every file joins Staged and a
     /// file's row, with its Unstage, takes the heading's place under the
-    /// pointer, and the second press writes nothing. It unstaged that file,
-    /// the press on the heading holding no still pointer for the row's
-    /// guard. Delta's row where the list shows every row; in a shorter list
-    /// the row that showing the confirming heading brings there.
-    async fn double_click_stage_all(
+    /// pointer, which has not moved since. Delta's row where the list shows
+    /// every row; in a shorter list the row that showing the confirming
+    /// heading brings there. Returns that file.
+    async fn unstage_under_a_still_pointer(
         app: &Entity<GitTurtle>,
         cx: &mut VisualTestContext,
         pointer: Point<Pixels>,
-    ) {
+    ) -> String {
         // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
         counted_click(cx, pointer, 1);
         press_lands(app, cx).await;
@@ -1246,6 +2557,20 @@ mod tests {
             Some((true, false)),
             "the first press staged {file}"
         );
+        file
+    }
+
+    /// A double-click on Stage all at `pointer`: a file's row, with its
+    /// Unstage, takes the heading's place under the pointer
+    /// ([`unstage_under_a_still_pointer`]), and the second press writes
+    /// nothing. It unstaged that file, the press on the heading holding no
+    /// still pointer for the row's guard.
+    async fn double_click_stage_all(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        pointer: Point<Pixels>,
+    ) {
+        let file = unstage_under_a_still_pointer(app, cx, pointer).await;
         counted_click(cx, pointer, 2);
         press_lands(app, cx).await;
         assert_eq!(
@@ -11299,8 +12624,8 @@ mod tests {
     /// showed, once appeared over epsilon's row about a second after the
     /// press and stayed until the pointer moved; and gamma's own control in
     /// Staged, which starts its flight under the pointer, said "Staged".
-    /// Once the pointer moves a pixel, epsilon's Stage lights up and its own
-    /// tooltip shows. A pointer that leaves for Fetch before the rows land
+    /// Once the pointer has moved, 6 px from where it rested, epsilon's Stage
+    /// lights up and its own tooltip shows. A pointer that leaves for Fetch before the rows land
     /// is not still: Fetch's tooltip shows there, where hiding the window's
     /// tooltip as the rows landed once cancelled it for good.
     #[gpui::test]
@@ -11416,7 +12741,7 @@ mod tests {
                 assert_eq!(tooltips(cx), 0, "{rest:?}: no tooltip {after} ms on");
             }
 
-            cx.simulate_mouse_move(pointer + point(px(1.), px(0.)), None, Modifiers::default());
+            cx.simulate_mouse_move(pointer + point(px(6.), px(0.)), None, Modifiers::default());
             draw(cx);
             assert_eq!(
                 fills(cx).len(),

@@ -2246,7 +2246,8 @@ fn reveal_heading(
 /// label, and a pressed fill that is its resting fill, so a press on the row
 /// in flight lights nothing. The kit applies a Button's pressed style to any
 /// Button that is not disabled, the picture's among them, and the still
-/// pointer's variant keeps the shared pressed fill for a control that acts.
+/// pointer's variant keeps the shared pressed fill: its control acts on the
+/// keyboard's press, and on the pointer's once the pointer has moved.
 fn picture_control_variant(
     p: appearance::Palette,
     cx: &App,
@@ -2255,6 +2256,45 @@ fn picture_control_variant(
         gpui_kit::component::button::ButtonCustomVariant::new(cx)
             .foreground(rgb(p.control_label()).into()),
     )
+}
+
+/// A Working list control whose pointer presses can be passed over
+/// (`GitTurtle::passes_over_press`): a row's Stage or Unstage, a heading's
+/// Stage all or Unstage all.
+trait PressedThrough {
+    /// The control with `press` as its click and, where `assistive`, as an
+    /// assistive technology's Click too, which `press` is given as the
+    /// keyboard's click is. Left to GPUI, that Click is a pointer's press and
+    /// release made up at the control's centre, with no move before it: it
+    /// would be passed over wherever the rows had moved under the pointer it
+    /// stands in for, as after the Click before it, though it names its
+    /// control and so aims at it. `assistive` only where the control is not
+    /// refused, so one announced unavailable offers no Click.
+    fn pressed_through(
+        self,
+        assistive: bool,
+        press: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self;
+}
+
+impl PressedThrough for Button {
+    fn pressed_through(
+        self,
+        assistive: bool,
+        press: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        let press = Rc::new(press);
+        let control = self.on_click({
+            let press = press.clone();
+            move |event, window, cx| press(event, window, cx)
+        });
+        if !assistive {
+            return control;
+        }
+        control.on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| {
+            press(&ClickEvent::default(), window, cx)
+        })
+    }
 }
 
 /// How the Working list scrolls to show a confirming heading whole
@@ -6363,14 +6403,17 @@ impl GitTurtle {
         // itself, the travelling copy of a row in flight
         // (`motion::TravellingRow`): no Tab stop, no click, hover, tooltip or
         // menu, and no `working-stage-…` selector, so a click on it reaches
-        // the row the list draws beneath, as one under a still pointer does.
-        // Its control's click once unstaged the file a double-click's first
+        // the row the list draws beneath, whose control takes a pointer's
+        // press only once the pointer has moved (`passes_over_press`). Its
+        // control's click once unstaged the file a double-click's first
         // press had just staged.
         let picture = controls.is_none();
         // What the rows moved under a pointer that has not moved since it
         // pressed a row's Stage or Unstage or a heading's Stage all or
         // Unstage all shows no hover and no tooltip until it moves
-        // (`motion::StillPointer`), nor does a picture.
+        // (`motion::StillPointer`), nor does a picture. A control it does
+        // not light takes no pointer's press either, which asks the same
+        // question (`passes_over_press`).
         let still = picture || self.still_over_moved_rows();
         // A control takes the shared look without its hover fill, and no
         // tooltip at all, not even its confirmation's word: gamma's Stage,
@@ -6542,14 +6585,17 @@ impl GitTurtle {
                                 .when(unavailable && confirming, |control| {
                                     control.text_color(rgb(p.control_label()))
                                 })
-                                .on_click(cx.listener(
-                                    move |this, event: &ClickEvent, window, cx| {
-                                        // A double-click's second press, on the
-                                        // heading the first press's write moved
-                                        // under the pointer, does nothing, as on
-                                        // a row's control: it wrote every
-                                        // remaining file, which nobody aimed at.
-                                        if event.click_count() > 1 && this.still_over_moved_rows() {
+                                .pressed_through(
+                                    !(refused || unavailable),
+                                    cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                        // A pointer's press on the heading a
+                                        // write's rows moved under it while it
+                                        // has not moved does nothing, as on a
+                                        // row's control and whatever the
+                                        // click's count: it wrote every
+                                        // remaining file, which nobody aimed at
+                                        // (`passes_over_press`).
+                                        if this.passes_over_press(event, cx) {
                                             return;
                                         }
                                         // Refused at once while a write runs or the
@@ -6579,8 +6625,8 @@ impl GitTurtle {
                                             window,
                                             cx,
                                         )
-                                    },
-                                ))
+                                    }),
+                                )
                                 .node_recorded(),
                             focus.as_ref(),
                             window,
@@ -6838,16 +6884,18 @@ impl GitTurtle {
                                     busy,
                                     busy && looks_busy,
                                 )
-                                .on_click(cx.listener(
-                                    move |this, event: &ClickEvent, window, cx| {
+                                .pressed_through(
+                                    !busy,
+                                    cx.listener(move |this, event: &ClickEvent, window, cx| {
                                         cx.stop_propagation();
-                                        // A double-click's second press, on
-                                        // the row the first press's write
-                                        // moved under the pointer, does
-                                        // nothing: it staged a file nobody
-                                        // aimed at, which is worse than a
-                                        // lost press.
-                                        if event.click_count() > 1 && this.still_over_moved_rows() {
+                                        // A pointer's press on the row a
+                                        // write's rows moved under it while
+                                        // it has not moved does nothing,
+                                        // whatever the click's count
+                                        // (`passes_over_press`): it staged
+                                        // a file nobody aimed at, which is
+                                        // worse than a lost press.
+                                        if this.passes_over_press(event, cx) {
                                             return;
                                         }
                                         if this.operation_busy.is_none() {
@@ -6861,8 +6909,8 @@ impl GitTurtle {
                                             window,
                                             cx,
                                         );
-                                    },
-                                ))
+                                    }),
+                                )
                             })
                             .node_recorded(),
                             stage_focus.as_ref(),
@@ -8243,11 +8291,12 @@ pub(super) fn working_row_menu(
                         ChangeArea::Unstaged
                     };
                     if let Some(row) = this.working_row_position(&path, area) {
-                        // A double-click's second press lands where this
-                        // write moves a row or a heading under the pointer,
-                        // as on a row's own control. Held on every confirm:
-                        // for a keyboard's it costs only hover staying off
-                        // until the pointer moves.
+                        // A second press lands where this write moves a
+                        // row or a heading under the pointer, as on a row's
+                        // own control. Held on every confirm: for a
+                        // keyboard's it costs only hover, and a pointer's
+                        // press on those controls, staying off until the
+                        // pointer moves.
                         if this.operation_busy.is_none() {
                             this.hold_still_pointer(row, window);
                         }
