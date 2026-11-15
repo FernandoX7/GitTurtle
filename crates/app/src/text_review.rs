@@ -3164,6 +3164,34 @@ mod tests {
         panic!("the quiet read never landed");
     }
 
+    /// Lets every read the window asked for by itself land, so that none
+    /// runs or waits as a test changes the repository outside the app: the
+    /// watcher's setup, on the operation thread, and the rescan it asks for
+    /// as it lands, which each read of the fixture's setup puts back to
+    /// wait and starts again. `settle` awaits neither
+    /// (`views::tests::hold_quiet_reads_for_test`), so on a slow host that
+    /// rescan still runs on the reader's thread as the test goes on. A
+    /// quiet read compares the index its status found with the worktree as
+    /// it stands when the read reaches the file, so one that read the
+    /// status before a change of several steps and the file during or after
+    /// it lands as a diff the repository never held, ahead of the read the
+    /// test asks for ([`quiet_read_lands`]). A test's watch reports nothing
+    /// by itself: once these have landed, nothing reads until the test asks.
+    fn earlier_reads_land(app: &gpui::Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) {
+        for _ in 0..16 {
+            // The watcher's setup and its checks run on the operation thread.
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.executor().run_until_parked();
+            if app.read_with(cx, |app, _| {
+                !app.automatic.quiet_read_requested() && app.automatic.replies_landed()
+            }) {
+                return;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+        }
+        panic!("the window's own reads never landed");
+    }
+
     /// Asserts that `route`'s text holds focus, `when`.
     fn assert_text_focused(route: &Route, cx: &mut gpui::VisualTestContext, when: &str) {
         assert!(
@@ -3603,6 +3631,11 @@ mod tests {
         let row = hunk_rows(&app, cx)[1];
         let stage = drawn_stage_hunk(cx, row);
         pointer_down(cx, stage.center());
+        // Earlier reads land first, so none reads this three-step change
+        // part made, or the index from before it against the worktree after
+        // it: another diff, which ends the press before the read asked for
+        // below shows the same one again.
+        earlier_reads_land(&app, cx);
         let root = fixture.path().join("narrow");
         let far = |notes: String| notes.replace("note 40\n", "forty\n");
         std::fs::write(root.join("notes.txt"), far(hunks_named(""))).unwrap();
