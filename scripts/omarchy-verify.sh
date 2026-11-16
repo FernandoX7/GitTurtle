@@ -39,6 +39,7 @@ readonly THEME_SECONDS=10    # one theme in the plan's estimate: the switch, its
 readonly REST_OF_DESKTOP=120 # seconds the plan's estimate gives everything else in the desktop part
 readonly MAX_UNPACKED=$((1024 * 1024 * 1024)) # bytes an archive may unpack to (a release unpacks to about 0.2 GiB)
 readonly MAX_ENTRIES=20000   # files and directories an archive may hold
+readonly SIZE_DIGITS=12      # a size in an archive's listing, and their sum, is a plain number of at most this many digits
 # The files `omarchy-font-set` (Omarchy 4.5) rewrites under ~/.config; it creates
 # kitty/ and fontconfig/ when they are missing.
 readonly FONT_FILES=(alacritty/alacritty.toml kitty/kitty.conf ghostty/config foot/foot.ini fontconfig/fonts.conf)
@@ -106,7 +107,7 @@ CHECK="" PROBLEMS=() PARTIALS=() COUNT_OK=0 COUNT_PARTIAL=0 COUNT_FAILED=0 COUNT
 START_EPOCH=0 STOPPED_BY="" OWNER_INSTALL_START=""
 DESKTOP_REFUSAL="" DESKTOP_START="" RESTORES=() RESTORE_FAILURES=() KEEP_RESTORE=no
 START_FOCUS="" START_DND="" START_AWAKE=""
-START_WORKSPACE="" ALONE=no HANDS_DONE=0 HANDS_ABSENT=no
+START_WORKSPACE="" LEAVES_WORKSPACE="" ALONE=no HANDS_DONE=0 HANDS_ABSENT=no
 LAUNCH="" DEMO="" APP_PID="" APP_ADDRESS=""
 START_THEME="" START_WALLPAPER=""
 THEME_BLOCKER="" THEME_UNKNOWNS=() SUDO_ASKED=no
@@ -203,7 +204,12 @@ says will not run is not started later in the run. It refuses the desktop part
 when Hyprland is not the compositor, when the session is locked or its lock state
 cannot be told, on battery below 30 %, when the desktop is on a named workspace
 or shows a special one (the run starts from a numbered workspace and returns to
-it), or when this monitor has no workspace without a window. With the desktop
+it), or when this monitor has no workspace without a window. The desktop part
+also ends at its start, before GitTurtle opens, when Omarchy's shell does not
+confirm that notifications are silenced once the script has asked for that: no
+picture could be taken, so silencing and the workspace are put back as they
+were, nothing else on the desktop is changed, and every check of the desktop
+part reports skipped with that reason. With the desktop
 part asked for, a results directory that lies under your home or names you or
 the host stops the run at the start (exit 2): GitTurtle's header shows the demo
 repository's path, so run it from /var/tmp.
@@ -216,13 +222,21 @@ A kill the script cannot catch (kill -9) or a power loss leaves the desktop as t
 step in progress had it. Before the first change the script prints where the
 starting state is written (records/desktop-start.txt, and work/restore under the
 results directory, with the saved copies and their manifest.txt) and how to put
-each thing back by hand, in the order the script itself uses: the workspace
-(SUPER + its number), the theme (omarchy-theme-set), the skip toggles this run
-made and the toggles directory if it made that too (remove them), the font
+back by hand what this run changes: a step only for a change the plan lets the
+run make, each to be taken only if the desktop differs from the starting value
+the step gives, and in the order the script itself uses. In general: the
+workspace (SUPER + its number); the theme (omarchy-theme-set, only when the
+current theme is another one, because setting the current theme again moves on
+to its next wallpaper); the wallpaper (omarchy-theme-bg-set with the path that
+manifest.txt keeps); the skip toggles this run made and the toggles directory
+if it made that too (remove them); the font
 (omarchy-font-set) and only then the font files, which omarchy-font-set rewrites
-(copy each saved font-N over the file manifest.txt names), the scale (hyprctl
-reload), notification silencing (omarchy-shell notifications setDnd off) and
-stay-awake (omarchy-toggle-idle allow-idle).
+(copy each saved font-N over the file manifest.txt names), the font only when
+the current font is another one, because omarchy-font-set rewrites those files
+and replaces a link at three of them whatever the font was; the scale (hyprctl
+reload); and, where the run found them off, notification silencing
+(omarchy-shell notifications setDnd off) and stay-awake (omarchy-toggle-idle
+allow-idle).
 The themes check is skipped, with the reason, where a switch would do more than the
 above. Two reasons stand whatever is asked: Omarchy's theme sync being on (it
 pushes each theme to your herdr machines over SSH), and Omarchy's sudo rule for
@@ -1748,17 +1762,24 @@ check_archive() {
     result
     return
   fi
-  # A size that is not a plain number is never counted as nothing: the sum is then
-  # not a number either, and the archive is not extracted.
-  unpacked=$(awk '$2 !~ /^[0-9]+\/[0-9]+$/ || $3 !~ /^[0-9]+$/ { unread = 1 } { bytes += $3 }
-    END { if (unread) print "unknown"; else printf "%.0f", bytes }' "$WORK/archive-listing.txt")
+  # A size counts only as a plain number of at most SIZE_DIGITS digits, and it is
+  # held to that before anything is computed from it: awk stops at the first that
+  # is not, and the shell compares the sum only once the sum is such a number too.
+  # A member can list as 2^62 bytes for nothing (a sparse one is all hole), and two
+  # of them add up to a total that 64-bit arithmetic reads as negative, and so as
+  # within the limit. An archive refused here is not extracted, so nothing of it is
+  # hashed or read afterwards either.
+  unpacked=$(awk -v digits="$SIZE_DIGITS" '
+    $2 !~ /^[0-9]+\/[0-9]+$/ || $3 !~ /^[0-9]+$/ || length($3) > digits { unread = 1; exit }
+    { bytes += $3 }
+    END { if (unread) print "unread"; else printf "%.0f", bytes }' "$WORK/archive-listing.txt")
   entries=$(grep -c . "$WORK/archive-names.txt")
   if [[ ! $unpacked =~ ^[0-9]+$ ]]; then
-    problem "not extracted: a size in its listing could not be read, so what it would unpack to is not known"
+    problem "not extracted: a size in its listing is not a plain number of at most $SIZE_DIGITS digits, so what it would unpack to is not counted"
     result
     return
   fi
-  if ((unpacked > MAX_UNPACKED || entries > MAX_ENTRIES)); then
+  if ((${#unpacked} > SIZE_DIGITS)) || ((unpacked > MAX_UNPACKED || entries > MAX_ENTRIES)); then
     problem "not extracted: it would unpack to $unpacked bytes in $entries entries, over the limit of $MAX_UNPACKED bytes and $MAX_ENTRIES entries"
     result
     return
@@ -1893,38 +1914,97 @@ desktop_snapshot() {
   for file in "${FONT_FILES[@]}"; do printf 'file ~/.config/%s %s\n' "$file" "$(file_mark "$HOME/.config/$file")"; done
 }
 
-# How to put the desktop back by hand, with this run's own values.
+# True when the plan lets the named check run. A check the plan lets run can still
+# skip itself, so what the text below says of it is conditional too.
+planned() { ! skip_named "$1" && [[ $1 != themes || -z $THEME_BLOCKER ]]; }
+
+# How to put back by hand what this run changes, with this run's own values: a
+# step only for a change the plan lets the run make, in the script's own order,
+# and each only where the desktop differs from the value given, which is how the
+# run found it. A step taken where nothing was changed would itself change
+# something: setting the current theme again moves on to its next wallpaper, and
+# omarchy-font-set rewrites the font files and replaces a link at three of them.
+# The skip toggles and the wallpaper are told by what manifest.txt lists: a
+# toggle only if this run made it, and the wallpaper's path, which the records
+# must not hold.
 by_hand() {
-  local theme font
+  local theme font scales manifest=$RESTORE/manifest.txt
+  local -a steps=()
   theme=$(sed -n 's/^theme //p' <<<"$DESKTOP_START")
   font=$(sed -n 's/^font //p' <<<"$DESKTOP_START")
-  cat <<TEXT
-The script puts all of this back itself, on every exit. After a kill it could not
-catch (kill -9) or a power loss, put it back by hand, in this order:
-  the workspace          it was $START_WORKSPACE: SUPER + $(((${START_WORKSPACE:-1} - 1) % 10 + 1)), its number among this monitor's ten
-  the theme              omarchy-theme-set "$theme"
-  the skip toggles       remove each file that $RESTORE/manifest.txt
-                         lists as "toggle ... made by this run", and then the
-                         toggles directory, if a line there says
-                         "directory ... made by this run" (rmdir: it goes only
-                         when nothing else is in it)
-  the font               omarchy-font-set "$font"
-  the font files         after the font, because omarchy-font-set rewrites
-                         them: for each font-N line of that manifest.txt, copy
+  scales=$(sed -n 's/^monitor \([^ ]*\) .* scale \([^ ]*\) at .*/\1 at \2/p' <<<"$DESKTOP_START" | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+  if [[ $LEAVES_WORKSPACE != no && $START_WORKSPACE =~ ^[0-9]+$ ]]; then
+    steps+=("  the workspace          only if the desktop is not on workspace $START_WORKSPACE, where the run
+                         started: SUPER + $(((START_WORKSPACE - 1) % 10 + 1)), its number among this monitor's ten")
+  fi
+  if planned themes && [[ -n $theme ]]; then
+    steps+=("  the theme              only if ~/.local/state/omarchy/current/theme.name does not
+                         read \"$theme\" (setting the current theme again moves on
+                         to its next wallpaper): omarchy-theme-set \"$theme\"")
+    if grep -q $'^wallpaper\t' "$manifest" 2>/dev/null; then
+      steps+=("  the wallpaper          after the theme, and only if ~/.local/state/omarchy/current/background
+                         does not lead to the picture that the \"wallpaper\" line of
+                         $manifest names:
+                         omarchy-theme-bg-set and that picture's path")
+    fi
+    steps+=("  the skip toggles       only what $manifest
+                         lists as \"toggle ... made by this run\": remove each such
+                         file, and then the toggles directory, if a line there says
+                         \"directory ... made by this run\" (rmdir: it goes only
+                         when nothing else is in it). A toggle that was on before
+                         the run is not listed, and stays on")
+  fi
+  if planned font && [[ -n $font ]]; then
+    steps+=("  the font               only if omarchy-font-current does not print \"$font\"
+                         (omarchy-font-set rewrites the font files, and replaces a
+                         link at three of them, when the font is the same too):
+                         omarchy-font-set \"$font\""
+      "  the font files         after the font, because omarchy-font-set rewrites them, and
+                         only where a file differs from its saved copy: for each font-N line of
+                         $manifest, copy
                          $RESTORE/font-N over the file the line
-                         names, and remove a file a line calls "absent"
-  the monitor's scale    hyprctl reload
-  notification silencing omarchy-shell notifications setDnd ${START_DND:-off}
-  stay-awake             $([[ $START_AWAKE == yes ]] && echo "it was on: nothing to do" || echo "omarchy-toggle-idle allow-idle")
-A GitTurtle window or a terminal this run opened can simply be closed.
-TEXT
+                         names, and remove a file a line calls \"absent\". Before the
+                         font check has saved the files there is no such line, and
+                         the files are as found")
+  fi
+  if planned scales && [[ -n $scales ]]; then
+    steps+=("  the monitor's scale    only if hyprctl monitors shows another scale than the run
+                         found ($scales): hyprctl reload")
+  fi
+  if [[ $START_DND == off ]]; then
+    steps+=("  notification silencing only if \"omarchy-shell notifications isDnd\" prints on (it
+                         printed off): omarchy-shell notifications setDnd off")
+  fi
+  if [[ $START_AWAKE == no ]]; then
+    steps+=("  stay-awake             only if ~/.local/state/omarchy/indicators/stay-awake exists
+                         (it did not): omarchy-toggle-idle allow-idle")
+  fi
+  if ((${#steps[@]} == 0)); then
+    echo "The script puts back what it changes itself, on every exit. This run changes"
+    echo "nothing that would need putting back by hand after a kill it could not catch"
+    echo "(kill -9) or a power loss."
+  else
+    echo "The script puts back what it changes itself, on every exit. After a kill it could"
+    echo "not catch (kill -9) or a power loss, put back by hand what is listed here, which"
+    echo "is what this run changes: in this order, and each only if it differs from the"
+    echo "value given, which is how the run found it."
+    printf '%s\n' "${steps[@]}"
+  fi
+  echo "A GitTurtle window or a terminal this run opened can simply be closed."
 }
 # The starting state, written where a hard stop still leaves it readable: in the
 # records, which are packed, and beside the saved copies in work/restore. The
 # terminal is told where both are and how to put the desktop back by hand.
 record_desktop_start() {
+  local wallpaper
   DESKTOP_START=$(desktop_snapshot)
   restore_note "# What this run saved or made: kind, path, note, separated by tabs. desktop-start.txt beside this file is the desktop as it was found."
+  # The wallpaper's path may name a private picture, so it stays out of the
+  # records, which are packed: the by-hand text points at this line instead.
+  wallpaper=$(wallpaper_now)
+  if planned themes && [[ -f $wallpaper && $wallpaper != *[[:cntrl:]]* ]]; then
+    restore_note "wallpaper	$wallpaper	the wallpaper as found; omarchy-theme-bg-set with this path puts it back"
+  fi
   {
     echo "The desktop as the desktop part found it ($(date -u +%FT%TZ)):"
     printf '%s\n' "$DESKTOP_START"
@@ -1941,7 +2021,7 @@ record_desktop_start() {
 # Records the starting state, moves to a workspace of the run's own, then makes
 # the two changes every picture needs: no notification, no screensaver.
 begin_desktop_part() {
-  local now
+  local now windows=""
   # The plan stands: a part it said would not run stays off, whatever has changed
   # since (the charger plugged in during the package build). A change for the
   # worse still stops it.
@@ -1955,7 +2035,10 @@ begin_desktop_part() {
   # show, so nothing on the desktop is changed.
   [[ -z $IDENTITY_REFUSAL && -n $INSTALLED_BINARY ]] || return 0
   START_FOCUS=$(active_address)
-  START_WORKSPACE=$(active_workspace | cut -d' ' -f1)
+  read -r START_WORKSPACE windows <<<"$(active_workspace)"
+  # The run leaves a workspace that holds a window, and stays on one that holds none.
+  LEAVES_WORKSPACE=yes
+  [[ $windows != 0 ]] || LEAVES_WORKSPACE=no
   START_DND=$(dnd_state)
   [[ $START_DND == on || $START_DND == off ]] || START_DND=""
   START_AWAKE=no
@@ -1970,8 +2053,20 @@ begin_desktop_part() {
     run_restore restore_focus
     return 0
   fi
+  # Every picture needs notifications known to be silenced. Where the shell does
+  # not confirm that now, no later check could take one, so the desktop part ends
+  # here as it does above: what was set is undone, and nothing else is changed.
   register_restore restore_notifications
-  silence_notifications || report "NOTE notifications could not be silenced: no picture is taken while that cannot be confirmed, so a check that needs one will say FAILED"
+  if ! silence_notifications; then
+    now=$(dnd_state | tr -cd 'a-z' | cut -c1-12)
+    [[ -z $now ]] && now="gave no answer" || now="answered \"$now\", not \"on\""
+    run_restore restore_notifications
+    run_restore restore_workspace
+    DESKTOP_REFUSAL="notification silencing could not be confirmed (asked whether notifications are silenced, Omarchy's shell $now), so a notification could be drawn over the window in a picture"
+    report "NOTE $DESKTOP_REFUSAL: the desktop part does not run"
+    run_restore restore_focus
+    return 0
+  fi
   register_restore restore_idle
   keep_awake || report "NOTE stay-awake could not be turned on: the screensaver may start during the run"
 }
@@ -2608,7 +2703,8 @@ say_what_was_kept() {
   say "NOT everything is as it was found. Kept, and not packed, to put the rest back with:"
   say "  $RESTORE"
   say "  desktop-start.txt is the desktop as it was found; manifest.txt says which saved"
-  say "  copy (font-0 to font-4) belongs to which file and what this run made."
+  say "  copy (font-0 to font-4) belongs to which file, what this run made and, where"
+  say "  the themes were to be switched, which picture the wallpaper was."
 }
 
 # The names of the records that name the home directory, the user or the host.
@@ -2668,7 +2764,13 @@ pack_results() {
   say "send this file back: $OUT.tar.gz"
 }
 
+# The first stop is the only one: from its first line on, no other signal is
+# heard. Left to finish, that came too late: a second, different signal arriving
+# after this one's exit and before finish's own first lines ran this again inside
+# the EXIT trap, where an exit ends the run at once, before the restores.
 on_signal() {
+  trap '' INT TERM HUP QUIT
+  trap : PIPE
   STOPPED_BY=$1
   exit "$2"
 }

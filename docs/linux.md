@@ -409,14 +409,23 @@ the last lines of the run say where.
 A kill the script cannot catch (`kill -9`) or a power loss leaves the desktop
 as the step in progress had it. Before its first change the script prints
 where the starting state is written (`records/desktop-start.txt`, and
-`work/restore` with the saved copies) and how to put each thing back by hand,
-in the order the script itself uses: the workspace (`SUPER` and its number),
-the theme (`omarchy-theme-set`), the skip toggles the run made (remove the
+`work/restore` with the saved copies) and how to put back by hand what that
+run changes. The text has a step only for a change the plan lets the run make,
+each step gives the value the run found, and a step is taken only if the
+desktop differs from that value, because a step taken where nothing was
+changed would itself change something. The steps come in the order the script
+itself uses: the workspace (`SUPER` and its number); the theme
+(`omarchy-theme-set`, only when the current theme is another one: setting the
+current theme again moves on to its next wallpaper); the wallpaper
+(`omarchy-theme-bg-set` with the picture's path, which `manifest.txt` keeps
+and the packed records do not); the skip toggles the run made (remove the
 files `manifest.txt` lists under `~/.local/state/omarchy/toggles`, and that
-directory too when `manifest.txt` says the run made it), the font
-(`omarchy-font-set`) and only then the font files, because `omarchy-font-set`
-rewrites them (copy each saved `font-N` over the file `manifest.txt` names),
-the monitor's scale (`hyprctl reload`), notification silencing
+directory too when `manifest.txt` says the run made it); the font
+(`omarchy-font-set`, only when the current font is another one: it rewrites
+the font files and replaces a link at three of them whatever the font was) and
+only then the font files, because `omarchy-font-set` rewrites them (copy each
+saved `font-N` over the file `manifest.txt` names); the monitor's scale
+(`hyprctl reload`); and, where the run found them off, notification silencing
 (`omarchy-shell notifications setDnd off`) and stay-awake
 (`omarchy-toggle-idle allow-idle`).
 
@@ -457,7 +466,12 @@ started later in the run. It refuses the desktop part when Hyprland is not the
 compositor, when the session is locked or Omarchy cannot tell whether it is,
 on battery below 30 %, when the desktop is on a named workspace or shows a
 special one (the run starts from a numbered workspace and returns to it), or
-when the monitor has no workspace without a window. With the desktop part
+when the monitor has no workspace without a window. The desktop part also
+ends at its start, before GitTurtle opens, when Omarchy's shell does not
+confirm that notifications are silenced once the script has asked for that:
+no picture could be taken, so silencing and the workspace are put back as they
+were, nothing else on the desktop is changed, and every check of the desktop
+part reports `skipped` with that reason. With the desktop part
 asked for, a results directory under your home stops the run at the start,
 before the archive is checked. It never runs as root and makes no network
 request. Its one use of sudo is the question Omarchy's own command asks,
