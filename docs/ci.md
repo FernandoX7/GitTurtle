@@ -211,9 +211,11 @@ suffixes, name refusal, animation-frame rule, templates, threshold, engine and
 A shard whose slice is empty, which happens when fewer than eight images are
 listed, records `scanned` in the slice step and runs neither the Pillow
 installation nor the scan step, so the secret is not mapped into that job. A
-shard with images prints its slice's size before it scans and, like the single
-job before it, prints its verdicts only when its whole scan ends; a shard
-cancelled at its limit shows the size and no verdict.
+shard with images prints its slice's size and then each image's verdict line,
+`path: clean` or `path: MATCH`, when that image's scan ends. The lines keep the
+list's order, so one waits for the images listed before it while the runner
+scans an image per core. The log of a shard cancelled at its limit therefore
+shows the images it finished; those after its last line were not scanned.
 
 The 90 minutes are a budget, not a measurement of the secret's set, whose size
 is unknown outside the secret. At the cost the
@@ -268,9 +270,12 @@ environment, keeps the scanner's temporary files under `$RUNNER_TEMP`, and
 removes the file afterwards. GitHub masks the value in logs; the scan prints no
 template name, score, position or crop, so nothing else derived from it can
 reach a log, and nothing is uploaded or published. Image paths travel
-NUL-delimited in a file, unprintable names fail the job, and the scan output is
-printed with workflow commands stopped, so a crafted file name cannot become a
-workflow command. The owner creates or rotates the secret with the steps in the
+NUL-delimited in a file and unprintable names fail the job. The step stops
+workflow commands before the scanner starts, passes each of the scanner's lines
+to the log as it is read and resumes commands when the scanner has ended,
+with a token the scanner is never given, so a crafted file name cannot become a
+workflow command. A step that is interrupted or fails while it passes lines on
+kills the scanner first, and still removes the file and resumes commands. The owner creates or rotates the secret with the steps in the
 [native-QA tooling guide](../scripts/native_qa/README.md#automated-scans); until
 then every run reports `unavailable` or `no-images`. Locally, `python3
 scripts/gate.py full` runs the same scan when a templates directory is configured.

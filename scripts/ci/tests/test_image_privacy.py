@@ -6,10 +6,13 @@ import io
 import json
 import os
 from pathlib import Path
+import queue
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -36,6 +39,52 @@ for image in images:
     print(f"{image}: {'MATCH' if 'leaky' in image else 'clean'}")
 print(f"privacy scan: {len(images)} image(s), {matched} matched a template")
 sys.exit(1 if matched else 0)
+"""
+
+# A scanner that prints its first verdict and then waits to be released, for at most a minute.
+HELD_SCANNER = """\
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+images = sys.argv[sys.argv.index("--") + 1:]
+release = Path(os.environ["STAND_IN_RELEASE"])
+Path(os.environ["STAND_IN_SAW"]).write_text(json.dumps({"argv": sys.argv, "environment": dict(os.environ)}))
+print(f"{images[0]}: clean", flush=True)
+deadline = time.monotonic() + 60
+while not release.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+for image in images[1:]:
+    print(f"{image}: clean", flush=True)
+print("::error title=Injected::a scanner line that looks like a workflow command", flush=True)
+print(f"privacy scan: {len(images)} image(s), 0 matched a template")
+"""
+
+# A scanner that prints its first verdict and then outlasts any test.
+SLEEPING_SCANNER = """\
+import os
+import sys
+import time
+from pathlib import Path
+
+Path(os.environ["STAND_IN_PID"]).write_text(str(os.getpid()))
+print(f"{sys.argv[sys.argv.index('--') + 1]}: clean", flush=True)
+time.sleep(600)
+"""
+
+# `image_privacy.py ARGUMENTS` as its own process, writing to a real pipe, with the scanner replaced.
+DRIVER = """\
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("ci_image_privacy", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.QA = Path(sys.argv[2])
+sys.exit(module.main(sys.argv[3:]))
 """
 
 
@@ -312,6 +361,141 @@ class ShardedRunTests(unittest.TestCase):
                                  [len(images[shard - 1::len(SHARDS)]) for shard in SHARDS])
                 self.assertEqual(sorted(line for _, _, lines in shards for line in lines),
                                  [f"{os.fsdecode(image)}: clean" for image in images])
+
+
+class PassThroughTests(unittest.TestCase):
+    """The scan step's log: each scanner line as it is read, inside one stop-commands bracket."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.listing, self.output = self.root / "images", self.root / "output"
+        self.images = ["docs/a.png", "::warning::docs/b.png"]
+        self.listing.write_bytes(nul_list([image.encode() for image in self.images]))
+        self.arguments = ["scan", "--list", str(self.listing), "--directory", str(self.root / "runner-temp"),
+                          "--output", str(self.output), "--repository", str(self.root)]
+
+    def test_a_verdict_is_out_while_the_scan_still_runs_and_no_scanner_line_is_a_command(self):
+        driver, scanner = self.root / "driver.py", self.root / "held_qa.py"
+        driver.write_text(DRIVER)
+        scanner.write_text(HELD_SCANNER)
+        release, saw = self.root / "release", self.root / "saw.json"
+        env = {**os.environ, image_privacy.SECRET: "packed-templates", "STAND_IN_RELEASE": str(release),
+               "STAND_IN_SAW": str(saw)}
+        process = subprocess.Popen([sys.executable, "-B", str(driver), str(SCRIPT), str(scanner), *self.arguments],
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+        lines = queue.Queue()
+
+        def read():
+            for line in process.stdout:
+                lines.put(line.rstrip("\n"))
+            lines.put(None)
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        received = []
+        try:
+            received.append(lines.get(timeout=30))  # the bracket opens
+            received.append(lines.get(timeout=30))  # the first image's verdict
+            held = process.poll() is None and not release.exists()  # and the scanner still waits for its release
+        except queue.Empty:
+            held = False
+        finally:
+            release.write_text("")
+            process.wait(timeout=120)
+            reader.join(timeout=120)
+            process.stdout.close()
+        received += iter(lines.get_nowait, None)
+        self.assertTrue(held, f"the first verdict was not out before the scan ended: {received}")
+        token = received[0].removeprefix("::stop-commands::")
+        self.assertRegex(token, r"\A[0-9a-f]{32}\Z")
+        self.assertEqual(received, [f"::stop-commands::{token}", "docs/a.png: clean", "::warning::docs/b.png: clean",
+                                    "::error title=Injected::a scanner line that looks like a workflow command",
+                                    "privacy scan: 2 image(s), 0 matched a template", f"::{token}::"])
+        self.assertEqual((process.returncode, self.output.read_text()), (0, "status=scanned\n"))
+        # The scanner cannot end the bracket itself: it is given neither the token nor the secret.
+        given = json.loads(saw.read_text())
+        self.assertFalse(any(token in value for value in [*given["argv"], *given["environment"].values()]))
+        self.assertNotIn(image_privacy.SECRET, given["environment"])
+        self.assertEqual(list((self.root / "runner-temp/scan").iterdir()), [])
+
+    def test_a_scanner_that_fails_mid_line_still_resumes_commands_before_the_error(self):
+        scanner = self.root / "failing_qa.py"
+        scanner.write_text('import sys\nsys.stdout.write("docs/a.png: clean\\n::error::half a line")\nsys.exit(3)\n')
+        with mock.patch.object(image_privacy, "QA", scanner):
+            status, printed = run_main(*self.arguments, env={image_privacy.SECRET: "packed-templates"})
+        lines = printed.splitlines()
+        token = lines[0].removeprefix("::stop-commands::")
+        self.assertEqual(lines, [f"::stop-commands::{token}", "docs/a.png: clean", "::error::half a line", f"::{token}::",
+                                 "::error title=Image privacy::the scan could not complete (exit 3)."])
+        self.assertEqual((status, self.output.exists()), (3, False))
+
+    def test_an_interrupted_pass_through_kills_the_scanner_and_still_cleans_up(self):
+        scanner = self.root / "sleeping_qa.py"
+        scanner.write_text(SLEEPING_SCANNER)
+
+        def gone(pid: int) -> bool:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        def end(pid: int) -> None:
+            if not gone(pid):
+                os.kill(pid, signal.SIGKILL)
+
+        for interruption in (KeyboardInterrupt, BrokenPipeError):
+            with self.subTest(interruption=interruption.__name__):
+                pid_file = self.root / f"pid-{interruption.__name__}"
+                raised = []
+
+                class Log(io.StringIO):
+                    """Takes the first verdict and then fails, as Ctrl-C or a closed log would in the print."""
+
+                    def write(self, text):
+                        written = super().write(text)
+                        if text.endswith(": clean\n"):
+                            raise interruption()
+                        return written
+
+                def scan():
+                    try:
+                        image_privacy.main(self.arguments)
+                    except BaseException as error:  # KeyboardInterrupt is one of the cases
+                        raised.append(error)
+
+                printed, worker = Log(), threading.Thread(target=scan, daemon=True)
+                with mock.patch.object(image_privacy, "QA", scanner), contextlib.redirect_stdout(printed), \
+                        mock.patch.dict(os.environ, {image_privacy.SECRET: "packed-templates",
+                                                     "STAND_IN_PID": str(pid_file)}):
+                    worker.start()
+                    worker.join(timeout=20)  # the scanner sleeps ten minutes: waiting for it fails here
+                    waited = worker.is_alive()
+                    pid = int(pid_file.read_text())
+                    self.addCleanup(end, pid)
+                    left_running = not gone(pid)
+                    end(pid)
+                    worker.join(timeout=20)
+                self.assertFalse(waited, "the interruption waited for the scanner instead of killing it")
+                self.assertFalse(left_running, "the scanner outlived the interruption")
+                self.assertEqual([type(error) for error in raised], [interruption])
+                opened, verdict, resumed = printed.getvalue().splitlines()
+                self.assertEqual((verdict, resumed), ("docs/a.png: clean", f"::{opened.removeprefix('::stop-commands::')}::"))
+                self.assertEqual(list((self.root / "runner-temp/scan").iterdir()), [])
+                self.assertFalse(self.output.exists())
+
+    def test_a_scanner_that_cannot_start_leaves_no_templates_and_no_open_bracket(self):
+        printed = io.StringIO()
+        with mock.patch.object(subprocess, "Popen", side_effect=OSError("no interpreter")), \
+                mock.patch.dict(os.environ, {image_privacy.SECRET: "packed-templates"}), \
+                contextlib.redirect_stdout(printed), self.assertRaises(OSError):
+            image_privacy.main(self.arguments)
+        opened, resumed = printed.getvalue().splitlines()
+        self.assertEqual(resumed, f"::{opened.removeprefix('::stop-commands::')}::")
+        self.assertEqual(list((self.root / "runner-temp/scan").iterdir()), [])
+        self.assertFalse(self.output.exists())
 
 
 class WorkflowTests(unittest.TestCase):

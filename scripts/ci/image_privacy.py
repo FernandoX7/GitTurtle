@@ -19,8 +19,9 @@ shards scan included): with every shard successful, `scanned` is true of the
 whole list.
 
 The only workflow outputs are fixed status words and a count. Image paths
-travel NUL-delimited in a file, and scan output is printed with workflow
-commands stopped, so no path is interpreted as a command.
+travel NUL-delimited in a file. Workflow commands are stopped before the
+scanner starts, and each line it prints is passed on as it arrives, so no path
+is interpreted as a command and a cancelled scan shows the images it finished.
 """
 
 from __future__ import annotations
@@ -194,33 +195,50 @@ def run_scan(args) -> int:
     # the C engine's per-template scratch files stay under the runner's temp.
     environment = {key: value for key, value in os.environ.items() if key != SECRET}
     environment["TMPDIR"] = str(scratch)
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-B", str(QA), "privacy", "scan", "--redacted", "--jobs", str(args.jobs),
-             "--packed", str(templates), "--", *images],
-            cwd=args.repository, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, errors="replace", check=False)
-    finally:
-        templates.unlink(missing_ok=True)
+    # Workflow commands stop before the scanner starts and resume whatever
+    # happens to it. Each of its lines is passed on, flushed, as it is read, so
+    # the log shows every image whose scan has ended, also when the job is
+    # cancelled, and no line (they begin with a path) is taken for a command.
     token = secrets.token_hex(16)
     print(f"::stop-commands::{token}")
-    print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
-    print(f"::{token}::")
-    if completed.returncode == 0:
+    try:
+        with subprocess.Popen(
+                [sys.executable, "-B", str(QA), "privacy", "scan", "--redacted", "--jobs", str(args.jobs),
+                 "--packed", str(templates), "--", *images],
+                cwd=args.repository, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, errors="replace") as child:
+            try:
+                ended = True
+                for line in child.stdout:
+                    ended = line.endswith("\n")
+                    print(line, end="", flush=True)
+                if not ended:
+                    print()
+            except BaseException:
+                # An interrupted or failed pass-through, Ctrl-C included, must not leave the scanner
+                # running with the templates loaded: it is killed and gone before the exception continues.
+                child.kill()
+                child.wait()
+                raise
+        returncode = child.returncode
+    finally:
+        templates.unlink(missing_ok=True)
+        print(f"::{token}::")
+    if returncode == 0:
         if args.output:
             with args.output.open("a", encoding="utf-8") as output:
                 output.write("status=scanned\n")
         verdict = f"{len(images)} added or changed image(s) template-scanned; no match."
-    elif completed.returncode == 1:
+    elif returncode == 1:
         verdict = "an added or changed image matched a private-string template; retake or crop it."
         print(f"::error title=Image privacy::{verdict}")
     else:
-        verdict = f"the scan could not complete (exit {completed.returncode})."
+        verdict = f"the scan could not complete (exit {returncode})."
         print(f"::error title=Image privacy::{verdict}")
     if args.summary:
         with args.summary.open("a", encoding="utf-8") as summary:
             summary.write(f"**Image privacy:** {verdict}\n")
-    return completed.returncode
+    return returncode
 
 
 def main(argv: list[str] | None = None) -> int:
