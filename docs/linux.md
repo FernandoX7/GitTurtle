@@ -376,21 +376,45 @@ before anything from the archive runs; when `--expect-revision`, the manifest
 or `ci-provenance.json` names another one, the executable, the installer, the
 package build and the whole desktop part are skipped as "identity not
 established". Then comes the desktop part, in which the keyboard and pointer
-are left alone. It takes about two minutes for everything but the themes, and
-about ten seconds more for each theme: about six minutes with the 24 themes of
-a stock Omarchy 4.5. Both figures are estimates: the plan gives the sum for
-the machine, and the run times every switch and writes it in the report. The
-script moves to a workspace that holds no window, opens the installed build
-there on a demo repository and takes a picture of GitTurtle's own window,
-never of the screen, at each step: the first launch, every theme
+are left alone. It takes about three minutes on the machine it was first run
+on, the Apple Silicon laptop described below with Omarchy 4.5's 24 themes:
+about five seconds a theme, of which the switch itself took 0.3 to 1.8
+seconds, and under a minute and a half for everything else. The plan gives the
+sum for the machine's own themes, and the run times every switch and writes it
+in the report. The script moves to a workspace that holds no window, opens the
+installed build there on a demo repository and takes a picture of GitTurtle's
+own window, never of the screen, at each step: the first launch, every theme
 `omarchy-theme-list` names, one other font, the window floating, its monitor
 at the scales 1, 1.25, 1.5 and 2 that its mode allows, the window inactive
 beside a terminal the script opens, and 30 seconds at rest before it is
-closed. A picture is refused, and its check fails, while another window or
-another monitor overlaps the window's rectangle, or while Omarchy's shell does
-not confirm that notifications are silenced. Where Omarchy's rules make the
-window translucent, the wallpaper shows through it faintly; the report gives
-the opacity Hyprland reports beside each picture.
+closed. Floating, the window is given 1,480 × 973 logical pixels, or three
+quarters of the monitor's usable area where that does not fit, centred in that
+area, which is the monitor less the edges it reserves for Omarchy's bar or a
+dock; the report records what Hyprland gave. A picture is refused, and its
+check fails, while another window or another monitor overlaps the window's
+rectangle, while the rectangle leaves its monitor or reaches into one of those
+reserved edges, where a bar is drawn over any window, or while Omarchy's shell
+does not confirm that notifications are silenced. Where Omarchy's rules make
+the window translucent, the wallpaper shows through it faintly; the report
+gives the opacity Hyprland reports beside each picture.
+
+Only code text follows `omarchy-font-set`, and GitTurtle opens on History,
+which shows none. So the font check first sends three keys to GitTurtle's own
+window, named by its address and only while it also has the focus: Down, Down
+and Return. Down twice selects the third commit from the top, whose one
+changed file is a text file, and Return opens that file's comparison. They are
+the app's own list keys and they only read: the report says that the demo
+repository and the settings GitTurtle saved are as they were before the keys.
+The check then is honest about what it saw. It takes a picture before the
+keys and one after them, and where the two files are the same it says that
+the comparison was not reached. The picture after the keys is the one before
+the font change; another is taken after the change and a last one after the
+starting font is back, and the files are compared by size and checksum. The
+check ends `ok` only when the picture changed with the font, and `partial:
+the picture did not change with the font`, with the view it believes it was
+on, when it did not; it also says whether the last picture is the same file
+as the one before the change. The checks after the font check picture the
+window on the view that check left, and each says which.
 
 What it changes, it puts back when the step ends and on every exit, Ctrl+C
 included, and also when its output is piped into a program that has ended: the
@@ -398,10 +422,10 @@ workspace shown, the theme and wallpaper, Omarchy's
 `skip-<editor>-theme-changes` toggles, the monospace font and the terminal and
 fontconfig files `omarchy-font-set` rewrites (through a symbolic link too: the
 bytes of the file a link leads to are saved and put back, and the link stays a
-link), the monitor's scale, the window's floating state, the focused window,
-and two settings it turns on for the run, notification silencing and
-stay-awake. A file is put back by a copy beside it and a rename, so it is
-never missing in between. If anything is not as it was found, the restore
+link), the monitor's scale, the window's floating state with its size and
+place, the focused window, and two settings it turns on for the run,
+notification silencing and stay-awake. A file is put back by a copy beside it
+and a rename, so it is never missing in between. If anything is not as it was found, the restore
 check fails and the saved copies stay in `work/restore` under the results
 directory, with a `manifest.txt` that says which copy belongs to which file;
 the last lines of the run say where.
@@ -488,7 +512,8 @@ the last line names after "send this file back": `report.txt`, with one
 section per check, the records it quotes, and the pictures. A section ends in
 `RESULT <check> ok`, `partial: <what was not covered and why>` when the check
 ran but could not cover a part of it (a scale the monitor's mode does not
-allow, a manifest that was not downloaded), `FAILED: <why>` or
+allow, a manifest that was not downloaded, a font change that the picture did
+not show), `FAILED: <why>` or
 `skipped: <why>`. They name no host, no user and no home directory, and the
 file is packed only after every record was read as text and none of them does.
 The exit status is 0 when no check failed and the file was packed, 1 when a

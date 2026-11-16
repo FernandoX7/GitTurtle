@@ -14,11 +14,12 @@
 # results directory. Nothing here runs as root or asks the network for anything, and
 # the only processes ended are ones this script started itself (the app, one at a
 # time; one terminal; the sleep of a wait that a stop cut short), each of them on
-# every exit. Omarchy's own theme switch does more than this script does, so the
-# themes check runs only where that switch reaches no network, installs nothing
-# and raises no dialog, as far as its steps and hooks are known; one that is not
-# known stops the check unless the plan named it and --themes-anyway was given:
-# see theme_blocker.
+# every exit. The only keys it sends are the font check's three, to the window of
+# the app it started and to nothing else: see FONT_KEYS and send_key. Omarchy's
+# own theme switch does more than this script does, so the themes check runs only
+# where that switch reaches no network, installs nothing and raises no dialog, as
+# far as its steps and hooks are known; one that is not known stops the check
+# unless the plan named it and --themes-anyway was given: see theme_blocker.
 
 set -u
 
@@ -35,8 +36,28 @@ readonly TERMINAL_LIFE=90   # seconds after which the inactive check's terminal 
 readonly ANSWER_WAIT=600    # seconds a prompt waits for Enter or an answer
 readonly MIN_BATTERY=30     # percent; below it, discharging, the desktop part does not start
 readonly SCALES=(1 1.25 1.5 2)
-readonly THEME_SECONDS=10    # one theme in the plan's estimate: the switch, its intro and the settle time
-readonly REST_OF_DESKTOP=120 # seconds the plan's estimate gives everything else in the desktop part
+# The keys the font check sends to the app's own window, as XKB names them, to
+# show code text, the only text that follows the font. Each is one of the app's
+# own bindings (crates/app/src/shortcuts.rs), and the route starts where a launch
+# on a repository leaves the app: on History, its commit list focused
+# (GitTurtle::new focuses it when a path is given), the newest commit selected.
+#   Down    "Next List Row" in a focused list: the next commit is selected, which
+#           reads its changed files and nothing else (select_commit). Twice: the
+#           third commit from the top, in the order of `git log --topo-order`.
+#   Return  "Open Selected List Item": with a changed file highlighted, that
+#           file's comparison opens (NextPane, select_file), which reads it.
+# Both demo repositories (make_demo_repository) put a commit third from the top
+# that changes exactly one file, a text file, so the comparison shows a patch in
+# the code font whichever file a list would highlight first.
+readonly FONT_KEYS=(Down Down Return)
+readonly KEY_SETTLE=1       # seconds the app gets after each key the font check sends it
+readonly FLOAT_SIZE=(1480 973) # logical pixels the floating window is given, where the usable area holds them
+readonly FLOAT_MARGIN=24    # logical pixels that size must leave free on every side of the usable area
+# The plan's estimate, from the first run of the desktop part (Omarchy 4.5 on an
+# Apple Silicon laptop, 2026-11-16): 24 theme pictures in 107 s, a switch taking
+# 0.3 to 1.8 s of that, and everything else in under a minute and a half.
+readonly THEME_SECONDS=5    # one theme: the switch, its intro, the settle time and the picture
+readonly REST_OF_DESKTOP=85 # seconds for everything else in the desktop part
 readonly MAX_UNPACKED=$((1024 * 1024 * 1024)) # bytes an archive may unpack to (a release unpacks to about 0.2 GiB)
 readonly MAX_ENTRIES=20000   # files and directories an archive may hold
 readonly SIZE_DIGITS=12      # a size in an archive's listing, and their sum, is a plain number of at most this many digits
@@ -108,12 +129,13 @@ START_EPOCH=0 STOPPED_BY="" OWNER_INSTALL_START=""
 DESKTOP_REFUSAL="" DESKTOP_START="" RESTORES=() RESTORE_FAILURES=() KEEP_RESTORE=no
 START_FOCUS="" START_DND="" START_AWAKE=""
 START_WORKSPACE="" LEAVES_WORKSPACE="" ALONE=no HANDS_DONE=0 HANDS_ABSENT=no
-LAUNCH="" DEMO="" APP_PID="" APP_ADDRESS=""
+LAUNCH="" DEMO="" DEMO_TARGET="" APP_PID="" APP_ADDRESS="" APP_VIEW="" KEY_DOWN=""
+declare -gA PICTURE_PLACE=() # each picture taken: the rectangle and the scale it was grabbed at
 START_THEME="" START_WALLPAPER=""
 THEME_BLOCKER="" THEME_UNKNOWNS=() SUDO_ASKED=no
 SKIP_TOGGLES=() SKIP_TOGGLES_MADE=() TOGGLES_DIRECTORY_MADE=no
 START_FONT="" FONT_PROBLEM="" FONT_SAVED=() FONT_DIRECTORY=() FONT_REAL=() FONT_LINK=()
-START_FLOATING=""
+START_FLOATING="" START_PLACE=""
 MONITOR_NAME="" MONITOR_MODE="" MONITOR_POSITION="" MONITOR_START_SCALE="" MONITOR_START_LINE=""
 TERMINAL_PID="" TERMINAL_ADDRESS=""
 
@@ -167,8 +189,12 @@ refused to start or was given an option or a --skip name it does not know.
   package   packaging/aur/test-local.sh builds gitturtle-bin from the archive
   launch    the installed executable on a demo repository: its window, no panic
   themes    every theme omarchy-theme-list names, then the starting theme again
-  font      one other font with omarchy-font-set, then the starting font again
-  floating  the window as it opened, then floating
+  font      three keys to GitTurtle's own window open a text file's comparison
+            (see Keys), then one other font with omarchy-font-set, then the
+            starting font again: ok only when the picture changed with the font
+  floating  the window as it opened, then floating at 1480x973 logical pixels,
+            or at three quarters of the monitor's usable area where that does
+            not fit, centred in that area
   scales    the window's monitor at 1, 1.25, 1.5 and 2, where its mode allows
   inactive  a terminal takes the focus while GitTurtle is pictured inactive
   rest      CPU time over 30 s and threads; closed through Hyprland; gone within
@@ -192,8 +218,8 @@ own commands:
     switch leaves VS Code, VSCodium and Cursor alone and installs no extension);
   - the monospace font (omarchy-font-set: the terminal and fontconfig files it
     rewrites, and its restart of the Omarchy shell);
-  - the scale of the monitor that holds the window; the window's floating state;
-    the focused window;
+  - the scale of the monitor that holds the window; the window's floating state,
+    with its size and place while it floats; the focused window;
   - notification silencing (on, so that none lands in a picture) and stay-awake
     (on, so that neither the screensaver nor the lock starts during the run).
 Each is recorded before it is changed and put back when its check ends and on every
@@ -213,11 +239,29 @@ part reports skipped with that reason. With the desktop
 part asked for, a results directory that lies under your home or names you or
 the host stops the run at the start (exit 2): GitTurtle's header shows the demo
 repository's path, so run it from /var/tmp.
-The desktop part takes about two minutes for everything but the themes, and about
-ten seconds more for each theme: about six minutes with the 24 themes of a stock
-Omarchy 4.5. Both figures are estimates; the run times every switch and writes
-it in the report. The plan gives the sum for this machine; --hands adds your own
+The desktop part takes about three minutes on the machine it was first run on
+(Omarchy 4.5 with its 24 themes, on an Apple Silicon laptop): about five seconds
+a theme, of which the switch itself took 0.3 to 1.8 s, and under a minute and a
+half for everything else. The run times every switch and writes it in the
+report. The plan gives the sum for this machine's themes; --hands adds your own
 time.
+Keys: the script sends keys to one window only, GitTurtle's own, named by its
+address in Omarchy's own form (hl.dsp.send_key_state, a press and its release),
+and only while that window also has the focus. They are the font check's three:
+Down, Down, Return. GitTurtle opens on History with its list focused, where only
+code text would follow the font and none is shown; Down twice selects the third
+commit from the top, whose one changed file is a text file, and Return opens that
+file's comparison. Selecting a commit and opening a comparison only read: the
+report says that the demo repository and the settings GitTurtle saved are as
+they were before the keys. A picture is taken before the keys and after them;
+where the two are the same, the report says that the comparison was not reached.
+The picture after the keys is the font check's first; its second is taken after
+the font change and its third after the starting font is back, and the files are
+compared by size and checksum. Where the first two are the same, the check ends
+"partial: the picture did not change with the font" and names the view it
+believes it was on; it also says whether the third is the same file as the
+first. The checks after the font check picture the window on the view that check
+left it on, and each says which.
 A kill the script cannot catch (kill -9) or a power loss leaves the desktop as the
 step in progress had it. Before the first change the script prints where the
 starting state is written (records/desktop-start.txt, and work/restore under the
@@ -264,7 +308,9 @@ Privacy: report.txt and the records name no host, no user and no home directory
 none of them does; the app shows only the demo repository made for the run. A
 picture is a grab of GitTurtle's own window rectangle, never of the screen, and
 is refused (its check FAILED, no file written) while another window or another
-monitor overlaps that rectangle, or while Omarchy's shell does not confirm that
+monitor overlaps that rectangle, while the rectangle leaves its monitor or
+reaches into an edge the monitor reserves (where Omarchy's bar or a dock is
+drawn, over any window), or while Omarchy's shell does not confirm that
 notifications are silenced. Where Omarchy's rules make the window translucent,
 the wallpaper shows through it faintly; the report gives the opacity Hyprland
 reports. The script makes no network request, and the themes check runs only
@@ -754,13 +800,14 @@ show_plan_and_wait() {
   else
     have omarchy-theme-list && themes=$(timeout 10 omarchy-theme-list 2>/dev/null | grep -c .)
     if skip_named themes || [[ -n $THEME_BLOCKER || ! $themes =~ ^[0-9]+$ ]]; then
-      say "Then the desktop part, about $((REST_OF_DESKTOP / 60)) minutes (an estimate); leave the keyboard and"
-      say "pointer alone:"
+      say "Then the desktop part, about $REST_OF_DESKTOP s at the pace of the machine it was first run on;"
+      say "leave the keyboard and pointer alone:"
     else
       seconds=$((seconds + themes * THEME_SECONDS))
-      say "Then the desktop part, about $(((seconds + 59) / 60)) minutes: about $((REST_OF_DESKTOP / 60)) for everything but the themes,"
-      say "and about $THEME_SECONDS s for each of the $themes themes. Both are estimates: the run times"
-      say "every switch and writes it in the report. Leave the keyboard and pointer alone:"
+      say "Then the desktop part, about $(((seconds + 30) / 60)) minutes at the pace of the machine it was first run"
+      say "on: about $THEME_SECONDS s for each of the $themes themes here and about $REST_OF_DESKTOP s for everything else."
+      say "The run times every switch and writes it in the report. Leave the keyboard and"
+      say "pointer alone:"
     fi
     say "  - the desktop moves to an empty workspace of this monitor, where GitTurtle"
     say "    opens on a demo repository; notifications are silenced and the session is"
@@ -790,8 +837,16 @@ show_plan_and_wait() {
         name_unknowns "--themes-anyway was given, so every switch also runs, unread by this script:"
       fi
     fi
-    skip_named font || say "  - one other monospace font is set with omarchy-font-set;"
-    skip_named floating || say "  - the window floats;"
+    if ! skip_named font; then
+      say "  - GitTurtle's own window, and nothing else, is sent ${#FONT_KEYS[@]} keys ($(key_names)):"
+      say "    the third commit from the top, then its one changed file, a text file, in a"
+      say "    comparison. They only read. Then one other monospace font is set with"
+      say "    omarchy-font-set. The checks after it picture the window on that comparison;"
+    fi
+    if ! skip_named floating; then
+      say "  - the window floats, at ${FLOAT_SIZE[0]}x${FLOAT_SIZE[1]} logical pixels or at three quarters of its"
+      say "    monitor's usable area, centred there;"
+    fi
     skip_named scales || say "  - the window's monitor goes through the scales ${SCALES[*]};"
     skip_named inactive || say "  - one terminal opens and closes;"
     if skip_named rest; then
@@ -803,7 +858,8 @@ show_plan_and_wait() {
     say "Everything is put back as it was found: workspace, theme and wallpaper, the"
     say "toggles, font and the files omarchy-font-set rewrites, scale, tiling, focus,"
     say "notifications and idle. A picture of GitTurtle's own window is taken at each"
-    say "step, never of the screen, and only while nothing else overlaps the window and"
+    say "step, never of the screen, and only while nothing else overlaps the window, the"
+    say "window lies clear of the edges its monitor reserves for a bar or a dock, and"
     say "notifications are known to be silenced."
     [[ $HANDS == no ]] || skip_named hands || say "At the end it asks four things of you (--hands), beside this terminal."
     say "Before the first change it prints where the desktop's starting state and the saved"
@@ -831,6 +887,15 @@ focus_window() { hypr_request dispatch "hl.dsp.focus({ window = \"address:$1\" }
 close_window() { hypr_request dispatch "hl.dsp.window.close({ window = \"address:$1\" })"; }
 toggle_floating() { hypr_request dispatch "hl.dsp.window.float({ window = \"address:$1\", action = \"toggle\" })"; }
 focus_workspace() { hypr_request dispatch "hl.dsp.focus({ workspace = \"$1\" })"; }
+# A floating window's size and its place in the layout, in logical pixels: the
+# exact forms of omarchy-hyprland-window-pop and omarchy-capture-webcam-resize.
+resize_window() { hypr_request dispatch "hl.dsp.window.resize({ window = \"address:$1\", x = $2, y = $3 })"; }
+move_window() { hypr_request dispatch "hl.dsp.window.move({ window = \"address:$1\", x = $2, y = $3 })"; }
+# One state of one key, without a modifier, for the app's own window by its
+# address: the form omarchy-menu-keybindings sends a binding's shortcut in. With
+# a window that Hyprland does not find, the request does nothing.
+key_state() { hypr_request dispatch "hl.dsp.send_key_state({ mods = \"\", key = \"$1\", state = \"$2\", window = \"address:$APP_ADDRESS\" })"; }
+key_names() { printf '%s, ' "${FONT_KEYS[@]}" | sed 's/, $//'; } # "Down, Down, Return"
 
 # "ID WINDOWS" of the workspace that has the focus.
 active_workspace() { hypr_json activeworkspace | jq -r '"\(.id) \(.windows)"' 2>/dev/null; }
@@ -884,6 +949,46 @@ app_window() {
 monitor_lines() {
   hypr_json monitors | jq -r '.[] | "\(.name) \(.width)x\(.height)@\(.refreshRate) scale \(.scale) at \(.x),\(.y) transform \(.transform) vrr \(.vrr) format \(.currentFormat) mirror \(.mirrorOf)"' 2>/dev/null
 }
+# jq definitions for rectangles of the layout, in logical pixels, put in front of
+# the filters that need them. A window is {at, size} as Hyprland lists it.
+readonly GEOMETRY='
+  # One side of a monitor. The scale Hyprland lists may be rounded to two
+  # decimals, while the scale it uses is a multiple of 1/120 that divides the
+  # mode into whole pixels: the side is the whole number such a scale gives
+  # that is nearest to pixels / scale, or that quotient rounded where none does.
+  def logical($pixels; $scale):
+    ($pixels / $scale) as $about
+    | ([range((($scale - 0.006) * 120) | ceil; ((($scale + 0.006) * 120) | floor) + 1)
+        | select(. > 0 and (($pixels * 120) % .) == 0) | $pixels * 120 / .]
+       | min_by(($about - .) | fabs)) // ($about | round);
+  # A monitor as a rectangle: its mode over its scale, turned with it.
+  def area:
+    (if (.transform % 2) == 1 then [.height, .width] else [.width, .height] end) as $mode
+    | {at: [.x, .y], size: [logical($mode[0]; .scale), logical($mode[1]; .scale)]};
+  # A monitor less the edges it reserves, [left, top, right, bottom]: where a
+  # bar or a dock is drawn, in a layer over every window.
+  def usable:
+    (.reserved // [0, 0, 0, 0]) as $edge
+    | area
+    | {at: [.at[0] + $edge[0], .at[1] + $edge[1]], size: [.size[0] - $edge[0] - $edge[2], .size[1] - $edge[1] - $edge[3]]};
+  def overlaps($a):
+    .at[0] < ($a.at[0] + $a.size[0]) and (.at[0] + .size[0]) > $a.at[0]
+    and .at[1] < ($a.at[1] + $a.size[1]) and (.at[1] + .size[1]) > $a.at[1];
+  def inside($a):
+    .at[0] >= $a.at[0] and (.at[0] + .size[0]) <= ($a.at[0] + $a.size[0])
+    and .at[1] >= $a.at[1] and (.at[1] + .size[1]) <= ($a.at[1] + $a.size[1]);
+  def box: "\(.size[0])x\(.size[1]) at \(.at[0]),\(.at[1])";
+'
+# "WxH at X,Y" of the app's window, as Hyprland lists it.
+window_place() { app_window '"\(.size[0])x\(.size[1]) at \(.at[0]),\(.at[1])"'; }
+wait_for_place() { # PLACE: true once the app's window is there, within 2 s
+  local tries=20
+  while ((tries-- > 0)); do
+    [[ $(window_place) != "$1" ]] || return 0
+    nap 0.1
+  done
+  return 1
+}
 
 # ---------------------------------------------------------------- pictures
 
@@ -891,8 +996,11 @@ monitor_lines() {
 # but its window (and, through Omarchy's window opacity, the wallpaper under it);
 # otherwise "blocked" and why. No other window may overlap the rectangle, tiled
 # or floating, since a translucent window shows what lies under it, and no other
-# monitor may reach into it. While the run has a workspace of its own (ALONE),
-# the only other window allowed on it at all is the terminal this script opened.
+# monitor may reach into it. The rectangle lies on its own monitor and clear of
+# the edges that monitor reserves: a bar there is drawn over the window, and the
+# first floating picture held Omarchy's bar because the window had the monitor's
+# whole size. While the run has a workspace of its own (ALONE), the only other
+# window allowed on it at all is the terminal this script opened.
 picture_target() {
   local clients monitors
   clients=$(hypr_json clients) && monitors=$(hypr_json monitors) || {
@@ -900,14 +1008,7 @@ picture_target() {
     return
   }
   jq -rn --argjson clients "$clients" --argjson monitors "$monitors" --argjson pid "${APP_PID:-0}" \
-    --arg alone "$ALONE" --arg terminal "${TERMINAL_ADDRESS:-}" '
-    def overlaps($a):
-      .at[0] < ($a.at[0] + $a.size[0]) and (.at[0] + .size[0]) > $a.at[0]
-      and .at[1] < ($a.at[1] + $a.size[1]) and (.at[1] + .size[1]) > $a.at[1];
-    # A monitor as a rectangle of the layout: its mode over its scale, turned with it.
-    def area:
-      (if (.transform % 2) == 1 then [.height, .width] else [.width, .height] end) as $mode
-      | {at: [.x, .y], size: [$mode[0] / .scale, $mode[1] / .scale]};
+    --arg alone "$ALONE" --arg terminal "${TERMINAL_ADDRESS:-}" "$GEOMETRY"'
     ([$clients[] | select(.pid == $pid and .mapped)] | first) as $app
     | if $app == null then "blocked the app has no window"
       elif $app.hidden then "blocked the window is hidden"
@@ -916,6 +1017,10 @@ picture_target() {
         | if $monitor == null then "blocked the window is on no monitor"
           elif $monitor.activeWorkspace.id != $app.workspace.id then "blocked the window is on a workspace that is not shown"
           elif ($monitor.specialWorkspace.name // "") != "" then "blocked a special workspace is shown over it"
+          elif ($app | inside($monitor | area) | not) then
+            "blocked the window leaves its monitor: it is \($app | box), and the monitor is \($monitor | area | box)"
+          elif ($app | inside($monitor | usable) | not) then
+            "blocked the window reaches into an edge its monitor reserves, where a bar or a dock is drawn over it: it is \($app | box), and the monitor less those edges is \($monitor | usable | box)"
           else
             [$clients[] | select(.address != $app.address and .mapped and (.hidden | not)
               and (.workspace.id == $app.workspace.id or (.pinned and .monitor == $app.monitor)))] as $others
@@ -963,6 +1068,7 @@ picture() {
   fi
   [[ $(active_address) != "$APP_ADDRESS" ]] || focus=active
   [[ $floating == true ]] && floating=floating || floating=tiled
+  PICTURE_PLACE[$name]="${w}x$h at $x,$y, monitor scale $scale"
   report "picture $name: pictures/$name.png, window ${w}x$h at $x,$y, monitor scale $scale, $floating, $focus, opacity $(window_opacity) (active/inactive, as Hyprland reports)"
 }
 
@@ -1135,7 +1241,47 @@ launch_app() {
     "GIT_CONFIG_GLOBAL=$LAUNCH/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
     "$INSTALLED_BINARY" "$DEMO" >>"$LAUNCH/app.log" 2>&1 </dev/null 3<&- &
   APP_PID=$!
+  APP_VIEW="History, as the app opened on the demo repository"
 }
+# The view the app's window is believed to be on, which every later picture shows.
+report_view() { report "view: ${APP_VIEW:-unknown}"; }
+
+# --- keys: to the app's own window, and to nothing else
+# True while a key can reach only the app: the window listed for this script's
+# own process still has the address the launch found, and it is the window that
+# has the focus, so the address and the focus name the same window.
+keys_can_go() {
+  [[ $APP_ADDRESS =~ ^0x[0-9a-f]+$ && $(app_window .address) == "$APP_ADDRESS" && $(active_address) == "$APP_ADDRESS" ]] && ! session_locked
+}
+# One key, pressed and released 50 ms later, as omarchy-menu-keybindings sends a
+# binding's shortcut. A key that is down is registered for its release first, so
+# that a stop between the two still releases it. False when it was not sent.
+send_key() {
+  [[ $1 =~ ^[A-Za-z0-9_]+$ ]] && keys_can_go || return 1
+  register_restore release_key
+  KEY_DOWN=$1
+  key_state "$1" down
+  nap 0.05
+  run_restore release_key
+}
+release_key() {
+  [[ -n $KEY_DOWN && $APP_ADDRESS =~ ^0x[0-9a-f]+$ ]] || return 0
+  key_state "$KEY_DOWN" up
+  KEY_DOWN=""
+}
+# What the keys must leave as it was. The demo repository: HEAD, every ref, the
+# index's bytes and the state of the working tree, read without an optional lock,
+# so that reading them refreshes no index either. And the settings the app saved.
+repository_mark() {
+  local -a quiet=(env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_OPTIONAL_LOCKS=0 git -C "$DEMO")
+  {
+    "${quiet[@]}" symbolic-ref HEAD
+    "${quiet[@]}" for-each-ref
+    "${quiet[@]}" status --porcelain=v1 --untracked-files=all
+    sha256sum <"$DEMO/.git/index"
+  } 2>&1 | sha256sum | cut -d' ' -f1
+}
+settings_mark() { sha256_of "$LAUNCH/config/gitturtle/preferences.json" 2>/dev/null || echo none; }
 # True while the process runs; one that has ended and waits to be collected has not.
 process_running() {
   local stat
@@ -1205,7 +1351,7 @@ stop_app() {
   fi
   reap "$APP_PID"
   [[ ! -f $LAUNCH/app.log ]] || record app-output.txt <"$LAUNCH/app.log"
-  APP_PID="" APP_ADDRESS=""
+  APP_PID="" APP_ADDRESS="" APP_VIEW="" KEY_DOWN=""
   [[ $ended == yes ]]
 }
 # Every exit ends what this script started: whatever is still in the shell's own
@@ -1412,15 +1558,53 @@ restore_font() {
   report "restore font: omarchy-font-current is $(timeout 5 omarchy-font-current 2>/dev/null), was $START_FONT"
 }
 
-# --- floating: the app's own window
+# --- floating: the app's own window, and its size and place while it floats
+# "X Y W H AREA" for the window once it floats: FLOAT_SIZE where the usable area
+# of its monitor holds that with FLOAT_MARGIN free on every side, otherwise three
+# quarters of that area; centred in it, in whole logical pixels of the layout.
+# AREA says which rectangle the usable area is.
+floating_place() {
+  hypr_json monitors | jq -r --argjson id "$(app_window .monitor)" --argjson w "${FLOAT_SIZE[0]}" --argjson h "${FLOAT_SIZE[1]}" \
+    --argjson margin "$FLOAT_MARGIN" "$GEOMETRY"'
+    first(.[] | select(.id == $id)) | usable as $free
+    | (if $w + 2 * $margin <= $free.size[0] and $h + 2 * $margin <= $free.size[1] then [$w, $h]
+       else [($free.size[0] * 3 / 4 | floor), ($free.size[1] * 3 / 4 | floor)] end) as $size
+    | "\($free.at[0] + (($free.size[0] - $size[0]) / 2 | floor)) \($free.at[1] + (($free.size[1] - $size[1]) / 2 | floor)) \($size[0]) \($size[1]) \($free | box)"' 2>/dev/null
+}
+# Left to Hyprland, the window floated at the monitor's whole size on the first
+# run, under Omarchy's bar. So it is given a size and a place, and what Hyprland
+# made of them is read back; the picture's own rule then decides.
+place_floating() {
+  local x y w h area asked
+  read -r x y w h area <<<"$(floating_place)"
+  if [[ ! "$x $y $w $h" =~ ^-?[0-9]+\ -?[0-9]+\ [1-9][0-9]*\ [1-9][0-9]*$ ]]; then
+    report "floating: no size and place were asked for: the usable area of the window's monitor could not be read"
+    return 1
+  fi
+  asked="${w}x$h at $x,$y"
+  resize_window "$APP_ADDRESS" "$w" "$h"
+  move_window "$APP_ADDRESS" "$x" "$y"
+  wait_for_place "$asked"
+  report "floating: asked for $asked, centred in the usable area of its monitor ($area: the monitor less the edges it reserves); Hyprland gave $(window_place)"
+}
+# The floating state, and with it the size and place: tiled again, the window has
+# them from the layout; one that floated before the check gets them back from
+# here where Hyprland did not keep them.
 restore_floating() {
-  local now
+  local now w h x y
   [[ -n $START_FLOATING ]] || return 0
   now=$(app_window .floating)
   [[ -z $now || $now == "$START_FLOATING" ]] || toggle_floating "$APP_ADDRESS"
   nap 0.5
-  report "restore floating: the window's floating state is $(app_window .floating), was $START_FLOATING"
-  START_FLOATING=""
+  if [[ -n $now && -n $START_PLACE ]] && ! wait_for_place "$START_PLACE" && [[ $START_FLOATING == true ]] &&
+    [[ $START_PLACE =~ ^([0-9]+)x([0-9]+)\ at\ (-?[0-9]+),(-?[0-9]+)$ ]]; then
+    w=${BASH_REMATCH[1]} h=${BASH_REMATCH[2]} x=${BASH_REMATCH[3]} y=${BASH_REMATCH[4]}
+    resize_window "$APP_ADDRESS" "$w" "$h"
+    move_window "$APP_ADDRESS" "$x" "$y"
+    wait_for_place "$START_PLACE"
+  fi
+  report "restore floating: the window's floating state is $(app_window .floating), was $START_FLOATING; it is $(window_place), was ${START_PLACE:-unknown}"
+  START_FLOATING="" START_PLACE=""
 }
 
 # --- the monitor's scale: a rule built from the monitor's own mode and position
@@ -2098,13 +2282,17 @@ window_gate() {
   return 0
 }
 
-# The only repository the app is shown: invented people, fixed dates.
+# The only repository the app is shown: invented people, fixed dates. In either
+# form its third commit from the top, in the order of `git log --topo-order` over
+# every ref, changes one file and no other, a text file: where FONT_KEYS lead.
+# DEMO_TARGET names that file.
 make_demo_repository() {
   local maker=$SCRIPT_DIR/create-demo-repo.py
   local -a run_git
   DEMO=$WORK/Aurora
   if have python3 && [[ -f $maker ]]; then
     if timeout 120 env PYTHONDONTWRITEBYTECODE=1 python3 "$maker" --output "$DEMO" >"$WORK/demo.txt" 2>&1; then
+      DEMO_TARGET='src/activity.css as "Add keyboard focus states to the activity feed" changed it'
       report "demo repository: made by scripts/create-demo-repo.py"
       return 0
     fi
@@ -2116,12 +2304,13 @@ make_demo_repository() {
     GIT_AUTHOR_EMAIL=maya@aurora.example.invalid GIT_COMMITTER_EMAIL=maya@aurora.example.invalid
     GIT_AUTHOR_DATE=2026-01-05T10:00:00Z GIT_COMMITTER_DATE=2026-01-05T10:00:00Z git -C "$DEMO")
   mkdir -p "$DEMO/src" && "${run_git[@]}" init --quiet --initial-branch=main || return 1
+  printf 'export function greet(name: string) {\n  return "Hello, " + name;\n}\n\nexport function farewell(name: string) {\n  return "Goodbye, " + name;\n}\n' >"$DEMO/src/greet.ts"
+  "${run_git[@]}" add --all && "${run_git[@]}" commit --quiet --message "Start the Aurora demo with a greeting" || return 1
   printf '# Aurora\n\nA demo repository.\n' >"$DEMO/README.md"
-  "${run_git[@]}" add --all && "${run_git[@]}" commit --quiet --message "Start the Aurora demo" || return 1
-  printf 'export function greet(name: string) {\n  return "Hello, " + name;\n}\n' >"$DEMO/src/greet.ts"
-  "${run_git[@]}" add --all && "${run_git[@]}" commit --quiet --message "Add a greeting" || return 1
+  "${run_git[@]}" add --all && "${run_git[@]}" commit --quiet --message "Say what the demo is" || return 1
   printf '\n## Use\n\nCall greet with a name.\n' >>"$DEMO/README.md"
   "${run_git[@]}" add --all && "${run_git[@]}" commit --quiet --message "Describe how to use it" || return 1
+  DEMO_TARGET='src/greet.ts as "Start the Aurora demo with a greeting" added it'
   report "demo repository: made with three git commits (scripts/create-demo-repo.py or python3 is missing)"
 }
 
@@ -2281,8 +2470,86 @@ other_font() {
   printf '%s' "$first"
 }
 
+# "same" or "different" for two pictures as files, their sizes and checksums
+# (equal files mean that nothing in the window changed); "unlike" when they were
+# grabbed at different rectangles or scales, where a difference says nothing of
+# what the window shows; "unknown" when either was not taken.
+compare_pictures() { # NAME NAME
+  local a=$PICTURES/$1.png b=$PICTURES/$2.png
+  if [[ ! -f $a || ! -f $b ]]; then
+    echo unknown
+  elif [[ ${PICTURE_PLACE[$1]:-} != "${PICTURE_PLACE[$2]:-}" ]]; then
+    echo unlike
+  elif [[ $(stat -c %s -- "$a") == "$(stat -c %s -- "$b")" && $(sha256_of "$a") == "$(sha256_of "$b")" ]]; then
+    echo same
+  else
+    echo different
+  fi
+}
+picture_facts() { # NAME: the file, its size and the start of its checksum
+  local file=$PICTURES/$1.png sum
+  if [[ -f $file ]] && sum=$(sha256_of "$file"); then
+    printf '%s.png (%s bytes, sha256 %s)' "$1" "$(stat -c %s -- "$file")" "${sum:0:16}"
+  else
+    printf '%s.png (not taken)' "$1"
+  fi
+}
+# Brings the app to a text file's comparison with FONT_KEYS: only code text
+# follows the font, and History, where the app opens, shows none, so the first
+# run's pictures before and after the font change were the same file. A picture
+# before the keys and one after them say whether the keys changed the view; the
+# one after them is the font check's first.
+show_code_text() {
+  local key sent=0 repository settings
+  picture font-before-keys || problem "no picture before the keys"
+  repository=$(repository_mark)
+  settings=$(settings_mark)
+  for key in "${FONT_KEYS[@]}"; do
+    if ! send_key "$key"; then
+      report "keys: $key was not sent: GitTurtle's window is not the one window that has the focus, and a key must reach nothing else"
+      break
+    fi
+    sent=$((sent + 1))
+    nap "$KEY_SETTLE"
+  done
+  report "keys: $sent of ${#FONT_KEYS[@]} sent (${FONT_KEYS[*]}), to GitTurtle's own window by its address and to nothing else, each a press and its release, $KEY_SETTLE s apart: the third commit from the top, then its one changed file; the requests and Hyprland's replies are in records/hyprland.txt"
+  nap "$SETTLE"
+  picture font-before || problem "no picture before the font change"
+  if [[ $(repository_mark) != "$repository" ]]; then
+    problem "the demo repository changed while the keys were sent (its HEAD, a ref, its index or its working tree)"
+  elif [[ $settings == none ]]; then
+    report "keys: the demo repository is as it was before them (HEAD, refs, index, working tree); GitTurtle had saved no settings before them to compare"
+  elif [[ $(settings_mark) != "$settings" ]]; then
+    problem "the settings GitTurtle saved (preferences.json) changed while the keys were sent"
+  else
+    report "keys: they wrote nothing: the demo repository (HEAD, refs, index, working tree) and the settings GitTurtle saved (preferences.json) are as they were before them"
+  fi
+  if ((sent < ${#FONT_KEYS[@]})); then
+    ((sent == 0)) || APP_VIEW="History, $sent of the font check's ${#FONT_KEYS[@]} keys on from where the app opened"
+    uncovered "the comparison was not reached: $sent of ${#FONT_KEYS[@]} keys were sent"
+    return
+  fi
+  case $(compare_pictures font-before-keys font-before) in
+    different)
+      APP_VIEW="the comparison of $DEMO_TARGET, where the font check's keys lead (they changed the picture)"
+      report "view: the keys changed the picture: $(picture_facts font-before-keys) before them, $(picture_facts font-before) after them"
+      ;;
+    same)
+      uncovered "the comparison was not reached: the keys changed nothing in the picture, $(picture_facts font-before-keys) before them and the same file after them"
+      ;;
+    unlike)
+      APP_VIEW="unknown: the font check's keys were sent, and the window's rectangle changed between the pictures before and after them"
+      uncovered "the comparison: whether the keys reached it cannot be told, because the window's rectangle changed between the two pictures (${PICTURE_PLACE[font-before-keys]}, then ${PICTURE_PLACE[font-before]})"
+      ;;
+    *)
+      APP_VIEW="unknown: the font check's keys were sent, and no picture pair says what they changed"
+      uncovered "the comparison: whether the keys reached it cannot be told without a picture before them and one after them"
+      ;;
+  esac
+}
+
 check_font() {
-  local other status hook
+  local other status hook slug
   section g font "omarchy-font-set, live"
   skip_gate || return
   window_gate || return
@@ -2317,6 +2584,9 @@ check_font() {
     return
   fi
   report "font: $START_FONT -> $other; ~/.config/fontconfig $([[ -d $HOME/.config/fontconfig ]] && echo "exists" || echo "does not exist yet (omarchy-font-set creates it)")"
+  slug=$(theme_slug "$other")
+  [[ $slug != before && $slug != before-keys && $slug != restored ]] || slug=set-$slug
+  show_code_text
   register_restore restore_font
   "${SESSION_ENV[@]}" timeout "$SWITCH_WAIT" omarchy-font-set "$other" </dev/null >"$WORK/font-set.log" 2>&1 3<&-
   status=$?
@@ -2326,35 +2596,52 @@ check_font() {
   silence_notifications # omarchy-font-set restarts the Omarchy shell, which holds that state
   nap "$SETTLE"
   report "font: fc-match monospace, in the app's environment: $(XDG_CONFIG_HOME=$LAUNCH/config fc-match monospace -f '%{family}\n' 2>/dev/null | head -n 1)"
-  picture "font-$(theme_slug "$other")" || problem "no picture with the other font"
+  picture "font-$slug" || problem "no picture with the other font"
+  # The check saw the font change only where the picture changed with it.
+  case $(compare_pictures font-before "font-$slug") in
+    different) report "font: the picture changed with the font: $(picture_facts font-before) before the change, $(picture_facts "font-$slug") after it" ;;
+    same) uncovered "the picture did not change with the font: $(picture_facts font-before) before the change and the same file after it; the view they show: $APP_VIEW" ;;
+    unlike) uncovered "whether the picture changed with the font: the window's rectangle changed between the two pictures (${PICTURE_PLACE[font-before]}, then ${PICTURE_PLACE[font-$slug]}), so their difference does not say" ;;
+  esac
   run_restore restore_font
   silence_notifications
   nap "$SETTLE"
   picture font-restored || problem "no picture after the starting font was restored"
+  case $(compare_pictures font-before font-restored) in
+    same) report "font: put back: $(picture_facts font-restored) is the same file as the picture before the change" ;;
+    different) report "font: put back: $(picture_facts font-restored) is NOT the same file as the picture before the change, $(picture_facts font-before)" ;;
+    unlike) report "font: put back: font-restored.png was grabbed at another rectangle (${PICTURE_PLACE[font-restored]}) than the picture before the change (${PICTURE_PLACE[font-before]}), so the two cannot be compared" ;;
+  esac
   [[ $(timeout 5 omarchy-font-current 2>/dev/null) == "$START_FONT" ]] || problem "the font is not the starting $START_FONT"
   record font-set-output.txt <"$WORK/font-set.log"
+  report "view: the checks after this one picture the window as this check leaves it: $APP_VIEW"
   result
 }
 
 check_floating() {
-  local now
+  local now place
   section h floating "tiled and floating"
   skip_gate || return
   window_gate || return
+  report_view
   START_FLOATING=$(app_window .floating)
+  START_PLACE=$(window_place)
   picture "window-as-opened" || problem "no picture of the window as it opened"
   register_restore restore_floating
   toggle_floating "$APP_ADDRESS"
-  nap "$SETTLE"
+  nap 0.5
   now=$(app_window .floating)
   if [[ $now == "$START_FLOATING" ]]; then
     problem "Hyprland did not change the window's floating state ($now)"
   else
+    [[ $now != true ]] || place_floating
+    nap "$SETTLE"
     picture "window-$([[ $now == true ]] && echo floating || echo tiled)" || problem "no picture after the toggle"
   fi
-  now=$START_FLOATING
+  now=$START_FLOATING place=$START_PLACE
   run_restore restore_floating
   [[ $(app_window .floating) == "$now" ]] || problem "the window's floating state was not restored"
+  [[ $(window_place) == "$place" ]] || problem "the window's size and place are not the ones it had ($place)"
   nap "$SETTLE"
   result
 }
@@ -2365,6 +2652,7 @@ check_scales() {
   section i scales "fractional scales"
   skip_gate || return
   window_gate || return
+  report_view
   facts=$(hypr_json monitors | jq -r --argjson id "$(app_window .monitor)" '.[] | select(.id == $id) | "\(.name) \(.width) \(.height) \(.refreshRate) \(.x) \(.y) \(.transform) \(.scale)"' 2>/dev/null)
   read -r MONITOR_NAME width height refresh x y transform MONITOR_START_SCALE <<<"$facts"
   if [[ ! $MONITOR_NAME =~ ^[A-Za-z0-9._-]+$ || ! $width$height =~ ^[0-9]+$ ]]; then
@@ -2433,6 +2721,7 @@ check_inactive() {
     skipped "xdg-terminal-exec, which opens Omarchy's default terminal, is missing"
     return
   fi
+  report_view
   before=$(hypr_json clients | jq -c '[.[].address]' 2>/dev/null)
   register_restore close_terminal
   # The terminal shows nothing: its command names the window and waits.
@@ -2472,6 +2761,7 @@ check_rest() {
   section k rest "at rest, and the exit"
   skip_gate || return
   window_gate || return
+  report_view
   hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
   read -r ticks_before threads_before <<<"$(cpu_and_threads "$APP_PID")"
   nap "$REST_SECONDS"
