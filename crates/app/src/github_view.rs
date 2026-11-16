@@ -1733,31 +1733,99 @@ fn held_pull<'a>(rows: &'a [PullRequest], new: &NewPull) -> Option<&'a PullReque
         _ => None,
     }
 }
-/// Shows a creation's result from its notice: where the notice's line, whose top is `line`,
-/// and `list`, the list's view below it, whose first row is the new one, are not both whole
-/// in `body`'s view, the body scrolls that line, the start of a block, to its top, as an
-/// opening pull request shows from its title, so the notice and the row under it are in view
-/// together. It runs once the row's own reveal has landed ([`Panel::show_row`]): that reveal
-/// follows focus and shows the row by the least movement, which left the notice 33 px above
-/// the body's top at 18 pt in a 461 × 490 window, and with a pointer the last input it
-/// shows nothing.
-fn show_from_notice(
-    body: &ScrollHandle,
-    line: Pixels,
-    list: Bounds<Pixels>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let (view, previous, top) = (body.bounds(), body.offset(), line);
-    if top >= view.top() && list.bottom() <= view.bottom() {
-        return;
+/// The body's content in the frame that first draws a creation's result
+/// ([`Panel::show_created`]), which shows the result from its notice: where this frame's
+/// layout puts the notice's line (`line`) and the list below it (`list`), whose first row is
+/// the new one, not both whole in `body`'s view, the body scrolls that line, the start of a
+/// block, to its top, as an opening pull request shows from its title, so the notice and the
+/// row under it are in view together. It does so before the content prepaints, so this frame
+/// draws both where they stay and no later frame moves them: the first frame after a change
+/// lays out its final state (DESIGN.md, Motion). The body once followed the row's own reveal
+/// first, which follows focus and shows the row by the least movement, and came to the
+/// notice four frames of the list later: at 18 pt in a 461 × 490 window the notice stood
+/// 33 px above the body's top until then, and jumped into view about 50 ms after the row.
+/// Made for that frame alone; every other frame's content is drawn as it is.
+struct Created {
+    content: AnyElement,
+    body: ScrollHandle,
+    line: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>,
+    list: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>,
+}
+impl Created {
+    /// How far the body moves its content to show the notice and the list together, having
+    /// moved its scroll by as much, if it moves. The body has placed its content at its offset
+    /// already, so each place read here is where this frame would draw it.
+    fn show(&self, window: &mut Window) -> Option<Pixels> {
+        let line = window.layout_bounds(self.line.get()?);
+        let list = window.layout_bounds(self.list.get()?);
+        let (view, offset) = (self.body.bounds(), self.body.offset());
+        if line.top() >= view.top() && list.bottom() <= view.bottom() {
+            return None;
+        }
+        let y = (offset.y + view.top() - line.top()).clamp(-self.body.max_offset().y, px(0.));
+        let moved = y - offset.y;
+        if moved == Pixels::ZERO {
+            return None;
+        }
+        self.body.set_offset(point(offset.x, y));
+        Some(moved)
     }
-    let body = body.clone();
-    window.defer(cx, move |window, _| {
-        let y = (previous.y + view.top() - top).clamp(-body.max_offset().y, px(0.));
-        body.set_offset(point(previous.x, y));
-        window.refresh();
-    });
+}
+impl IntoElement for Created {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl Element for Created {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.content.request_layout(window, cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Content the body moves is prepainted where its new offset puts it.
+        match self.show(window) {
+            Some(moved) => window.with_element_offset(point(Pixels::ZERO, moved), |window| {
+                self.content.prepaint(window, cx);
+            }),
+            None => {
+                self.content.prepaint(window, cx);
+            }
+        }
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.content.paint(window, cx);
+    }
 }
 /// How a request of the panel opens its transport once the operation executor runs it
 /// ([`Panel::opener`]): the offline fixture's or the connected account's
@@ -2429,10 +2497,10 @@ struct Panel {
     /// listed: the list then says so, since it must not read as the open pull requests, and
     /// Refresh PRs loads those ([`Panel::show_created`]).
     created_only: bool,
-    /// Set as a creation's row joins the list, to the frames of the list until the body shows
-    /// the notice that names the pull request and its row together ([`show_from_notice`]): the
-    /// fourth, once the row's own reveal, which follows focus, has landed, by the third.
-    show_row: std::rc::Rc<std::cell::Cell<u8>>,
+    /// Set as a creation's row joins the list: the frame that next draws the list shows the
+    /// notice that names the pull request and its row together ([`Created`]), and the row's
+    /// own reveal, which follows focus, counts as made.
+    show_row: std::rc::Rc<std::cell::Cell<bool>>,
     /// Set as a failure lands that the body must show wherever it has scrolled: the frame
     /// that next draws the top line among the content brings the line into view
     /// ([`Panel::flow_top_line`]).
@@ -3533,9 +3601,9 @@ impl Panel {
         }
         self.created_only = !listed || self.created_only;
         // The row's title takes focus at the top of its list, whose first row it is, and the
-        // body then shows the notice and the row together ([`show_from_notice`]).
+        // frame that draws it shows the notice and the row together ([`Created`]).
         self.review.pull_scroll.set_offset(point(px(0.), px(0.)));
-        self.show_row.set(4);
+        self.show_row.set(true);
         let focus = self.review.buttons.focus(("github-pr", number), cx);
         focus.focus(window, cx);
         // A key still down from Send presses nothing on the row ([`Self::land_focus`]).
@@ -4178,6 +4246,12 @@ impl Render for Panel {
         // line ([`FailedForm`]). Above the body the line is in view already.
         let failed = (self.show_failed.take() && self.create && !pinned && !unpinned)
             .then(|| std::rc::Rc::new(FailedForm::default()));
+        // A creation landed: this frame lays out the notice's line and the list, which the
+        // body shows together before its content prepaints ([`Created`]).
+        let created = (self.show_row.take() && !self.create && !pinned && !unpinned).then(|| {
+            let laid = || std::rc::Rc::new(std::cell::Cell::new(None));
+            (laid(), laid())
+        });
         let (flowing_line, top_line) = if pinned {
             (
                 None,
@@ -4199,7 +4273,10 @@ impl Render for Panel {
         } else {
             self.review.top_line.set(Pixels::ZERO);
             let line = self.flow_top_line(lines, busy, flowing.clone());
-            let laid = failed.as_ref().map(|failed| &failed.line);
+            let laid = failed
+                .as_ref()
+                .map(|failed| &failed.line)
+                .or(created.as_ref().map(|(line, _)| line));
             (line.map(|line| laid_out(line, laid)), None)
         };
         // Each part of the content starts a block of the body ([`review::Blocks`]), and the
@@ -4208,7 +4285,6 @@ impl Render for Panel {
         let starts = blocks.starts();
         let drawn = self.review.top_line.clone();
         let line_for_confirmation = flowing.clone();
-        let line_for_created = flowing.clone();
         let line_for_failed = flowing.clone();
         let parts = move |children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App| {
             if let Some((top, bottom)) = flowing.get()
@@ -4269,13 +4345,13 @@ impl Render for Panel {
                 // margin, so the rows' text keeps the panel's edge, and above the first row and
                 // below the last the room is the list's own (a negative margin there collapsed
                 // the panel's scrolling body to its padding).
-                .child(review::clipped_lines(crate::native_accessibility::clips_children(div().on_children_prepainted({let (revealed,scroll,blocks)=(self.review.pull_revealed.clone(),self.review.pull_scroll.clone(),self.review.pull_blocks.clone());let (created,body,line)=(self.show_row.clone(),self.review.body_scroll.clone(),line_for_created);move|_,window,cx|{
+                .child(laid_out(review::clipped_lines(crate::native_accessibility::clips_children(div().on_children_prepainted({let (revealed,scroll,blocks)=(self.review.pull_revealed.clone(),self.review.pull_scroll.clone(),self.review.pull_blocks.clone());let (landed,body,shown)=(created.is_some(),self.review.body_scroll.clone(),self.review.revealed_focus.clone());move|_,window,cx|{
                     // The focus its rows' reveals showed ([`Panel::pull_part`]).
                     review::record_shown(&revealed,&scroll,|context|context.contains(review::PULL),window,cx);blocks.finish();
-                    // A creation's row, the first, shows with the notice above the list.
-                    let frames=created.get();
-                    if frames>1{created.set(frames-1);window.defer(cx,|window,_|window.refresh());}
-                    else if frames==1{created.set(0);if let Some((line,_))=line.get(){show_from_notice(&body,line,scroll.bounds(),window,cx);}}}})
+                    // A creation's row, the first, which this frame shows with the notice above
+                    // the list ([`Created`]): its own reveal, which follows focus and would move
+                    // the list or the body a frame later, is made, in the list and in the body.
+                    if landed{for (shown,view) in [(&revealed,&scroll),(&shown,&body)]{*shown.borrow_mut()=review::FocusObservation{focus:window.focused(cx),viewport:view.bounds(),rem_size:window.rem_size()};}}}})
                     .id("github-pr-list").debug_selector(||"github-pr-list".into()).track_scroll(&self.review.pull_scroll).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().zip(&self.row_parts).map(|(pull,(_,part))|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         // A list row, as the Files list's rows are: it rests on the panel surface,
@@ -4321,7 +4397,7 @@ impl Render for Panel {
                                 *this.review.revealed_focus.borrow_mut()=Default::default();cx.notify();})))
                     }else{
                         EmptyState::new("github-list-empty","No pull requests shown · Refresh PRs loads the open ones").tooltip("Opening this panel reads local settings and drafts only.")
-                    }.block(cx)))))),&self.review.pull_blocks).when(self.review.reopening.holds_row(),|list|list.child(review::list_mark(self.review.reopening.clone()))))
+                    }.block(cx)))))),&self.review.pull_blocks).when(self.review.reopening.holds_row(),|list|list.child(review::list_mark(self.review.reopening.clone()))),created.as_ref().map(|(_,list)|list)))
                 // A row that cannot hold its controls wraps them below, whole. A label after a
                 // Button takes the panel's text inset, which the Button gives back, so beside it
                 // nothing moves and on a line of its own the label starts at the panel's edge
@@ -4430,6 +4506,18 @@ impl Render for Panel {
             self.review.pull_scroll.clone(),
             self.review.pull_blocks.clone(),
         );
+        // In the frame that first draws a creation's row, the body shows it with its notice
+        // before the content prepaints ([`Created`]).
+        let content = match created {
+            Some((line, list)) => Created {
+                content: content.into_any_element(),
+                body: self.review.body_scroll.clone(),
+                line,
+                list,
+            }
+            .into_any_element(),
+            None => content.into_any_element(),
+        };
         let body = cue.list(
             div()
                 .on_children_prepainted(cue.observe(move |_, window, cx| {
@@ -25175,6 +25263,144 @@ mod tests {
     #[gpui::test]
     async fn a_failed_resolve_says_why_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
         assert_a_failed_send_says_why_in_view(cx, TopLineSend::Resolve).await;
+    }
+
+    /// A creation lands in one frame, at `interface` pt in a 461 × 490 window: the first frame
+    /// the body draws once the creation's answer is in shows the new row whole, with its
+    /// ring's room, in its list and in the body's view, the row holding focus, and every
+    /// frame after it draws the body's view, the list's and each part of the body where that
+    /// first frame did, so neither the notice above the row nor the row moves again; the
+    /// last frame draws the notice whole above the row and the row's ring whole. The notice
+    /// once came to the body's top four frames after the row, about 50 ms later, and at 18 pt
+    /// stood 33 px above the body's top until then.
+    async fn assert_a_creation_lands_in_one_frame(cx: &mut TestAppContext, interface: u8) {
+        use crate::tags::tests::draw;
+        let name = format!("{interface} pt in 461 × 490");
+        let rows = vec![
+            listed_pull(7, "fixture:other", "main"),
+            listed_pull(6, "fixture:older", "main"),
+        ];
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let answer = (201, made(false).to_string());
+        let at = (interface, 461., 490.);
+        let send =
+            review_creation(&app, &panel, &script, at, (answer.0, &answer.1), false, cx).await;
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        press_return(cx);
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending),
+            "{name}: sent"
+        );
+
+        // The window's frames, one for each layout of the repository page under the panel.
+        let window_frames = || {
+            crate::in_frame::probe::take()
+                .iter()
+                .filter(|frame| frame.region == "repository-columns")
+                .count()
+        };
+        crate::in_frame::probe::watch();
+        review::BODY_FRAMES.set(Some(Vec::new()));
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        let asked = window_frames();
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let later = window_frames();
+        crate::in_frame::probe::stop();
+        let drawn = review::BODY_FRAMES.take().expect("watched");
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.notice.clone())
+                .as_deref(),
+            Some("Pull request #203 created."),
+            "{name}"
+        );
+        let landed: Vec<_> = drawn
+            .iter()
+            .filter(|frame| frame.parts.iter().any(|(part, _)| part == "pr-203"))
+            .collect();
+        assert!(
+            asked >= 1 && later == 4 && landed.len() > later,
+            "{name}: the landing drew {asked} frames of the window by itself and the display \
+             {later} more, {} of them the body's with the row",
+            landed.len()
+        );
+        // One settled frame: every frame with the row draws the body's view, the list's and
+        // each part where the first of them did.
+        let mut settled: Vec<&review::BodyFrame> = Vec::new();
+        for frame in landed.iter().copied() {
+            let seen = |seen: &&review::BodyFrame| {
+                seen.view == frame.view && seen.pulls == frame.pulls && seen.parts == frame.parts
+            };
+            if !settled.iter().any(seen) {
+                settled.push(frame);
+            }
+        }
+        assert_eq!(
+            settled.len(),
+            1,
+            "{name}: the {} frames with the row, {asked} of the window's drawn by the landing \
+             itself, draw it in one place: its title at {:?}",
+            landed.len(),
+            settled
+                .iter()
+                .map(|frame| frame.parts.iter().find(|(part, _)| part == "pr-203"))
+                .collect::<Vec<_>>()
+        );
+        let row = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept(("github-pr", 203u64))
+            })
+            .expect("the row's title");
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let first = landed[0];
+        let part = |frame: &review::BodyFrame| {
+            frame
+                .parts
+                .iter()
+                .find(|(part, _)| part == "pr-203")
+                .map(|(_, bounds)| *bounds)
+                .expect("the row")
+        };
+        assert_eq!(
+            first.focused.as_ref(),
+            Some(&row),
+            "{name}: the row's focus"
+        );
+        assert!(
+            revealed_whole(part(first), first.view, room)
+                && revealed_whole(part(first), first.pulls, room),
+            "{name}: the first frame draws the row {:?} whole in the body {:?} and the list {:?}",
+            part(first),
+            first.view,
+            first.pulls
+        );
+        let notice = whole_in_body(cx, "github-notice", &name);
+        let card = whole_in_body(cx, "github-pr-card-203", &name);
+        let title = whole_in_body(cx, "github-pr-203", &name);
+        assert!(
+            card.top() >= notice.bottom(),
+            "{name}: the row {card:?} below the notice {notice:?}"
+        );
+        assert_ringed_whole(cx, title, &name);
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "{name}");
+    }
+
+    #[gpui::test]
+    async fn a_creation_lands_in_one_frame_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_creation_lands_in_one_frame(cx, 13).await;
+    }
+
+    #[gpui::test]
+    async fn a_creation_lands_in_one_frame_at_18_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_creation_lands_in_one_frame(cx, 18).await;
     }
 
     /// The open panel with its local reads drained.
