@@ -76,6 +76,21 @@ fn phrases(
     )
     .text_size(crate::appearance::ui_text(12.))
 }
+/// `button` with `name` as its accessible name where its label alone would not say what it
+/// acts on. In tests the name is kept under `selector` ([`NAMED_FOR_READING`]): the test
+/// platform builds no accessibility tree, and a kit Button's node is not reachable.
+fn named_for_reading(button: Button, selector: &'static str, name: String) -> Button {
+    #[cfg(test)]
+    NAMED_FOR_READING.with(|named| named.borrow_mut().insert(selector, name.clone()));
+    let _ = selector;
+    button.accessibility_label(name)
+}
+#[cfg(test)]
+thread_local! {
+    /// The accessible names [`named_for_reading`] last gave, by selector.
+    static NAMED_FOR_READING: std::cell::RefCell<std::collections::BTreeMap<&'static str, String>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
 /// A path's line of the panel, its label and the path, built once for the path it names
 /// ([`PathText::new`]), so a frame builds none of its text: the panel's frames clone its
 /// shared strings, which count references.
@@ -3941,14 +3956,22 @@ impl Render for Panel {
                         .child(line.min_w_0())
                         .child(
                             self.part("open-existing", div(), cx).child(
-                                self.button("github-open-existing", open, "", false, cx)
-                                    .debug_selector(|| "github-open-existing".into())
-                                    .disabled(pending)
-                                    .on_click(cx.listener(|this, event, window, cx| {
+                                // Its name says what #N is: read alone, as a screen reader
+                                // lists a window's buttons, "Open #7" named nothing.
+                                named_for_reading(
+                                    self.button("github-open-existing", open, "", false, cx),
+                                    "github-open-existing",
+                                    format!("Open pull request #{number}"),
+                                )
+                                .debug_selector(|| "github-open-existing".into())
+                                .disabled(pending)
+                                .on_click(cx.listener(
+                                    |this, event, window, cx| {
                                         if !this.held.borrow().refuses(event) {
                                             this.open_existing(window, cx)
                                         }
-                                    })),
+                                    },
+                                )),
                             ),
                         )
                         .into_any_element()
@@ -4145,7 +4168,7 @@ impl Render for Panel {
                     // reveals leave neither cut at its edge.
                     // Rows a creation's answer gave, with no page listed, are not the open pull
                     // requests: one line under them says so and names the step that loads those.
-                    .when(self.created_only&&!self.rows.is_empty(),|element|element.child(phrases("github-list-partial",if self.rows.len()==1{"Only the new pull request is shown · Refresh PRs loads the open ones"}else{"Only the new pull requests are shown · Refresh PRs loads the open ones"}).flex_shrink_0().px(text_inset()).pb_1().text_color(rgb(p.muted))))
+                    .when(self.created_only&&!self.rows.is_empty(),|element|element.child(phrases("github-list-partial",if self.rows.len()==1{"Only the new pull request is shown · Refresh PRs loads the open ones"}else{"Only the new pull requests are shown · Refresh PRs loads the open ones"}).flex_shrink_0().px(text_inset()).pb_1().text_color(rgb(p.muted)).children(appearance::text_probe(||"github-list-partial".into()))))
                     .when(self.rows.is_empty(),|element|element.child(self.part("pr-empty",div(),cx).py_5().px(text_inset()).child(div().child(review::one_line()).child(if self.local_loaded&&self.destination.read(cx).value().trim().is_empty(){
                         EmptyState::new("github-list-empty","No GitHub remote · Name the repository to load its pull requests").tooltip("Enter the destination as owner/repository or a GitHub.com remote URL. Opening this panel reads local settings and drafts only.")
                             .action(self.held_button("github-choose-destination",crate::empty_state::action("github-choose-destination","Name repository",""),cx).disabled(pending).on_click(cx.listener(|this,_,window,cx|{let focus=this.destination.read(cx).focus_handle(cx);window.focus(&focus,cx);
@@ -23375,6 +23398,111 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         assert_a_refusal_gives_its_remedy_focus(cx, Landed::Refresh, (18, 461., 490.)).await;
+    }
+
+    /// Open #7's accessible name says what it opens, "Open pull request #7", where its label,
+    /// beside the line that names the pull request, stays "Open #7": read alone, as a screen
+    /// reader lists a window's buttons, the label named nothing.
+    #[gpui::test]
+    async fn open_existing_is_named_by_what_it_opens(cx: &mut TestAppContext) {
+        let name = "13 pt in 1480 × 973";
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        NAMED_FOR_READING.with(|named| named.borrow_mut().clear());
+        let at = (13, 1480., 973.);
+        click_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        let action = whole_in_body(cx, "github-open-existing", name);
+        assert_eq!(
+            NAMED_FOR_READING.with(|named| named.borrow().get("github-open-existing").cloned()),
+            Some("Open pull request #7".into())
+        );
+        // Its label is the short one: the Button is narrower than its name alone would be.
+        let named = cx.update(|window, _| {
+            crate::views::shaped_width(
+                "Open pull request #7",
+                appearance::ui_text(13.),
+                FontWeight::NORMAL,
+                window,
+            )
+        });
+        assert!(
+            action.size.width < named,
+            "the label stays Open #7: {action:?} against {named:?}"
+        );
+    }
+
+    /// The line under rows a creation's answer gave is the list's empty line in kind: the 12 px
+    /// muted secondary text, at the rows' text inset, and
+    /// read by an assistive technology as static text named by the whole line, as the empty
+    /// line it stands in for is.
+    async fn assert_the_partial_list_line_is_the_empty_lines_kind(
+        cx: &mut TestAppContext,
+        at: (u8, f32, f32),
+    ) {
+        use crate::native_accessibility::written;
+        const LINE: &str = "Only the new pull request is shown · Refresh PRs loads the open ones";
+        let name = format!("{} pt in {} × {}", at.0, at.1, at.2);
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let answer = made(false).to_string();
+        send_creation(&app, &panel, &script, at, (201, &answer), cx).await;
+        let line = whole_in_body(cx, "github-list-partial", &name);
+        let size = appearance::ui_text(12.);
+        let muted = cx.read(|cx| gpui::Hsla::from(rgb(palette(cx).muted)));
+        assert_eq!(
+            appearance::drawn_size("github-list-partial"),
+            Some(size),
+            "{name}: the 12 px secondary size"
+        );
+        assert_eq!(
+            appearance::drawn_color("github-list-partial"),
+            Some(muted),
+            "{name}: muted"
+        );
+        let title = cx
+            .debug_bounds("github-pr-title-203")
+            .expect("the row's title");
+        assert!(
+            (line.left() + text_inset() - title.left()).abs() < px(0.5),
+            "{name}: the line's text {line:?} starts where the row's {title:?} does"
+        );
+        let read = |id: &str| {
+            written::get(id).map(|written| written.node).map(|node| {
+                (
+                    node.role(),
+                    node.label().or(node.value()).map(str::to_owned),
+                )
+            })
+        };
+        let partial = read("github-list-partial").expect("the line is written");
+        assert_eq!(partial.1.as_deref(), Some(LINE), "{name}: named whole");
+
+        // The empty line the same list draws once its rows go.
+        type_into_destination(&panel, "x", cx);
+        assert!(cx.debug_bounds("github-list-empty").is_some(), "{name}");
+        let empty = read("github-list-empty-line").expect("the empty line is written");
+        assert_eq!(partial.0, empty.0, "{name}: read as the empty line is");
+        assert_eq!(
+            appearance::drawn_size("github-list-empty-line"),
+            Some(size),
+            "{name}: the empty line's size"
+        );
+        assert_eq!(
+            appearance::drawn_color("github-list-empty-line"),
+            Some(muted)
+        );
+    }
+
+    #[gpui::test]
+    async fn the_partial_list_line_is_drawn_and_read_as_the_empty_line_is(cx: &mut TestAppContext) {
+        assert_the_partial_list_line_is_the_empty_lines_kind(cx, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn the_partial_list_line_is_drawn_and_read_as_the_empty_line_is_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        assert_the_partial_list_line_is_the_empty_lines_kind(cx, (18, 461., 490.)).await;
     }
 
     /// Types `text` into the open panel's destination field, as a person does, and draws.
