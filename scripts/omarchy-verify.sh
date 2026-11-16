@@ -955,12 +955,13 @@ readonly GEOMETRY='
   # One side of a monitor. The scale Hyprland lists may be rounded to two
   # decimals, while the scale it uses is a multiple of 1/120 that divides the
   # mode into whole pixels: the side is the whole number such a scale gives
-  # that is nearest to pixels / scale, or that quotient rounded where none does.
+  # that is nearest to pixels / scale, or that quotient rounded down where none
+  # does, so that the rectangle never reaches past the monitor.
   def logical($pixels; $scale):
     ($pixels / $scale) as $about
     | ([range((($scale - 0.006) * 120) | ceil; ((($scale + 0.006) * 120) | floor) + 1)
         | select(. > 0 and (($pixels * 120) % .) == 0) | $pixels * 120 / .]
-       | min_by(($about - .) | fabs)) // ($about | round);
+       | min_by(($about - .) | fabs)) // ($about | floor);
   # A monitor as a rectangle: its mode over its scale, turned with it.
   def area:
     (if (.transform % 2) == 1 then [.height, .width] else [.width, .height] end) as $mode
@@ -1249,9 +1250,10 @@ report_view() { report "view: ${APP_VIEW:-unknown}"; }
 # --- keys: to the app's own window, and to nothing else
 # True while a key can reach only the app: the window listed for this script's
 # own process still has the address the launch found, and it is the window that
-# has the focus, so the address and the focus name the same window.
+# has the focus, so the address and the focus name the same window. The lock is
+# read first, since it can take seconds: the focus is the last thing read.
 keys_can_go() {
-  [[ $APP_ADDRESS =~ ^0x[0-9a-f]+$ && $(app_window .address) == "$APP_ADDRESS" && $(active_address) == "$APP_ADDRESS" ]] && ! session_locked
+  ! session_locked && [[ $APP_ADDRESS =~ ^0x[0-9a-f]+$ && $(app_window .address) == "$APP_ADDRESS" && $(active_address) == "$APP_ADDRESS" ]]
 }
 # One key, pressed and released 50 ms later, as omarchy-menu-keybindings sends a
 # binding's shortcut. A key that is down is registered for its release first, so
@@ -1276,9 +1278,11 @@ repository_mark() {
   local -a quiet=(env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_OPTIONAL_LOCKS=0 git -C "$DEMO")
   {
     "${quiet[@]}" symbolic-ref HEAD
+    "${quiet[@]}" rev-parse HEAD
     "${quiet[@]}" for-each-ref
     "${quiet[@]}" status --porcelain=v1 --untracked-files=all
     sha256sum <"$DEMO/.git/index"
+    sha256sum <"$DEMO/.git/config"
   } 2>&1 | sha256sum | cut -d' ' -f1
 }
 settings_mark() { sha256_of "$LAUNCH/config/gitturtle/preferences.json" 2>/dev/null || echo none; }
@@ -2516,13 +2520,15 @@ show_code_text() {
   nap "$SETTLE"
   picture font-before || problem "no picture before the font change"
   if [[ $(repository_mark) != "$repository" ]]; then
-    problem "the demo repository changed while the keys were sent (its HEAD, a ref, its index or its working tree)"
+    problem "the demo repository changed while the keys were sent (its HEAD, a ref, its index, its working tree or its configuration)"
+  elif [[ $settings == none && $(settings_mark) != none ]]; then
+    report "keys: the demo repository is as it was before them (HEAD, refs, index, working tree, its configuration); GitTurtle saved its settings for the first time while they were sent (preferences.json appeared), so there was nothing to compare them with"
   elif [[ $settings == none ]]; then
-    report "keys: the demo repository is as it was before them (HEAD, refs, index, working tree); GitTurtle had saved no settings before them to compare"
+    report "keys: the demo repository is as it was before them (HEAD, refs, index, working tree, its configuration); GitTurtle had saved no settings before them and saved none while they were sent"
   elif [[ $(settings_mark) != "$settings" ]]; then
     problem "the settings GitTurtle saved (preferences.json) changed while the keys were sent"
   else
-    report "keys: they wrote nothing: the demo repository (HEAD, refs, index, working tree) and the settings GitTurtle saved (preferences.json) are as they were before them"
+    report "keys: they wrote nothing: the demo repository (HEAD, refs, index, working tree, its configuration) and the settings GitTurtle saved (preferences.json) are as they were before them"
   fi
   if ((sent < ${#FONT_KEYS[@]})); then
     ((sent == 0)) || APP_VIEW="History, $sent of the font check's ${#FONT_KEYS[@]} keys on from where the app opened"
