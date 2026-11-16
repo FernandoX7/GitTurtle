@@ -251,6 +251,82 @@ impl Element for LaidOut {
         self.child.paint(window, cx);
     }
 }
+/// `element`, recording the layout ID it is laid out under in `laid` where there is one
+/// ([`LaidOut`]), and otherwise as it is.
+fn laid_out(
+    element: impl IntoElement,
+    laid: Option<&std::rc::Rc<std::cell::Cell<Option<LayoutId>>>>,
+) -> AnyElement {
+    match laid {
+        Some(laid) => LaidOut {
+            child: element.into_any_element(),
+            laid: laid.clone(),
+        }
+        .into_any_element(),
+        None => element.into_any_element(),
+    }
+}
+/// What the New pull request form shows as its creation fails, in the frame that first draws
+/// the failure's line ([`Panel::show_failed`]): where that frame lays out the line, the form's
+/// title field, which holds the focus Send gave up as the creation was sent, and Pull requests,
+/// the Button between them. The body shows the line whole, wherever it has scrolled, and with
+/// it the control focus rests on ([`FailedForm::show`]). Made for that frame alone: every
+/// other frame of the panel draws the three as they are and reads one flag.
+#[derive(Default)]
+struct FailedForm {
+    line: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>,
+    title: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>,
+    back: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>,
+}
+impl FailedForm {
+    /// Shows the failure's line, drawn from `top` to `bottom` in the frame being prepainted,
+    /// in `scroll`, the body, by the least movement that shows it whole, as the refusal for
+    /// an existing pull request is shown ([`review::show`]), and the title field whole with it
+    /// where the body's view holds both, so focus stays on the field, in view with its ring:
+    /// the person edits and reviews again. Where the view cannot hold both, as with a failure
+    /// of five lines at 18 pt in a 461 × 490 window, the line comes first and Pull requests,
+    /// the control nearest it, is shown with it; `rest` then moves focus there, since focus
+    /// left on a field out of view is on nothing the person sees. A line taller than the view
+    /// shows from its top, and focus stays on the field. Each place is this frame's layout,
+    /// read once the body's content has prepainted.
+    fn show(
+        &self,
+        (top, bottom): (Pixels, Pixels),
+        scroll: &ScrollHandle,
+        blocks: &review::Blocks,
+        rest: impl FnOnce(&mut Window, &mut App) + 'static,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let (Some(line), Some(title), Some(back)) =
+            (self.line.get(), self.title.get(), self.back.get())
+        else {
+            return;
+        };
+        // Each where this frame draws it, by where it draws the line.
+        let laid = window.layout_bounds(line);
+        let by = point(px(0.), top - laid.top());
+        let line = Bounds::from_corners(point(laid.left(), top), point(laid.right(), bottom));
+        let (title, back) = (
+            window.layout_bounds(title) + by,
+            window.layout_bounds(back) + by,
+        );
+        let inset = review::reveal_room(window, cx);
+        let height = scroll.bounds().size.height;
+        let holds = |with: Bounds<Pixels>| with.bottom() - line.top() + inset * 2. <= height;
+        let (shown, on_back) = if holds(title) {
+            (vec![line, title], false)
+        } else if holds(back) {
+            (vec![line, back], true)
+        } else {
+            (vec![line], false)
+        };
+        review::show(scroll, blocks, shown, inset, false, |_, _| true, window, cx);
+        if on_back {
+            window.defer(cx, rest);
+        }
+    }
+}
 /// One line of the panel's text, `prefix` and then `path` elided in its middle where the line
 /// is narrower than both, keeping the path's top directory and its last component, as the
 /// header elides the repository's path ([`crate::views::location_tail`]): "Local worktree:
@@ -2361,6 +2437,10 @@ struct Panel {
     /// that next draws the top line among the content brings the line into view
     /// ([`Panel::flow_top_line`]).
     show_line: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Set as a creation fails for any reason but its branch's existing pull request: the frame
+    /// that next draws the form brings the failure's line into view with the control focus
+    /// rests on ([`FailedForm`]).
+    show_failed: std::rc::Rc<std::cell::Cell<bool>>,
     /// The part each of `rows`' titles is in the body (`pr-{number}`), built once for each page
     /// the rows change to ([`Panel::name_row_parts`]) rather than for each row in each frame.
     row_parts: Vec<(u64, SharedString)>,
@@ -2449,7 +2529,7 @@ impl Panel {
             head:cx.new(|cx|InputState::new(window,cx).default_value(branch).placeholder("Published head branch (owner:branch for a fork)")),
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
-            rows:vec![],listed:None,existing:None,created_only:false,show_row:Default::default(),show_line:Default::default(),row_parts:Vec::new(),page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
+            rows:vec![],listed:None,existing:None,created_only:false,show_row:Default::default(),show_line:Default::default(),show_failed:Default::default(),row_parts:Vec::new(),page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
             account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,origin:Origin::Panel,presses:Presses::default(),held:Default::default(),hears_keys:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:SharedString::default(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
             #[cfg(test)]
@@ -3227,7 +3307,20 @@ impl Panel {
                     _ => format!("{error:#}"),
                 });
                 if exists { this.focus_refusal(window, cx); }
-                else if this.conversations.active.is_some() { this.focus_visible_section(window,cx); }
+                else {
+                    // Every other failure that answers on the panel's top line is shown there
+                    // wherever the body has scrolled, as that refusal is: Send stands at the
+                    // foot of what it sends, and the line that said why stood above the body's
+                    // top, so Send seemed to do nothing. A failed creation shows the control
+                    // focus rests on with it ([`FailedForm`]). While a reply is open the line
+                    // stands above the body, in view, and the frame that draws it there takes
+                    // the request back; the reply's own failure is drawn in its composer.
+                    match &sent_action {
+                        Action::Create(_) => this.show_failed.set(true),
+                        _ => this.show_line.set(true),
+                    }
+                    if this.conversations.active.is_some() { this.focus_visible_section(window,cx); }
+                }
             },
         }, window, cx);
         if sent {
@@ -3360,6 +3453,22 @@ impl Panel {
         // the top of its ring cut.
         self.review.reopening.reveal();
         self.land_focus(&focus, window, cx);
+    }
+    /// Rests focus on Pull requests, the Button between a failed creation's line and its form,
+    /// where the body's view cannot hold the line and the form's title field together
+    /// ([`FailedForm::show`]): only while the form is open with focus still on that field, where
+    /// sending left it, so focus the person has moved since stays theirs. The Button neither
+    /// sends nor reads: its press saves the draft and goes back to the list, and Tab goes on to
+    /// the title. The keys then down are held off it ([`Self::land_focus`]).
+    fn rest_on_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self.title.read(cx).focus_handle(cx);
+        if !self.create || self.pending || !title.is_focused(window) {
+            return;
+        }
+        let focus = self.review.buttons.focus("github-create-back", cx);
+        focus.focus(window, cx);
+        self.land_focus(&focus, window, cx);
+        cx.notify();
     }
     /// Shows the pull request a creation of `new` made, from the creation's own answer and with
     /// no request after it. The notice names it, "Pull request #N created." or, for a draft,
@@ -4065,6 +4174,10 @@ impl Render for Panel {
         // difference, read from where this frame lays the line out ([`Self::unpin_top_line`]).
         let stood = self.review.top_line_pinned.replace(pinned);
         let unpinned = stood && !pinned;
+        // A creation failed: this frame lays out what the body then shows with the failure's
+        // line ([`FailedForm`]). Above the body the line is in view already.
+        let failed = (self.show_failed.take() && self.create && !pinned && !unpinned)
+            .then(|| std::rc::Rc::new(FailedForm::default()));
         let (flowing_line, top_line) = if pinned {
             (
                 None,
@@ -4086,7 +4199,8 @@ impl Render for Panel {
         } else {
             self.review.top_line.set(Pixels::ZERO);
             let line = self.flow_top_line(lines, busy, flowing.clone());
-            (line.map(IntoElement::into_any_element), None)
+            let laid = failed.as_ref().map(|failed| &failed.line);
+            (line.map(|line| laid_out(line, laid)), None)
         };
         // Each part of the content starts a block of the body ([`review::Blocks`]), and the
         // line among it records the room it takes there, up to the part after it
@@ -4095,6 +4209,7 @@ impl Render for Panel {
         let drawn = self.review.top_line.clone();
         let line_for_confirmation = flowing.clone();
         let line_for_created = flowing.clone();
+        let line_for_failed = flowing.clone();
         let parts = move |children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App| {
             if let Some((top, bottom)) = flowing.get()
                 && let Some(next) = children.iter().find(|part| part.top() >= bottom)
@@ -4249,10 +4364,12 @@ impl Render for Panel {
                 .when(self.review.section==Section::Files,|element|element.child(self.render_files(window,cx)))
                 .when(self.review.section==Section::Review,|element|element.child(self.render_collected(cx))))
             .when(self.create,|element|element
-                .child(self.button("github-create-back","Pull requests","arrow-left",false, cx).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.create=false;this.confirm=None;this.review.show_list=true;this.focus_visible_section(window,cx);cx.notify();})))
+                // A failed creation can rest focus on Pull requests ([`Self::rest_on_back`]), so a
+                // key still held from Send presses nothing on it ([`HeldKeys`]).
+                .child(laid_out(self.button("github-create-back","Pull requests","arrow-left",false, cx).debug_selector(||"github-create-back".into()).disabled(pending).on_click(cx.listener(|this,event,window,cx|{if this.held.borrow().refuses(event){return;}this.save_draft(window,cx);this.create=false;this.confirm=None;this.review.show_list=true;this.focus_visible_section(window,cx);cx.notify();})),failed.as_ref().map(|failed|&failed.back)))
                 .child(label("github-create-fields","New pull request · published head → destination base").font_weight(FontWeight::SEMIBOLD))
                 // Each one-line field is one line of the body, which its reveals leave whole.
-                .child(div().child(self.stop_mark(&self.title.read(cx).focus_handle(cx),review::ring_room,false,false)).child(review::one_line()).child(Input::new(&self.title).aria_label("Pull request title").disabled(pending)))
+                .child(laid_out(div().debug_selector(||"github-create-title".into()).child(self.stop_mark(&self.title.read(cx).focus_handle(cx),review::ring_room,false,false)).child(review::one_line()).child(Input::new(&self.title).aria_label("Pull request title").disabled(pending)),failed.as_ref().map(|failed|&failed.title)))
                 .child(div().flex().gap_2().child(div().flex_1().child(review::one_line()).child(Input::new(&self.head).aria_label("Published head branch").disabled(pending))).child(div().flex_1().child(review::one_line()).child(Input::new(&self.base).aria_label("Destination base branch").disabled(pending))))
                 .child(div().flex().gap_2().children([(true,"Draft"),(false,"Ready")].map(|(draft,name)|self.button(name,name,"",self.draft==draft, cx).toggled(self.draft==draft).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.draft=draft;this.confirm=None;this.save_draft(window,cx);}))))
                     .child(self.button("github-load-templates","Load local base templates","",false, cx).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.load_templates(window,cx)))))
@@ -4326,6 +4443,14 @@ impl Render for Panel {
                     blocks.finish();
                     #[cfg(test)]
                     review::record_body_frame(&scroll, &list_scroll, &pull_scroll, window, cx);
+                    // A failed creation's line, shown with the control focus rests on.
+                    if let (Some(failed), Some(line)) = (&failed, line_for_failed.get()) {
+                        let panel = panel.clone();
+                        let rest = move |window: &mut Window, cx: &mut App| {
+                            let _ = panel.update(cx, |panel, cx| panel.rest_on_back(window, cx));
+                        };
+                        failed.show(line, &scroll, &blocks, rest, window, cx);
+                    }
                     let panel = panel.clone();
                     reopening.settle(
                         &scroll,
@@ -24409,6 +24534,647 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         assert_a_clicked_refusal_gives_its_remedy_focus(cx, Landed::Refresh).await;
+    }
+
+    /// The ways a creation fails that are no refusal for an existing pull request, each as the
+    /// script answers the creation itself, with a status or, with none, with no answer at all,
+    /// as a lost connection and a timeout leave the transport, and the sentence the panel's
+    /// top line then reads, word for word.
+    const FAILED_CREATIONS: [(&str, Option<u16>, &str); 6] = [
+        (
+            "a 403",
+            Some(403),
+            "GitHub refused this action. Check repository access, organization authorization, and review permissions. No automatic retry was made. Check GitHub before resubmitting.",
+        ),
+        (
+            "a 404",
+            Some(404),
+            "GitHub repository or pull request is unavailable to this account. No automatic retry was made. Check GitHub before resubmitting.",
+        ),
+        (
+            "a 422 of another form",
+            Some(422),
+            "GitHub rejected the reviewed target or content. Refresh and review the branches, permissions, and diff positions. No automatic retry was made. Check GitHub before resubmitting.",
+        ),
+        (
+            "a rate limit",
+            Some(429),
+            "GitHub rate limit reached. No automatic retry was made. Check GitHub before resubmitting.",
+        ),
+        (
+            "a 502",
+            Some(502),
+            "GitHub returned HTTP 502. The remote outcome may be uncertain. Check GitHub before resubmitting; this action was not replayed.",
+        ),
+        (
+            "a lost connection",
+            None,
+            "The script holds no further answer. The GitHub outcome may be uncertain. Check the destination before resubmitting; no automatic retry was made.",
+        ),
+    ];
+
+    /// Opens [`creation_panel`]'s panel in a `width` × `height` window at `interface` pt, the
+    /// window resized first.
+    async fn open_creation(
+        app: &Entity<GitTurtle>,
+        (interface, width, height): (u8, f32, f32),
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+        draw(cx);
+        cx.update(|window, _| {
+            assert_eq!(window.scale_factor(), 2., "the test window's scale");
+            assert_eq!(window.viewport_size(), size(px(width), px(height)));
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(app, cx).await;
+        draw(cx);
+    }
+
+    /// Reviews the open form's creation, by Return on Review submission…, and leaves the
+    /// script holding what Send to GitHub then gets: the two rechecks and the creation's
+    /// answer under `status`, or, with none, nothing for the creation. Send's focus handle.
+    async fn review_failing_creation(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        script: &github::Scripted,
+        status: Option<u16>,
+        cx: &mut VisualTestContext,
+    ) -> FocusHandle {
+        use crate::tags::tests::draw;
+        let identities = |script: &github::Scripted| {
+            script.answer(200, format!(r#"{{"sha":"{}"}}"#, "1".repeat(40)));
+            script.answer(200, format!(r#"{{"sha":"{}"}}"#, "2".repeat(40)));
+        };
+        identities(script);
+        let review = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-review-submit")
+            })
+            .expect("Review submission…");
+        cx.update(|window, cx| review.focus(window, cx));
+        draw(cx);
+        press_return(cx);
+        settle_panel(app, cx).await;
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some()),
+            "the creation is reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        identities(script);
+        if let Some(status) = status {
+            script.answer(status, "{}");
+        }
+        panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub")
+    }
+
+    /// The lines `text` takes at the panel's 12 pt wrapped in `width`.
+    fn lines_wrapped(cx: &mut VisualTestContext, text: &str, width: Pixels) -> usize {
+        cx.update(|window, _| {
+            let style = window.text_style();
+            window
+                .text_system()
+                .shape_text(
+                    SharedString::from(text.to_owned()),
+                    appearance::ui_text(12.),
+                    &[style.to_run(text.len())],
+                    Some(width),
+                    None,
+                )
+                .map_or(1, |lines| {
+                    lines
+                        .iter()
+                        .map(|line| line.wrap_boundaries.len() + 1)
+                        .sum()
+                })
+        })
+    }
+
+    /// Where focus rests once a creation has failed ([`failure_shown`]).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Rests {
+        Title,
+        Back,
+    }
+
+    /// What is wrong with how the last frame shows a creation's failure, `said`: its line
+    /// whole in the body's view, and below it the control focus rests on, whole in view with
+    /// its ring whole: the form's title field wherever the view holds the line and the field
+    /// together, each with a line's room, and Pull requests, the Button between them, only
+    /// where it cannot. Nothing where all of that holds; then where focus rests, and the
+    /// line's height with the lines its words take in its width.
+    fn failure_shown(
+        panel: &Entity<Panel>,
+        said: &str,
+        name: &str,
+        cx: &mut VisualTestContext,
+    ) -> (Vec<String>, Option<Rests>, (Pixels, usize)) {
+        let mut wrong = Vec::new();
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let within = |drawn: Bounds<Pixels>| {
+            drawn.size.height > px(0.)
+                && drawn.top() >= body.top()
+                && drawn.bottom() <= body.bottom()
+                && drawn.left() >= body.left()
+                && drawn.right() <= body.right()
+        };
+        let line = cx.debug_bounds("github-error").expect("the failure's line");
+        if !within(line) {
+            wrong.push(format!(
+                "{name}: the line {line:?} is not whole in the body's view {body:?}"
+            ));
+        }
+        let title = cx.debug_bounds("github-create-title").expect("the title");
+        let back = cx
+            .debug_bounds("github-create-back")
+            .expect("Pull requests");
+        let (on_title, on_back, room) = cx.update(|window, cx| {
+            let panel = panel.read(cx);
+            let title = panel.title.read(cx).focus_handle(cx);
+            let back = panel.review.buttons.kept("github-create-back");
+            (
+                title.is_focused(window),
+                back.is_some_and(|back| back.is_focused(window)),
+                review::reveal_room(window, cx),
+            )
+        });
+        // Whether the view holds the line and the field together, a line's room about them.
+        let holds = title.bottom() - line.top() + room * 2. <= body.size.height;
+        let rests = match (on_title, on_back) {
+            (true, _) => Some((Rests::Title, title)),
+            (_, true) => Some((Rests::Back, back)),
+            _ => None,
+        };
+        match rests {
+            Some((rests, control)) if within(control) && control.top() >= line.bottom() => {
+                if rests == Rests::Title {
+                    crate::focus_ring::assert_input_ringed(cx, title, name);
+                } else {
+                    assert_ringed_whole(cx, back, name);
+                }
+                if holds != (rests == Rests::Title) {
+                    wrong.push(format!(
+                        "{name}: focus rests on {rests:?}, though the view {body:?} {} the line \
+                         {line:?} and the title field {title:?} together",
+                        if holds { "holds" } else { "cannot hold" }
+                    ));
+                }
+            }
+            Some((rests, control)) => wrong.push(format!(
+                "{name}: focus rests on {rests:?}, which at {control:?} is not whole in the \
+                 body's view {body:?} below the line {line:?}"
+            )),
+            None => wrong.push(format!(
+                "{name}: focus rests on neither the title field nor Pull requests"
+            )),
+        }
+        let lines = lines_wrapped(cx, said, line.size.width);
+        (
+            wrong,
+            rests.map(|(rests, _)| rests),
+            (line.size.height, lines),
+        )
+    }
+
+    /// A creation that fails for any reason says why in view, at `at`: each failure's sentence,
+    /// word for word, on the panel's top line, wrapped whole inside the body's view though
+    /// Send stood at the form's foot, with the form open below it, what was typed kept and
+    /// its draft kept; focus on the form's title field, drawn whole with its ring, so the
+    /// person can edit and review again; and no request after the failure. Each failure is
+    /// sent from the form the one before left, as a person tries again. Only the refusal for
+    /// an existing pull request asked the body to show its line: at 13 pt in a 461 × 490 window
+    /// every other failure's line stood above the body's top, and Send seemed to do nothing.
+    async fn assert_failed_creations_are_shown(cx: &mut TestAppContext, at: (u8, f32, f32)) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        open_creation(&app, at, cx).await;
+        let mut wrong = Vec::new();
+        let mut drawn = Vec::new();
+        for (round, (kind, status, said)) in FAILED_CREATIONS.into_iter().enumerate() {
+            let name = format!("{kind} at {} pt in {} × {}", at.0, at.1, at.2);
+            let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+            cx.update(|window, cx| send.focus(window, cx));
+            draw(cx);
+            press_return(cx);
+            settle_panel(&app, cx).await;
+            draw(cx);
+            draw(cx);
+            panel.read_with(cx, |panel, cx| {
+                assert_eq!(panel.error.as_deref(), Some(said), "{name}");
+                assert!(
+                    panel.create
+                        && panel.confirm.is_none()
+                        && !panel.pending
+                        && panel.existing.is_none(),
+                    "{name}: the form stays open"
+                );
+                assert_eq!(
+                    panel.title.read(cx).value().as_ref(),
+                    "Keep the review's place",
+                    "{name}"
+                );
+                assert_eq!(
+                    panel.body.read(cx).value().as_ref(),
+                    "Typed description",
+                    "{name}"
+                );
+                assert!(
+                    panel
+                        .saved
+                        .iter()
+                        .any(|draft| matches!(draft, Draft::Pull(pull) if pull.head == "feature")),
+                    "{name}: the draft is kept"
+                );
+            });
+            assert_eq!(
+                script.asked("POST", "/pulls"),
+                round + 1,
+                "{name}: sent once"
+            );
+            assert_eq!(
+                script.requests.lock().unwrap().len(),
+                5 * (round + 1),
+                "{name}: no request follows the failure"
+            );
+            let (shown, rests, line) = failure_shown(&panel, said, &name, cx);
+            wrong.extend(shown);
+            // Only 18 pt in the half tile is too short to hold a failure's line and the field.
+            if at != (18, 461., 490.) && rests != Some(Rests::Title) {
+                wrong.push(format!(
+                    "{name}: focus rests on {rests:?}, not the title field"
+                ));
+            }
+            drawn.push((name, line));
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        // Every line its words wrap to is drawn: the lines' one height, whatever the sentence.
+        let size = appearance::ui_text(12.);
+        for (name, (height, lines)) in &drawn {
+            let each = *height / *lines as f32;
+            let (_, (first, of)) = &drawn[0];
+            assert!(
+                (each - *first / *of as f32).abs() < px(0.01) && each >= size,
+                "{name}: {lines} lines of the {size:?} text in {height:?}, where {}'s {of} take \
+                 {first:?}",
+                drawn[0].0
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn a_failed_creation_says_why_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_failed_creations_are_shown(cx, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_creation_says_why_in_view_at_18_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_failed_creations_are_shown(cx, (18, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_creation_says_why_in_view_at_13_pt_in_a_wide_window(cx: &mut TestAppContext) {
+        assert_failed_creations_are_shown(cx, (13, 1480., 973.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_creation_says_why_in_view_at_18_pt_in_a_wide_window(cx: &mut TestAppContext) {
+        assert_failed_creations_are_shown(cx, (18, 1480., 973.)).await;
+    }
+
+    /// A creation cancelled from the busy row's Cancel says so in view wherever the body has
+    /// scrolled since, at 13 pt in a 461 × 490 window: the person wheels up to Cancel, on the
+    /// panel's top line, presses it and wheels back down to the form while the request winds
+    /// down, and the sentence it ends with is drawn whole in the body's view, the form open
+    /// below it with focus on its title field, in view. Nothing was sent, and nothing follows.
+    #[gpui::test]
+    async fn a_cancelled_creation_says_so_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        open_creation(&app, (13, 461., 490.), cx).await;
+        let send = review_failing_creation(&app, &panel, &script, Some(201), cx).await;
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        press_return(cx);
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        let wheel = |cx: &mut VisualTestContext, by: Pixels| {
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            cx.simulate_event(ScrollWheelEvent {
+                position: body.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), by)),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            draw(cx);
+        };
+        wheel(cx, px(4000.));
+        let cancel = whole_in_body(cx, "github-cancel", "the busy row's Cancel");
+        cx.simulate_click(cancel.center(), Modifiers::none());
+        draw(cx);
+        wheel(cx, px(-4000.));
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let row = cx.debug_bounds("github-busy-row").expect("the busy row");
+        assert!(
+            row.bottom() <= body.top(),
+            "back at the form's foot, the busy row {row:?} lies above the body's view {body:?}"
+        );
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        const SAID: &str = "GitHub action cancelled before submission";
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.error.as_deref(), Some(SAID));
+            assert!(panel.create && panel.confirm.is_none() && !panel.pending);
+            assert_eq!(
+                panel.title.read(cx).value().as_ref(),
+                "Keep the review's place"
+            );
+        });
+        assert_eq!(script.asked("POST", "/pulls"), 0, "nothing was sent");
+        assert_eq!(script.requests.lock().unwrap().len(), 2, "nothing follows");
+        let (wrong, rests, _) = failure_shown(&panel, SAID, "a cancel", cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        assert_eq!(rests, Some(Rests::Title), "focus rests on the title field");
+    }
+
+    /// A key held on Send to GitHub across a creation that fails presses nothing and types
+    /// nothing, at `interface` pt in a 461 × 490 window, where the failure's line is brought
+    /// into view: the held Return's repeats, as each platform delivers them and as X11's
+    /// release and press pairs, while the creation is sent and once it has failed, leave the
+    /// form open, byte for byte, review nothing again and send nothing again, with the line
+    /// and the control focus rests on whole in view all the while. Once the key has come up, a
+    /// fresh Return acts as that control does: nothing in the title field, and on Pull
+    /// requests, where the view could not hold the field, its one press, back to the list
+    /// with the draft kept. Nothing is sent again either way.
+    async fn assert_a_key_held_on_send_across_a_failed_creation_presses_nothing(
+        cx: &mut TestAppContext,
+        interface: u8,
+    ) {
+        use crate::branch_actions::tests::enter;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (kind, status, said) = FAILED_CREATIONS[0];
+        open_creation(&app, (interface, 461., 490.), cx).await;
+        let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        draw(cx);
+        let form = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |panel, cx| {
+                let fields = [&panel.title, &panel.head, &panel.base]
+                    .map(|input| input.read(cx).value().to_string());
+                (fields, panel.body.read(cx).value().to_string())
+            })
+        };
+        let typed = form(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        enter(cx, Some(false));
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        let unchanged = |cx: &mut VisualTestContext, when: &str| {
+            assert_eq!(form(cx), typed, "{when}");
+            assert!(
+                panel.read_with(cx, |panel, _| panel.create && panel.confirm.is_none()),
+                "{when}: the form stays open, and nothing is reviewed again"
+            );
+            assert!(script.asked("POST", "/pulls") <= 1, "{when}: sent once");
+        };
+        hold_return(cx, "while it is sent", unchanged);
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(said),
+            "{kind}"
+        );
+        let shown = |cx: &mut VisualTestContext, when: &str| {
+            let (wrong, rests, _) = failure_shown(&panel, said, when, cx);
+            assert!(wrong.is_empty(), "{wrong:#?}");
+            rests.expect("where focus rests")
+        };
+        let rests = shown(cx, "as the failure lands");
+        hold_return(cx, "once it has failed", unchanged);
+        for _ in 0..3 {
+            x11_repeat(cx, "enter");
+            unchanged(cx, "a release and its press, in two batches");
+        }
+        assert_eq!(shown(cx, "through the held key's repeats"), rests);
+        enter(cx, None);
+        draw(cx);
+        unchanged(cx, "as the key comes up");
+        enter(cx, Some(false));
+        enter(cx, None);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        match rests {
+            Rests::Title => {
+                unchanged(cx, "a fresh press in the title");
+                assert_eq!(shown(cx, "after a fresh press"), rests);
+            }
+            Rests::Back => panel.read_with(cx, |panel, _| {
+                assert!(
+                    !panel.create && panel.review.show_list,
+                    "a fresh press on Pull requests goes back to the list"
+                );
+                assert!(
+                    panel
+                        .saved
+                        .iter()
+                        .any(|draft| matches!(draft, Draft::Pull(pull) if pull.head == "feature")),
+                    "the draft is kept"
+                );
+            }),
+        }
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "nothing follows");
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+        assert!(panel.read_with(cx, |panel, _| !panel.pending));
+    }
+
+    #[gpui::test]
+    async fn a_key_held_on_send_across_a_failed_creation_presses_nothing_at_13_pt(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_on_send_across_a_failed_creation_presses_nothing(cx, 13).await;
+    }
+
+    #[gpui::test]
+    async fn a_key_held_on_send_across_a_failed_creation_presses_nothing_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_on_send_across_a_failed_creation_presses_nothing(cx, 18).await;
+    }
+
+    /// A send whose failure answers on the panel's top line with no reply open: a review, a
+    /// comment on the pull request, or a conversation's Resolve.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum TopLineSend {
+        Review,
+        Comment,
+        Resolve,
+    }
+
+    /// A review, a comment or a Resolve that fails says why in view, at 13 pt in a 461 × 490
+    /// window: its failure answers on the panel's top line, which stood above the body's top
+    /// as Send was pressed at the foot of what it sends, and the body brings the line into
+    /// view whole, as it does a failed creation's. The draft is kept, nothing is sent again
+    /// and focus stays where sending left it. (A reply's failure is drawn in its composer.)
+    async fn assert_a_failed_send_says_why_in_view(cx: &mut TestAppContext, sent: TopLineSend) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let script = github::Scripted::default();
+        let scripted = script.clone();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let pull = github::review::fixture_pull(false);
+        let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+        let mut threads = Client(UiTransport::Fixture { moved: false })
+            .review_threads(
+                &pull.capture(repository),
+                None,
+                &OperationControl::default(),
+            )
+            .unwrap();
+        for thread in &mut threads.items {
+            thread.target.account = github::Scripted::LOGIN.into();
+        }
+        let target = threads.items[0].target.clone();
+        // The pull request read again before the write, then the write refused; a Resolve's
+        // first read finds the script empty, as a lost connection answers nothing.
+        if sent != TopLineSend::Resolve {
+            script.answer(200, serde_json::to_string(&pull).unwrap());
+            script.answer(422, r#"{"message":"Validation Failed"}"#);
+        }
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(scripted);
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = if sent == TopLineSend::Resolve {
+                    Section::Overview
+                } else {
+                    Section::Review
+                };
+                panel.discussion = sent == TopLineSend::Comment;
+                panel.receive_threads(threads, None);
+                panel.close(window, cx);
+            });
+            panel
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        cx.update(|window, cx| {
+            assert_eq!(window.scale_factor(), 2., "the test window's scale");
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        // What is sent is reviewed as its own press reviews it, at the foot of what it sends.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if sent == TopLineSend::Resolve {
+                    panel.confirm = Some(Confirmation {
+                        account: target.account.clone(),
+                        action: Action::SetThreadResolved {
+                            target: target.clone(),
+                            resolved: true,
+                        },
+                    });
+                    panel.focus_confirmation(window, cx);
+                } else {
+                    panel
+                        .body
+                        .update(cx, |input, cx| input.set_value(TYPED, window, cx));
+                    panel.review_submission(window, cx);
+                }
+            })
+        });
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some()),
+            "{sent:?}: the submission is reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        let send = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        whole_in_body(
+            cx,
+            "github-confirm-send",
+            "Send to GitHub, where it is pressed",
+        );
+        press_return(cx);
+        settle_panel(&app, cx).await;
+        let focus = cx.update(|window, cx| window.focused(cx));
+        draw(cx);
+        draw(cx);
+        panel.read_with(cx, |panel, cx| {
+            assert!(
+                !panel.pending && panel.confirm.is_none() && panel.error.is_some(),
+                "{sent:?}: the send fails and says so: {:?}",
+                panel.error
+            );
+            if sent != TopLineSend::Resolve {
+                assert_eq!(panel.body.read(cx).value().as_ref(), TYPED, "{sent:?}");
+            }
+        });
+        let asked = script.requests.lock().unwrap().len();
+        assert_eq!(
+            asked,
+            if sent == TopLineSend::Resolve { 1 } else { 2 },
+            "{sent:?}: sent once, and nothing follows the failure"
+        );
+        whole_in_body(cx, "github-error", &format!("{sent:?}'s failure"));
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            focus,
+            "{sent:?}: focus stays where sending left it"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_failed_review_says_why_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Review).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_comment_says_why_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Comment).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_resolve_says_why_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Resolve).await;
     }
 
     /// The open panel with its local reads drained.
