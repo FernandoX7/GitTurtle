@@ -11593,6 +11593,20 @@ pub(crate) mod tests {
         panic!("a running quiet read never landed");
     }
 
+    /// Lands the recent-project saves asked for so far, so a recent list a
+    /// test then sets on the hub by hand stays as set. Every snapshot that
+    /// lands remembers its repository on the preference thread
+    /// (`GitTurtle::remember_repository`), and the save's reply gives the
+    /// hub the store's own list. [`settle`] cannot wait for that thread, so
+    /// the reply lands at whatever park follows the write: on a hosted
+    /// Ubuntu runner one landed after a test had set three recent projects
+    /// and before the frame it read the second row from, which drew the
+    /// store's one project.
+    pub(crate) fn land_recent_saves_for_test(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        cx.executor().run_until_parked();
+    }
+
     /// A 1000 × 680 window on a one-commit fixture, in History with the
     /// commit selected. Keep the returned directory until the test ends.
     pub(crate) async fn history_window(
