@@ -21919,7 +21919,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn a_refused_creation_names_no_number_from_another_repositorys_list(
+    async fn a_refused_creation_names_no_number_from_the_list_of_another_repository(
         cx: &mut TestAppContext,
     ) {
         let rows = rows_holding_seven();
