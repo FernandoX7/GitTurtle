@@ -22849,8 +22849,8 @@ mod tests {
     /// with its creation reviewed and Send to GitHub holding focus, the script holding the
     /// answer that gives `landed` focus. Review submission… is pressed by Return or, with `by_click`, by a
     /// click, which leaves no Return behind it.
-    async fn landing_panel<'a>(
-        cx: &'a mut TestAppContext,
+    async fn landing_panel(
+        cx: &mut TestAppContext,
         landed: Landed,
         by_click: bool,
     ) -> (
@@ -22858,7 +22858,7 @@ mod tests {
         Entity<GitTurtle>,
         Entity<Panel>,
         github::Scripted,
-        &'a mut VisualTestContext,
+        &mut VisualTestContext,
     ) {
         let (fixture, app, panel, script, cx) = creation_panel(cx, landed.rows(), "feature");
         let (status, answer) = landed.answer();
@@ -23068,15 +23068,15 @@ mod tests {
     /// Space held on Send to GitHub across the creation's landing, as X11 repeats it, with the
     /// new row holding focus and refusing the key: the panel as [`land`] leaves it, with the
     /// number of its requests so far.
-    async fn space_held_across_a_creation<'a>(
-        cx: &'a mut TestAppContext,
+    async fn space_held_across_a_creation(
+        cx: &mut TestAppContext,
     ) -> (
         tempfile::TempDir,
         Entity<GitTurtle>,
         Entity<Panel>,
         github::Scripted,
         u64,
-        &'a mut VisualTestContext,
+        &mut VisualTestContext,
     ) {
         let (fixture, app, panel, script, cx) = landing_panel(cx, Landed::Row, true).await;
         let sending = app.read_with(cx, |app, _| app.operations.hold());
