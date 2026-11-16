@@ -1535,11 +1535,18 @@ impl GitTurtle {
                 .child(form.clone())
                 .footer(
                     DialogFooter::new().child(
-                        button("github-close", "Back to repository", "", false)
-                            .debug_selector(|| "github-close".into())
-                            .on_click(move |_, window, cx| {
-                                close.update(cx, |this, cx| this.close(window, cx))
-                            }),
+                        // Back to repository stands where the panel hears Return and Space go
+                        // down and come up, as its body does ([`HeldKeys`]).
+                        div()
+                            .key_context(HELD)
+                            .capture_key_up(window.listener_for(&form, Panel::note_key_up))
+                            .child(
+                                button("github-close", "Back to repository", "", false)
+                                    .debug_selector(|| "github-close".into())
+                                    .on_click(move |_, window, cx| {
+                                        close.update(cx, |this, cx| this.close(window, cx))
+                                    }),
+                            ),
                     ),
                 )
                 .on_cancel(move |_, window, cx| {
@@ -1759,7 +1766,18 @@ struct Presses {
 /// ([`Panel::new`]) and not a key listener: a key bound in the focused control's context, as
 /// Return is in a field, reaches no listener, and a Return held on Send repeats in the form's
 /// first field while the creation is sent. It counts only where the panel hears the key come
-/// up too, with focus inside the body or on the line above it ([`HELD`]).
+/// up too, with focus inside the body, on the line above it or on the dialog footer's Back to
+/// repository ([`HELD`]): everywhere the panel's dialog draws a stop.
+///
+/// A press never outlasts the hearing of its key. The panel's close ends every press
+/// ([`Panel::close`]), and a press under way as focus goes to nothing the window draws, where
+/// no key-up is heard, is marked as one whose key-up may have been lost ([`HeldKeys::leave`]).
+/// The footer once stood outside the hearing: a Return that sent and came up on Back to
+/// repository, like a key down as the panel closed, stayed recorded, the next landing latched
+/// it with no key down, and the other key did nothing on the controls a landing focuses until
+/// the recorded one had been pressed once; and a Space held on Back to repository across a
+/// landing, which the panel never heard go down, opened the new pull request at its next
+/// repeat.
 #[derive(Default)]
 struct HeldKeys {
     /// Return's press, then Space's ([`held_key`]).
@@ -1816,8 +1834,9 @@ impl HeldKeys {
     }
 }
 /// The key context of the panel's top line and body together while the line stands above the
-/// body, where its Open #N is no part of the body ([`review::BODY`]): with focus in either,
-/// the panel hears Return and Space come up ([`HeldKeys`]).
+/// body, where its Open #N is no part of the body ([`review::BODY`]), and of the dialog
+/// footer's Back to repository: with focus in any of them, the panel hears Return and Space
+/// come up ([`HeldKeys`]).
 const HELD: &str = "GitTurtleGithubHeldKeys";
 /// A Return or Space press in the panel ([`HeldKeys`]).
 #[derive(Clone, Copy)]
@@ -2453,6 +2472,9 @@ impl Panel {
                     this.held.borrow_mut().leave();
                 }
             }));
+        // As may one held as focus goes to nothing the window draws, where no key-up is heard.
+        this.subscriptions
+            .push(cx.on_focus_lost(window, |this, _, _| this.held.borrow_mut().leave()));
         this.hear_keys(window.window_handle().window_id(), cx);
         this.subscriptions.push(cx.subscribe_in(
             &this.review.input,
@@ -3237,8 +3259,8 @@ impl Panel {
     }
     /// Hears Return and Space go down in `window`, the panel's, while the panel is open
     /// ([`HeldKeys`]): with focus where the panel hears them come up, the key's press begins
-    /// or repeats; anywhere else, in a dialog over the panel or on its footer, a key of the
-    /// panel still down may come up unheard ([`HeldKeys::leave`]). The panel's close drops it,
+    /// or repeats; anywhere else, as in a dialog over the panel, a key of the panel still down
+    /// may come up unheard ([`HeldKeys::leave`]). The panel's close drops it,
     /// so a closed panel, kept warm for its repository, takes no part in the window's keys.
     fn hear_keys(&mut self, window: crate::gpui::WindowId, cx: &mut Context<Self>) {
         let held = self.held.clone();
@@ -3719,8 +3741,10 @@ impl Panel {
         self.pressed.set(None);
         // And a Return held off a review comment, whose key-up lands outside the panel.
         self.forget_return();
-        // Closed, the panel takes no part in the window's keys ([`Self::hear_keys`]).
+        // Closed, the panel takes no part in the window's keys ([`Self::hear_keys`]), and
+        // keeps no press it heard go down: its key comes up outside the closed panel.
         self.hears_keys = None;
+        *self.held.borrow_mut() = HeldKeys::default();
         self.hold_closing_focus(window, cx);
         self.save_draft(window, cx);
         self.closed = true;
@@ -24147,6 +24171,199 @@ mod tests {
         unchanged(cx, "a fresh press in the title");
         assert_eq!(script.requests.lock().unwrap().len(), 5, "nothing follows");
         assert!(panel.read_with(cx, |panel, _| !panel.pending));
+    }
+
+    /// Tabs from wherever focus is until it stands on the dialog footer's Back to repository:
+    /// outside the body, and not on the busy row's Cancel, which the line above the body can
+    /// hold.
+    fn tab_to_the_footer(panel: &Entity<Panel>, cx: &mut VisualTestContext) {
+        for _ in 0..24 {
+            cx.simulate_keystrokes("tab");
+            crate::tags::tests::draw(cx);
+            let cancel = panel.read_with(cx, |panel, _| panel.cancel_request.handle().clone());
+            let on_footer = cx.update(|window, cx| {
+                let in_body = window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains(review::BODY));
+                window
+                    .focused(cx)
+                    .is_some_and(|focus| focus != cancel && !in_body)
+            });
+            if on_footer {
+                return;
+            }
+        }
+        panic!("Tab reaches Back to repository");
+    }
+
+    /// A press the panel closed over ends with it: Space goes down in the panel, the panel
+    /// closes and the key comes up outside it; reopened, a creation sent by a click lands, and
+    /// the first Return on the new row opens it, once. The closed panel kept the press, the
+    /// landing latched it with no key down, and Return did nothing on the row until Space had
+    /// been pressed once.
+    #[gpui::test]
+    async fn a_press_the_panel_closed_over_holds_nothing_off_a_later_landing(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let landed = Landed::Row;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, landed.rows(), "feature");
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        let review = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-review-submit")
+            })
+            .expect("Review submission…");
+        cx.update(|window, cx| review.focus(window, cx));
+        draw(cx);
+        key_goes_down(cx, "space", false);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.held.borrow().keys[1].is_some()),
+            "the panel hears Space go down"
+        );
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        key_comes_up(cx, "space");
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.closed && panel.confirm.is_none()),
+            "the panel closed with nothing reviewed"
+        );
+
+        let (status, answer) = landed.answer();
+        let at = (13, 1480., 973.);
+        click_creation(&app, &panel, &script, at, (status, &answer), cx).await;
+        draw(cx);
+        let row = landed.focus(&panel, cx);
+        assert!(cx.update(|window, _| row.is_focused(window)));
+        let sent = panel.read_with(cx, |panel, _| panel.request_generation);
+        landed.answer_press(&script);
+        key_goes_down(cx, "enter", false);
+        key_comes_up(cx, "enter");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        landed.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    /// A key that comes up on the footer's Back to repository holds nothing off a later
+    /// landing: Return goes down on Send to GitHub, Tab takes focus to the footer while the
+    /// creation is sent and Return comes up there; the creation lands, and the first Space on
+    /// the new row opens it, once. The panel heard no key come up on its footer: the press
+    /// stayed recorded, the landing latched it with no key down, and Space did nothing on the
+    /// row until Return had been pressed once.
+    #[gpui::test]
+    async fn a_key_that_came_up_on_the_footer_holds_nothing_off_a_landing(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let landed = Landed::Row;
+        let (_fixture, app, panel, script, cx) = landing_panel(cx, landed, true).await;
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        key_goes_down(cx, "enter", false);
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        tab_to_the_footer(&panel, cx);
+        key_comes_up(cx, "enter");
+        draw(cx);
+        let (_, sent) = land(&app, &panel, &script, landed, sending, cx).await;
+        landed.answer_press(&script);
+        key_goes_down(cx, "space", false);
+        key_comes_up(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        landed.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    /// Space held on the footer's Back to repository across a creation's landing presses
+    /// nothing on the new row: the creation is sent by a click, Tab takes focus to the footer
+    /// and Space goes down there, each release of its repeats asking the panel to close, which
+    /// it refuses while the creation is sent; the creation lands and gives the row focus, and
+    /// the held key's repeats and its key-up open nothing; a fresh press after that opens the
+    /// row, once. The panel heard no key on its footer, so the landing found no press to hold
+    /// off the row.
+    #[gpui::test]
+    async fn space_held_on_the_footer_presses_nothing_on_the_row_the_creation_made(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let landed = Landed::Row;
+        let (_fixture, app, panel, script, cx) = landing_panel(cx, landed, true).await;
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        tab_to_the_footer(&panel, cx);
+        key_goes_down(cx, "space", false);
+        draw(cx);
+        x11_repeat(cx, "space");
+        x11_repeat(cx, "space");
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending && !panel.closed),
+            "the panel stays open while the creation is sent"
+        );
+        let (_, sent) = land(&app, &panel, &script, landed, sending, cx).await;
+        for _ in 0..3 {
+            x11_repeat(cx, "space");
+        }
+        for held in [false, true, true] {
+            key_goes_down(cx, "space", held);
+            draw(cx);
+        }
+        x11_repeat(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_nothing_pressed(&panel, &script, sent, "Space held on the footer", cx);
+        key_comes_up(cx, "space");
+        draw(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_nothing_pressed(&panel, &script, sent, "Space come up", cx);
+
+        landed.answer_press(&script);
+        key_goes_down(cx, "space", false);
+        key_comes_up(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        landed.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    /// A key that came up with focus on nothing the window draws costs one press at most:
+    /// Space goes down on Send to GitHub and comes up with nothing focused, where no key-up is
+    /// heard and no key goes down either; the creation, sent by a click, lands with that press
+    /// still recorded: the next Return on the row presses nothing, and the one after it opens
+    /// the row. Nothing marked the press as one whose key-up may have been lost, so Return
+    /// did nothing on the row, however often it was pressed, until Space had been pressed once.
+    #[gpui::test]
+    async fn a_key_up_lost_with_nothing_focused_costs_one_press_at_most(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let landed = Landed::Row;
+        let (_fixture, app, panel, script, cx) = landing_panel(cx, landed, true).await;
+        key_goes_down(cx, "space", false);
+        let send = cx.update(|window, cx| window.focused(cx)).expect("Send");
+        cx.update(|window, cx| window.blur(cx));
+        draw(cx);
+        key_comes_up(cx, "space");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some() && !panel.pending),
+            "nothing was sent"
+        );
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+        let row = landed.focus(&panel, cx);
+        assert!(cx.update(|window, _| row.is_focused(window)));
+        let sent = panel.read_with(cx, |panel, _| panel.request_generation);
+        assert_the_second_return_opens_the_row(&app, &panel, &script, sent, cx).await;
     }
 
     /// The open panel with its local reads drained.
