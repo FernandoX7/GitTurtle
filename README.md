@@ -106,7 +106,7 @@ Diffs and source views turn ligatures off, so `->`, `!=` and `--` never merge in
 
 On an [Omarchy](https://omarchy.org/) desktop, GitTurtle follows your setup from the first launch. It needs no Omarchy patch or theme template: it reads your current theme's colors itself, hand-written and installed themes included, and never writes them.
 
-<p align="center"><img src="docs/screenshots/readme/omarchy-desktop.png" alt="GitTurtle tiled beside a terminal on an Omarchy desktop" width="920"></p>
+<p align="center"><img src="docs/screenshots/readme/omarchy-desktop.png" alt="GitTurtle tiled beside a terminal on an Omarchy desktop in Tokyo Night, and the same desktop in Catppuccin Latte and Gruvbox below it" width="920"></p>
 
 - **Your theme, live.** A first launch selects the **Omarchy** theme, which takes its colors from your current Omarchy theme. `omarchy theme set` retints the open window, with colors adjusted where needed so text and diffs stay readable.
 - **Your font.** Code uses your Omarchy monospace font, and `omarchy font set` changes it in the open window. Theme and font can each be changed in **Settings**.
@@ -114,7 +114,7 @@ On an [Omarchy](https://omarchy.org/) desktop, GitTurtle follows your setup from
 - **Your tools.** With no editor chosen in **Settings**, **Menu → Open repository in editor** opens your Omarchy editor, and **Open repository in terminal** opens your default terminal in the repository.
 - **At home in Hyprland.** GitTurtle is a native Wayland client that works tiled or floating and keeps Omarchy's default window opacity. Hyprland draws no title bar, so there are no window buttons: quit with **Ctrl+Q** or close the window with your compositor binding.
 
-<p align="center"><img src="docs/screenshots/readme/omarchy-themes.png" alt="GitTurtle following each of Omarchy's stock themes, one frame per theme" width="920"></p>
+<p align="center"><img src="docs/screenshots/readme/omarchy-themes.png" alt="GitTurtle following 23 of Omarchy's stock themes, one labeled frame per theme" width="920"></p>
 
 To open GitTurtle with a key, or focus it when it is already open, add this to `~/.config/hypr/bindings.lua`:
 

@@ -66,6 +66,38 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## November 16 the README's screenshots are retaken on Omarchy 4.5
+
+The README's pictures were retaken for its rewrite: ten frames of the app and three sheets built from further frames, all under `docs/screenshots/readme/`. `history.png`, `settings-themes.png` and `keyboard-shortcuts.png` replace the [September 28 frames](#september-28-readme-screenshots-on-omarchy) at the same paths; the other ten paths are new. No product code changed, so there is no base and candidate pair. These are pictures, not a QA verdict: no scenario bundle and no attestation belongs to them.
+
+- **Platform:** an M2 Pro MacBook Pro on Omarchy 4.5.0-3 (Arch Linux ARM, kernel 7.2.11-14-1-ARCH, AArch64), Hyprland 0.56.2 on native Wayland, eDP-1 3456 × 2234 at scale 2.
+- **Build:** `gitturtle-025eaf4`, a clean release of `025eaf40` (`--build-info` reports that revision and a clean source tree, `aarch64-unknown-linux-gnu`, release, `rustc 1.99.0`; sha256 `4bbb41f4…`). `git diff --stat` over `crates`, `vendor`, `Cargo.toml`, `Cargo.lock` and `assets` between `025eaf40` and `main` at `20866d96` is empty, so the frames show `main`'s app.
+- **Method:** the Hyprland harness, as on November 15 (`qa.py` needs python-xlib on this host): `hyprctl` dispatches, a virtual pointer and `wtype` keys sent to the app's own window, and `grim` grabs of the window's rectangle or of the whole monitor. The window was 1,480 × 973 logical pixels, so an app frame is 2,960 × 1,946; interface text was 13 pt; the pointer was parked outside the window. A frame was kept when two grabs 300 ms apart were identical; the command palette's pair differs only in its blinking caret, and each desktop pair only in the bar's clock.
+- **Fixture:** `/tmp/studio/Aurora`, a disposable repository made for these frames and removed afterwards: the repository of `scripts/create-demo-repo.py` with twelve more commits, three more branches, a tag, a Markdown file holding a Mermaid diagram, a changed panel image, a local bare remote and five working changes. Four one-commit repositories fill the project list. The people, their addresses and every path are invented. Each launch had its own HOME and XDG directories, removed after its frames.
+- **Themes:** the ten app frames show the Omarchy theme following a stock copy of Tokyo Night placed in the launch's HOME. The eight built-in themes were chosen in the app's Settings. For the Omarchy sheet and the desktop frames the launch's `~/.local/state/omarchy/current` was a symbolic link to the desktop's own, and each theme was set with the desktop's `omarchy-theme-set`; the app was not touched between themes. The desktop's theme, background and notification state were compared with their starting values after the last frame and matched.
+
+| Picture | Size | State | sha256 |
+| --- | --- | --- | --- |
+| [history.png](screenshots/readme/history.png) | 2960 × 1946 | History, project list on, `ccb54bc` selected with its seven changed files | `aff11743…` |
+| [changes.png](screenshots/readme/changes.png) | 2960 × 1946 | Changes, the unstaged diff of `src/App.tsx` with two hunks, two files staged, a message typed | `34e7a9e7…` |
+| [compare.png](screenshots/readme/compare.png) | 2960 × 1946 | Compare, split view of `src/App.tsx` in `ccb54bc` | `b88c9eab…` |
+| [file-history.png](screenshots/readme/file-history.png) | 2960 × 1946 | File history of `src/theme.css`, revision 2 of 5 | `690a979a…` |
+| [image-compare.png](screenshots/readme/image-compare.png) | 2960 × 1946 | Compare of a PNG, Side by side at Fit | `11eecd5b…` |
+| [markdown.png](screenshots/readme/markdown.png) | 2960 × 1946 | Compare of a Markdown file, Rendered, with a Mermaid diagram | `9bcff0db…` |
+| [command-palette.png](screenshots/readme/command-palette.png) | 2960 × 1946 | The command palette over History, `hist` typed, four results | `867db632…` |
+| [keyboard-shortcuts.png](screenshots/readme/keyboard-shortcuts.png) | 2960 × 1946 | Keyboard Shortcuts over History, 64 shortcuts listed | `deb090e3…` |
+| [settings-themes.png](screenshots/readme/settings-themes.png) | 2960 × 1946 | Settings, the Omarchy card selected and following Tokyo Night | `c6b5dc65…` |
+| [theme-editor.png](screenshots/readme/theme-editor.png) | 2960 × 1946 | The theme editor, an unsaved theme based on Midnight with its accent changed | `bd5d124b…` |
+| [themes-builtin.png](screenshots/readme/themes-builtin.png) | 1836 × 694 | A sheet: the History frame in Midnight, Catppuccin Mocha, Nord, Ember, Porcelain, Braden, Rosé Pine Dawn and Solarized Light | `b123a8d8…` |
+| [omarchy-themes.png](screenshots/readme/omarchy-themes.png) | 1836 × 1002 | A sheet: the History frame under 23 stock Omarchy themes, eighteen dark and five light | `b0b9efdb…` |
+| [omarchy-desktop.png](screenshots/readme/omarchy-desktop.png) | 3456 × 3383 | A sheet: the whole monitor with the app beside a terminal on Tokyo Night, and on Catppuccin Latte and Gruvbox at half size | `e8e0c43f…` |
+
+The three sheets are composed from frames taken the same way and are not single grabs. Each theme frame is reduced to a labeled tile (441 pixels wide for the built-in themes, 286 for the Omarchy themes) on a transparent background, with a one-pixel edge. Solitude is the one stock theme that rounds its windows, so its tile's corners are transparent at that radius. The desktop sheet holds the Tokyo Night frame unscaled and the other two at half size.
+
+Privacy: this host has no template set. Each of the ten app frames was viewed at full resolution in tiles, the two theme sheets at their committed size on GitHub's light and dark page colors, and the desktop frames' bar and terminal at full resolution with the rest at half size. They show the demo's invented people, addresses and paths, the terminal's bare `$` prompt, and in the bar the capture's local date and time, a temperature, fan and battery readings and glyphs without names. None of the 13 files holds a metadata chunk. The pull request's Image privacy job template-scans them on the hosted runner.
+
+Not covered: the sheet shows 23 of Omarchy's stock themes because this host's `osaka-jade` folder holds no `colors.toml`. No PDF or 3D model frame was taken, and none of these pictures comes from macOS or X11. The timings in the status bars are single readings, not measurements.
+
 ## November 15 the PTR-A and PTR-B build passes natively on Omarchy 4.5, and the CI-built AArch64 archive installs and runs as the local build does
 
 - **Platform:** an M2 Pro MacBook Pro on Omarchy 4.5.0-3 (`/etc/os-release` Arch Linux ARM, kernel 7.2.11-14-1-ARCH, AArch64), Hyprland 0.56.2 on native Wayland, eDP-1 3456 × 2234 at scale 2. The machine moved to Omarchy 4.5 on 2026-11-08 (its package log); its dated records before then were made on Omarchy Mac 4.0.4 on Asahi Linux. Both parts ran with the Hyprland harness, frames by `grim` (no scenario bundle or attestation: `qa.py` needs python-xlib on this host), in a 1,480 × 973 window, Midnight at 13 pt unless noted.
@@ -3335,6 +3367,8 @@ A `design-reviewer` pass over every proposed frame at full size accepted each di
 Still open: under untiled Linux client decorations `max_height` ignores the kit's window paddings, so the panel would overrun by about 20 px; a long save error that wraps makes the footer taller than the cap assumes. Neither occurs on X11 or macOS. macOS and fractional scale factors are not covered.
 
 ## September 28 README screenshots on Omarchy
+
+The three frames below were replaced at the same paths on [November 16](#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45); the sizes and digests in this entry describe the September 28 frames, which stay in the repository's history.
 
 The README's screenshots were retaken on the owner's Omarchy laptop, replacing the September 14 frames captured in Ubuntu virtual X11 from build `7d18fef`. Those frames stay under `docs/screenshots/public-launch/` as the [public-launch record](public-launch-validation.md)'s evidence. No product code changed, so there is no base and candidate pair; the rules both [visual evidence tiers](../.agents/skills/gitturtle-native-qa/references/visual-evidence.md) share still applied.
 
