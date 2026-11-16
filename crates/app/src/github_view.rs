@@ -2425,6 +2425,43 @@ fn capture_draft(
 fn empty_pull_draft(draft: &Draft) -> bool {
     matches!(draft, Draft::Pull(pull) if pull.title.is_empty() && pull.body.is_empty())
 }
+/// The key a new pull request's draft is saved under ([`Draft::key`]): its destination, its
+/// head and its base. The New pull request form's text belongs to one, the key it was typed
+/// or restored under ([`Panel::settle_form`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FormKey {
+    repository: Repository,
+    head: String,
+    base: String,
+}
+impl FormKey {
+    /// The key `form`'s fields name.
+    fn of(form: &NewPull) -> Self {
+        Self {
+            repository: form.repository.clone(),
+            head: form.head.clone(),
+            base: form.base.clone(),
+        }
+    }
+    /// Whether `pull` is a draft of this key.
+    fn names(&self, pull: &NewPull) -> bool {
+        pull.repository == self.repository && pull.head == self.head && pull.base == self.base
+    }
+    /// The draft that keeps `form`'s title, description and Draft or Ready under this key,
+    /// whatever key the form's fields name.
+    fn keep(&self, form: &NewPull) -> NewPull {
+        NewPull {
+            repository: self.repository.clone(),
+            head: self.head.clone(),
+            base: self.base.clone(),
+            ..form.clone()
+        }
+    }
+}
+/// Whether two creation drafts hold the same text: title, description and Draft or Ready.
+fn same_text(one: &NewPull, other: &NewPull) -> bool {
+    one.title == other.title && one.body == other.body && one.draft == other.draft
+}
 /// One unpublished form snapshot, regardless of how often typing changes its
 /// destination key. Only a quiet form or an explicit transition reaches the
 /// durable saver; previously accepted destination drafts remain independent.
@@ -2455,6 +2492,12 @@ impl DeferredDraft {
     }
 }
 const DRAFT_QUIET_PERIOD: Duration = Duration::from_millis(500);
+/// What the New pull request form's save status reads once it shows a saved draft it took
+/// whole, until the next edit ([`Panel::settle_form`]): the words a restored review's has.
+const DRAFT_RESTORED: &str = "Draft restored locally";
+/// What the form's save status reads while its text has no key and another draft holds the
+/// one its fields name ([`Panel::settle_form`]): neither is put in the other's place.
+const DRAFT_HELD: &str = "Draft not saved: another draft is saved for this head and base. Discard it in Recover drafts to save this one. Keep this window open or copy your text.";
 /// The GitHub CLI sign-in command that Copy sign-in command copies.
 const SIGN_IN_COMMAND: &str = "gh auth login --hostname github.com --web --skip-ssh-key";
 type DraftSaveReply = futures::channel::oneshot::Receiver<anyhow::Result<()>>;
@@ -2565,6 +2608,18 @@ struct Panel {
     /// review body share the field, and the form opens by clearing it only of a review's text
     /// ([`Panel::create`]).
     reviewed: bool,
+    /// The key the form's text belongs to ([`FormKey`]): the one it was typed or restored
+    /// under, which the form is saved under and no other, whatever its fields name meanwhile
+    /// ([`Panel::settle_form`]). None while the text has no key, typed with a destination
+    /// that names no repository, or while another draft holds the key its fields name.
+    home: Option<FormKey>,
+    /// Whether an edit of the destination, the head or the base has named a key that does
+    /// not count yet: the field's loss of focus settles it ([`Panel::settle_key`]). Focus
+    /// that only passes through one of the three settles nothing.
+    naming: bool,
+    /// Whether the form shows a saved draft it took whole, with nothing edited since: its
+    /// status says so until the next edit ([`DRAFT_RESTORED`]).
+    restored: bool,
     draft: bool,
     event: ReviewEvent,
     discussion: bool,
@@ -2643,6 +2698,9 @@ impl Panel {
             account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,origin:Origin::Panel,presses:Presses::default(),held:Default::default(),hears_keys:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:SharedString::default(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
             reviewed: false,
+            home: None,
+            naming: false,
+            restored: false,
             #[cfg(test)]
             scripted:None,
         };
@@ -2691,15 +2749,21 @@ impl Panel {
             this.subscriptions.push(cx.subscribe_in(
                 &input,
                 window,
-                |this, input, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::Change) {
+                |this, input, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => {
                         this.confirm = None;
-                        // An edit of the head or the base gives the form another draft's key.
-                        if input != &this.title {
-                            this.take_saved(false, window, cx);
+                        // An edit of the head or the base names another draft's key, which
+                        // counts once the field is left ([`Self::settle_form`]).
+                        if input == &this.title {
+                            this.defer_draft_save(window, cx);
+                        } else {
+                            this.key_edited(window, cx);
                         }
-                        this.defer_draft_save(window, cx);
                     }
+                    InputEvent::Blur if input != &this.title && this.naming => {
+                        this.settle_key(window, cx)
+                    }
+                    _ => {}
                 },
             ));
         }
@@ -2717,6 +2781,9 @@ impl Panel {
             &this.destination,
             window,
             |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Blur) && this.naming {
+                    this.settle_key(window, cx);
+                }
                 if matches!(event, InputEvent::Change) {
                     // Destination edits arrive after the field changed. Flush the
                     // old captured review snapshot before clearing its identity.
@@ -2747,9 +2814,8 @@ impl Panel {
                     this.confirm = None;
                     this.page = 1;
                     this.has_next = false;
-                    // As an edit of the head does, this one gives an open form another key.
-                    this.take_saved(false, window, cx);
-                    this.defer_draft_save(window, cx);
+                    // As an edit of the head does, this one names another draft's key.
+                    this.key_edited(window, cx);
                     cx.notify();
                 }
             },
@@ -2827,14 +2893,23 @@ impl Panel {
                         }
                         match saved {
                             Ok(mut saved) => {
+                                // Whether the form saved its text under its key before
+                                // this read landed, in place of whatever the store held.
+                                let own = this.stored_at_home().is_some();
                                 for draft in std::mem::take(&mut this.saved) {
                                     let key = draft.key();
                                     saved.retain(|old| old.key() != key);
                                     saved.push(draft);
                                 }
                                 this.saved = saved;
-                                // A form opened before this read landed takes its draft now.
-                                this.take_saved(false, window, cx);
+                                // The key counts as the saved drafts are read: a draft the
+                                // read found under it, which the form neither showed nor
+                                // saved over, is no text of the form's, so the form's has
+                                // no key until the rule gives it one ([`Self::settle_form`]).
+                                if !own && this.stored_at_home().is_some() {
+                                    this.home = None;
+                                }
+                                this.settle_key(window, cx);
                             }
                             Err(error) => this.local_read_failed(format!("{error:#}")),
                         }
@@ -2890,9 +2965,220 @@ impl Panel {
             self.save_status = SharedString::default();
             return None;
         }
-        Some(draft)
+        let form = match draft {
+            Draft::Pull(form) => form,
+            other => return Some(other),
+        };
+        // The form is saved under the key its text belongs to and under no other, whatever
+        // its fields name meanwhile. Text with no key takes the one they name where no other
+        // draft holds it, and is otherwise not saved, which the status says.
+        let key = FormKey::of(&form);
+        if self.home.is_none() {
+            if self
+                .stored(&key)
+                .is_some_and(|saved| !same_text(saved, &form))
+            {
+                self.save_status = DRAFT_HELD.into();
+                return None;
+            }
+            self.home = Some(key);
+        }
+        self.home.as_ref().map(|home| Draft::Pull(home.keep(&form)))
+    }
+    /// The creation draft the panel knows to be saved under `key`.
+    fn stored(&self, key: &FormKey) -> Option<&NewPull> {
+        self.saved.iter().find_map(|saved| match saved {
+            Draft::Pull(saved) if key.names(saved) => Some(saved),
+            _ => None,
+        })
+    }
+    /// The draft saved under the key the form's text belongs to.
+    fn stored_at_home(&self) -> Option<&NewPull> {
+        self.home.as_ref().and_then(|home| self.stored(home))
+    }
+    /// Settles the key the New pull request form's fields name, by the one rule for whose
+    /// text a key holds (decided 2026-11-16; it loses nothing in any order of edits).
+    ///
+    /// 1. A draft belongs to the key it was typed or restored under: its destination, head
+    ///    and base ([`FormKey`]). Nothing is taken and nothing is saved for a key the three
+    ///    fields only pass through. A key counts once its edit has settled, which is when
+    ///    the edited field loses focus ([`Self::settle_key`]), and at each transition that
+    ///    saves the form at once ([`Self::save_draft`]: Review submission…, Pull requests,
+    ///    Refresh PRs, a pull request's opening, the panel's close); as the form opens
+    ///    (`opening`); and as the saved drafts are read. Focus leaving the field settles an
+    ///    edit, not the quiet period a save waits out: a pause in the middle of a name would
+    ///    count the prefix it stopped at, `fix` on the way to `fix-2`, and the form's text
+    ///    waits on no timer to be safe, by the next point.
+    /// 2. Before the fields name another key, the form's text is saved under the key it
+    ///    belongs to, where it differs from what is stored there ([`Self::keep_home`]): at
+    ///    the first keystroke of the edit ([`Self::key_edited`]) and again here. The edit
+    ///    saves nothing under the key it names.
+    /// 3. At the settled key, a draft saved there is taken whole, its title, its description
+    ///    and Draft or Ready, in place of what the form showed, which is safe under its own
+    ///    key and in Recover drafts. With none saved there the form keeps its text, which
+    ///    belongs to the new key from now on and is saved there at the next save. A form is
+    ///    never filled from two drafts.
+    /// 4. The form's status says a draft was restored, until the next edit
+    ///    ([`DRAFT_RESTORED`]).
+    /// 5. Text with no key, typed while the destination named no repository or before the
+    ///    saved drafts were read, is saved nowhere: it takes no saved draft's place in the
+    ///    store, and no saved draft takes its place in the form. The form keeps it, the saved
+    ///    draft stays, and the status says the text is not saved and why ([`DRAFT_HELD`]),
+    ///    until that draft is discarded, the fields name a free key or the form is emptied.
+    ///
+    /// A form that opens with neither a title nor a description takes the draft saved under
+    /// its key though the key is its own: an emptied form is never saved, so the draft it
+    /// had is still there. While the form stays open, what the person empties stays empty.
+    ///
+    /// The form once took a saved draft at every keystroke of the three fields and saved
+    /// itself under each key it named: typed towards `fix-2`, an empty form took `fix`'s
+    /// draft on the way and saved it over `fix-2`'s; a form that opened on one head's draft,
+    /// edited onto another head's, saved the first over the second; and a form holding only
+    /// a title took the other draft's description under it and saved the mix there.
+    fn settle_form(&mut self, opening: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.create {
+            return;
+        }
+        self.naming = false;
+        // A destination that names no repository names no key: the text keeps the one it has.
+        let Ok(Draft::Pull(form)) = self.current_draft(cx) else {
+            return;
+        };
+        let key = FormKey::of(&form);
+        let empty = form.title.is_empty() && form.body.is_empty();
+        let moved = self.home.as_ref() != Some(&key);
+        if !moved && !(opening && empty) {
+            return;
+        }
+        if moved {
+            self.keep_home(window, cx);
+        }
+        let Some(saved) = self
+            .stored(&key)
+            .filter(|saved| !same_text(saved, &form))
+            .cloned()
+        else {
+            // Nothing is saved there, or the very text the form holds.
+            self.home = Some(key);
+            return;
+        };
+        if self.home.is_none() && !empty {
+            self.save_status = DRAFT_HELD.into();
+            return;
+        }
+        self.home = Some(key);
+        self.fill_form(&saved, window, cx);
+        // What was reviewed is no longer what the form shows.
+        self.confirm = None;
+        self.restored = true;
+        self.save_status = DRAFT_RESTORED.into();
+    }
+    /// Puts `saved`'s title, description and Draft or Ready in the form.
+    fn fill_form(&mut self, saved: &NewPull, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft = saved.draft;
+        self.title
+            .update(cx, |input, cx| input.set_value(&saved.title, window, cx));
+        self.body
+            .update(cx, |input, cx| input.set_value(&saved.body, window, cx));
+    }
+    /// Saves the form's text under the key it belongs to, at once, where it differs from what
+    /// is stored there: before its fields name another key ([`Self::settle_form`], point 2).
+    /// A snapshot waiting out the quiet period is of that text and goes. Nothing is saved of
+    /// a form with neither a title nor a description, nor of text that has no key.
+    fn keep_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft_timer = None;
+        self.deferred_draft.clear();
+        let Some(home) = self.home.clone() else {
+            return;
+        };
+        let own = NewPull {
+            repository: home.repository.clone(),
+            title: self.title.read(cx).value().to_string(),
+            body: self.body.read(cx).value().to_string(),
+            head: home.head.clone(),
+            base: home.base.clone(),
+            draft: self.draft,
+            expected_head: None,
+            expected_base: None,
+        };
+        if own.title.is_empty() && own.body.is_empty() {
+            return;
+        }
+        if self
+            .stored(&home)
+            .is_some_and(|saved| same_text(saved, &own))
+        {
+            return;
+        }
+        self.persist_draft(Draft::Pull(own), window, cx);
+    }
+    /// An edit of the destination, the head or the base: with the form open, its text is
+    /// saved under the key it belongs to before the fields name another
+    /// ([`Self::keep_home`]), and nothing is taken or saved for the key they name now, which
+    /// counts once the field is left ([`Self::settle_key`]). With no form open the edit
+    /// defers a save as any other does.
+    fn key_edited(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.create {
+            self.defer_draft_save(window, cx);
+            return;
+        }
+        let restored = std::mem::take(&mut self.restored);
+        self.naming = true;
+        self.keep_home(window, cx);
+        match self.current_draft(cx) {
+            Err(issue) => {
+                self.save_status = issue.save_message().into();
+                if self.draft_issue.is_some() {
+                    self.draft_issue = Some(issue);
+                }
+            }
+            Ok(form) => {
+                self.draft_issue = None;
+                // A status that spoke of the key the fields named until now speaks of what
+                // holds: the text is stored under its own key, or waits for the key it gets.
+                let stale = restored
+                    || [DRAFT_HELD, DraftIssue::Destination.save_message()]
+                        .contains(&self.save_status.as_ref());
+                if stale {
+                    self.save_status = if empty_pull_draft(&form) {
+                        ""
+                    } else if self.home.is_some() {
+                        "Draft saved locally"
+                    } else {
+                        "Saving local draft…"
+                    }
+                    .into();
+                }
+            }
+        }
+        cx.notify();
+    }
+    /// The field whose edit named another key lost focus, or the saved drafts were read: the
+    /// key counts ([`Self::settle_form`]). Text that had no key until now is saved at once
+    /// under the one it got, since it is saved nowhere else.
+    fn settle_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.create {
+            return;
+        }
+        let keyless = self.home.is_none();
+        self.settle_form(false, window, cx);
+        if keyless {
+            self.save_form(window, cx);
+        }
+        cx.notify();
+    }
+    /// Saves the form or the review at once, where there is something to save: nothing of a
+    /// form that shows a restored draft nothing has edited since, which holds what is stored
+    /// and whose status stays.
+    fn save_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(draft) = self.draft_to_save(cx)
+            && !(self.restored && self.holds_stored(&draft))
+        {
+            self.persist_draft(draft, window, cx);
+        }
     }
     fn defer_draft_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.restored = false;
         self.draft_timer = None;
         self.deferred_draft.clear();
         if let Some(draft) = self.draft_to_save(cx) {
@@ -2920,10 +3206,18 @@ impl Panel {
         // A superseded timer must never enqueue its older destination afterward.
         self.draft_timer = None;
         self.deferred_draft.clear();
-        if let Some(draft) = self.draft_to_save(cx) {
-            self.persist_draft(draft, window, cx);
-        }
+        // The transition acts on the form as it stands, so the key its fields name counts
+        // ([`Self::settle_form`]).
+        self.settle_form(false, window, cx);
+        self.save_form(window, cx);
         cx.notify();
+    }
+    /// Whether `draft` is a creation draft the panel knows to be saved as it is, under its
+    /// key.
+    fn holds_stored(&self, draft: &Draft) -> bool {
+        matches!(draft, Draft::Pull(form) if self
+            .stored(&FormKey::of(form))
+            .is_some_and(|saved| same_text(saved, form)))
     }
     fn flush_draft_for_shutdown(&mut self, cx: &mut App) -> Option<DraftSaveCompletion> {
         self.draft_timer = None;
@@ -2963,6 +3257,8 @@ impl Panel {
         self.save_completion.clone()
     }
     fn persist_draft(&mut self, draft: Draft, window: &mut Window, cx: &mut Context<Self>) {
+        // Whatever is saved from here on is no draft the form has just taken.
+        self.restored = false;
         let key = draft.key();
         if matches!(&draft, Draft::Reply(reply) if reply.body.is_empty()) {
             // Empty replies are serialized deletions, not recoverable snapshots.
@@ -2999,16 +3295,26 @@ impl Panel {
                     // A previous destination's reply must not claim the
                     // currently invalid or newly edited form has been saved.
                     let current = this.current_draft(cx);
-                    apply_save_completion(
-                        &mut this.save_status,
-                        response_generation,
-                        this.save_response_generation,
-                        current,
-                        this.deferred_draft.is_pending()
-                            || this.conversations.deferred.is_pending()
-                            || this.saver.is_pending(),
-                        succeeded,
-                    );
+                    // Nor does the save of what a form held before it took a saved draft
+                    // replace what its status says of that draft, nor any save claim that
+                    // text with no key was saved; a failed save is said either way.
+                    let kept = this.create
+                        && succeeded
+                        && (this.restored
+                            || (this.home.is_none()
+                                && matches!(&current, Ok(form) if !empty_pull_draft(form))));
+                    if !kept {
+                        apply_save_completion(
+                            &mut this.save_status,
+                            response_generation,
+                            this.save_response_generation,
+                            current,
+                            this.deferred_draft.is_pending()
+                                || this.conversations.deferred.is_pending()
+                                || this.saver.is_pending(),
+                            succeeded,
+                        );
+                    }
                     cx.notify();
                 });
             })
@@ -3043,6 +3349,7 @@ impl Panel {
             self.body
                 .update(cx, |input, cx| input.set_value("", window, cx));
             self.save_status = SharedString::default();
+            self.restored = false;
         }
         self.saved.retain(|saved| !saved.sent_as(sent));
         let key = Draft::Pull(sent.clone()).key();
@@ -3340,47 +3647,18 @@ impl Panel {
         if reviewed {
             self.body
                 .update(cx, |input, cx| input.set_value("", window, cx));
+            // The review took the description's place, no edit of the person's: the form
+            // holds again what it was left with, the draft saved under its key as it was.
+            if let Some(left) = self.stored_at_home().cloned() {
+                self.fill_form(&left, window, cx);
+            }
         }
-        self.take_saved(true, window, cx);
+        // The key the fields name counts as the form opens ([`Self::settle_form`]).
+        self.restored = false;
+        self.settle_form(true, window, cx);
         self.notice=Some("Use a branch already published to GitHub. Creating a PR never pushes a branch. Choose Draft or Ready, then review the destination.".into());
         self.save_draft(window, cx);
         cx.notify();
-    }
-    /// Brings the open New pull request form in step with the draft saved for its
-    /// destination, head and base, so that nothing the form saves puts an emptier draft over
-    /// a fuller one it never showed: as the form opens (`opening`), as an edit of one of the
-    /// three gives it another draft's key, and as the saved drafts are read. A form holding
-    /// neither a title nor a description takes the saved draft whole, with its Draft or
-    /// Ready; so does one that opens on text a saved draft holds too, which is safe under the
-    /// key it was left with. Otherwise what the form holds stays, since it may be saved
-    /// nowhere else, and the form takes only the title or the description it has none of. A
-    /// field the person empties afterwards stays empty: nothing is taken while the key stays.
-    fn take_saved(&mut self, opening: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.create {
-            return;
-        }
-        let Ok(form) = self.current_draft(cx) else {
-            return;
-        };
-        let key = form.key();
-        let saved = self.saved.iter().find(|saved| saved.key() == key);
-        let (Draft::Pull(form), Some(Draft::Pull(saved))) = (form, saved.cloned()) else {
-            return;
-        };
-        let holds = |kept: &Draft| matches!(kept, Draft::Pull(kept) if kept.title == form.title && kept.body == form.body);
-        let whole = (form.title.is_empty() && form.body.is_empty())
-            || (opening && self.saved.iter().any(holds));
-        if whole {
-            self.draft = saved.draft;
-        }
-        if (whole || form.title.is_empty()) && saved.title != form.title {
-            self.title
-                .update(cx, |input, cx| input.set_value(saved.title, window, cx));
-        }
-        if (whole || form.body.is_empty()) && saved.body != form.body {
-            self.body
-                .update(cx, |input, cx| input.set_value(saved.body, window, cx));
-        }
     }
     fn load_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
@@ -4189,12 +4467,17 @@ impl Panel {
         };
         cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(Ok(())) => {
                         this.saved.retain(|draft| draft.key() != key);
                         this.notice =
                             Some("The selected saved draft was discarded locally.".into());
+                        // Text the discarded draft kept out of the store takes the key it
+                        // gave up ([`Self::settle_form`], point 5).
+                        if this.home.is_none() {
+                            this.settle_key(window, cx);
+                        }
                     }
                     _ => this.refuse(
                         "Could not discard the selected draft; its stored text was preserved.",
@@ -22806,10 +23089,14 @@ mod tests {
     }
 
     /// An edit of the head or of the destination that brings the open form to a saved
-    /// draft's key takes what the form has none of, and never saves an emptier draft over
-    /// it: a form holding nothing shows the saved draft whole, with its Ready, and one with
-    /// a title typed keeps that title and takes the saved description. The typed title was
-    /// saved with no description over the saved draft, its description gone from the store.
+    /// draft's key shows that draft whole once the edited field is left, with its Ready, and
+    /// never saves an emptier draft over it: a form holding nothing takes it, and so does one
+    /// with a title typed for another head, whose title is saved under the key it was typed
+    /// for, since a form is never filled from two drafts. Nothing is taken while the field
+    /// keeps focus. A title typed while the destination named no repository has no key, so
+    /// it stays in the form and the saved draft stays in the store. The typed title was once
+    /// saved with no description over the saved draft; and later the form kept the typed
+    /// title over the saved description, and that was saved, the saved title gone.
     async fn assert_an_edit_onto_a_saved_draft_takes_it(
         cx: &mut TestAppContext,
         destination: bool,
@@ -22823,7 +23110,11 @@ mod tests {
             ("fixture/repo", "")
         };
         let (_fixture, app, panel, cx) = stored_panel(cx, first, head);
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        // An active window, as one typed in is: an inactive one reports no field left.
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
         settle_panel(&app, cx).await;
         draw(cx);
         click_in_body(&app, "github-create", cx).await;
@@ -22837,6 +23128,7 @@ mod tests {
             cx.simulate_input("Typed title");
             draw(cx);
         }
+        let typed = form(&panel, cx);
         cx.update(|window, cx| {
             let panel = panel.read(cx);
             let field = if destination {
@@ -22854,18 +23146,33 @@ mod tests {
         });
         settle_panel(&app, cx).await;
         draw(cx);
-        let expected = if titled {
-            ("Typed title".to_string(), stored_form().1, true)
+        assert_eq!(
+            form(&panel, cx),
+            typed,
+            "nothing is taken while the field keeps focus"
+        );
+        leave_for_title(&app, &panel, cx).await;
+        let expected = if titled && destination {
+            typed.clone()
         } else {
             stored_form()
         };
-        assert_eq!(form(&panel, cx), expected, "the form takes the saved draft");
+        assert_eq!(
+            form(&panel, cx),
+            expected,
+            "the form once the field is left"
+        );
         // Pull requests saves what the form holds.
         click_in_body(&app, "github-create-back", cx).await;
         let stored = creations(&drafts::load().expect("the draft store"));
-        assert!(
-            stored.contains(&expected) && stored.iter().all(|saved| !saved.1.is_empty()),
-            "the saved description stays in the store: {stored:?}"
+        let kept = if titled && !destination {
+            vec![stored_form(), typed]
+        } else {
+            vec![stored_form()]
+        };
+        assert_eq!(
+            stored, kept,
+            "the saved draft stays whole in the store, beside a title typed for another head"
         );
     }
 
@@ -22884,6 +23191,485 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         assert_an_edit_onto_a_saved_draft_takes_it(cx, true, true).await;
+    }
+
+    /// The draft a store holds for `head` onto `main` in `repository`: Ready, its title and
+    /// its description naming both, so a test tells whose text a form or a key holds.
+    fn keyed(repository: &str, head: &str) -> Draft {
+        let (title, body, draft) = shows(repository, head);
+        Draft::Pull(NewPull {
+            repository: Repository::parse(repository).unwrap(),
+            title,
+            body,
+            head: head.into(),
+            base: "main".into(),
+            draft,
+            expected_head: None,
+            expected_base: None,
+        })
+    }
+
+    /// What [`form`] gives for a form that shows [`keyed`]'s draft whole.
+    fn shows(repository: &str, head: &str) -> (String, String, bool) {
+        (
+            format!("Title of {head} in {repository}"),
+            format!("Description of {head} in {repository}"),
+            false,
+        )
+    }
+
+    /// The creation drafts `saved` holds, each as its key, title, description and Draft, in
+    /// the keys' order.
+    fn by_key(saved: &[Draft]) -> Vec<(String, String, String, bool)> {
+        let mut kept: Vec<_> = saved
+            .iter()
+            .filter_map(|draft| match draft {
+                Draft::Pull(pull) => Some((
+                    draft.key(),
+                    pull.title.clone(),
+                    pull.body.clone(),
+                    pull.draft,
+                )),
+                _ => None,
+            })
+            .collect();
+        kept.sort();
+        kept
+    }
+
+    /// One of [`by_key`]'s entries: `text`, as [`form`] gives it, kept for `head` onto `main`
+    /// in `repository`.
+    fn under(
+        repository: &str,
+        head: &str,
+        (title, body, draft): (String, String, bool),
+    ) -> (String, String, String, bool) {
+        (
+            format!("create:{repository}:{head}:main"),
+            title,
+            body,
+            draft,
+        )
+    }
+
+    /// Asserts that the draft store on disk and Recover drafts each hold exactly `expected`,
+    /// every key once, with the saves queued so far landed.
+    async fn assert_kept(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        expected: &[(String, String, String, bool)],
+        when: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        settle_panel(app, cx).await;
+        let mut expected = expected.to_vec();
+        expected.sort();
+        assert_eq!(
+            by_key(&drafts::load().expect("the draft store")),
+            expected,
+            "{when}: the draft store"
+        );
+        assert_eq!(
+            panel.read_with(cx, |panel, _| by_key(&panel.saved)),
+            expected,
+            "{when}: Recover drafts lists each draft once"
+        );
+    }
+
+    /// A window on an empty repository whose draft store holds `stored`, and a new panel over
+    /// it for `destination` with `head` as its branch, open at 13 pt in a 1,480 × 973 window
+    /// with New pull request chosen by a click. Its requests are answered from the script.
+    async fn keyed_form<'a>(
+        cx: &'a mut TestAppContext,
+        destination: &str,
+        head: &str,
+        stored: &[Draft],
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        github::Scripted,
+        &'a mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (fixture, app, cx) = repository_window(cx);
+        for draft in stored {
+            drafts::save(draft.clone()).expect("the draft store");
+        }
+        let script = github::Scripted::default();
+        let scripted = script.clone();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, head.into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(scripted);
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                panel
+                    .destination
+                    .update(cx, |input, cx| input.set_value(destination, window, cx));
+                panel.close(window, cx);
+            });
+            panel
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        // An active window, as one typed in is: an inactive one reports no field left.
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        click_in_body(&app, "github-create", cx).await;
+        assert!(
+            panel.read_with(cx, |panel, _| panel.create),
+            "New pull request opens the form"
+        );
+        (fixture, app, panel, script, cx)
+    }
+
+    /// A field of the form that names its draft's key.
+    #[derive(Clone, Copy, Debug)]
+    enum Names {
+        Destination,
+        Head,
+    }
+
+    /// Types `text` at the end of what `field` holds, after `erased` Backspaces there, each
+    /// one keystroke of the view's own: focus stays in the field.
+    fn retype(
+        panel: &Entity<Panel>,
+        field: Names,
+        erased: usize,
+        text: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| {
+            let panel = panel.read(cx);
+            let field = match field {
+                Names::Destination => &panel.destination,
+                Names::Head => &panel.head,
+            };
+            field.read(cx).focus_handle(cx).focus(window, cx)
+        });
+        draw(cx);
+        cx.simulate_keystrokes("end");
+        for _ in 0..erased {
+            cx.simulate_keystrokes("backspace");
+        }
+        cx.simulate_input(text);
+        draw(cx);
+    }
+
+    /// Types `text` into the form's title, at its end, and leaves focus there.
+    fn title_typed(panel: &Entity<Panel>, text: &str, cx: &mut VisualTestContext) {
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| {
+            let title = panel.read(cx).title.read(cx).focus_handle(cx);
+            title.focus(window, cx)
+        });
+        draw(cx);
+        cx.simulate_keystrokes("end");
+        cx.simulate_input(text);
+        draw(cx);
+    }
+
+    /// Focus leaves the field it is in for the form's title, as a click on the title takes
+    /// it, and the frames and saves that follow land: an edit of the field has settled.
+    async fn leave_for_title(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        cx: &mut VisualTestContext,
+    ) {
+        title_typed(panel, "", cx);
+        settle_panel(app, cx).await;
+        crate::tags::tests::draw(cx);
+    }
+
+    /// What the form's save status reads.
+    fn status(panel: &Entity<Panel>, cx: &mut VisualTestContext) -> String {
+        panel.read_with(cx, |panel, _| panel.save_status.to_string())
+    }
+
+    /// Route (a): a name typed through another draft's key takes nothing there and saves
+    /// nothing there. With drafts saved for a short name and for a longer one that begins with
+    /// it, an empty form whose `field` is typed to the longer one, a key at a time, passes
+    /// through the shorter one's key with nothing taken; the quiet period then passes with
+    /// focus still in the field and nothing is saved; and once the field is left the form
+    /// shows the longer one's draft whole, and says it restored it. The store and Recover
+    /// drafts hold both drafts as they were throughout, each once. At the shorter name the
+    /// form took that draft, at the longer one, no longer empty, it took nothing, and the
+    /// save that followed wrote the shorter one's text over the longer one's draft.
+    async fn assert_a_name_typed_through_a_drafts_key_takes_nothing_there(
+        cx: &mut TestAppContext,
+        field: Names,
+    ) {
+        use crate::tags::tests::draw;
+        let (destination, head, short, long, stored) = match field {
+            Names::Head => (
+                "acme/app",
+                "",
+                "fix",
+                "fix-2",
+                [keyed("acme/app", "fix"), keyed("acme/app", "fix-2")],
+            ),
+            Names::Destination => (
+                "",
+                "fix",
+                "acme/app",
+                "acme/app-web",
+                [keyed("acme/app", "fix"), keyed("acme/app-web", "fix")],
+            ),
+        };
+        let longer = match field {
+            Names::Head => shows("acme/app", "fix-2"),
+            Names::Destination => shows("acme/app-web", "fix"),
+        };
+        let all = by_key(&stored);
+        let (_fixture, app, panel, _script, cx) = keyed_form(cx, destination, head, &stored).await;
+        let empty = (String::new(), String::new(), true);
+        assert_eq!(form(&panel, cx), empty, "the form opens empty");
+        retype(&panel, field, 0, short, cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            form(&panel, cx),
+            empty,
+            "{field:?} typed as far as {short}: the form takes nothing of that key's draft"
+        );
+        retype(&panel, field, 0, &long[short.len()..], cx);
+        cx.executor().advance_clock(DRAFT_QUIET_PERIOD * 2);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            form(&panel, cx),
+            empty,
+            "{field:?} typed to {long}, focus still in it: nothing is taken yet"
+        );
+        assert_kept(&app, &panel, &all, "typed, the quiet period over", cx).await;
+        leave_for_title(&app, &panel, cx).await;
+        assert_eq!(
+            form(&panel, cx),
+            longer,
+            "{field:?} left at {long}: the form shows that key's draft whole"
+        );
+        assert_eq!(status(&panel, cx), "Draft restored locally", "{field:?}");
+        assert_kept(&app, &panel, &all, "the field left", cx).await;
+        // Pull requests saves what the form holds.
+        click_in_body(&app, "github-create-back", cx).await;
+        assert_kept(&app, &panel, &all, "after Pull requests", cx).await;
+    }
+
+    #[gpui::test]
+    async fn a_head_typed_through_a_drafts_key_takes_nothing_there(cx: &mut TestAppContext) {
+        assert_a_name_typed_through_a_drafts_key_takes_nothing_there(cx, Names::Head).await;
+    }
+
+    #[gpui::test]
+    async fn a_destination_typed_through_a_drafts_key_takes_nothing_there(cx: &mut TestAppContext) {
+        assert_a_name_typed_through_a_drafts_key_takes_nothing_there(cx, Names::Destination).await;
+    }
+
+    /// Route (b), and back and forth: a form that opened on one head's saved draft and has
+    /// its head edited to another's shows the other's draft whole, and edited back shows the
+    /// first one's again, three times over, the store and Recover drafts holding both drafts
+    /// as they were each time. Text then typed into the title under the second head is that
+    /// head's: it is saved under that key as the head is edited away, the first head's draft
+    /// comes back as it was, and the second head shows what was typed. A saved copy counted
+    /// only as the form opened, so nothing was taken at the second head and the first head's
+    /// text was saved over the second one's draft.
+    #[gpui::test]
+    async fn a_head_edited_between_two_drafts_shows_each_whole(cx: &mut TestAppContext) {
+        let stored = [keyed("acme/app", "alpha"), keyed("acme/app", "beta")];
+        let all = by_key(&stored);
+        let (_fixture, app, panel, _script, cx) =
+            keyed_form(cx, "acme/app", "alpha", &stored).await;
+        let (alpha, beta) = (shows("acme/app", "alpha"), shows("acme/app", "beta"));
+        assert_eq!(form(&panel, cx), alpha, "the form opens on alpha's draft");
+        assert_eq!(status(&panel, cx), "Draft restored locally", "as it opens");
+        for turn in 0..3 {
+            retype(&panel, Names::Head, "alpha".len(), "beta", cx);
+            leave_for_title(&app, &panel, cx).await;
+            assert_eq!(form(&panel, cx), beta, "turn {turn}: beta's draft, whole");
+            assert_eq!(status(&panel, cx), "Draft restored locally", "turn {turn}");
+            assert_kept(&app, &panel, &all, &format!("turn {turn}, at beta"), cx).await;
+            retype(&panel, Names::Head, "beta".len(), "alpha", cx);
+            leave_for_title(&app, &panel, cx).await;
+            assert_eq!(form(&panel, cx), alpha, "turn {turn}: alpha's draft, whole");
+            assert_kept(&app, &panel, &all, &format!("turn {turn}, at alpha"), cx).await;
+        }
+        retype(&panel, Names::Head, "alpha".len(), "beta", cx);
+        title_typed(&panel, " and more", cx);
+        assert_ne!(status(&panel, cx), "Draft restored locally", "edited");
+        let edited = (format!("{} and more", beta.0), beta.1.clone(), beta.2);
+        assert_eq!(form(&panel, cx), edited, "typed under beta");
+        retype(&panel, Names::Head, "beta".len(), "alpha", cx);
+        leave_for_title(&app, &panel, cx).await;
+        assert_eq!(form(&panel, cx), alpha, "alpha's draft is as it was");
+        let kept = [
+            under("acme/app", "alpha", alpha),
+            under("acme/app", "beta", edited.clone()),
+        ];
+        assert_kept(&app, &panel, &kept, "beta edited, back at alpha", cx).await;
+        retype(&panel, Names::Head, "alpha".len(), "beta", cx);
+        leave_for_title(&app, &panel, cx).await;
+        assert_eq!(
+            form(&panel, cx),
+            edited,
+            "beta shows what was typed under it"
+        );
+        click_in_body(&app, "github-create-back", cx).await;
+        assert_kept(&app, &panel, &kept, "after Pull requests", cx).await;
+    }
+
+    /// Route (c): a form that holds a title and no description, its head edited onto one with
+    /// a saved title and description, shows that draft whole, and the title it held is saved
+    /// under the head it was typed for. The form became its own title over the other draft's
+    /// description and was saved so under the other head, whose title was gone.
+    #[gpui::test]
+    async fn a_titled_form_edited_onto_a_draft_shows_that_draft_whole(cx: &mut TestAppContext) {
+        let stored = [keyed("acme/app", "beta")];
+        let (_fixture, app, panel, _script, cx) =
+            keyed_form(cx, "acme/app", "alpha", &stored).await;
+        assert_eq!(form(&panel, cx), (String::new(), String::new(), true));
+        title_typed(&panel, "Typed title", cx);
+        let beta = shows("acme/app", "beta");
+        let kept = [
+            under(
+                "acme/app",
+                "alpha",
+                ("Typed title".into(), String::new(), true),
+            ),
+            under("acme/app", "beta", beta.clone()),
+        ];
+        // The edit's first keystroke saves the title under the head it was typed for, with
+        // no quiet period waited out and the field not yet left.
+        retype(&panel, Names::Head, 0, "-", cx);
+        assert_kept(&app, &panel, &kept, "one keystroke into the edit", cx).await;
+        retype(&panel, Names::Head, "alpha-".len(), "beta", cx);
+        leave_for_title(&app, &panel, cx).await;
+        assert_eq!(
+            form(&panel, cx),
+            beta,
+            "the form is never filled from two drafts"
+        );
+        assert_eq!(status(&panel, cx), "Draft restored locally");
+        assert_kept(&app, &panel, &kept, "the head left at beta", cx).await;
+        click_in_body(&app, "github-create-back", cx).await;
+        assert_kept(&app, &panel, &kept, "after Pull requests", cx).await;
+    }
+
+    /// The review step shows exactly what the form shows: with the head typed onto a saved
+    /// draft's and Review submission… clicked from there, the click itself settling the
+    /// edit, the confirmation holds that draft's title, description and Ready for that head,
+    /// which is what the form shows. It reviewed the form's own title over the other draft's
+    /// description.
+    #[gpui::test]
+    async fn a_review_after_a_head_edit_shows_what_the_form_shows(cx: &mut TestAppContext) {
+        let stored = [keyed("acme/app", "beta")];
+        let (_fixture, app, panel, script, cx) = keyed_form(cx, "acme/app", "alpha", &stored).await;
+        title_typed(&panel, "Typed title", cx);
+        retype(&panel, Names::Head, "alpha".len(), "beta", cx);
+        script.answer(200, format!(r#"{{"sha":"{}"}}"#, "1".repeat(40)));
+        script.answer(200, format!(r#"{{"sha":"{}"}}"#, "2".repeat(40)));
+        click_in_body(&app, "github-review-submit", cx).await;
+        let reviewed = panel.read_with(cx, |panel, _| match &panel.confirm {
+            Some(Confirmation {
+                action: Action::Create(pull),
+                ..
+            }) => Some((
+                pull.head.clone(),
+                (pull.title.clone(), pull.body.clone(), pull.draft),
+            )),
+            _ => None,
+        });
+        let beta = shows("acme/app", "beta");
+        assert_eq!(
+            reviewed,
+            Some(("beta".to_string(), beta.clone())),
+            "the creation reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        assert_eq!(form(&panel, cx), beta, "the form shows what is reviewed");
+        assert_eq!(
+            status(&panel, cx),
+            "Draft restored locally",
+            "the review saves nothing of a draft just restored"
+        );
+        assert_eq!(script.asked("POST", "/pulls"), 0, "nothing is sent");
+    }
+
+    /// Text that has no key takes no other draft's place: typed while the destination names
+    /// no repository it is saved nowhere, and with the destination then typed onto a
+    /// repository that has a draft saved for the form's head and base, the form keeps what
+    /// was typed, the saved draft stays in the store and in Recover drafts, and the status
+    /// says the text is not saved and why. The form took the saved description under the
+    /// typed title, and that was saved over the saved draft.
+    #[gpui::test]
+    async fn text_typed_with_no_key_takes_no_saved_drafts_place(cx: &mut TestAppContext) {
+        let stored = [keyed("acme/app", "fix")];
+        let all = by_key(&stored);
+        let (_fixture, app, panel, _script, cx) = keyed_form(cx, "", "fix", &stored).await;
+        title_typed(&panel, "Typed title", cx);
+        retype(&panel, Names::Destination, 0, "acme/app", cx);
+        leave_for_title(&app, &panel, cx).await;
+        let typed = ("Typed title".to_string(), String::new(), true);
+        assert_eq!(form(&panel, cx), typed, "the form keeps what was typed");
+        assert_eq!(status(&panel, cx), DRAFT_HELD);
+        assert_kept(&app, &panel, &all, "the destination left", cx).await;
+        click_in_body(&app, "github-create-back", cx).await;
+        assert_kept(&app, &panel, &all, "after Pull requests", cx).await;
+        click_in_body(&app, "github-create", cx).await;
+        assert_eq!(
+            form(&panel, cx),
+            typed,
+            "the form still holds what was typed"
+        );
+        // Discarded in Recover drafts, the saved draft gives its key up to the form's text.
+        let saved = panel.read_with(cx, |panel, _| panel.saved[0].clone());
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.discard_draft(saved, window, cx))
+        });
+        for _ in 0..2 {
+            settle_panel(&app, cx).await;
+            crate::tags::tests::draw(cx);
+        }
+        let kept = [under("acme/app", "fix", typed.clone())];
+        assert_kept(&app, &panel, &kept, "the saved draft discarded", cx).await;
+        assert_eq!(form(&panel, cx), typed);
+    }
+
+    /// The saved drafts' read follows the same rule: a form opened before they are read, a
+    /// title typed into it meanwhile and saved nowhere yet, keeps that title as the read
+    /// lands with a draft saved for its key, which stays in the store and in Recover drafts.
+    /// The form took the saved description under the typed title.
+    #[gpui::test]
+    async fn text_typed_before_the_drafts_are_read_takes_no_saved_drafts_place(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = stored_panel(cx, "fixture/repo", "feature");
+        let reading = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        draw(cx);
+        let create = whole_in_body(cx, "github-create", "New pull request");
+        cx.simulate_click(create.center(), Modifiers::none());
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.create && panel.saved.is_empty()));
+        title_typed(&panel, "Typed title", cx);
+        drop(reading);
+        for _ in 0..2 {
+            settle_panel(&app, cx).await;
+            draw(cx);
+        }
+        let typed = ("Typed title".to_string(), String::new(), true);
+        assert_eq!(form(&panel, cx), typed, "the form keeps what was typed");
+        assert_eq!(status(&panel, cx), DRAFT_HELD);
+        assert_one_creation_saved(&panel, &stored_form(), "the read landed", cx);
     }
 
     /// The draft [`creation_panel`]'s form holds, as [`form`] gives one.
