@@ -11606,8 +11606,11 @@ pub(crate) mod tests {
     ///
     /// [`styled_history_window`] lands the opening's own, so a test begins
     /// with none in flight. A test that opens another repository, and then
-    /// sets the hub's recent list by hand or counts frames, lands that
-    /// opening's save here first.
+    /// sets the hub's recent list by hand, lands that opening's save here
+    /// first. One that then counts frames lands that opening's path filter
+    /// as well, whose reply draws a frame too: the filter's drain before
+    /// this call, as the opener does, or `land_every_reply`, which lands
+    /// every reply the window waits for.
     pub(crate) fn land_recent_saves_for_test(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         app.read_with(cx, |app, _| app.preferences_writer.drain());
         cx.executor().run_until_parked();
