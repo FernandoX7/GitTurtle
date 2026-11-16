@@ -1,0 +1,32 @@
+{
+  "deployment_id": "cdbe8670-ab65-4aa2-8f29-42fa433dbc65",
+  "deployment_url": "https://cdbe8670.gitturtle.pages.dev",
+  "source_revision": "86ed3d8f04bb901fade372182df91546574b06af",
+  "base_url": "https://gitturtle.com",
+  "tls_verification": true,
+  "smoke_script_sha256": "2f5d99f14c105789e18216a8e27378233b5adc8a0f547ffbbd7360e4cac1306d",
+  "files": {
+    "404.html": "9c8136d61e8e2438c5ab9553dda1b5b0b5d2a2b03d76b59731cbbe91c7cf9ed8",
+    "_headers": "096b5fe923ed8ccf8f937e551ed5d6748d0fddd11f6fc729e929ebb6da367968",
+    "assets/app-icon.png": "c932e5c84eca7c3ac0c35c51da3facc2ca4a22dee34a79a0286641f12e42fdad",
+    "assets/changes.png": "34e7a9e72bad3e98bef3f2c6cc9685374958b2058640e66c71505a683bc8bf0b",
+    "assets/compare.png": "b88c9eabf3a7ebe561c92688a978fc5404e0d15b80079a228a3ebf868bbe7877",
+    "assets/file-history.png": "690a979a01ebafc7ecb9e0c7dce61514d4a72879f3cfa36e193d5b1f59658883",
+    "assets/history.png": "aff11743a10f630adad584ce07868e284e3e9a092240fdd642c3b5fe7b97884e",
+    "assets/image-compare.png": "11eecd5ba31fe3c7aba7f91b735551a05c7841d2c1324236a5438979ebc5bf62",
+    "assets/keyboard-shortcuts.png": "deb090e33b9e75009aca6b878e5d85c4bb7ad7dc9422b9c07d9195554eaf8c41",
+    "assets/omarchy-desktop.png": "41f721cb538e8c069712462f98040216d3a65f28c806715b5bd3cb10763a0f8f",
+    "assets/omarchy-themes.png": "b0b9efdb2661a1b4d59cb79b72fac04ae834dde16055388b04ccc42af20d17cc",
+    "assets/settings-themes.png": "c6b5dc65e5b5ea241dd07c85f4f41ce273674c85b9fd5530ed9f1294050683e5",
+    "assets/theme-editor.png": "bd5d124bcb8d88bf8a835cd8547491099d67900fef1f8fef0f1f1e3f06e41ba4",
+    "assets/themes-builtin.png": "b123a8d89c67b88aa7974ece1729a4791037b071ef9d0e9964ad1b4d95847fd4",
+    "assets/turtle.png": "4acc96f40346ad54940d94cd112f90e4c923b9c0d461c0dfe27473ea29bee39b",
+    "fonts/OFL.txt": "e01b637272e0cbdfb240184dd98ea5cc671556d9894dae2668d92ab2c906787c",
+    "fonts/manrope-latin.a30ddcd34970.woff2": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972",
+    "index.html": "b6bce5aa24b9a34d6478d915ae393dc6071f21466bdcc03c08d21ae504cfda0d",
+    "robots.txt": "e919a653bd573c5790916f8eb8084461349fb64144aeeefbba6b8eb059bb1a49",
+    "site.js": "13334bb59acf3a0c743da306974e20753bd46e34dcf6aa053df7933b9d5c35e3",
+    "sitemap.xml": "e9ad6d177bd36412af41dc3246bd3249a0a82edb62430bd27533ecaaff121e80",
+    "styles.css": "dbb524707416d81ef1c585561ca988d8c32afde3e7dd42391ac870391cf4462e"
+  }
+}

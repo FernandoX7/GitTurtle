@@ -89,8 +89,8 @@ The owner approved publication on September 14, 2026. Cloudflare Pages hosts the
 | Initial deployed source | `0db617969b94c565ec1f89d94a03055e705c1efb`, exact `website/public/` bytes |
 | Production branch label | `main` |
 | Upload tool | Wrangler `4.131.2` |
-| Current production deployment | `10a8ce6a-295e-44e4-a979-374420029a8b` |
-| Current deployed source | `88b21e38f1282b0b228710bc0b240958f95cf21e` |
+| Current production deployment | `cdbe8670-ab65-4aa2-8f29-42fa433dbc65` (November 16, 2026; `https://cdbe8670.gitturtle.pages.dev`) |
+| Current deployed source | `86ed3d8f04bb901fade372182df91546574b06af` |
 
 Publication created the Pages project and custom-domain binding, then added one proxied CNAME: `gitturtle.com` → `gitturtle.pages.dev`, automatic TTL. Cloudflare reports the domain, verification and certificate validation active. Both public DNS resolvers checked resolve the apex; domain TLS and file-byte checks passed against those resolved addresses. DNS propagation temporarily limited local browser verification, so browser checks used the working Pages hostname.
 

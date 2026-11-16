@@ -162,3 +162,17 @@ Manrope's Latin subset has no non-breaking hyphen: Chromium drew U+2011 from a f
 | `public/404.html` | 705 | `9c8136d61e8e2438c5ab9553dda1b5b0b5d2a2b03d76b59731cbbe91c7cf9ed8` |
 
 The script is unchanged. The first view requests 614,354 bytes: the page, stylesheet, script, font, icon and the History picture. With every picture the page weighs 6,249,996 bytes in seventeen files: the desktop picture adds 1,177,156 bytes and the turtle falls from 942,906 to 235,756. The largest response is now `omarchy-desktop.png`, under the 2 MiB that `smoke.py` allows.
+
+## November 16, 2026 production deployment
+
+The owner asked for the refreshed site to be published on November 16, 2026, and signed the upload tool in to Cloudflare for it. The files uploaded are `website/public/` of `main` at `86ed3d8f04bb901fade372182df91546574b06af`, from a clean checkout of that commit, after `node --check website/public/site.js` and `python3 website/check.py` passed there.
+
+- **Deployment:** Wrangler 4.131.2, `pages deploy public --project-name gitturtle --branch main` with that commit's hash: 21 files, 15 uploaded and 6 already present, then `_headers`. Production deployment `cdbe8670-ab65-4aa2-8f29-42fa433dbc65`, `https://cdbe8670.gitturtle.pages.dev`, completed at 23:26 UTC.
+- **Smoke check:** `python3 smoke.py` against `https://gitturtle.com` passed: ten HTTP requests and one verified TLS connection (the certificate expires on February 11, 2027; the homepage, the redirect to HTTPS, the custom 404, the stylesheet, script, font and screenshot with their headers and cache rules, and three revalidations answered 304). [The output](evidence/2026-11-16-production-smoke.txt) and [the manifest](evidence/2026-11-16-production.json) of the 22 uploaded files with their SHA-256 values are kept.
+- **Live bytes:** the homepage served at the canonical domain and at the deployment's own address equals the committed `index.html` byte for byte (29,356 bytes) when fetched without a browser's `Accept` header; the stylesheet, the script, the History picture and the Omarchy desktop picture equal the uploaded files.
+- **Rendered:** the live page was drawn in a headless Chromium at 1,440 and 380 pixels wide: the font, the hero picture, the measured figures and the tour's heading as in the reviewed frames.
+- **Before it:** the no-script page was looked at whole (the hero, the figures, all six tour panels stacked with their captions, the themes), as the design review asked.
+
+**One observation, not caused by the upload:** for a request that asks for HTML as a browser does, the canonical domain's response carries one more tag before `</body>`, Cloudflare's Web Analytics beacon (`static.cloudflareinsights.com/beacon.min.js`), added by the zone and not present in the uploaded file or at the `pages.dev` address. The site's own policy (`script-src 'self'`, `connect-src 'none'`) refuses that script, so it does not run and nothing is collected, but a browser's console records the refusal on every visit. The site's documents say it carries no analytics script. Whether to switch the zone's injection off, or to adopt analytics deliberately (which would change the policy and those documents), is the owner's decision.
+
+The page still says that no download is published; the lines marked `data-release` change with the first release.
